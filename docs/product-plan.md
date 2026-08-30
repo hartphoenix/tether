@@ -1,6 +1,6 @@
 ---
 title: Tether — architecture and extraction plan
-status: active — Phase 2 complete; Phase 3 next
+status: active — Phase 2.5 complete; Phase 3 next
 created: 2026-08-28
 ---
 # Tether
@@ -311,6 +311,31 @@ Do not install or alter Wave widgets, read Wave configuration, introduce cmux be
 
 Exit condition: from a source checkout, `mdreview open file.md` starts or reuses one daemon and opens the extracted editor in the default browser without Wave installed; the automated suite passes; two views and concurrent writes behave correctly; Recents is independent of authorization; stale discovery and shutdown leave no stranded Bun process; and the current Wave viewer still works unchanged.
 
+### Phase 2.5 — validate the agent review loop
+
+Pull the minimum agent-facing CLI forward before building the Wave adapter. This phase validates Tether's central human–agent workflow against the same daemon, document service, mutation queue, revision checks, and embedded ledger used by the browser. MCP discovery and packaged harness skills remain deferred.
+
+Add these source-checkout commands:
+
+```text
+mdreview document read <file>
+mdreview document save <file> --expected-body-revision <revision> --body-file <path|->
+mdreview pending <file> --actor <actor>
+mdreview thread <file> <thread-id>
+mdreview reply <file> <thread-id> --actor <actor> --body-file <path|->
+mdreview resolve <file> <thread-id> --actor <actor>
+mdreview reopen <file> <thread-id> --actor <actor>
+mdreview acknowledge <file> --actor <actor> --through <seq> --body-revision <revision>
+```
+
+Each command explicitly grants its named canonical Markdown file for one authenticated control operation, runs through `DocumentService`, and closes the temporary grant afterward. It must not require a browser session, use Recents as authority, or expose the daemon control credential. Document save consumes stdin or a body file, requires the body revision returned by read, preserves the embedded ledger, and reports conflicts structurally.
+
+Keep stdout to one protocol-versioned JSON object and stderr for diagnostics only. Distinguish usage, missing document, authorization, invalid ledger, invalid thread, and revision conflict errors with stable codes and nonzero exit status. Pending and thread reads should remain compact so an agent need not ingest the entire document unless it explicitly requests `document read`.
+
+Automated coverage should exercise the real CLI against a reused daemon: read and conflict-safe save; pending, thread, reply, resolve, reopen, and acknowledge; multiline stdin; exact ledger preservation; malformed-ledger refusal; JSON/error contracts; and coexistence with an open browser session on the same file. Playwright, MCP, and skill packaging remain out of scope.
+
+Exit condition: an agent can inspect a copied annotated document, respond to or change the state of its threads, acknowledge only the sequence it received, and safely revise the body without bypassing daemon serialization. The browser reflects those changes through its existing lease refresh, and the full unit, HTTP, CLI, process, type, and bundle checks pass.
+
 ### Phase 3 — restore Wave parity through an adapter
 
 Begin with a Wave capability record tied to the installed client version. For Wave 0.14.5, record `fileNavigatorHook: false`: Wave exposes no public file-extension association or native file-navigator routing hook. Tether's widgets, Recents page, CLI, and wikilinks can open documents, but native navigator parity requires a future upstream Wave capability or a modified Wave build.
@@ -339,7 +364,7 @@ Exit condition: the versioned capability matrix is recorded; `mdreview open file
 
 ### Phase 5 — package agent integrations
 
-Stabilize the CLI response schema, then add a focused review-workflow skill. Add MCP only when tool discovery or structured mutation materially improves actual harness use. Both integrations use the same daemon client and event protocol.
+Treat the Phase 2.5 CLI response schema as the baseline, then add a focused review-workflow skill. Add MCP only when tool discovery or structured mutation materially improves actual harness use. Both integrations use the same daemon client and event protocol rather than reimplementing file mutations.
 
 Exit condition: Codex and Claude Code can inspect pending threads, answer or resolve them, and acknowledge only the sequence they received without reading the full document by default.
 
