@@ -18,10 +18,11 @@ const DEFAULT_TICKET_MS = 30_000;
 const DEFAULT_LEASE_MS = 90_000;
 const DEFAULT_STARTUP_GRACE_MS = 30_000;
 const DEFAULT_IDLE_MS = 5_000;
+const DEFAULT_SESSION_GRACE_MS = 5_000;
 
 export type Clock = () => number;
 export type Ticket = { ticket: string; url: string; expiresAt: number };
-export type Session = { id: string; grant: DocumentSession; cookie: string; createdAt: number; lastSeen: number; leases: Map<string, number>; leased: boolean };
+export type Session = { id: string; grant: DocumentSession; cookie: string; createdAt: number; lastSeen: number; leases: Map<string, number>; unleasedSince: number | null };
 
 export type DaemonOptions = {
   config?: TetherConfig;
@@ -34,6 +35,7 @@ export type DaemonOptions = {
   leaseMs?: number;
   startupGraceMs?: number;
   idleMs?: number;
+  sessionGraceMs?: number;
   actor?: string;
   /** A production web build can supply the extracted editor response. */
   web?: (request: Request, session: Session) => Response | Promise<Response>;
@@ -141,6 +143,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const leaseMs = options.leaseMs ?? Number(process.env.TETHER_LEASE_MS ?? DEFAULT_LEASE_MS);
   const startupGraceMs = options.startupGraceMs ?? Number(process.env.TETHER_STARTUP_GRACE_MS ?? DEFAULT_STARTUP_GRACE_MS);
   const idleMs = options.idleMs ?? Number(process.env.TETHER_IDLE_MS ?? DEFAULT_IDLE_MS);
+  const sessionGraceMs = options.sessionGraceMs ?? DEFAULT_SESSION_GRACE_MS;
   const service = options.service ?? new DocumentService({ now });
   const recents = options.recents ?? new RecentsRegistry({ path: config.recentsPath, now });
   const hostAdapter = options.hostAdapter ?? createBrowserHost({ open: options.opener });
@@ -264,7 +267,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         if (typeof body.clientId !== "string" || !body.clientId) return error("invalid_client", "A lease clientId is required.", 400);
         const leaseId = body.clientId;
         session.leases.set(leaseId, now() + leaseMs);
-        session.leased = true;
+        session.unleasedSince = null;
         emptySince = 0;
         const read = await service.read(session.grant);
         return json({ bodyRevision: read.bodyRevision, ledgerRevision: read.ledgerRevision, revision: read.bodyRevision });
@@ -277,6 +280,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         // idle window so the replacement page can bootstrap and lease it
         // again. With no remaining leases the daemon is still free to stop.
         session.lastSeen = now();
+        if (session.leases.size === 0) session.unleasedSince = session.lastSeen;
         return json({ ok: true });
       }
       if (apiPath === "/open" && request.method === "POST") {
@@ -325,7 +329,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         return error("ticket_expired", "The launch ticket has expired.", 401);
       }
       const id = randomToken();
-      const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt: now(), lastSeen: now(), leases: new Map(), leased: false };
+      const createdAt = now();
+      const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt, lastSeen: createdAt, leases: new Map(), unleasedSince: createdAt };
       sessions.set(id, session);
       try { await recents.add(pending.grant.realPath); }
       catch (cause) {
@@ -416,7 +421,12 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         const current = now();
         for (const session of [...sessions.values()]) {
           for (const [lease, expiry] of session.leases) if (expiry <= current) session.leases.delete(lease);
-          if (session.leased && session.leases.size === 0) {
+          if (session.leases.size > 0) {
+            session.unleasedSince = null;
+            continue;
+          }
+          session.unleasedSince ??= current;
+          if (current - session.unleasedSince >= sessionGraceMs) {
             sessions.delete(session.id);
             service.close(session.grant);
           }

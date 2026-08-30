@@ -151,7 +151,7 @@ describe("session API", () => {
   test("opens wikilinks in a new view, persists preferences, and survives reload release", async () => {
     const file = await fixture("[[other]]\n");
     const opened: string[] = [];
-    const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, opener: async (url) => { opened.push(url); }, web: () => new Response("web") });
+    const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, sessionGraceMs: 2_000, opener: async (url) => { opened.push(url); }, web: () => new Response("web") });
     daemons.push(daemon);
     await daemon.ready;
     const session = await exchange(daemon, file.path);
@@ -171,6 +171,9 @@ describe("session API", () => {
 
     expect((await sessionFetch(daemon, session.location, session.cookie, "api/lease", { method: "POST", headers: origin, body: JSON.stringify({ clientId: "browser" }) })).status).toBe(200);
     expect((await sessionFetch(daemon, session.location, session.cookie, "api/release", { method: "POST", headers: origin, body: JSON.stringify({ clientId: "browser" }) })).status).toBe(200);
+    // Cross at least one 500 ms sweeper tick. Reload must not depend on racing
+    // the release beacon against the replacement page's bootstrap request.
+    await Bun.sleep(750);
     expect((await sessionFetch(daemon, session.location, session.cookie, "api/bootstrap")).status).toBe(200);
     expect((await sessionFetch(daemon, session.location, session.cookie, "api/lease", { method: "POST", headers: origin, body: JSON.stringify({ clientId: "replacement-page" }) })).status).toBe(200);
     expect(daemon.sessions.size).toBe(2);
