@@ -16,6 +16,20 @@ export type DaemonStatus = {
   sessions?: number;
 };
 
+export class ControlRequestError extends Error {
+  readonly code: string;
+  readonly status: number;
+  readonly details?: unknown;
+
+  constructor(code: string, message: string, status: number, details?: unknown) {
+    super(message);
+    this.name = "ControlRequestError";
+    this.code = code;
+    this.status = status;
+    this.details = details;
+  }
+}
+
 export type EnsureDaemonOptions = {
   config?: TetherConfig;
   /** Used by tests and alternate launchers; defaults to this source checkout's daemon entrypoint. */
@@ -129,6 +143,33 @@ export async function stopDaemon(config = resolveConfig()): Promise<{ running: b
   const response = await fetch(`${discovery.origin}/control/stop`, { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000) });
   if (!response.ok) throw new Error((await response.text()) || "Unable to stop the daemon.");
   return { running: true, stopping: true };
+}
+
+/** Authenticated host-neutral control request used by the source-checkout CLI. */
+export async function controlRequest<T>(config: TetherConfig, pathname: string, body: Record<string, unknown>): Promise<T> {
+  const discovery = await ensureDaemon({ config });
+  const { readControlToken } = await import("./config");
+  const token = await readControlToken(config);
+  if (!token) throw new ControlRequestError("control_unavailable", "Daemon control credential is unavailable.", 503);
+  const response = await fetch(`${discovery.origin}${pathname}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+  let payload: unknown;
+  try { payload = await response.json(); }
+  catch { throw new ControlRequestError("invalid_response", "The daemon returned an invalid response.", response.status); }
+  if (!response.ok) {
+    const issue = payload && typeof payload === "object" ? (payload as { error?: { code?: unknown; message?: unknown; details?: unknown } }).error : undefined;
+    throw new ControlRequestError(
+      typeof issue?.code === "string" ? issue.code : "control_failed",
+      typeof issue?.message === "string" ? issue.message : "The daemon control request failed.",
+      response.status,
+      issue?.details,
+    );
+  }
+  return payload as T;
 }
 
 export async function controlLaunch(config: TetherConfig, path: string): Promise<{ url: string; expiresAt: number; path: string }> {

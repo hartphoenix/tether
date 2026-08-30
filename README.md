@@ -27,6 +27,33 @@ TETHER_PROFILE=preview ./mdreview daemon stop
 
 `TETHER_RUNTIME_DIR` and `TETHER_CONFIG_DIR` can set exact private directories for an isolated run. CLI stdout is one protocol-v1 JSON object. Exit code `0` is success, `1` is an operational failure, and `2` is invalid usage.
 
+## Agent review CLI
+
+Agent commands use the same daemon and serialized document service as the browser. Start with compact pending state, inspect individual threads, and request the full body only when needed:
+
+```sh
+TETHER_PROFILE=preview ./mdreview pending /tmp/tether-preview.md --actor codex
+TETHER_PROFILE=preview ./mdreview thread /tmp/tether-preview.md <thread-id>
+TETHER_PROFILE=preview ./mdreview document read /tmp/tether-preview.md
+```
+
+Reply or change thread state:
+
+```sh
+TETHER_PROFILE=preview ./mdreview reply /tmp/tether-preview.md <thread-id> --actor codex --body-file -
+TETHER_PROFILE=preview ./mdreview resolve /tmp/tether-preview.md <thread-id> --actor codex
+TETHER_PROFILE=preview ./mdreview reopen /tmp/tether-preview.md <thread-id> --actor codex
+TETHER_PROFILE=preview ./mdreview acknowledge /tmp/tether-preview.md --actor codex --through <seq> --body-revision <revision>
+```
+
+Conflict-safe body saves require the revision returned by `document read` and accept a file or stdin:
+
+```sh
+TETHER_PROFILE=preview ./mdreview document save /tmp/tether-preview.md --expected-body-revision <revision> --body-file -
+```
+
+`pending` and `thread` avoid returning the full document. All commands emit one structured JSON response and never use Recents as file authority.
+
 ## Development
 
 ```sh

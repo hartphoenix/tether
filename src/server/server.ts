@@ -9,7 +9,7 @@ import {
 } from "../shared/contracts";
 import type { HostAdapter } from "../hosts/host-adapter";
 import { createBrowserHost } from "../hosts/browser";
-import { DocumentService, DocumentConflictError, DocumentReadOnlyError, type AnnotationEventInput, type DocumentSession } from "../documents/document-service";
+import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type DocumentSession } from "../documents/document-service";
 import { RecentsRegistry } from "../recents/registry";
 import { ensureControlToken, prepareConfig, readControlToken, removeDiscovery, resolveConfig, writeDiscovery, type TetherConfig } from "./config";
 
@@ -68,6 +68,16 @@ function json(data: unknown, init: ResponseInit = {}): Response {
 
 function error(code: string, message: string, status: number, details?: unknown): Response {
   return json({ error: { code, message, ...(details === undefined ? {} : { details }) } }, { status });
+}
+
+function controlError(cause: unknown): Response {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  if (cause instanceof DocumentConflictError) return error("conflict", message, 409);
+  if (cause instanceof DocumentReadOnlyError) return error("ledger_invalid", message, 422, cause.ledgerError);
+  if (cause instanceof DocumentNotFoundError) return error("document_not_found", message, 404);
+  if (cause instanceof DocumentAccessError) return error("document_unauthorized", message, 403);
+  if (message.startsWith("Annotation thread not found:")) return error("thread_not_found", message, 404);
+  return error("invalid_request", message || "Request failed.", 400);
 }
 
 export function sameOrigin(request: Request, origin: string): boolean {
@@ -197,6 +207,23 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
 
   async function preferences(): Promise<AppPreferences> {
     try { return preferencesFrom(JSON.parse(await readFile(config.preferencesPath, "utf8"))); } catch { return preferencesFrom(null); }
+  }
+
+  async function withControlDocument<T>(body: Record<string, unknown>, operation: (grant: DocumentSession) => Promise<T>): Promise<T> {
+    if (typeof body.path !== "string" || !body.path.trim()) throw new Error("A Markdown path is required.");
+    const grant = await service.open(body.path);
+    try { return await operation(grant); }
+    finally { service.close(grant); }
+  }
+
+  function mutationSummary(document: DocumentSnapshot): Record<string, unknown> {
+    return {
+      path: document.path,
+      bodyRevision: document.bodyRevision,
+      ledgerRevision: document.ledgerRevision,
+      maxSequence: document.annotations.maxSequence,
+      unresolvedCount: document.annotations.unresolvedCount,
+    };
   }
 
   async function sessionApi(request: Request, session: Session, path: string): Promise<Response> {
@@ -362,9 +389,57 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           discardTicket(body.ticket);
           return json({ cancelled: true });
         }
+        if (request.method === "POST" && (pathname.startsWith("/control/document/") || pathname.startsWith("/control/review/"))) {
+          const body = await requestJson(request);
+          const result = await withControlDocument(body, async (grant) => {
+            if (pathname === "/control/document/read") return await service.read(grant);
+            if (pathname === "/control/document/save") {
+              if (typeof body.body !== "string" || typeof body.expectedBodyRevision !== "string") throw new Error("Document save requires body and expectedBodyRevision.");
+              return mutationSummary(await service.saveBody({ session: grant, body: body.body, expectedBodyRevision: body.expectedBodyRevision }));
+            }
+            if (pathname === "/control/review/pending") {
+              if (typeof body.actor !== "string" || !body.actor.trim()) throw new Error("Pending review requires actor.");
+              const pending = await service.pendingRead(grant, body.actor);
+              return {
+                path: pending.path,
+                documentId: pending.documentId,
+                bodyRevision: pending.bodyRevision,
+                ledgerRevision: pending.ledgerRevision,
+                events: pending.events,
+                maxSequence: pending.maxSequence,
+                acknowledgement: pending.acknowledgement,
+              };
+            }
+            if (pathname === "/control/review/thread") {
+              if (typeof body.threadId !== "string" || !body.threadId) throw new Error("A thread ID is required.");
+              return await service.thread(grant, body.threadId);
+            }
+            const action = /^\/control\/review\/(reply|resolve|reopen|acknowledge)$/.exec(pathname)?.[1];
+            if (!action) throw new Error("Control endpoint not found.");
+            if (typeof body.actor !== "string" || !body.actor.trim()) throw new Error(`Review ${action} requires actor.`);
+            let event: AnnotationEventInput;
+            if (action === "reply") {
+              if (typeof body.threadId !== "string" || !textBody(body)) throw new Error("A reply needs threadId and body.");
+              event = selectEvent({ ...body, type: "reply", body: textBody(body) }, "reply");
+            } else if (action === "acknowledge") {
+              if (!Number.isSafeInteger(body.through) || (body.through as number) < 1 || typeof body.bodyRevision !== "string") throw new Error("An acknowledgement needs through and bodyRevision.");
+              event = selectEvent({ ...body, type: "ack", throughSeq: body.through }, "ack");
+            } else {
+              if (typeof body.threadId !== "string" || !body.threadId) throw new Error(`A ${action} event needs threadId.`);
+              event = selectEvent({ ...body, type: action }, action);
+            }
+            return mutationSummary(await service.appendEvent({
+              session: grant,
+              event,
+              expectedBodyRevision: action === "acknowledge" ? body.bodyRevision as string : undefined,
+              expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined,
+            }));
+          });
+          return json(result);
+        }
         if (pathname === "/control/status" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId, origin: daemon.origin, pid: process.pid, sessions: sessions.size });
         if (pathname === "/control/stop" && request.method === "POST") { queueMicrotask(() => { void daemon.stop(); }); return json({ stopping: true }); }
-      } catch (cause) { return error("invalid_request", (cause as Error).message, 400); }
+      } catch (cause) { return controlError(cause); }
       return error("not_found", "Control endpoint not found.", 404);
     }
     if (pathname.startsWith("/s/")) {

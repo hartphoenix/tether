@@ -26,8 +26,12 @@ function cleanEnvironment(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...base, ...overrides };
 }
 
-async function command(args: string[], env: NodeJS.ProcessEnv) {
-  const child = Bun.spawn([process.execPath, ...args], { cwd: repository, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+async function command(args: string[], env: NodeJS.ProcessEnv, input?: string) {
+  const child = Bun.spawn([process.execPath, ...args], { cwd: repository, env, stdin: input === undefined ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe" });
+  if (input !== undefined && child.stdin) {
+    child.stdin.write(input);
+    child.stdin.end();
+  }
   const exitCode = await child.exited;
   const stdout = await new Response(child.stdout).text();
   const stderr = await new Response(child.stderr).text();
@@ -90,6 +94,21 @@ test("simultaneous source-checkout launchers recover stale state, reuse one daem
   expect((await stat(config.discoveryPath)).mode & 0o077).toBe(0);
   expect((await stat(config.controlPath)).mode & 0o077).toBe(0);
   expect(await readFile(config.discoveryPath, "utf8")).not.toContain(await readFile(config.controlPath, "utf8"));
+
+  const agentRead = await command(["mdreview", "document", "read", path], env);
+  expect(agentRead.stderr).toBe("");
+  expect(agentRead.stdout.trim().split("\n")).toHaveLength(1);
+  const readPayload = JSON.parse(agentRead.stdout) as { data: { bodyRevision: string } };
+  const agentSave = await command([
+    "mdreview", "document", "save", path,
+    "--expected-body-revision", readPayload.data.bodyRevision,
+    "--body-file", "-",
+  ], env, "# Revised through stdin\n\nSecond line.\n");
+  expect(agentSave.exitCode).toBe(0);
+  expect(agentSave.stderr).toBe("");
+  expect(JSON.parse(agentSave.stdout)).toMatchObject({ protocol: 1, ok: true, command: "document.save" });
+  expect(await readFile(path, "utf8")).toBe("# Revised through stdin\n\nSecond line.\n");
+  expect((await discoverDaemon(config))?.instanceId).toBe(discovery!.instanceId);
 
   const launch = await controlLaunch(config, path);
   const exchange = await fetch(launch.url, { redirect: "manual" });
