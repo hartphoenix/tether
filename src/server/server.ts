@@ -7,8 +7,9 @@ import {
   type AppPreferences,
   type DocumentSnapshot,
 } from "../shared/contracts";
-import type { HostAdapter } from "../hosts/host-adapter";
+import type { HostAdapter, HostTarget } from "../hosts/host-adapter";
 import { createBrowserHost } from "../hosts/browser";
+import { HostGateway } from "../hosts/wave-bridge";
 import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type DocumentSession } from "../documents/document-service";
 import { RecentsRegistry } from "../recents/registry";
 import { ensureControlToken, prepareConfig, readControlToken, removeDiscovery, resolveConfig, writeDiscovery, type TetherConfig } from "./config";
@@ -22,7 +23,8 @@ const DEFAULT_SESSION_GRACE_MS = 5_000;
 
 export type Clock = () => number;
 export type Ticket = { ticket: string; url: string; expiresAt: number };
-export type Session = { id: string; grant: DocumentSession; cookie: string; createdAt: number; lastSeen: number; leases: Map<string, number>; unleasedSince: number | null };
+export type Session = { id: string; grant: DocumentSession; cookie: string; createdAt: number; lastSeen: number; leases: Map<string, number>; unleasedSince: number | null; target?: HostTarget };
+type RecentsSession = { id: string; cookie: string; createdAt: number; lastSeen: number; leaseUntil: number; target?: HostTarget };
 
 export type DaemonOptions = {
   config?: TetherConfig;
@@ -51,7 +53,7 @@ export type TetherDaemon = {
   ready: Promise<void>;
   closed: Promise<void>;
   stop: () => Promise<void>;
-  mintTicket: (grant: DocumentSession) => Ticket;
+  mintTicket: (grant: DocumentSession, target?: HostTarget) => Ticket;
   service: DocumentService;
   sessions: ReadonlyMap<string, Session>;
 };
@@ -156,10 +158,12 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const sessionGraceMs = options.sessionGraceMs ?? DEFAULT_SESSION_GRACE_MS;
   const service = options.service ?? new DocumentService({ now });
   const recents = options.recents ?? new RecentsRegistry({ path: config.recentsPath, now });
-  const hostAdapter = options.hostAdapter ?? createBrowserHost({ open: options.opener });
+  const hostAdapter = options.hostAdapter ?? new HostGateway(config, createBrowserHost({ open: options.opener }));
   const instanceId = crypto.randomUUID();
-  const tickets = new Map<string, { grant: DocumentSession; expiresAt: number }>();
+  const tickets = new Map<string, { grant: DocumentSession; expiresAt: number; target?: HostTarget }>();
+  const recentsTickets = new Map<string, { expiresAt: number; target?: HostTarget }>();
   const sessions = new Map<string, Session>();
+  const recentsSessions = new Map<string, RecentsSession>();
   const startedAt = now();
   let emptySince = 0;
   let stopped = false;
@@ -179,10 +183,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const originFor = (port: number) => `http://${LOOPBACK}:${port}`;
   let daemon!: TetherDaemon;
 
-  function mintTicket(grant: DocumentSession): Ticket {
+  function mintTicket(grant: DocumentSession, target?: HostTarget): Ticket {
     const ticket = randomToken();
     const expiresAt = now() + ticketMs;
-    tickets.set(ticket, { grant, expiresAt });
+    tickets.set(ticket, { grant, expiresAt, target });
     return { ticket, expiresAt, url: `${daemon.origin}/launch?ticket=${encodeURIComponent(ticket)}` };
   }
 
@@ -192,6 +196,20 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     tickets.delete(ticket);
     service.close(pending.grant);
   }
+
+  function mintRecentsTicket(target?: HostTarget): Ticket {
+    const ticket = randomToken();
+    const expiresAt = now() + ticketMs;
+    recentsTickets.set(ticket, { expiresAt, target });
+    return { ticket, expiresAt, url: `${daemon.origin}/recents/launch?ticket=${encodeURIComponent(ticket)}` };
+  }
+
+  const recentsHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Tether Recents</title><style>
+  :root{color-scheme:dark}body{margin:0;background:#111;color:#eee;font:15px system-ui;padding:24px}h1{font-size:18px;margin:0 0 18px}.file{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;width:100%;text-align:left;background:#1d1d1d;color:inherit;border:1px solid #333;border-radius:8px;padding:12px;margin:8px 0;cursor:pointer}.name{font-weight:650}.dir{color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.time{color:#999;align-self:center}button:hover{border-color:#777}.empty{color:#999}</style></head><body><h1>Recent Markdown</h1><main id="list"></main><script type="module">
+  const api='./api'; const list=document.querySelector('#list');
+  async function load(){const r=await fetch(api+'/files');if(!r.ok){list.textContent='Session expired.';return}const files=await r.json();list.innerHTML=files.length?'':'<p class="empty">No recent Markdown files.</p>';for(const file of files){const b=document.createElement('button');b.className='file';b.innerHTML='<span><span class="name"></span><br><span class="dir"></span></span><span class="time"></span>';b.querySelector('.name').textContent=file.name;b.querySelector('.dir').textContent=file.directory;b.querySelector('.time').textContent=new Date(file.createdAt).toLocaleString();b.onclick=async()=>{b.disabled=true;try{const response=await fetch(api+'/open',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:file.path})});if(!response.ok)throw new Error((await response.json()).error?.message||'Open failed')}catch(error){alert(error.message)}finally{b.disabled=false}};list.append(b)}}
+  setInterval(()=>fetch(api+'/lease',{method:'POST'}),30000);fetch(api+'/lease',{method:'POST'});load();
+  </script></body></html>`;
 
   function sessionFrom(request: Request, pathname: string): Session | Response {
     const match = /^\/s\/([^/]+)(\/.*)?$/.exec(pathname);
@@ -233,7 +251,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     try {
       if (apiPath === "/bootstrap" && request.method === "GET") {
         const document = await service.read(session.grant);
-        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, document, capabilities: hostAdapter.capabilities(), preferences: await preferences(), actor: options.actor ?? "assistant" });
+        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, document, capabilities: hostAdapter.capabilities(session.target), preferences: await preferences(), actor: options.actor ?? "assistant" });
       }
       if (apiPath === "/file" && request.method === "GET") return json(await service.read(session.grant));
       if (apiPath === "/export" && request.method === "GET" || apiPath === "/file/export" && request.method === "GET") {
@@ -314,8 +332,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         const body = await requestJson(request);
         if (typeof body.target !== "string" || !body.target.trim()) throw new Error("A wikilink target is required.");
         const grant = await resolveTarget(session.grant.path, body.target, service);
-        const ticket = mintTicket(grant);
-        try { await hostAdapter.openView(ticket.url); }
+        const ticket = mintTicket(grant, session.target);
+        try { await hostAdapter.openView(ticket.url, session.target); }
         catch (cause) { discardTicket(ticket.ticket); throw cause; }
         return json({ path: grant.path, resolvedPath: grant.realPath, opened: true });
       }
@@ -357,7 +375,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       const id = randomToken();
       const createdAt = now();
-      const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt, lastSeen: createdAt, leases: new Map(), unleasedSince: createdAt };
+      const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt, lastSeen: createdAt, leases: new Map(), unleasedSince: createdAt, ...(pending.target ? { target: pending.target } : {}) };
       sessions.set(id, session);
       try { await recents.add(pending.grant.realPath); }
       catch (cause) {
@@ -373,6 +391,49 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         "referrer-policy": "no-referrer",
       } });
     }
+    if (pathname === "/recents/launch" && request.method === "GET") {
+      const ticket = url.searchParams.get("ticket");
+      const pending = ticket ? recentsTickets.get(ticket) : undefined;
+      if (!ticket || !pending) return error("ticket_invalid", "The Recents launch ticket is invalid or already used.", 401);
+      recentsTickets.delete(ticket);
+      if (pending.expiresAt <= now()) return error("ticket_expired", "The Recents launch ticket has expired.", 401);
+      const id = randomToken();
+      const createdAt = now();
+      const session: RecentsSession = { id, cookie: randomToken(), createdAt, lastSeen: createdAt, leaseUntil: createdAt + leaseMs, ...(pending.target ? { target: pending.target } : {}) };
+      recentsSessions.set(id, session);
+      const root = `/r/${encodeURIComponent(id)}/`;
+      return new Response(null, { status: 302, headers: {
+        location: root,
+        "set-cookie": `tether_recents=${session.cookie}; Path=${root}; HttpOnly; SameSite=Strict`,
+        "cache-control": "no-store", "referrer-policy": "no-referrer",
+      } });
+    }
+    if (pathname.startsWith("/r/")) {
+      const match = /^\/r\/([^/]+)\/(.*)$/.exec(pathname);
+      const session = match ? recentsSessions.get(decodeURIComponent(match[1])) : undefined;
+      if (!session) return error("session_expired", "The Recents session has expired.", 401);
+      if (cookieValue(request, "tether_recents") !== session.cookie) return error("unauthorized", "A scoped Recents cookie is required.", 401);
+      session.lastSeen = now();
+      const suffix = `/${match![2]}`;
+      if (request.method === "GET" && suffix === "/") return new Response(recentsHtml, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+      if (request.method === "GET" && suffix === "/api/files") return json(await recents.files());
+      if (request.method === "POST" && suffix === "/api/lease") { session.leaseUntil = now() + leaseMs; return json({ ok: true }); }
+      if (request.method === "POST" && suffix === "/api/open") {
+        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
+        try {
+          const body = await requestJson(request);
+          if (typeof body.path !== "string") throw new Error("A recent Markdown path is required.");
+          const allowed = await recents.paths();
+          const grant = await service.open(body.path);
+          if (!allowed.includes(grant.realPath)) { service.close(grant); return error("document_unauthorized", "The path is not in Tether Recents.", 403); }
+          const launch = mintTicket(grant, session.target);
+          try { await hostAdapter.openView(launch.url, session.target); }
+          catch (cause) { discardTicket(launch.ticket); throw cause; }
+          return json({ opened: true, path: grant.path });
+        } catch (cause) { return error("open_failed", cause instanceof Error ? cause.message : String(cause), 400); }
+      }
+      return error("not_found", "Recents resource not found.", 404);
+    }
     if (pathname.startsWith("/control/")) {
       const expected = await readControlToken(config);
       if (!expected || request.headers.get("authorization") !== `Bearer ${expected}`) return error("forbidden", "Control authorization is required.", 403);
@@ -380,8 +441,18 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         if (pathname === "/control/launch" && request.method === "POST") {
           const body = await requestJson(request);
           const grant = await service.open(typeof body.path === "string" ? body.path : "");
-          const ticket = mintTicket(grant);
+          const target = body.target && typeof body.target === "object" && !Array.isArray(body.target)
+            ? Object.fromEntries(Object.entries(body.target).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+            : undefined;
+          const ticket = mintTicket(grant, target);
           return json({ ...ticket, path: grant.path });
+        }
+        if (pathname === "/control/recents/launch" && request.method === "POST") {
+          const body = await requestJson(request);
+          const target = body.target && typeof body.target === "object" && !Array.isArray(body.target)
+            ? Object.fromEntries(Object.entries(body.target).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+            : undefined;
+          return json(mintRecentsTicket(target));
         }
         if (pathname === "/control/cancel" && request.method === "POST") {
           const body = await requestJson(request);
@@ -475,6 +546,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       sessions.clear();
       for (const pending of tickets.values()) service.close(pending.grant);
       tickets.clear();
+      recentsTickets.clear();
+      recentsSessions.clear();
       await bunServer.stop();
       await removeDiscovery(config, instanceId);
       settleReady();
@@ -512,7 +585,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
             service.close(pending.grant);
           }
         }
-        const active = [...sessions.values()].some((session) => session.leases.size > 0);
+        for (const [ticket, pending] of recentsTickets) if (pending.expiresAt <= current) recentsTickets.delete(ticket);
+        for (const [id, session] of recentsSessions) if (session.leaseUntil <= current) recentsSessions.delete(id);
+        const active = [...sessions.values()].some((session) => session.leases.size > 0) || [...recentsSessions.values()].some((session) => session.leaseUntil > current);
         if (active) { emptySince = 0; return; }
         if (emptySince === 0) emptySince = current;
         const grace = current - startedAt < startupGraceMs ? startupGraceMs : idleMs;

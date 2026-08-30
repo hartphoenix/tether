@@ -1,5 +1,6 @@
 import { readDiscovery, acquireStartupLock, prepareConfig, removeStaleRuntime, resolveConfig, type TetherConfig } from "./config";
 import { PROTOCOL_VERSION, SERVICE_ID, type DiscoveryRecord } from "../shared/contracts";
+import type { HostTarget } from "../hosts/host-adapter";
 
 const LOOPBACK = "127.0.0.1";
 const WAIT_MS = 100;
@@ -172,15 +173,19 @@ export async function controlRequest<T>(config: TetherConfig, pathname: string, 
   return payload as T;
 }
 
-export async function controlLaunch(config: TetherConfig, path: string): Promise<{ url: string; expiresAt: number; path: string }> {
+export async function controlLaunch(config: TetherConfig, path: string, target?: HostTarget): Promise<{ url: string; expiresAt: number; path: string }> {
   const discovery = await ensureDaemon({ config });
   const { readControlToken } = await import("./config");
   const token = await readControlToken(config);
   if (!token) throw new Error("Daemon control credential is unavailable.");
-  const response = await fetch(`${discovery.origin}/control/launch`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ path }) });
+  const response = await fetch(`${discovery.origin}/control/launch`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ path, ...(target ? { target } : {}) }) });
   const payload = await response.json() as { url?: string; expiresAt?: number; path?: string; error?: { message?: string } };
   if (!response.ok || !payload.url || !payload.expiresAt || !payload.path) throw new Error(payload.error?.message ?? "Unable to create a launch ticket.");
   return { url: payload.url, expiresAt: payload.expiresAt, path: payload.path };
+}
+
+export async function controlRecentsLaunch(config: TetherConfig, target?: HostTarget): Promise<{ url: string; expiresAt: number }> {
+  return controlRequest(config, "/control/recents/launch", { ...(target ? { target } : {}) });
 }
 
 export async function cancelLaunch(config: TetherConfig, url: string): Promise<void> {

@@ -2,15 +2,30 @@
 import { readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { resolveConfig, type TetherConfig } from "../server/config";
-import { cancelLaunch, controlLaunch, controlRequest, ControlRequestError, statusDaemon, stopDaemon } from "../server/lifecycle";
+import { cancelLaunch, controlLaunch, controlRecentsLaunch, controlRequest, ControlRequestError, statusDaemon, stopDaemon } from "../server/lifecycle";
 import { createBrowserHost } from "../hosts/browser";
+import { createWaveHost } from "../hosts/wave";
+import { startWaveBridge } from "../hosts/wave-bridge";
+import type { HostAdapter } from "../hosts/host-adapter";
 import type { ProtocolResponse } from "../shared/contracts";
+import { RecentsRegistry } from "../recents/registry";
+import { installWaveLaunchers, uninstallWaveLaunchers, waveLauncherStatus } from "../hosts/wave-launchers";
 
 export type CliDependencies = {
   config?: TetherConfig;
   open?: (url: string) => Promise<void>;
   readBody?: (path: string) => Promise<string>;
+  host?: HostAdapter;
 };
+
+async function launchHost(dependencies: CliDependencies): Promise<HostAdapter> {
+  if (dependencies.host) return dependencies.host;
+  if (!dependencies.open) {
+    const wave = createWaveHost();
+    if (await wave.detect()) return wave;
+  }
+  return createBrowserHost({ open: dependencies.open });
+}
 
 function success<T>(command: string, data: T): ProtocolResponse<T> {
   return { protocol: 1, ok: true, command, data };
@@ -26,7 +41,7 @@ function failure(command: string, cause: unknown, code = "command_failed"): Prot
   };
 }
 
-const usageText = "Usage: mdreview open <file> | daemon <status|stop> | document <read|save> <file> | pending <file> --actor <actor> | thread <file> <thread-id> | <reply|resolve|reopen> <file> <thread-id> --actor <actor> | acknowledge <file> --actor <actor> --through <seq> --body-revision <revision>";
+const usageText = "Usage: mdreview open <file> | recents | recent <1|2|3> | wave <status|install|uninstall> | daemon <status|stop> | document <read|save> <file> | pending <file> --actor <actor> | thread <file> <thread-id> | <reply|resolve|reopen> <file> <thread-id> --actor <actor> | acknowledge <file> --actor <actor> --through <seq> --body-revision <revision>";
 
 class CliUsageError extends Error {
   constructor(message = usageText) {
@@ -59,6 +74,7 @@ async function bodyFile(path: string, dependencies: CliDependencies): Promise<st
 function commandName(argv: string[]): string {
   if (argv[0] === "daemon") return `daemon.${argv[1] ?? ""}`;
   if (argv[0] === "document") return `document.${argv[1] ?? ""}`;
+  if (argv[0] === "wave") return `wave.${argv[1] ?? ""}`;
   if (["pending", "thread", "reply", "resolve", "reopen", "acknowledge"].includes(argv[0] ?? "")) return `review.${argv[0]}`;
   return argv[0] ?? "unknown";
 }
@@ -67,20 +83,37 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
   const command = commandName(argv);
   try {
     const config = dependencies.config ?? resolveConfig();
-    if (argv[0] === "open") {
-      const path = argv[1];
+    if (argv[0] === "open" || argv[0] === "recent") {
+      let path = argv[1];
+      if (argv[0] === "recent") {
+        const index = Number(path);
+        if (!Number.isSafeInteger(index) || index < 1 || index > 3) usage("recent requires an index from 1 through 3.");
+        path = (await new RecentsRegistry(config.recentsPath).paths())[index - 1];
+        if (!path) throw new Error(`Recent Markdown file ${index} is unavailable.`);
+      }
       if (!path) usage();
       const canonicalPath = await realpath(resolve(path));
-      const launch = await controlLaunch(config, canonicalPath);
+      const host = await launchHost(dependencies);
+      if (host.id === "wave" && !dependencies.host) await startWaveBridge(config);
+      const launch = await controlLaunch(config, canonicalPath, host.launchTarget?.());
       if (process.env.TETHER_SUPPRESS_BROWSER !== "1") {
-        const browser = createBrowserHost({ open: dependencies.open });
-        try { await browser.openView(launch.url); }
+        try { await host.openView(launch.url, host.launchTarget?.()); }
         catch (cause) { await cancelLaunch(config, launch.url); throw cause; }
       }
-      return { response: success("open", { path: launch.path, expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" }), exitCode: 0 };
+      return { response: success(argv[0], { path: launch.path, expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" }), exitCode: 0 };
+    }
+    if (argv[0] === "recents") {
+      const host = await launchHost(dependencies);
+      if (host.id === "wave" && !dependencies.host) await startWaveBridge(config);
+      const launch = await controlRecentsLaunch(config, host.launchTarget?.());
+      if (process.env.TETHER_SUPPRESS_BROWSER !== "1") await host.openView(launch.url, host.launchTarget?.());
+      return { response: success("recents", { expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" }), exitCode: 0 };
     }
     if (argv[0] === "daemon" && argv[1] === "status") return { response: success(command, await statusDaemon(config)), exitCode: 0 };
     if (argv[0] === "daemon" && argv[1] === "stop") return { response: success(command, await stopDaemon(config)), exitCode: 0 };
+    if (argv[0] === "wave" && argv[1] === "status") return { response: success(command, await waveLauncherStatus()), exitCode: 0 };
+    if (argv[0] === "wave" && argv[1] === "install") return { response: success(command, await installWaveLaunchers()), exitCode: 0 };
+    if (argv[0] === "wave" && argv[1] === "uninstall") return { response: success(command, await uninstallWaveLaunchers()), exitCode: 0 };
 
     if (argv[0] === "document" && argv[1] === "read") {
       if (!argv[2]) usage();

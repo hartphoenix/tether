@@ -5,6 +5,7 @@ import { bodyRevision } from "../src/core/annotation-ledger";
 import { DocumentAccessError, DocumentService } from "../src/documents/document-service";
 import { resolveConfig } from "../src/server/config";
 import { createDaemon, type TetherDaemon } from "../src/server/server";
+import { controlRecentsLaunch } from "../src/server/lifecycle";
 
 const directories: string[] = [];
 const daemons: TetherDaemon[] = [];
@@ -42,6 +43,33 @@ function sessionFetch(daemon: TetherDaemon, location: string, cookie: string, pa
 }
 
 describe("browser launch authorization", () => {
+  test("scopes the Recents page and opens only registered files in a new view", async () => {
+    const file = await fixture();
+    const opened: string[] = [];
+    const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, opener: async (url) => { opened.push(url); }, web: () => new Response("web") });
+    daemons.push(daemon);
+    await daemon.ready;
+    await new (await import("../src/recents/registry")).RecentsRegistry(file.config.recentsPath).add(file.other);
+    const launch = await controlRecentsLaunch(file.config);
+    const exchange = await fetch(launch.url, { redirect: "manual" });
+    const location = exchange.headers.get("location")!;
+    const cookie = exchange.headers.get("set-cookie")!.split(";", 1)[0];
+    expect(location).toStartWith("/r/");
+    expect((await fetch(`${daemon.origin}${location}api/files`, { headers: { cookie: "tether_recents=wrong" } })).status).toBe(401);
+    const files = await (await fetch(`${daemon.origin}${location}api/files`, { headers: { cookie } })).json() as Array<{ path: string }>;
+    expect(files.map((entry) => entry.path)).toEqual([file.other]);
+    const openedRecent = await fetch(`${daemon.origin}${location}api/open`, {
+      method: "POST", headers: { cookie, origin: daemon.origin, "content-type": "application/json" }, body: JSON.stringify({ path: file.other }),
+    });
+    expect(openedRecent.status).toBe(200);
+    expect(opened).toHaveLength(1);
+    expect((await fetch(opened[0], { redirect: "manual" })).status).toBe(302);
+    const denied = await fetch(`${daemon.origin}${location}api/open`, {
+      method: "POST", headers: { cookie, origin: daemon.origin, "content-type": "application/json" }, body: JSON.stringify({ path: file.path }),
+    });
+    expect(denied.status).toBe(403);
+  });
+
   test("uses expiring single-use tickets and distinct path-scoped cookie sessions", async () => {
     const file = await fixture();
     let now = 1_700_000_000_000;

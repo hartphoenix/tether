@@ -1,6 +1,6 @@
 ---
 title: Tether — architecture and extraction plan
-status: active — Phase 2.5 complete; Phase 3 next
+status: active — Phase 3 preview ready for manual validation
 created: 2026-08-28
 ---
 # Tether
@@ -348,11 +348,15 @@ The Wave adapter should set `web:hidenav` when supported and treat `web:partitio
 
 Keep Wave authority narrow. The launcher may use the injected `WAVETERM_JWT` to perform its immediate `wsh` operation, but the generic daemon must not inherit, persist, log, or expose it. Do not place Wave credentials or Tether launch tickets in `widgets.json`, `cmd:env`, block metadata, discovery files, or durable URLs.
 
+Wave 0.14.5 has been verified to reject local `wsh` commands when `WAVETERM_JWT` is absent. Use a separate, profile-scoped Wave bridge for host actions that outlive the launcher, such as opening a wikilink. The bridge may retain the injected JWT only in process memory; it exposes a narrow authenticated open-view operation, receives no document content or filesystem authority, and exits after its leases expire. The generic Tether daemon talks to this bridge without receiving the JWT. A stale or unavailable bridge must produce an explicit relaunch-required result rather than falling back silently to the system browser.
+
 Wave exposes no documented web-content event for block closure. Retain explicit page release, expiring leases, idle shutdown, and stale-process recovery. If Wave restores a block containing an obsolete dynamic URL, show a relaunch state instead of a blank or indefinitely failed view.
 
 Wave's documented custom-widget model supports terminal launchers and direct web widgets; the existing terminal-to-web handoff remains reasonable because the daemon URL and launch ticket are created dynamically. Wave now also documents `wsh launch` for named custom widgets, which should be evaluated during implementation. [Wave custom widgets](https://docs.waveterm.dev/customwidgets), [Wave release notes](https://docs.waveterm.dev/releasenotes)
 
 Exit condition: the Markdown widget, three recent-file widgets, Recents page, wikilinks, hidden navigation, simultaneous session isolation, credential isolation, and stale-block recovery behave as specified, while Roger contains only configuration or thin wrappers. Native Wave file-navigator routing is explicitly out of scope until Wave exposes a supported hook.
+
+Implementation checkpoint (2026-08-30): the exact-version Wave adapter, destination propagation, in-memory credential bridge, scoped Recents browser session, indexed recent commands, and five distinct preview widgets are implemented. Automated unit, HTTP, CLI, process, type, and browser-bundle checks pass. Manual Wave validation remains for widget placement, hidden navigation, wikilinks across simultaneous views, and restored stale blocks; legacy widget IDs remain untouched until that validation passes.
 
 ### Phase 4 — add the cmux adapter
 

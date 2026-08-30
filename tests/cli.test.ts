@@ -38,6 +38,27 @@ test("returns one versioned open result without exposing the launch ticket", asy
   expect(opened[0]).toContain("/launch?ticket=");
 });
 
+test("opens the indexed recent file through the normal path-scoped launch", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-cli-recent-"));
+  directories.push(directory);
+  const first = join(directory, "first.md");
+  const second = join(directory, "second.md");
+  await writeFile(first, "First\n");
+  await writeFile(second, "Second\n");
+  const config = resolveConfig({ profile: "recent", runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
+  const daemon = createDaemon({ config, startupGraceMs: 600_000, web: () => new Response("web") });
+  daemons.push(daemon);
+  await daemon.ready;
+  const { RecentsRegistry } = await import("../src/recents/registry");
+  const registry = new RecentsRegistry(config.recentsPath);
+  await registry.add(first);
+  await registry.add(second);
+  const opened: string[] = [];
+  const result = await runCli(["recent", "2"], { config, open: async (url) => { opened.push(url); } });
+  expect(result.response).toMatchObject({ ok: true, command: "recent", data: { path: await realpath(first), opened: true } });
+  expect(opened).toHaveLength(1);
+});
+
 test("uses a documented structured usage failure", async () => {
   const result = await runCli(["unknown"]);
   expect(result.exitCode).toBe(2);
