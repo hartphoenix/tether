@@ -272,10 +272,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/release" && request.method === "POST") {
         const body = await requestJson(request);
         if (typeof body.clientId === "string") session.leases.delete(body.clientId);
-        if (session.leased && session.leases.size === 0) {
-          sessions.delete(session.id);
-          service.close(session.grant);
-        }
+        // A pagehide beacon also fires during an ordinary reload. Keep the
+        // scoped session and document grant alive through the daemon's short
+        // idle window so the replacement page can bootstrap and lease it
+        // again. With no remaining leases the daemon is still free to stop.
+        session.lastSeen = now();
         return json({ ok: true });
       }
       if (apiPath === "/open" && request.method === "POST") {

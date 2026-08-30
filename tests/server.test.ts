@@ -148,7 +148,7 @@ describe("session API", () => {
     expect(final.annotations.events.map((event) => event.seq)).toEqual([1, 2]);
   });
 
-  test("opens wikilinks in a new view, persists preferences, and releases leases", async () => {
+  test("opens wikilinks in a new view, persists preferences, and survives reload release", async () => {
     const file = await fixture("[[other]]\n");
     const opened: string[] = [];
     const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, opener: async (url) => { opened.push(url); }, web: () => new Response("web") });
@@ -171,7 +171,9 @@ describe("session API", () => {
 
     expect((await sessionFetch(daemon, session.location, session.cookie, "api/lease", { method: "POST", headers: origin, body: JSON.stringify({ clientId: "browser" }) })).status).toBe(200);
     expect((await sessionFetch(daemon, session.location, session.cookie, "api/release", { method: "POST", headers: origin, body: JSON.stringify({ clientId: "browser" }) })).status).toBe(200);
-    expect((await sessionFetch(daemon, session.location, session.cookie, "api/file")).status).toBe(401);
+    expect((await sessionFetch(daemon, session.location, session.cookie, "api/bootstrap")).status).toBe(200);
+    expect((await sessionFetch(daemon, session.location, session.cookie, "api/lease", { method: "POST", headers: origin, body: JSON.stringify({ clientId: "replacement-page" }) })).status).toBe(200);
+    expect(daemon.sessions.size).toBe(2);
   });
 });
 
