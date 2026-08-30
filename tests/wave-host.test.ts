@@ -8,6 +8,7 @@ test("detects Wave 0.14.5 and creates a hidden-navigation web block", async () =
     return { exitCode: 0, stdout: command[1] === "version" ? `wsh v${SUPPORTED_WAVE_VERSION}` : "", stderr: "" };
   };
   const adapter = new WaveHostAdapter({
+    wshPath: "wsh",
     env: {
       WAVETERM: "1",
       TERM_PROGRAM: "waveterm",
@@ -39,6 +40,7 @@ test("detects Wave 0.14.5 and creates a hidden-navigation web block", async () =
 test("uses the documented web-open fallback outside the verified Wave version", async () => {
   const commands: string[][] = [];
   const adapter = new WaveHostAdapter({
+    wshPath: "wsh",
     env: { WAVETERM: "1", WAVETERM_JWT: "jwt" },
     run: async (command) => {
       commands.push(command);
@@ -52,10 +54,11 @@ test("uses the documented web-open fallback outside the verified Wave version", 
 });
 
 test("does not claim Wave outside Wave or place a view without its injected JWT", async () => {
-  const outside = new WaveHostAdapter({ env: {}, run: async () => ({ exitCode: 0, stdout: "wsh v0.14.5", stderr: "" }) });
+  const outside = new WaveHostAdapter({ env: {}, wshPath: "wsh", run: async () => ({ exitCode: 0, stdout: "wsh v0.14.5", stderr: "" }) });
   expect(await outside.detect()).toBe(false);
   const missingCredential = new WaveHostAdapter({
     env: { WAVETERM: "1" },
+    wshPath: "wsh",
     run: async () => ({ exitCode: 0, stdout: "wsh v0.14.5", stderr: "" }),
   });
   expect(await missingCredential.detect()).toBe(true);

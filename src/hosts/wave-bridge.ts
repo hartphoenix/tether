@@ -84,6 +84,7 @@ export async function startWaveBridge(config: TetherConfig, env = process.env): 
   const childEnv: NodeJS.ProcessEnv = {
     PATH: env.PATH, TMPDIR: env.TMPDIR, LANG: env.LANG, LC_ALL: env.LC_ALL,
     WAVETERM: "1", TERM_PROGRAM: "waveterm", WAVETERM_JWT: env.WAVETERM_JWT,
+    WAVETERM_WSHBINARY: env.WAVETERM_WSHBINARY,
     WAVETERM_WORKSPACEID: env.WAVETERM_WORKSPACEID, WAVETERM_TABID: env.WAVETERM_TABID,
     TETHER_PROFILE: config.profile, TETHER_RUNTIME_DIR: config.runtimeDir, TETHER_CONFIG_DIR: config.configDir,
   };

@@ -27,7 +27,7 @@ test("runs a credential-isolated bridge process for Wave actions after the launc
   const wsh = join(bin, "wsh");
   await writeFile(wsh, `#!/bin/sh\nif [ "$1" = version ]; then echo 'wsh v0.14.5'; else printf '%s\\n' "$*" >> '${log}'; fi\n`);
   await chmod(wsh, 0o700);
-  await startWaveBridge(config, { PATH: `${bin}:/usr/bin:/bin`, WAVETERM: "1", TERM_PROGRAM: "waveterm", WAVETERM_JWT: "memory-only" });
+  await startWaveBridge(config, { PATH: `${bin}:/usr/bin:/bin`, WAVETERM: "1", TERM_PROGRAM: "waveterm", WAVETERM_JWT: "memory-only", WAVETERM_WSHBINARY: wsh });
   const gateway = new HostGateway(config, createBrowserHost({ open: async () => {} }));
   await gateway.openView("http://127.0.0.1:8420/launch?ticket=one", { host: "wave", version: "0.14.5" });
   expect(await readFile(log, "utf8")).toContain("createblock web url=http://127.0.0.1:8420/launch?ticket=one web:hidenav=true");

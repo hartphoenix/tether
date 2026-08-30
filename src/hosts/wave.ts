@@ -1,11 +1,20 @@
 import type { HostCapabilities } from "../shared/contracts";
 import type { HostAdapter, HostTarget } from "./host-adapter";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export const SUPPORTED_WAVE_VERSION = "0.14.5";
 
 export type WaveCommandResult = { exitCode: number; stdout: string; stderr: string };
 export type WaveCommandRunner = (command: string[], env: NodeJS.ProcessEnv) => Promise<WaveCommandResult>;
-export type WaveHostOptions = { env?: NodeJS.ProcessEnv; run?: WaveCommandRunner };
+export type WaveHostOptions = { env?: NodeJS.ProcessEnv; run?: WaveCommandRunner; wshPath?: string };
+
+function defaultWshPath(env: NodeJS.ProcessEnv): string {
+  if (env.WAVETERM_WSHBINARY) return env.WAVETERM_WSHBINARY;
+  if (env.WAVETERM_WSH_PATH) return env.WAVETERM_WSH_PATH;
+  if (process.platform === "darwin") return join(homedir(), "Library", "Application Support", "waveterm", "bin", "wsh");
+  return "wsh";
+}
 
 function commandEnvironment(source: NodeJS.ProcessEnv, target?: HostTarget): NodeJS.ProcessEnv {
   const allowed = ["PATH", "TMPDIR", "LANG", "LC_ALL", "WAVETERM_JWT", "WAVETERM_WORKSPACEID", "WAVETERM_TABID"];
@@ -41,16 +50,18 @@ export class WaveHostAdapter implements HostAdapter {
   readonly id = "wave" as const;
   private readonly env: NodeJS.ProcessEnv;
   private readonly run: WaveCommandRunner;
+  private readonly wshPath: string;
   private version: string | null = null;
 
   constructor(options: WaveHostOptions = {}) {
     this.env = options.env ?? process.env;
     this.run = options.run ?? runWaveCommand;
+    this.wshPath = options.wshPath ?? defaultWshPath(this.env);
   }
 
   async detect(): Promise<boolean> {
     if (this.env.WAVETERM !== "1" && this.env.TERM_PROGRAM !== "waveterm") return false;
-    const result = await this.run(["wsh", "version"], commandEnvironment(this.env));
+    const result = await this.run([this.wshPath, "version"], commandEnvironment(this.env));
     this.version = result.exitCode === 0 ? parseVersion(`${result.stdout} ${result.stderr}`) : null;
     return this.version !== null;
   }
@@ -79,8 +90,8 @@ export class WaveHostAdapter implements HostAdapter {
   async openView(url: string, target?: HostTarget): Promise<void> {
     if (!this.env.WAVETERM_JWT) throw new Error("Wave view placement requires WAVETERM_JWT. Relaunch Tether from a Wave widget or terminal.");
     const command = this.version === SUPPORTED_WAVE_VERSION
-      ? ["wsh", "createblock", "web", `url=${url}`, "web:hidenav=true"]
-      : ["wsh", "web", "open", url];
+      ? [this.wshPath, "createblock", "web", `url=${url}`, "web:hidenav=true"]
+      : [this.wshPath, "web", "open", url];
     const result = await this.run(command, commandEnvironment(this.env, target));
     if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout || `wsh exited with status ${result.exitCode}`);
   }
