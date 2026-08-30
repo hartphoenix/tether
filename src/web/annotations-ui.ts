@@ -1,4 +1,4 @@
-import { Plugin, PluginKey, TextSelection } from "@milkdown/kit/prose/state";
+import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
 import {
@@ -400,7 +400,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       threadPopover?.remove();
       threadPopover = null;
       renderRail();
-      navigateToThread(thread);
+      navigateToThread(thread, trigger);
       if (!railOpen) showThreadPopover(thread, trigger);
       onSelectThread(thread);
     },
@@ -435,18 +435,12 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     return getEditorView?.() ?? editorView;
   }
 
-  function navigateToThread(thread: AnnotationThread): void {
+  function navigateToThread(thread: AnnotationThread, trigger?: HTMLElement): void {
     const view = currentView();
     if (!view) return;
-    const resolved = resolveAnchor(view.state.doc, thread.anchor);
-    const first = resolved?.ranges[0];
-    if (!first) return;
-    try {
-      view.focus();
-      view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, first.from, first.to)).scrollIntoView());
-    } catch {
-      onNotice("This comment's anchor is no longer available in the editor.");
-    }
+    const highlight = trigger ?? [...view.dom.querySelectorAll<HTMLElement>("[data-wm-annotation-id]")]
+      .find((element) => element.dataset.wmAnnotationId === thread.id);
+    highlight?.scrollIntoView?.({ block: "center", inline: "nearest" });
   }
 
   function positionPopover(node: HTMLElement, anchor?: AnnotationAnchor, trigger?: HTMLElement): void {

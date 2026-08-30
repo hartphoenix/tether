@@ -405,7 +405,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
                 documentId: pending.documentId,
                 bodyRevision: pending.bodyRevision,
                 ledgerRevision: pending.ledgerRevision,
-                events: pending.events,
+                events: pending.events.map(({ event }) => event),
                 maxSequence: pending.maxSequence,
                 acknowledgement: pending.acknowledgement,
               };

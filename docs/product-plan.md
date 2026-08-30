@@ -146,11 +146,11 @@ Recents belongs to the product because every host needs the same file history. T
 Keep the current command semantics but give them a product CLI:
 
 ```text
-mdreview pending <file> --actor codex
+mdreview pending <file> --actor assistant
 mdreview thread <file> <thread-id>
-mdreview reply <file> <thread-id> --actor codex --body-file -
-mdreview resolve <file> <thread-id> --actor codex
-mdreview acknowledge <file> --actor codex --through <seq> --body-revision <rev>
+mdreview reply <file> <thread-id> --actor assistant --body-file -
+mdreview resolve <file> <thread-id> --actor assistant
+mdreview acknowledge <file> --actor assistant --through <seq> --body-revision <rev>
 ```
 
 The CLI should use the daemon API so browser clients and agents share the same mutation serialization. An MCP server can wrap the same typed client later; it should not reimplement ledger writes. Harness skills should describe the review protocol and invoke either CLI or MCP.

@@ -49,7 +49,6 @@ const zoomLabel = document.querySelector<HTMLElement>("#zoom-label")!;
 const commentButton = document.querySelector<HTMLButtonElement>("#comment")!;
 const copyDocumentButton = document.querySelector<HTMLButtonElement>("#copy-document")!;
 const pendingCount = document.querySelector<HTMLElement>("#pending-count")!;
-const bodyChangeStatus = document.querySelector<HTMLElement>("#body-change-status")!;
 const editorRoot = document.querySelector<HTMLElement>("#editor")!;
 const annotationsRoot = document.querySelector<HTMLElement>("#annotations")!;
 const conflictBar = document.querySelector<HTMLElement>("#conflict")!;
@@ -236,11 +235,6 @@ function clearConflict(): void {
   conflictBar.hidden = true;
   setReviewControls(false);
 }
-function updateDocumentChanged(): void {
-  const acknowledgement = annotationState.acknowledgements?.find((item) => item.actor === targetActor);
-  const baseline = acknowledgement?.bodyRevision ?? annotationState.header?.baseBodyRevision;
-  bodyChangeStatus.hidden = !baseline || baseline === currentBodyRevision;
-}
 function normalizeThreads(state: AnnotationState): AnnotationThread[] {
   return (state.threads ?? []).map((thread) => ({
     id: thread.id,
@@ -258,7 +252,6 @@ function normalizeThreads(state: AnnotationState): AnnotationThread[] {
 function applyAnnotationState(state: AnnotationState): void {
   annotationState = state;
   annotationUi?.setState({ threads: normalizeThreads(state) });
-  updateDocumentChanged();
 }
 async function refreshAnnotations(generation = documentGeneration, path = currentPath): Promise<void> {
   if (!path) return;
@@ -294,7 +287,6 @@ async function save(): Promise<boolean> {
     annotationState = result.annotations;
     savedEditorMarkdown = markdown;
     syncSaveState();
-    updateDocumentChanged();
   } catch (error) {
     succeeded = false;
     if ((error as Error & { status?: number }).status === 409) showConflict();

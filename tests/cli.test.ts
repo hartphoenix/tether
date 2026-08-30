@@ -99,14 +99,15 @@ test("runs the complete agent document and thread workflow through a reused daem
   expect(read.exitCode).toBe(0);
   expect(read.response).toMatchObject({ protocol: 1, ok: true, command: "document.read", data: { body: "Review target\n", bodyRevision: initial.bodyRevision } });
 
-  const pending = await runCli(["pending", path, "--actor", "codex"], { config });
-  expect(pending.response).toMatchObject({ ok: true, command: "review.pending", data: { events: [{ event: { id: threadId, type: "comment" } }], maxSequence: 1 } });
+  const pending = await runCli(["pending", path, "--actor", "assistant"], { config });
+  expect(pending.response).toMatchObject({ ok: true, command: "review.pending", data: { events: [{ id: threadId, type: "comment" }], maxSequence: 1 } });
+  expect(JSON.stringify(pending.response)).not.toContain('"thread"');
   expect(JSON.stringify(pending.response)).not.toContain("Review target");
 
   expect((await runCli(["thread", path, threadId], { config })).response).toMatchObject({ ok: true, command: "review.thread", data: { thread: { id: threadId, status: "open" } } });
-  expect((await runCli(["reply", path, threadId, "--actor", "codex", "--body-file", "-"], { config, readBody: async () => "Applied the requested revision.\nSecond line." })).response).toMatchObject({ ok: true, command: "review.reply", data: { maxSequence: 2 } });
-  expect((await runCli(["resolve", path, threadId, "--actor", "codex"], { config })).response).toMatchObject({ ok: true, command: "review.resolve", data: { maxSequence: 3, unresolvedCount: 0 } });
-  const reopened = await runCli(["reopen", path, threadId, "--actor", "codex"], { config });
+  expect((await runCli(["reply", path, threadId, "--actor", "assistant", "--body-file", "-"], { config, readBody: async () => "Applied the requested revision.\nSecond line." })).response).toMatchObject({ ok: true, command: "review.reply", data: { maxSequence: 2 } });
+  expect((await runCli(["resolve", path, threadId, "--actor", "assistant"], { config })).response).toMatchObject({ ok: true, command: "review.resolve", data: { maxSequence: 3, unresolvedCount: 0 } });
+  const reopened = await runCli(["reopen", path, threadId, "--actor", "assistant"], { config });
   expect(reopened.response).toMatchObject({ ok: true, command: "review.reopen", data: { maxSequence: 4, unresolvedCount: 1 } });
 
   const ledgerBeforeSave = splitAnnotationLedger(await readFile(path, "utf8")).ledgerText;
@@ -123,8 +124,8 @@ test("runs the complete agent document and thread workflow through a reused daem
   expect((await browserRead.json() as { body: string }).body).toBe("Revised by agent.\n\nMultiline body.\n");
 
   const savedRevision = bodyRevision("Revised by agent.\n\nMultiline body.\n");
-  expect((await runCli(["acknowledge", path, "--actor", "codex", "--through", "4", "--body-revision", savedRevision], { config })).response).toMatchObject({ ok: true, command: "review.acknowledge", data: { maxSequence: 5 } });
-  expect((await runCli(["pending", path, "--actor", "codex"], { config })).response).toMatchObject({ ok: true, data: { events: [] } });
+  expect((await runCli(["acknowledge", path, "--actor", "assistant", "--through", "4", "--body-revision", savedRevision], { config })).response).toMatchObject({ ok: true, command: "review.acknowledge", data: { maxSequence: 5 } });
+  expect((await runCli(["pending", path, "--actor", "assistant"], { config })).response).toMatchObject({ ok: true, data: { events: [] } });
 
   const conflict = await runCli(["document", "save", path, "--expected-body-revision", initial.bodyRevision, "--body-file", "-"], { config, readBody: async () => "Stale overwrite\n" });
   expect(conflict).toMatchObject({ exitCode: 1, response: { ok: false, command: "document.save", error: { code: "conflict" } } });

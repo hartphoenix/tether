@@ -32,7 +32,7 @@ TETHER_PROFILE=preview ./mdreview daemon stop
 Agent commands use the same daemon and serialized document service as the browser. Start with compact pending state, inspect individual threads, and request the full body only when needed:
 
 ```sh
-TETHER_PROFILE=preview ./mdreview pending /tmp/tether-preview.md --actor codex
+TETHER_PROFILE=preview ./mdreview pending /tmp/tether-preview.md --actor assistant
 TETHER_PROFILE=preview ./mdreview thread /tmp/tether-preview.md <thread-id>
 TETHER_PROFILE=preview ./mdreview document read /tmp/tether-preview.md
 ```
@@ -40,10 +40,10 @@ TETHER_PROFILE=preview ./mdreview document read /tmp/tether-preview.md
 Reply or change thread state:
 
 ```sh
-TETHER_PROFILE=preview ./mdreview reply /tmp/tether-preview.md <thread-id> --actor codex --body-file -
-TETHER_PROFILE=preview ./mdreview resolve /tmp/tether-preview.md <thread-id> --actor codex
-TETHER_PROFILE=preview ./mdreview reopen /tmp/tether-preview.md <thread-id> --actor codex
-TETHER_PROFILE=preview ./mdreview acknowledge /tmp/tether-preview.md --actor codex --through <seq> --body-revision <revision>
+TETHER_PROFILE=preview ./mdreview reply /tmp/tether-preview.md <thread-id> --actor assistant --body-file -
+TETHER_PROFILE=preview ./mdreview resolve /tmp/tether-preview.md <thread-id> --actor assistant
+TETHER_PROFILE=preview ./mdreview reopen /tmp/tether-preview.md <thread-id> --actor assistant
+TETHER_PROFILE=preview ./mdreview acknowledge /tmp/tether-preview.md --actor assistant --through <seq> --body-revision <revision>
 ```
 
 Conflict-safe body saves require the revision returned by `document read` and accept a file or stdin:
@@ -52,7 +52,7 @@ Conflict-safe body saves require the revision returned by `document read` and ac
 TETHER_PROFILE=preview ./mdreview document save /tmp/tether-preview.md --expected-body-revision <revision> --body-file -
 ```
 
-`pending` and `thread` avoid returning the full document. All commands emit one structured JSON response and never use Recents as file authority.
+`pending` returns only unacknowledged event deltas; use `thread` to fetch full thread state. Neither command returns the full document. All commands emit one structured JSON response and never use Recents as file authority.
 
 ## Development
 

@@ -51,6 +51,7 @@ function testSchema(): Schema {
     nodes: {
       doc: { content: "block+" },
       paragraph: { content: "inline*", group: "block" },
+      hardbreak: { inline: true, group: "inline", atom: true, attrs: { isInline: { default: false } } },
       text: { group: "inline" },
     },
   });
@@ -87,6 +88,21 @@ test("projects block text and resolves an anchor to ProseMirror ranges", () => {
     start: 6,
     end: 10,
     ranges: [{ from: 7, to: 11 }],
+  });
+});
+
+test("includes a soft break in the quoted text and highlight ranges", () => {
+  const schema = testSchema();
+  const doc = schema.node("doc", null, [schema.node("paragraph", null, [
+    schema.text("serious"),
+    schema.node("hardbreak", { isInline: true }),
+    schema.text("product"),
+  ])]);
+  expect(projectDocument(doc).projection).toBe("serious product");
+  expect(resolveAnchor(doc, anchor("serious product", { projectionStart: 0, projectionEnd: 15 }))).toEqual({
+    start: 0,
+    end: 15,
+    ranges: [{ from: 1, to: 8 }, { from: 8, to: 9 }, { from: 9, to: 16 }],
   });
 });
 
@@ -198,6 +214,32 @@ test("an open drawer expands threads inline while a closed drawer uses a canvas-
   expect(Number.parseFloat(popover.style.left)).toBeGreaterThanOrEqual(22);
   expect(Number.parseFloat(popover.style.left) + 340).toBeLessThanOrEqual(888);
   expect(Number.parseFloat(popover.style.top)).toBeGreaterThanOrEqual(22);
+  ui.destroy();
+});
+
+test("opening a thread scrolls to its highlight without selecting document text", () => {
+  installDom();
+  const root = document.createElement("div");
+  const editorRoot = document.createElement("main");
+  const highlight = document.createElement("span");
+  highlight.dataset.wmAnnotationId = "c-1";
+  editorRoot.append(highlight);
+  document.body.append(editorRoot, root);
+  let scrolled = 0;
+  highlight.scrollIntoView = () => { scrolled += 1; };
+  const { schema, doc } = documentWith("alpha beta");
+  let editorState = EditorState.create({ schema, doc });
+  const view = {
+    get state() { return editorState; },
+    dom: editorRoot,
+    dispatch(transaction: Parameters<typeof editorState.apply>[0]) { editorState = editorState.apply(transaction); },
+  } as unknown as import("@milkdown/kit/prose/view").EditorView;
+  const initialSelection = editorState.selection;
+  const ui = createAnnotationUi({ root, editorRoot, getEditorView: () => view });
+  ui.setState({ threads: [thread()] });
+  ui.openThread("c-1", highlight);
+  expect(scrolled).toBe(1);
+  expect(editorState.selection.eq(initialSelection)).toBe(true);
   ui.destroy();
 });
 
