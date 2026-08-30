@@ -1,6 +1,6 @@
 ---
 title: Tether — architecture and extraction plan
-status: active — Phase 2 underway
+status: active — Phase 2 complete; Phase 3 next
 created: 2026-08-28
 ---
 # Tether
