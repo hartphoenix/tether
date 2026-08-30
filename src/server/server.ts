@@ -207,10 +207,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       if (apiPath === "/file" && request.method === "GET") return json(await service.read(session.grant));
       if (apiPath === "/export" && request.method === "GET" || apiPath === "/file/export" && request.method === "GET") {
-        const document = await service.read(session.grant);
+        const { document, source } = await service.readExactSnapshot(session.grant);
         if (document.readOnly) return error("ledger_invalid", document.ledgerError ?? "The document ledger is malformed.", 422);
-        const body = await service.exportExact(session.grant);
-        return new Response(body, { headers: { "content-type": "text/markdown; charset=utf-8", "content-disposition": `attachment; filename="${basename(session.grant.path).replaceAll('"', "")}"` } });
+        return new Response(source, { headers: { "content-type": "text/markdown; charset=utf-8", "content-disposition": `attachment; filename="${basename(session.grant.path).replaceAll('"', "")}"` } });
       }
       if (apiPath === "/file" && request.method === "PUT") {
         const body = await requestJson(request);
@@ -222,8 +221,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/annotations" && request.method === "GET") {
         const actor = new URL(request.url).searchParams.get("actor") ?? options.actor ?? "assistant";
         const pending = await service.pendingRead(session.grant, actor);
-        const read = await service.read(session.grant);
-        return json({ ...read, ...(pending && typeof pending === "object" ? pending : {}), annotations: read.annotations });
+        return json(pending);
       }
       if (apiPath === "/annotations/pending" && (request.method === "GET" || request.method === "POST")) {
         const body = request.method === "POST" ? await requestJson(request) : {};

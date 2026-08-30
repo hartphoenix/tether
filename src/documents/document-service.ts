@@ -40,6 +40,8 @@ export type DocumentGrant = DocumentSession;
 export type DocumentServiceOptions = {
   now?: () => number;
   queue?: RealPathMutationQueue;
+  /** Injectable source reader for deterministic transaction tests. */
+  readText?: (path: string) => Promise<string>;
 };
 
 export type AnnotationEventInput = {
@@ -107,6 +109,11 @@ export type PendingRead = {
 export type ThreadRead = {
   path: string;
   thread: DerivedThread;
+};
+
+export type ExactDocumentRead = {
+  document: DocumentSnapshot;
+  source: string;
 };
 
 export class DocumentAccessError extends Error {
@@ -272,12 +279,14 @@ async function atomicReplace(path: string, source: string): Promise<void> {
 
 export class DocumentService {
   private readonly now: () => number;
+  private readonly readText: (path: string) => Promise<string>;
   readonly queue: RealPathMutationQueue;
   private readonly sessions = new Map<string, DocumentSession>();
   private readonly grantedPaths = new Set<string>();
 
   constructor(options: DocumentServiceOptions = {}) {
     this.now = options.now ?? Date.now;
+    this.readText = options.readText ?? ((path) => readFile(path, "utf8"));
     this.queue = options.queue ?? new RealPathMutationQueue();
   }
 
@@ -332,14 +341,19 @@ export class DocumentService {
 
   private async readSource(session: DocumentSession | string): Promise<{ path: string; source: string }> {
     const path = await this.canonicalFor(session);
-    try { return { path, source: await readFile(path, "utf8") }; }
+    try { return { path, source: await this.readText(path) }; }
     catch { throw new DocumentNotFoundError(); }
   }
 
   async read(session: DocumentSession | string): Promise<DocumentSnapshot> {
+    return (await this.readExactSnapshot(session)).document;
+  }
+
+  /** Couple exact bytes and parsed state to one filesystem read. */
+  async readExactSnapshot(session: DocumentSession | string): Promise<ExactDocumentRead> {
     const { path, source } = await this.readSource(session);
-    try { return snapshotFromSource(path, source); }
-    catch (error) { return malformedSnapshot(path, source, error); }
+    try { return { document: snapshotFromSource(path, source), source }; }
+    catch (error) { return { document: malformedSnapshot(path, source, error), source }; }
   }
 
   /** Read the source bytes exactly, without reconstructing Markdown or ledger data. */
@@ -359,7 +373,7 @@ export class DocumentService {
     const path = await this.canonicalFor(session);
     return this.queue.run(path, async () => {
       let source: string;
-      try { source = await readFile(path, "utf8"); } catch { throw new DocumentNotFoundError(); }
+      try { source = await this.readText(path); } catch { throw new DocumentNotFoundError(); }
       let parsed: ParsedSource;
       try { parsed = parseWritableSource(source); }
       catch (error) { throw new DocumentReadOnlyError(undefined, errorMessage(error)); }
@@ -445,46 +459,43 @@ export class DocumentService {
   acknowledge(input: AppendEventInput): Promise<DocumentSnapshot> { return this.eventAction(input, "ack"); }
 
   async pendingEvents(session: DocumentSession | string, actor = "assistant"): Promise<PendingAnnotation[]> {
-    const { source } = await this.readSource(session);
-    try {
-      const split = splitAnnotationLedger(source);
-      if (split.ledger) validateAnnotationLedger(split.ledger);
-      return pendingAnnotations(split.ledger ?? [], actor);
-    } catch (error) {
-      throw new DocumentReadOnlyError(undefined, errorMessage(error));
-    }
+    return (await this.pending(session, actor)).pending;
   }
 
   async pending(session: DocumentSession | string, actor = "assistant"): Promise<PendingRead> {
-    const snapshot = await this.read(session);
-    if (snapshot.readOnly) throw new DocumentReadOnlyError(undefined, snapshot.ledgerError);
-    const pending = await this.pendingEvents(session, actor);
-    const acknowledgements = snapshot.annotations.acknowledgements;
-    const acknowledgement = acknowledgements.find((value) => (value as { actor?: string }).actor === actor) ?? null;
-    const header = snapshot.annotations.header;
-    return { path: snapshot.path, documentId: typeof header?.documentId === "string" ? header.documentId : null, bodyRevision: snapshot.bodyRevision, ledgerRevision: snapshot.ledgerRevision, annotations: snapshot.annotations, pending, events: pending, maxSequence: snapshot.annotations.maxSequence, acknowledgement };
+    const { path, source } = await this.readSource(session);
+    try {
+      const split = splitAnnotationLedger(source);
+      if (split.ledger) validateAnnotationLedger(split.ledger);
+      const snapshot = snapshotFromSource(path, source);
+      const pending = pendingAnnotations(split.ledger ?? [], actor);
+      const acknowledgement = snapshot.annotations.acknowledgements.find((value) => (value as { actor?: string }).actor === actor) ?? null;
+      const header = snapshot.annotations.header;
+      return { path, documentId: typeof header?.documentId === "string" ? header.documentId : null, bodyRevision: snapshot.bodyRevision, ledgerRevision: snapshot.ledgerRevision, annotations: snapshot.annotations, pending, events: pending, maxSequence: snapshot.annotations.maxSequence, acknowledgement };
+    } catch (error) {
+      throw new DocumentReadOnlyError(undefined, errorMessage(error));
+    }
   }
 
   pendingRead(session: DocumentSession | string, actor = "assistant"): Promise<PendingRead> { return this.pending(session, actor); }
   pendingAnnotations(session: DocumentSession | string, actor = "assistant"): Promise<PendingAnnotation[]> { return this.pendingEvents(session, actor); }
 
   async threadValue(session: DocumentSession | string, threadId: string): Promise<DerivedThread> {
-    const { source } = await this.readSource(session);
+    return (await this.thread(session, threadId)).thread;
+  }
+
+  async thread(session: DocumentSession | string, threadId: string): Promise<ThreadRead> {
+    const { path, source } = await this.readSource(session);
     try {
       const split = splitAnnotationLedger(source);
       if (split.ledger) validateAnnotationLedger(split.ledger);
       const thread = deriveAnnotationState(split.ledger ?? []).byThread.get(threadId);
       if (!thread) throw new Error(`Annotation thread not found: ${threadId}.`);
-      return thread;
+      return { path, thread };
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("Annotation thread not found:")) throw error;
       throw new DocumentReadOnlyError(undefined, errorMessage(error));
     }
-  }
-
-  async thread(session: DocumentSession | string, threadId: string): Promise<ThreadRead> {
-    const thread = await this.threadValue(session, threadId);
-    return { path: (await this.read(session)).path, thread };
   }
 
   threadRead(session: DocumentSession | string, threadId: string): Promise<ThreadRead> { return this.thread(session, threadId); }

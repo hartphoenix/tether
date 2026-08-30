@@ -51,6 +51,43 @@ describe("DocumentService grants", () => {
 });
 
 describe("DocumentService review transactions", () => {
+  test("derives pending, thread, and exact-export payloads from one source read each", async () => {
+    const file = await fixture("Single snapshot\n");
+    let reads = 0;
+    const service = new DocumentService({
+      readText: async (path) => {
+        reads += 1;
+        return await readFile(path, "utf8");
+      },
+    });
+    const session = await service.open(file.path);
+    const initial = await service.read(session);
+    const commented = await service.appendComment({
+      session,
+      actor: "hart",
+      expectedBodyRevision: initial.bodyRevision,
+      body: "One read only.",
+      anchor: { exact: "Single", prefix: "", suffix: " snapshot", projectionStart: 0, projectionEnd: 6, bodyRevision: initial.bodyRevision },
+    });
+    const threadId = (commented.annotations.events[0] as { id: string }).id;
+
+    reads = 0;
+    const pending = await service.pending(session, "assistant");
+    expect(reads).toBe(1);
+    expect(pending.bodyRevision).toBe(commented.bodyRevision);
+    expect(pending.annotations.events).toHaveLength(1);
+
+    reads = 0;
+    expect((await service.thread(session, threadId)).thread.id).toBe(threadId);
+    expect(reads).toBe(1);
+
+    reads = 0;
+    const exact = await service.readExactSnapshot(session);
+    expect(reads).toBe(1);
+    expect(exact.document.ledgerRevision).toBe(commented.ledgerRevision);
+    expect(exact.source).toBe(await readFile(file.path, "utf8"));
+  });
+
   test("preserves exact transitional ledger bytes through body saves", async () => {
     const file = await fixture("Body before save\n");
     const service = new DocumentService();
