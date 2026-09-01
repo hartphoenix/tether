@@ -9,6 +9,7 @@ import { startWaveBridge } from "../hosts/wave-bridge";
 import type { HostAdapter } from "../hosts/host-adapter";
 import type { ProtocolResponse } from "../shared/contracts";
 import { RecentsRegistry } from "../recents/registry";
+import { recordRecent } from "../recents/service";
 import { installWaveLaunchers, uninstallWaveLaunchers, waveLauncherStatus } from "../hosts/wave-launchers";
 
 export type CliDependencies = {
@@ -41,7 +42,7 @@ function failure(command: string, cause: unknown, code = "command_failed"): Prot
   };
 }
 
-const usageText = "Usage: mdreview open <file> | recents | recent <1|2|3> | wave <status|install|uninstall> | daemon <status|stop> | document <read|save> <file> | pending <file> --actor <actor> | thread <file> <thread-id> | <reply|resolve|reopen> <file> <thread-id> --actor <actor> | acknowledge <file> --actor <actor> --through <seq> --body-revision <revision>";
+const usageText = "Usage: mdreview open <file> | recents | recents add <file> | recent <1|2|3> | wave <status|install|uninstall> | daemon <status|stop> | document <read|save> <file> | pending <file> --actor <actor> | thread <file> <thread-id> | <reply|resolve|reopen> <file> <thread-id> --actor <actor> | acknowledge <file> --actor <actor> --through <seq> --body-revision <revision>";
 
 class CliUsageError extends Error {
   constructor(message = usageText) {
@@ -75,6 +76,7 @@ function commandName(argv: string[]): string {
   if (argv[0] === "daemon") return `daemon.${argv[1] ?? ""}`;
   if (argv[0] === "document") return `document.${argv[1] ?? ""}`;
   if (argv[0] === "wave") return `wave.${argv[1] ?? ""}`;
+  if (argv[0] === "recents" && argv[1]) return `recents.${argv[1]}`;
   if (["pending", "thread", "reply", "resolve", "reopen", "acknowledge"].includes(argv[0] ?? "")) return `review.${argv[0]}`;
   return argv[0] ?? "unknown";
 }
@@ -102,7 +104,21 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       }
       return { response: success(argv[0], { path: launch.path, expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" }), exitCode: 0 };
     }
-    if (argv[0] === "recents") {
+    if (argv[0] === "recents" && argv[1] === "add") {
+      if (!argv[2]) usage();
+      const host = await launchHost(dependencies);
+      const result = await recordRecent(new RecentsRegistry(config.recentsPath), host, resolve(argv[2]), host.launchTarget?.());
+      return {
+        response: success(command, {
+          path: result.entry.path,
+          recentCount: result.entries.length,
+          host: host.id,
+          hostSynchronized: result.hostSynchronized,
+        }),
+        exitCode: 0,
+      };
+    }
+    if (argv[0] === "recents" && argv.length === 1) {
       const host = await launchHost(dependencies);
       const launch = await controlRecentsLaunch(config, host.launchTarget?.());
       if (host.id === "wave" && !dependencies.host) await startWaveBridge(config, process.env, { wait: false });

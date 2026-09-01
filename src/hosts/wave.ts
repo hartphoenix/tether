@@ -1,5 +1,7 @@
 import type { HostCapabilities } from "../shared/contracts";
 import type { HostAdapter, HostTarget } from "./host-adapter";
+import type { RecentEntry } from "../recents/registry";
+import { syncWaveRecentLaunchers } from "./wave-launchers";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -7,7 +9,12 @@ export const SUPPORTED_WAVE_VERSION = "0.14.5";
 
 export type WaveCommandResult = { exitCode: number; stdout: string; stderr: string };
 export type WaveCommandRunner = (command: string[], env: NodeJS.ProcessEnv) => Promise<WaveCommandResult>;
-export type WaveHostOptions = { env?: NodeJS.ProcessEnv; run?: WaveCommandRunner; wshPath?: string };
+export type WaveHostOptions = {
+  env?: NodeJS.ProcessEnv;
+  run?: WaveCommandRunner;
+  wshPath?: string;
+  syncRecents?: (entries: RecentEntry[]) => Promise<unknown>;
+};
 
 function defaultWshPath(env: NodeJS.ProcessEnv): string {
   if (env.WAVETERM_WSHBINARY) return env.WAVETERM_WSHBINARY;
@@ -62,12 +69,14 @@ export class WaveHostAdapter implements HostAdapter {
   private readonly env: NodeJS.ProcessEnv;
   private readonly run: WaveCommandRunner;
   private readonly wshPath: string;
+  private readonly syncRecents: (entries: RecentEntry[]) => Promise<unknown>;
   private version: string | null = null;
 
   constructor(options: WaveHostOptions = {}) {
     this.env = options.env ?? process.env;
     this.run = options.run ?? runWaveCommand;
     this.wshPath = options.wshPath ?? defaultWshPath(this.env);
+    this.syncRecents = options.syncRecents ?? ((entries) => syncWaveRecentLaunchers(entries));
   }
 
   async detect(): Promise<boolean> {
@@ -143,6 +152,10 @@ export class WaveHostAdapter implements HostAdapter {
   async revealFile(path: string): Promise<void> {
     const result = await this.run(["open", "-R", path], commandEnvironment(this.env));
     if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout || `open exited with status ${result.exitCode}`);
+  }
+
+  async recentsChanged(entries: RecentEntry[]): Promise<void> {
+    await this.syncRecents(entries);
   }
 }
 

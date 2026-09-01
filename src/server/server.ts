@@ -12,6 +12,7 @@ import { createBrowserHost } from "../hosts/browser";
 import { HostGateway } from "../hosts/wave-bridge";
 import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type DocumentSession } from "../documents/document-service";
 import { RecentsRegistry } from "../recents/registry";
+import { recordRecent } from "../recents/service";
 import { ensureControlToken, prepareConfig, readControlToken, removeDiscovery, resolveConfig, writeDiscovery, type TetherConfig } from "./config";
 
 const LOOPBACK = "127.0.0.1";
@@ -19,11 +20,10 @@ const DEFAULT_TICKET_MS = 30_000;
 const DEFAULT_LEASE_MS = 90_000;
 const DEFAULT_STARTUP_GRACE_MS = 30_000;
 const DEFAULT_IDLE_MS = 5_000;
-const DEFAULT_SESSION_GRACE_MS = 5_000;
 
 export type Clock = () => number;
 export type Ticket = { ticket: string; url: string; expiresAt: number };
-export type Session = { id: string; grant: DocumentSession; cookie: string; createdAt: number; lastSeen: number; leases: Map<string, number>; unleasedSince: number | null; target?: HostTarget };
+export type Session = { id: string; grant: DocumentSession; cookie: string; createdAt: number; lastSeen: number; leases: Map<string, number>; target?: HostTarget };
 type RecentsSession = { id: string; cookie: string; createdAt: number; lastSeen: number; leaseUntil: number; target?: HostTarget };
 
 export type DaemonOptions = {
@@ -37,7 +37,6 @@ export type DaemonOptions = {
   leaseMs?: number;
   startupGraceMs?: number;
   idleMs?: number;
-  sessionGraceMs?: number;
   actor?: string;
   /** A production web build can supply the extracted editor response. */
   web?: (request: Request, session: Session) => Response | Promise<Response>;
@@ -155,7 +154,6 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const leaseMs = options.leaseMs ?? Number(process.env.TETHER_LEASE_MS ?? DEFAULT_LEASE_MS);
   const startupGraceMs = options.startupGraceMs ?? Number(process.env.TETHER_STARTUP_GRACE_MS ?? DEFAULT_STARTUP_GRACE_MS);
   const idleMs = options.idleMs ?? Number(process.env.TETHER_IDLE_MS ?? DEFAULT_IDLE_MS);
-  const sessionGraceMs = options.sessionGraceMs ?? DEFAULT_SESSION_GRACE_MS;
   const service = options.service ?? new DocumentService({ now });
   const recents = options.recents ?? new RecentsRegistry({ path: config.recentsPath, now });
   const hostAdapter = options.hostAdapter ?? new HostGateway(config, createBrowserHost({ open: options.opener }));
@@ -312,7 +310,6 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         if (typeof body.clientId !== "string" || !body.clientId) return error("invalid_client", "A lease clientId is required.", 400);
         const leaseId = body.clientId;
         session.leases.set(leaseId, now() + leaseMs);
-        session.unleasedSince = null;
         emptySince = 0;
         const read = await service.read(session.grant);
         return json({ bodyRevision: read.bodyRevision, ledgerRevision: read.ledgerRevision, revision: read.bodyRevision });
@@ -320,12 +317,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/release" && request.method === "POST") {
         const body = await requestJson(request);
         if (typeof body.clientId === "string") session.leases.delete(body.clientId);
-        // A pagehide beacon also fires during an ordinary reload. Keep the
-        // scoped session and document grant alive through the daemon's short
-        // idle window so the replacement page can bootstrap and lease it
-        // again. With no remaining leases the daemon is still free to stop.
+        // A pagehide beacon also fires during reload, browser suspension, and
+        // host-managed webview transitions. It releases presence only; the
+        // document-scoped authorization remains valid until explicit daemon
+        // shutdown.
         session.lastSeen = now();
-        if (session.leases.size === 0) session.unleasedSince = session.lastSeen;
         return json({ ok: true });
       }
       if (apiPath === "/open" && request.method === "POST") {
@@ -375,17 +371,13 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       const id = randomToken();
       const createdAt = now();
-      const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt, lastSeen: createdAt, leases: new Map(), unleasedSince: createdAt, ...(pending.target ? { target: pending.target } : {}) };
+      const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt, lastSeen: createdAt, leases: new Map(), ...(pending.target ? { target: pending.target } : {}) };
       sessions.set(id, session);
-      try { await recents.add(pending.grant.realPath); }
+      try { await recordRecent(recents, hostAdapter, pending.grant.realPath, pending.target); }
       catch (cause) {
         sessions.delete(id);
         service.close(pending.grant);
         return error("launch_failed", cause instanceof Error ? cause.message : String(cause), 500);
-      }
-      if (hostAdapter.recentsChanged) {
-        const entries = await recents.list();
-        void hostAdapter.recentsChanged(entries, pending.target).catch(() => {});
       }
       const root = sessionRoutes(id).root;
       return new Response(null, { status: 302, headers: {
@@ -573,15 +565,6 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         const current = now();
         for (const session of [...sessions.values()]) {
           for (const [lease, expiry] of session.leases) if (expiry <= current) session.leases.delete(lease);
-          if (session.leases.size > 0) {
-            session.unleasedSince = null;
-            continue;
-          }
-          session.unleasedSince ??= current;
-          if (current - session.unleasedSince >= sessionGraceMs) {
-            sessions.delete(session.id);
-            service.close(session.grant);
-          }
         }
         for (const [ticket, pending] of tickets) {
           if (pending.expiresAt <= current) {
@@ -590,8 +573,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           }
         }
         for (const [ticket, pending] of recentsTickets) if (pending.expiresAt <= current) recentsTickets.delete(ticket);
-        for (const [id, session] of recentsSessions) if (session.leaseUntil <= current) recentsSessions.delete(id);
-        const active = [...sessions.values()].some((session) => session.leases.size > 0) || [...recentsSessions.values()].some((session) => session.leaseUntil > current);
+        const active = sessions.size > 0 || recentsSessions.size > 0 || tickets.size > 0 || recentsTickets.size > 0;
         if (active) { emptySince = 0; return; }
         if (emptySince === 0) emptySince = current;
         const grace = current - startedAt < startupGraceMs ? startupGraceMs : idleMs;

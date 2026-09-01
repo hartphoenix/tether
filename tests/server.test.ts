@@ -6,6 +6,7 @@ import { DocumentAccessError, DocumentService } from "../src/documents/document-
 import { resolveConfig } from "../src/server/config";
 import { createDaemon, type TetherDaemon } from "../src/server/server";
 import { controlRecentsLaunch } from "../src/server/lifecycle";
+import type { HostAdapter } from "../src/hosts/host-adapter";
 
 const directories: string[] = [];
 const daemons: TetherDaemon[] = [];
@@ -43,6 +44,28 @@ function sessionFetch(daemon: TetherDaemon, location: string, cookie: string, pa
 }
 
 describe("browser launch authorization", () => {
+  test("awaits host recents synchronization and surfaces its failures", async () => {
+    const file = await fixture();
+    const host: HostAdapter = {
+      id: "wave",
+      detect: async () => true,
+      capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: true, widgetInstallation: true, fileNavigatorHook: false, revealFile: true }),
+      openView: async () => {},
+      openExternal: async () => {},
+      recentsChanged: async () => { throw new Error("Wave update failed"); },
+    };
+    const daemon = createDaemon({ config: file.config, hostAdapter: host, startupGraceMs: 600_000, web: () => new Response("web") });
+    daemons.push(daemon);
+    await daemon.ready;
+    const grant = await daemon.service.open(file.path);
+    const launch = daemon.mintTicket(grant, { host: "wave" });
+
+    const response = await fetch(launch.url, { redirect: "manual" });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: { code: "launch_failed", message: "Wave update failed" } });
+    expect(daemon.sessions.size).toBe(0);
+  });
+
   test("scopes the Recents page and opens only registered files in a new view", async () => {
     const file = await fixture();
     const opened: string[] = [];
@@ -179,7 +202,7 @@ describe("session API", () => {
   test("opens wikilinks in a new view, persists preferences, and survives reload release", async () => {
     const file = await fixture("[[other]]\n");
     const opened: string[] = [];
-    const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, sessionGraceMs: 2_000, opener: async (url) => { opened.push(url); }, web: () => new Response("web") });
+    const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, opener: async (url) => { opened.push(url); }, web: () => new Response("web") });
     daemons.push(daemon);
     await daemon.ready;
     const session = await exchange(daemon, file.path);
@@ -206,6 +229,60 @@ describe("session API", () => {
     expect((await sessionFetch(daemon, session.location, session.cookie, "api/lease", { method: "POST", headers: origin, body: JSON.stringify({ clientId: "replacement-page" }) })).status).toBe(200);
     expect(daemon.sessions.size).toBe(2);
   });
+});
+
+test("browser sessions survive expired presence leases", async () => {
+  const file = await fixture();
+  let now = 1_700_000_000_000;
+  const daemon = createDaemon({
+    config: file.config,
+    now: () => now,
+    leaseMs: 10,
+    startupGraceMs: 0,
+    idleMs: 0,
+    web: () => new Response("web"),
+  });
+  daemons.push(daemon);
+  await daemon.ready;
+  const session = await exchange(daemon, file.path);
+  const origin = { origin: daemon.origin };
+  expect((await sessionFetch(daemon, session.location, session.cookie, "api/lease", {
+    method: "POST",
+    headers: origin,
+    body: JSON.stringify({ clientId: "suspended-browser" }),
+  })).status).toBe(200);
+
+  now += 20;
+  await Bun.sleep(600);
+  now += 6_000;
+  await Bun.sleep(600);
+
+  expect(daemon.sessions.size).toBe(1);
+  expect((await sessionFetch(daemon, session.location, session.cookie, "api/bootstrap")).status).toBe(200);
+});
+
+test("Recents sessions survive expired presence leases", async () => {
+  const file = await fixture();
+  let now = 1_700_000_000_000;
+  const daemon = createDaemon({
+    config: file.config,
+    now: () => now,
+    leaseMs: 10,
+    startupGraceMs: 0,
+    idleMs: 0,
+    web: () => new Response("web"),
+  });
+  daemons.push(daemon);
+  await daemon.ready;
+  const launch = await controlRecentsLaunch(file.config);
+  const exchange = await fetch(launch.url, { redirect: "manual" });
+  const location = exchange.headers.get("location")!;
+  const cookie = exchange.headers.get("set-cookie")!.split(";", 1)[0];
+
+  now += 20;
+  await Bun.sleep(600);
+
+  expect((await fetch(`${daemon.origin}${location}api/files`, { headers: { cookie } })).status).toBe(200);
 });
 
 test("idle shutdown resolves the daemon closed promise", async () => {

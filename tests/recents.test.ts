@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { RecentsRegistry } from "../src/recents/index";
+import { RecentsRegistry, recordRecent } from "../src/recents/index";
+import type { HostAdapter } from "../src/hosts/host-adapter";
 
 const directories: string[] = [];
 
@@ -56,4 +57,44 @@ test("serializes concurrent adds atomically and creates private state directorie
   await chmod(registry.path, 0o644);
   await registry.add(paths[0]);
   expect((await stat(registry.path)).mode & 0o077).toBe(0);
+});
+
+test("records a recent document and synchronizes the active host", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-recents-service-"));
+  directories.push(directory);
+  const path = join(directory, "review.md");
+  await writeFile(path, "Review\n");
+  const registry = new RecentsRegistry(join(directory, "recent-files.json"));
+  const synchronized: string[][] = [];
+  const host: HostAdapter = {
+    id: "wave",
+    detect: async () => true,
+    capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: true, widgetInstallation: true, fileNavigatorHook: false, revealFile: true }),
+    openView: async () => {},
+    openExternal: async () => {},
+    recentsChanged: async (entries) => { synchronized.push(entries.map((entry) => entry.path)); },
+  };
+
+  const result = await recordRecent(registry, host, path, { host: "wave" });
+  expect(result).toMatchObject({ entry: { path: await realpath(path) }, hostSynchronized: true });
+  expect(synchronized).toEqual([[await realpath(path)]]);
+});
+
+test("surfaces host synchronization failures", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-recents-service-"));
+  directories.push(directory);
+  const path = join(directory, "review.md");
+  await writeFile(path, "Review\n");
+  const registry = new RecentsRegistry(join(directory, "recent-files.json"));
+  const host: HostAdapter = {
+    id: "wave",
+    detect: async () => true,
+    capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: true, widgetInstallation: true, fileNavigatorHook: false, revealFile: true }),
+    openView: async () => {},
+    openExternal: async () => {},
+    recentsChanged: async () => { throw new Error("Wave update failed"); },
+  };
+
+  await expect(recordRecent(registry, host, path, { host: "wave" })).rejects.toThrow("Wave update failed");
+  expect(await registry.paths()).toEqual([await realpath(path)]);
 });

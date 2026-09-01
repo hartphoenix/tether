@@ -1,6 +1,6 @@
 ---
 title: Tether — architecture and extraction plan
-status: active — Phase 3 preview ready for manual validation
+status: active — Phase 3 preview validated; cutover decision pending
 created: 2026-08-28
 ---
 # Tether
@@ -181,6 +181,7 @@ The public CLI contract should be stable across harnesses and implementation lan
 * Serve each browser launch beneath a session-specific path and scope its cookie to that path. This prevents simultaneous widgets from overwriting one another's grants while allowing app-wide preferences to remain shared separately.
 * Keep atomic replace, separate body/ledger revisions, and per-real-path serialization:
   * **Atomic replace:** write a complete temporary file, then swap it into place in one filesystem operation. A crash during saving should leave either the old complete file or the new complete file, not a half-written file.
+    * here's a test input that should help diagnose whether atomic replace is working as expected.
   * **Separate revisions:** track changes to the Markdown body and annotation ledger independently. Adding a comment should not look like the underlying proposal changed, and each kind of save can detect the conflict relevant to it.
   * **Per-real-path serialization:** resolve aliases and symbolic links to the actual file, then perform writes to that file one at a time. Two open views cannot overwrite each other's nearly simultaneous changes.
 * Preserve the embedded ledger as the portable source of truth. App state contains preferences and discovery metadata, not required review history.
@@ -290,7 +291,7 @@ The phase has one vertical-slice target: `mdreview open file.md` starts or safel
 * Extract the current read, exact export, body save, annotation append, pending/thread lookup, reply, resolve, reopen, edit, delete, and acknowledge behavior. Preserve the transitional `wave-annotations:v1` envelope unchanged.
 * Retain atomic replacement, source-file permissions, separate body and ledger revisions, malformed-ledger read-only recovery, and complete read–validate–write transactions serialized by canonical real path.
 * Keep thread semantics already established in the product: comments and replies form threads; state is only open or resolved; orphaned is an independent location condition; orphaned threads remain replyable. Agent workflow policy remains outside the domain model.
-* Keep leases, explicit release, expiry, startup grace, and idle shutdown. The daemon process must actually exit after shutdown; the prior high-CPU stranded-process failure gets a process-level regression test.
+* Keep leases as advisory presence signals, not authorization lifetime. Document-scoped and Recents sessions survive missed heartbeats, suspended embedded webviews, and laptop sleep. While sessions exist, keep the shared daemon resident and idle until explicit shutdown; it must then actually exit. The prior high-CPU stranded-process failure gets a process-level regression test.
 
 #### Recents and host contract
 
@@ -350,13 +351,13 @@ Keep Wave authority narrow. The launcher may use the injected `WAVETERM_JWT` to 
 
 Wave 0.14.5 has been verified to reject local `wsh` commands when `WAVETERM_JWT` is absent. Use a separate, profile-scoped Wave bridge for host actions that outlive the launcher, such as opening a wikilink. The bridge may retain the injected JWT only in process memory; it exposes a narrow authenticated open-view operation, receives no document content or filesystem authority, and exits after its leases expire. The generic Tether daemon talks to this bridge without receiving the JWT. A stale or unavailable bridge must produce an explicit relaunch-required result rather than falling back silently to the system browser.
 
-Wave exposes no documented web-content event for block closure. Retain explicit page release, expiring leases, idle shutdown, and stale-process recovery. If Wave restores a block containing an obsolete dynamic URL, show a relaunch state instead of a blank or indefinitely failed view.
+Wave exposes no documented web-content event for block closure, and embedded webviews may throttle or suspend browser timers. Treat page release and expiring leases only as presence information: they must not revoke a scoped browser session or stop a daemon that still owns sessions. Retain explicit daemon shutdown and stale-process recovery. If Wave restores a block containing an obsolete dynamic URL, show a relaunch state instead of a blank or indefinitely failed view.
 
 Wave's documented custom-widget model supports terminal launchers and direct web widgets; the existing terminal-to-web handoff remains reasonable because the daemon URL and launch ticket are created dynamically. Wave now also documents `wsh launch` for named custom widgets, which should be evaluated during implementation. [Wave custom widgets](https://docs.waveterm.dev/customwidgets), [Wave release notes](https://docs.waveterm.dev/releasenotes)
 
 Exit condition: the Markdown widget, three recent-file widgets, Recents page, wikilinks, hidden navigation, simultaneous session isolation, credential isolation, and stale-block recovery behave as specified, while Roger contains only configuration or thin wrappers. Native Wave file-navigator routing is explicitly out of scope until Wave exposes a supported hook.
 
-Implementation checkpoint (2026-08-30): the exact-version Wave adapter, destination propagation, in-memory credential bridge, scoped Recents browser session, indexed recent commands, and five distinct preview widgets are implemented. Automated unit, HTTP, CLI, process, type, and browser-bundle checks pass. Manual Wave validation remains for widget placement, hidden navigation, wikilinks across simultaneous views, and restored stale blocks; legacy widget IDs remain untouched until that validation passes.
+Implementation checkpoint (2026-09-01): the exact-version Wave adapter, destination propagation, in-memory credential bridge, scoped Recents browser session, indexed recent commands, and five distinct preview widgets are implemented. Manual validation confirmed single-pane widget launches, hidden navigation, dynamic Recents, linked documents opening in a new view without replacing their source, simultaneous views, and long-lived sessions surviving refresh and browser suspension. Recent-document recording now runs through one application transaction that updates the product registry and synchronizes the active host; adapter failures are surfaced rather than discarded. Automated unit, HTTP, CLI, process, type, and browser-bundle checks pass. Legacy widget IDs remain untouched; replacing them is a separate cutover decision.
 
 ### Phase 4 — add the cmux adapter
 
@@ -403,3 +404,11 @@ Exit condition: each adapter passes the same open/read/review/save contract test
 * Repository and license: **public, MIT**.
 * MVP distribution: **source checkout**.
 * Prototype annotation compatibility: **transitional only**. Keep the existing sentinel through cutover and rollback, then convert this plan once because it governs later phases.
+
+<!-- wave-annotations:v1
+{"type":"ledger","documentId":"7db5c79a-439e-43c2-971b-ebbed9c8b1dc","baseBodyRevision":"sha256:62d5b22cd2f5310247f4a11c39afbefab61bf12a1ef21897d1be3b19fffb7c39","createdAt":"2026-09-01T16:23:19.973Z"}
+{"type":"comment","id":"a-70ad5a20-6c6a-465f-ab9f-b53b40267951","seq":1,"actor":"hart","createdAt":"2026-09-01T16:23:19.972Z","anchor":{"exact":"Adding a comment should not look like the underlying proposal changed, and each kind of save can detect the conflict relevant to it.","prefix":"anges to the Markdown body and annotation ledger independently. ","suffix":"\nPer-real-path serialization: resolve aliases and symbolic links","projectionStart":8583,"projectionEnd":8715,"bodyRevision":"sha256:62d5b22cd2f5310247f4a11c39afbefab61bf12a1ef21897d1be3b19fffb7c39"},"body":"here's a test comment that should help to diagnose whether annotations and body edits are performing independently of each other. check for this and reply to this comment with a summary of steps taken and results found."}
+{"type":"reply","id":"a-bc56eec0-930b-40a3-9e06-1299fe948390","seq":2,"actor":"assistant","createdAt":"2026-09-01T16:27:00.506Z","threadId":"a-70ad5a20-6c6a-465f-ab9f-b53b40267951","body":"Verified through the live daemon. The nested test bullet is present in the Markdown body. The thread is stored separately in the terminal annotation ledger. The ledger header records the same body revision that the document still has now, while the ledger has its own distinct revision; adding this comment therefore changed the ledger without changing the body. I also confirmed the daemon remained healthy during the read and reply workflow.\n"}
+{"type":"ack","id":"a-eedcc16c-c3c1-45f7-a0fb-f3796dc68c24","seq":3,"actor":"assistant","throughSeq":1,"bodyRevision":"sha256:62d5b22cd2f5310247f4a11c39afbefab61bf12a1ef21897d1be3b19fffb7c39","createdAt":"2026-09-01T16:27:05.254Z"}
+{"type":"resolve","id":"a-13cdfca0-91af-4ad0-9934-6c50fba4bb92","seq":4,"actor":"hart","createdAt":"2026-09-01T17:32:12.968Z","threadId":"a-70ad5a20-6c6a-465f-ab9f-b53b40267951"}
+-->

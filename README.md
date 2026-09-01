@@ -18,7 +18,7 @@ cp /path/to/source.md /tmp/tether-preview.md
 TETHER_PROFILE=preview ./mdreview open /tmp/tether-preview.md
 ```
 
-The command starts or reuses one per-profile daemon and opens the editor in the default browser. The file is the durable review store; Recents and theme preferences live in Tether's profile config. To inspect or stop the daemon:
+The command starts or reuses one per-profile daemon and opens the editor in the default browser. Document-scoped browser sessions survive inactive or suspended webviews; heartbeat leases report presence but do not revoke access. The daemon remains idle while sessions exist and stops explicitly. The file is the durable review store; Recents and theme preferences live in Tether's profile config. To inspect or stop the daemon:
 
 ```sh
 TETHER_PROFILE=preview ./mdreview daemon status
@@ -38,6 +38,12 @@ The preview launchers use `TETHER_PROFILE=preview`: Tether Markdown, Tether Rece
 
 ```sh
 ./mdreview wave uninstall
+```
+
+Record a document without opening it and synchronize the active host's recent launchers with:
+
+```sh
+TETHER_PROFILE=preview ./mdreview recents add /absolute/path/to/document.md
 ```
 
 The installer preserves unrelated Wave widgets and creates a one-time `widgets.json.tether-preview.backup`. Wave's native file navigator remains outside this preview because Wave 0.14.5 has no public file-extension routing hook.

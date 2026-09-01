@@ -103,3 +103,12 @@ test("a Wave widget removes its launcher block immediately after placing the web
   ]);
   expect(calls.at(-1)?.env.WAVETERM_BLOCKID).toBe("launcher");
 });
+
+test("synchronizes recent entries through the Wave launcher adapter", async () => {
+  const synchronized: string[][] = [];
+  const adapter = new WaveHostAdapter({
+    syncRecents: async (entries) => { synchronized.push(entries.map((entry) => entry.path)); },
+  });
+  await adapter.recentsChanged([{ path: "/docs/review.md", createdAt: 1 }]);
+  expect(synchronized).toEqual([["/docs/review.md"]]);
+});

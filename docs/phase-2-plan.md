@@ -89,7 +89,7 @@ Ordinary stdout is exactly one protocol-versioned JSON object. Diagnostics use s
 
 ## Lifecycle
 
-Carry forward leases, explicit release, lease expiry, startup grace and idle shutdown. Closing all views must eventually stop the daemon. The daemon's main function must await the server's closed promise so shutdown exits the Bun process rather than leaving a CPU-spinning orphan.
+Keep leases and explicit release as advisory browser-presence signals. They must not revoke document-scoped authorization because embedded webviews can suspend timers. Keep the daemon resident and idle while sessions exist; explicit shutdown must exit the process rather than leaving a CPU-spinning orphan. An empty daemon with no sessions or pending tickets may still stop after startup grace.
 
 Add a process-level regression test that launches a real child daemon, closes or stops it, and proves the child exits. Also test stale discovery recovery and simultaneous launcher convergence.
 

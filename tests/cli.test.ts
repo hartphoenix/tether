@@ -6,6 +6,7 @@ import { DocumentAccessError } from "../src/documents/document-service";
 import { runCli } from "../src/cli/main";
 import { resolveConfig } from "../src/server/config";
 import { createDaemon, type TetherDaemon } from "../src/server/server";
+import type { HostAdapter } from "../src/hosts/host-adapter";
 
 const directories: string[] = [];
 const daemons: TetherDaemon[] = [];
@@ -57,6 +58,50 @@ test("opens the indexed recent file through the normal path-scoped launch", asyn
   const result = await runCli(["recent", "2"], { config, open: async (url) => { opened.push(url); } });
   expect(result.response).toMatchObject({ ok: true, command: "recent", data: { path: await realpath(first), opened: true } });
   expect(opened).toHaveLength(1);
+});
+
+test("adds a recent file through the application transaction and reports host synchronization", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-cli-recents-add-"));
+  directories.push(directory);
+  const path = join(directory, "review.md");
+  await writeFile(path, "Review\n");
+  const config = resolveConfig({ profile: "recents-add", runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
+  const synchronized: string[][] = [];
+  const host: HostAdapter = {
+    id: "wave",
+    detect: async () => true,
+    capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: true, widgetInstallation: true, fileNavigatorHook: false, revealFile: true }),
+    launchTarget: () => ({ host: "wave" }),
+    openView: async () => {},
+    openExternal: async () => {},
+    recentsChanged: async (entries) => { synchronized.push(entries.map((entry) => entry.path)); },
+  };
+
+  const result = await runCli(["recents", "add", path], { config, host });
+  expect(result).toMatchObject({
+    exitCode: 0,
+    response: { ok: true, command: "recents.add", data: { path: await realpath(path), recentCount: 1, host: "wave", hostSynchronized: true } },
+  });
+  expect(synchronized).toEqual([[await realpath(path)]]);
+});
+
+test("returns a failed recents add when host synchronization fails", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-cli-recents-add-"));
+  directories.push(directory);
+  const path = join(directory, "review.md");
+  await writeFile(path, "Review\n");
+  const config = resolveConfig({ profile: "recents-add-failure", runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
+  const host: HostAdapter = {
+    id: "wave",
+    detect: async () => true,
+    capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: true, widgetInstallation: true, fileNavigatorHook: false, revealFile: true }),
+    openView: async () => {},
+    openExternal: async () => {},
+    recentsChanged: async () => { throw new Error("Wave update failed"); },
+  };
+
+  const result = await runCli(["recents", "add", path], { config, host });
+  expect(result).toMatchObject({ exitCode: 1, response: { ok: false, command: "recents.add", error: { message: "Wave update failed" } } });
 });
 
 test("uses a documented structured usage failure", async () => {
