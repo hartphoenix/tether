@@ -44,6 +44,59 @@ function sessionFetch(daemon: TetherDaemon, location: string, cookie: string, pa
 }
 
 describe("browser launch authorization", () => {
+  test("serves and authorizes every Recents context-menu action", async () => {
+    const file = await fixture();
+    const revealed: string[] = [];
+    const opened: string[] = [];
+    const trashed: string[] = [];
+    const synchronized: string[][] = [];
+    const host: HostAdapter = {
+      id: "wave",
+      detect: async () => true,
+      capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: true, widgetInstallation: true, fileNavigatorHook: false, revealFile: true }),
+      openView: async () => {},
+      openExternal: async (path) => { opened.push(path); },
+      revealFile: async (path) => { revealed.push(path); },
+      recentsChanged: async (entries) => { synchronized.push(entries.map((entry) => entry.path)); },
+    };
+    const registry = new (await import("../src/recents/registry")).RecentsRegistry(file.config.recentsPath);
+    await registry.add(file.path);
+    await registry.add(file.other);
+    const daemon = createDaemon({
+      config: file.config,
+      hostAdapter: host,
+      trashFile: async (path) => { trashed.push(path); },
+      startupGraceMs: 600_000,
+      web: () => new Response("web"),
+    });
+    daemons.push(daemon);
+    await daemon.ready;
+    const launch = await controlRecentsLaunch(file.config, { host: "wave" });
+    const exchanged = await fetch(launch.url, { redirect: "manual" });
+    const location = exchanged.headers.get("location")!;
+    const cookie = exchanged.headers.get("set-cookie")!.split(";", 1)[0];
+    const action = (path: string, value: string) => fetch(`${daemon.origin}${location}api/action`, {
+      method: "POST",
+      headers: { cookie, origin: daemon.origin, "content-type": "application/json" },
+      body: JSON.stringify({ path, action: value }),
+    });
+
+    const page = await (await fetch(`${daemon.origin}${location}`, { headers: { cookie } })).text();
+    expect(page).toContain("Reveal in Finder");
+    expect(page).toContain("Open in Default App");
+    expect(page).toContain("Remove from Queue");
+    expect(page).toContain("Move to Trash");
+    expect((await action(file.other, "reveal")).status).toBe(200);
+    expect((await action(file.other, "default")).status).toBe(200);
+    expect((await action(file.other, "remove")).status).toBe(200);
+    expect((await action(file.path, "trash")).status).toBe(200);
+    expect(revealed).toEqual([file.other]);
+    expect(opened).toEqual([file.other]);
+    expect(trashed).toEqual([file.path]);
+    expect(await registry.paths()).toEqual([]);
+    expect(synchronized.at(-1)).toEqual([]);
+  });
+
   test("awaits host recents synchronization and surfaces its failures", async () => {
     const file = await fixture();
     const host: HostAdapter = {

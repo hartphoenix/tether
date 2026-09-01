@@ -1,6 +1,6 @@
 ---
 title: Tether — architecture and extraction plan
-status: active — Phase 3 preview validated; cutover decision pending
+status: active — Tether primary; Phase 4 cmux adapter next
 created: 2026-08-28
 ---
 # Tether
@@ -229,17 +229,11 @@ tether/
 
 Split packages only when a real consumer needs independent versioning—for example, publishing the ledger codec or MCP server separately.
 
-## Transition from the current viewer
+## Transition from the original viewer — completed 2026-09-01
 
-Keep the current Roger implementation available as the daily-use fallback while Tether develops. Freeze it at a committed working state and limit further changes to serious defects.
+Tether was developed beside the Roger implementation under an isolated `preview` profile. The manual gate passed, Tether became the sole active viewer and Recents system, and the legacy scripts, processes, and widget definitions were retired. The established profile name remains `preview` temporarily to preserve current Recents, preferences, and session discovery without a second data migration.
 
-Install Tether beside it under a separate preview profile. The preview must use its own daemon identity, runtime discovery and lock files, configuration, Recents registry, browser sessions, preferences, logs, and Wave widget IDs. It must not replace or rewrite the current Markdown or recent-file widgets before cutover.
-
-During early testing, use copied documents by default. Do not edit the same file concurrently through the legacy and Tether daemons: their per-file mutation queues cannot serialize writes across processes. A real document may be tested sequentially after closing its legacy view.
-
-Delay the annotation-sentinel rename until after Tether becomes the primary viewer and its rollback window closes. Tether may temporarily retain `wave-annotations:v1` during extraction and parity testing. This is transitional compatibility, not a commitment to preserve the legacy format indefinitely; it separates retiring the application from migrating durable files.
-
-Tether is ready to become primary when the following manual checks pass:
+The completed gate covered:
 
 * open, edit, save, close, and reopen;
 * create, reply to, resolve, filter, and preserve threads;
@@ -250,7 +244,7 @@ Tether is ready to become primary when the following manual checks pass:
 * shut down without stranded processes;
 * recover clearly from stale host views and save conflicts.
 
-Cut over reversibly: back up Wave configuration and retained annotated documents, import legacy Recents, point the familiar widgets at Tether, and hide rather than delete a legacy launcher. Keep the old document format through a short rollback window. After acceptance, migrate the retained documents once and remove the legacy launcher.
+The Wave installer keeps a pre-cutover widget backup and owns only canonical `tether-*` definitions after removing retired `agent-*` and `tether-preview-*` entries. The original `wave-annotations:v1` sentinel remains the current document envelope until a separate, deliberate format migration; retiring the application does not require rewriting retained documents.
 
 ## Extraction plan
 
@@ -357,7 +351,7 @@ Wave's documented custom-widget model supports terminal launchers and direct web
 
 Exit condition: the Markdown widget, three recent-file widgets, Recents page, wikilinks, hidden navigation, simultaneous session isolation, credential isolation, and stale-block recovery behave as specified, while Roger contains only configuration or thin wrappers. Native Wave file-navigator routing is explicitly out of scope until Wave exposes a supported hook.
 
-Implementation checkpoint (2026-09-01): the exact-version Wave adapter, destination propagation, in-memory credential bridge, scoped Recents browser session, indexed recent commands, and five distinct preview widgets are implemented. Manual validation confirmed single-pane widget launches, hidden navigation, dynamic Recents, linked documents opening in a new view without replacing their source, simultaneous views, and long-lived sessions surviving refresh and browser suspension. Recent-document recording now runs through one application transaction that updates the product registry and synchronizes the active host; adapter failures are surfaced rather than discarded. Automated unit, HTTP, CLI, process, type, and browser-bundle checks pass. Legacy widget IDs remain untouched; replacing them is a separate cutover decision.
+Implementation checkpoint (2026-09-01): the exact-version Wave adapter, destination propagation, in-memory credential bridge, scoped Recents browser session, indexed recent commands, and five canonical Tether widgets are implemented. Manual validation confirmed single-pane widget launches, hidden navigation, dynamic Recents, linked documents opening in a new view without replacing their source, simultaneous views, and long-lived sessions surviving refresh and browser suspension. Recent-document recording runs through one application transaction that updates the product registry and synchronizes the active host; adapter failures are surfaced rather than discarded. The Recents page supports reveal, default-app open, queue removal, and confirmed Finder trash actions. Tether has replaced the legacy Roger viewer and queue; their scripts and widget definitions are retired. Automated unit, HTTP, CLI, process, type, and browser-bundle checks pass. Phase 4 begins with the cmux capability audit.
 
 ### Phase 4 — add the cmux adapter
 

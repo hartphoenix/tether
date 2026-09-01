@@ -4,7 +4,7 @@
 
 Read [README.md](README.md) and the current status and implementation checkpoint in [docs/product-plan.md](docs/product-plan.md). Run `git status --short --branch` before acting; preserve existing work and verify plan status against the code and tests rather than assuming either is current.
 
-The legacy Wave viewer remains the daily-use fallback until cutover. Never edit the same real Markdown file concurrently through the legacy viewer and Tether because their separate processes cannot serialize each other's writes.
+Tether is the sole active Markdown viewer, review service, and recent-document registry. Legacy Roger implementations are archived reference material, not runnable dependencies or fallback paths.
 
 ## Architecture invariants
 
@@ -39,7 +39,7 @@ Use revision-safe CLI operations documented in [README.md](README.md). Do not ed
 
 A user-visible recent-document addition is one application operation: update the product registry, then synchronize the active host. Use `recordRecent()` inside the application or `mdreview recents add <file>` from the CLI. Do not call `RecentsRegistry.add()` directly for a user-visible action; that lower-level method intentionally has no host side effects.
 
-Before cutover, modify only Tether's `tether-preview-*` Wave widget IDs. Do not replace or remove the legacy Markdown or Recents widgets. Wave credentials remain in process memory only: never place `WAVETERM_JWT`, launch tickets, or control credentials in logs, configuration, widget definitions, discovery records, URLs, or test fixtures.
+Tether owns the canonical `tether-*` Wave widget IDs. Retired `agent-*` and `tether-preview-*` definitions are removed by the installer and must not be recreated. Wave credentials remain in process memory only: never place `WAVETERM_JWT`, launch tickets, or control credentials in logs, configuration, widget definitions, discovery records, URLs, or test fixtures.
 
 ## Context-efficiency contract
 

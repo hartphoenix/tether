@@ -1,5 +1,5 @@
 import { basename, dirname } from "node:path";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import {
   PROTOCOL_VERSION,
   SERVICE_ID,
@@ -12,7 +12,8 @@ import { createBrowserHost } from "../hosts/browser";
 import { HostGateway } from "../hosts/wave-bridge";
 import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type DocumentSession } from "../documents/document-service";
 import { RecentsRegistry } from "../recents/registry";
-import { recordRecent } from "../recents/service";
+import { recordRecent, removeRecent } from "../recents/service";
+import { moveToTrash } from "../recents/actions";
 import { ensureControlToken, prepareConfig, readControlToken, removeDiscovery, resolveConfig, writeDiscovery, type TetherConfig } from "./config";
 
 const LOOPBACK = "127.0.0.1";
@@ -41,6 +42,7 @@ export type DaemonOptions = {
   /** A production web build can supply the extracted editor response. */
   web?: (request: Request, session: Session) => Response | Promise<Response>;
   opener?: (url: string) => Promise<void>;
+  trashFile?: (path: string) => Promise<void>;
 };
 
 export type TetherDaemon = {
@@ -156,6 +158,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const idleMs = options.idleMs ?? Number(process.env.TETHER_IDLE_MS ?? DEFAULT_IDLE_MS);
   const service = options.service ?? new DocumentService({ now });
   const recents = options.recents ?? new RecentsRegistry({ path: config.recentsPath, now });
+  const trashFile = options.trashFile ?? moveToTrash;
   const hostAdapter = options.hostAdapter ?? new HostGateway(config, createBrowserHost({ open: options.opener }));
   const instanceId = crypto.randomUUID();
   const tickets = new Map<string, { grant: DocumentSession; expiresAt: number; target?: HostTarget }>();
@@ -203,10 +206,13 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   }
 
   const recentsHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Tether Recents</title><style>
-  :root{color-scheme:dark}body{margin:0;background:#111;color:#eee;font:15px system-ui;padding:24px}h1{font-size:18px;margin:0 0 18px}.file{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;width:100%;text-align:left;background:#1d1d1d;color:inherit;border:1px solid #333;border-radius:8px;padding:12px;margin:8px 0;cursor:pointer}.name{font-weight:650}.dir{color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.time{color:#999;align-self:center}button:hover{border-color:#777}.empty{color:#999}</style></head><body><h1>Recent Markdown</h1><main id="list"></main><script type="module">
-  const api='./api'; const list=document.querySelector('#list');
-  async function load(){const r=await fetch(api+'/files');if(!r.ok){list.textContent='Session expired.';return}const files=await r.json();list.innerHTML=files.length?'':'<p class="empty">No recent Markdown files.</p>';for(const file of files){const b=document.createElement('button');b.className='file';b.innerHTML='<span><span class="name"></span><br><span class="dir"></span></span><span class="time"></span>';b.querySelector('.name').textContent=file.name;b.querySelector('.dir').textContent=file.directory;b.querySelector('.time').textContent=new Date(file.createdAt).toLocaleString();b.onclick=async()=>{b.disabled=true;try{const response=await fetch(api+'/open',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:file.path})});if(!response.ok)throw new Error((await response.json()).error?.message||'Open failed')}catch(error){alert(error.message)}finally{b.disabled=false}};list.append(b)}}
-  setInterval(()=>fetch(api+'/lease',{method:'POST'}),30000);fetch(api+'/lease',{method:'POST'});load();
+  :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#111;color:#eee;font:15px system-ui;padding:24px}h1{font-size:18px;margin:0 0 18px}.file{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;width:100%;text-align:left;background:#1d1d1d;color:inherit;border:1px solid #333;border-radius:8px;padding:12px;margin:8px 0;cursor:pointer}.name{font-weight:650}.dir{color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.time{color:#999;align-self:center}button:hover{border-color:#777}.empty,#status{color:#999}#status{min-height:20px;margin-top:12px}#menu{position:fixed;z-index:10;display:none;min-width:190px;padding:5px;border:1px solid #444;border-radius:8px;background:#282d33;box-shadow:0 10px 28px #0008}#menu.open{display:block}#menu button{display:block;width:100%;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:inherit;text-align:left;cursor:pointer}#menu button:hover{background:#3a414a}#menu button[data-action="trash"]{color:#ff9898}</style></head><body><h1>Recent Markdown</h1><main id="list"></main><div id="status"></div><div id="menu" role="menu"><button data-action="reveal" role="menuitem">Reveal in Finder</button><button data-action="default" role="menuitem">Open in Default App</button><button data-action="remove" role="menuitem">Remove from Queue</button><button data-action="trash" role="menuitem">Move to Trash</button></div><script type="module">
+  const api='./api';const list=document.querySelector('#list');const status=document.querySelector('#status');const menu=document.querySelector('#menu');let selectedPath=null;
+  function closeMenu(){menu.classList.remove('open');selectedPath=null}function openMenu(event,path){event.preventDefault();selectedPath=path;menu.classList.add('open');const bounds=menu.getBoundingClientRect();menu.style.left=Math.max(4,Math.min(event.clientX,innerWidth-bounds.width-4))+'px';menu.style.top=Math.max(4,Math.min(event.clientY,innerHeight-bounds.height-4))+'px'}
+  async function post(endpoint,body){const response=await fetch(api+'/'+endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!response.ok)throw new Error((await response.json()).error?.message||'Action failed');return response.json()}
+  async function load(){const r=await fetch(api+'/files');if(!r.ok){list.textContent='Session expired.';return}const files=await r.json();list.innerHTML=files.length?'':'<p class="empty">No recent Markdown files.</p>';for(const file of files){const b=document.createElement('button');b.className='file';b.innerHTML='<span><span class="name"></span><br><span class="dir"></span></span><span class="time"></span>';b.querySelector('.name').textContent=file.name;b.querySelector('.dir').textContent=file.directory;b.querySelector('.time').textContent=new Date(file.createdAt).toLocaleString();b.onclick=async()=>{b.disabled=true;status.textContent='Opening…';try{await post('open',{path:file.path});status.textContent='Opened.'}catch(error){status.textContent=error.message}finally{b.disabled=false}};b.addEventListener('contextmenu',(event)=>openMenu(event,file.path));list.append(b)}}
+  menu.addEventListener('click',async(event)=>{const button=event.target.closest('button[data-action]');if(!button||!selectedPath)return;const action=button.dataset.action;const path=selectedPath;closeMenu();if(action==='trash'&&!confirm('Move this file to the Trash?'))return;status.textContent='Working…';try{await post('action',{path,action});status.textContent='';if(action==='remove'||action==='trash')await load()}catch(error){status.textContent=error.message}});
+  document.addEventListener('click',(event)=>{if(!menu.contains(event.target))closeMenu()});document.addEventListener('keydown',(event)=>{if(event.key==='Escape')closeMenu()});addEventListener('scroll',closeMenu,true);setInterval(()=>fetch(api+'/lease',{method:'POST'}),30000);fetch(api+'/lease',{method:'POST'});load();
   </script></body></html>`;
 
   function sessionFrom(request: Request, pathname: string): Session | Response {
@@ -427,6 +433,34 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           catch (cause) { discardTicket(launch.ticket); throw cause; }
           return json({ opened: true, path: grant.path });
         } catch (cause) { return error("open_failed", cause instanceof Error ? cause.message : String(cause), 400); }
+      }
+      if (request.method === "POST" && suffix === "/api/action") {
+        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
+        try {
+          const body = await requestJson(request);
+          if (typeof body.path !== "string" || typeof body.action !== "string") throw new Error("A recent Markdown path and action are required.");
+          const path = await realpath(body.path);
+          if (!(await recents.paths()).includes(path)) return error("document_unauthorized", "The path is not in Tether Recents.", 403);
+          switch (body.action) {
+            case "reveal":
+              if (!hostAdapter.capabilities(session.target).revealFile || !hostAdapter.revealFile) throw new Error("Reveal in Finder is unavailable in this host.");
+              await hostAdapter.revealFile(path);
+              break;
+            case "default":
+              await hostAdapter.openExternal(path);
+              break;
+            case "remove":
+              await removeRecent(recents, hostAdapter, path, session.target);
+              break;
+            case "trash":
+              await trashFile(path);
+              await removeRecent(recents, hostAdapter, path, session.target);
+              break;
+            default:
+              throw new Error("Unknown recent-file action.");
+          }
+          return json({ action: body.action, path });
+        } catch (cause) { return error("action_failed", cause instanceof Error ? cause.message : String(cause), 400); }
       }
       return error("not_found", "Recents resource not found.", 404);
     }

@@ -6,7 +6,7 @@ The first implementation is being extracted from a working Wave Terminal viewer.
 
 ## Current scope
 
-Phase 3 preview adds Wave placement, hidden navigation, a scoped Recents page, three indexed recent-file launchers, and a credential-isolated bridge for wikilinks. The standalone daemon and editor remain host-neutral. The existing `wave-annotations:v1` envelope remains byte-compatible during the rollback window.
+Tether is the active Markdown viewer and review system. Phase 3 provides Wave placement, hidden navigation, a scoped Recents page, three indexed recent-file launchers, and a credential-isolated bridge for wikilinks. The standalone daemon and editor remain host-neutral. The existing `wave-annotations:v1` envelope remains the current durable document format.
 
 ## Source-checkout preview
 
@@ -25,16 +25,16 @@ TETHER_PROFILE=preview ./mdreview daemon status
 TETHER_PROFILE=preview ./mdreview daemon stop
 ```
 
-## Wave preview
+## Wave installation
 
-Install five distinct preview launchers without replacing the working legacy widgets:
+Install or refresh the five canonical Tether launchers. This atomically removes retired legacy and preview widget definitions while preserving unrelated widgets:
 
 ```sh
 ./mdreview wave status
 ./mdreview wave install
 ```
 
-The preview launchers use `TETHER_PROFILE=preview`: Tether Markdown, Tether Recents, and recent positions 1–3. They launch a short-lived command block, then place the actual editor or Recents page in a hidden-navigation web block. Remove only these preview launchers with:
+The launchers use the established `TETHER_PROFILE=preview` data profile for continuity: Tether Markdown, Tether Recents, and recent positions 1–3. They launch a short-lived command block, then place the actual editor or Recents page in a hidden-navigation web block. Remove the Tether launchers with:
 
 ```sh
 ./mdreview wave uninstall
@@ -46,7 +46,7 @@ Record a document without opening it and synchronize the active host's recent la
 TETHER_PROFILE=preview ./mdreview recents add /absolute/path/to/document.md
 ```
 
-The installer preserves unrelated Wave widgets and creates a one-time `widgets.json.tether-preview.backup`. Wave's native file navigator remains outside this preview because Wave 0.14.5 has no public file-extension routing hook.
+The installer preserves unrelated Wave widgets and creates a one-time `widgets.json.tether-cutover.backup`. Wave's native file navigator remains outside Tether because Wave 0.14.5 has no public file-extension routing hook.
 
 `TETHER_RUNTIME_DIR` and `TETHER_CONFIG_DIR` can set exact private directories for an isolated run. CLI stdout is one protocol-v1 JSON object. Exit code `0` is success, `1` is an operational failure, and `2` is invalid usage.
 
@@ -85,4 +85,4 @@ bun run check
 bun run build:web
 ```
 
-Tether is under active development. Keep the current Wave viewer as the daily-use fallback and do not edit one real file through both daemons at once.
+Tether is under active development. The legacy Roger viewer and queue are archived and no longer form part of the operating system.

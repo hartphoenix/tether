@@ -29,7 +29,7 @@ const capabilities: HostCapabilities = {
   hiddenNavigation: false,
   widgetInstallation: false,
   fileNavigatorHook: false,
-  revealFile: false,
+  revealFile: process.platform === "darwin",
 };
 
 /** Host-neutral adapter for the ordinary system browser. */
@@ -48,6 +48,10 @@ export class BrowserHostAdapter implements HostAdapter {
   capabilities(): HostCapabilities { return { ...capabilities }; }
   async openView(url: string, _target?: HostTarget): Promise<void> { await this.run(platformOpenCommand(url), this.environment); }
   async openExternal(pathOrUrl: string): Promise<void> { await this.run(platformOpenCommand(pathOrUrl), this.environment); }
+  async revealFile(path: string): Promise<void> {
+    if (process.platform !== "darwin") throw new Error("Reveal in Finder is available only on macOS.");
+    await this.run(["open", "-R", path], this.environment);
+  }
 }
 
 export function createBrowserHost(options: BrowserHostOptions = {}): BrowserHostAdapter {

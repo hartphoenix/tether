@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { RecentsRegistry, recordRecent } from "../src/recents/index";
+import { RecentsRegistry, moveToTrash, recordRecent, removeRecent } from "../src/recents/index";
 import type { HostAdapter } from "../src/hosts/host-adapter";
 
 const directories: string[] = [];
@@ -97,4 +97,38 @@ test("surfaces host synchronization failures", async () => {
 
   await expect(recordRecent(registry, host, path, { host: "wave" })).rejects.toThrow("Wave update failed");
   expect(await registry.paths()).toEqual([await realpath(path)]);
+});
+
+test("removes a recent document and synchronizes the remaining launchers", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-recents-remove-"));
+  directories.push(directory);
+  const first = join(directory, "first.md");
+  const second = join(directory, "second.md");
+  await writeFile(first, "First\n");
+  await writeFile(second, "Second\n");
+  const registry = new RecentsRegistry(join(directory, "recent-files.json"));
+  await registry.add(first);
+  await registry.add(second);
+  const synchronized: string[][] = [];
+  const host: HostAdapter = {
+    id: "wave",
+    detect: async () => true,
+    capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: true, widgetInstallation: true, fileNavigatorHook: false, revealFile: true }),
+    openView: async () => {},
+    openExternal: async () => {},
+    recentsChanged: async (entries) => { synchronized.push(entries.map((entry) => entry.path)); },
+  };
+
+  await removeRecent(registry, host, second, { host: "wave" });
+  expect(await registry.paths()).toEqual([await realpath(first)]);
+  expect(synchronized).toEqual([[await realpath(first)]]);
+});
+
+test("uses Finder for an authorized macOS trash operation", async () => {
+  if (process.platform !== "darwin") return;
+  const commands: string[][] = [];
+  await moveToTrash("/tmp/review.md", async (command) => { commands.push(command); });
+  expect(commands).toHaveLength(1);
+  expect(commands[0]?.[0]).toBe("osascript");
+  expect(commands[0]?.at(-1)).toBe("/tmp/review.md");
 });

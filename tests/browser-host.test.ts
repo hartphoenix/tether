@@ -10,11 +10,12 @@ test("reports honest system-browser capabilities and uses an injectable opener",
     hiddenNavigation: false,
     widgetInstallation: false,
     fileNavigatorHook: false,
-    revealFile: false,
+    revealFile: process.platform === "darwin",
   });
   await adapter.openView("http://127.0.0.1:1234/launch?ticket=one");
   await adapter.openExternal("https://example.com");
-  expect(opened).toEqual(["http://127.0.0.1:1234/launch?ticket=one", "https://example.com"]);
+  if (process.platform === "darwin") await adapter.revealFile("/tmp/example.md");
+  expect(opened).toEqual(["http://127.0.0.1:1234/launch?ticket=one", "https://example.com", ...(process.platform === "darwin" ? ["/tmp/example.md"] : [])]);
   expect(platformOpenCommand("https://example.com").at(-1)).toBe("https://example.com");
 });
 
