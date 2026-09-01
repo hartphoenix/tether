@@ -145,7 +145,7 @@
 .wm-zoom-control { position: relative; display: inline-flex; flex: 0 0 auto; }
 .wm-zoom-button:focus-visible { outline: 2px solid #82b7ff; outline-offset: 1px; }
 
-.wm-zoom-menu {
+.milkdown .wm-zoom-menu {
   position: absolute;
   z-index: 32;
   top: calc(100% + 4px);
