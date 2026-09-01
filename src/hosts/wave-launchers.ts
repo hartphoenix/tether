@@ -5,9 +5,10 @@ import { basename } from "node:path";
 import type { RecentEntry } from "../recents/registry";
 
 export const WAVE_WIDGET_IDS = [
-  "tether-markdown", "tether-recents", "tether-recent-1", "tether-recent-2", "tether-recent-3",
+  "tether-recents", "tether-recent-1", "tether-recent-2", "tether-recent-3",
 ] as const;
 export const RETIRED_WAVE_WIDGET_IDS = [
+  "tether-markdown",
   "tether-preview-markdown", "tether-preview-recents", "tether-preview-recent-1", "tether-preview-recent-2", "tether-preview-recent-3",
   "agent-markdown", "agent-recent-queue", "agent-recent-1", "agent-recent-2", "agent-recent-3", "agent-recent-4", "agent-recent-5",
 ] as const;
@@ -49,11 +50,10 @@ function commandWidget(label: string, description: string, icon: string, args: s
 
 function tetherWidgets(mdreviewPath: string, runtimePath: string, recents: RecentEntry[] = []): Widgets {
   const widgets: Widgets = {
-    "tether-markdown": commandWidget("Tether Markdown", "Open Tether’s recent Markdown picker", "file-pen", ["recents"], 1090, mdreviewPath, runtimePath),
-    "tether-recents": commandWidget("Tether Recents", "Browse recent Tether Markdown files", "clock-rotate-left", ["recents"], 1091, mdreviewPath, runtimePath),
+    "tether-recents": commandWidget("Tether Recents", "Browse recent Tether Markdown files", "clock-rotate-left", ["recents"], 1090, mdreviewPath, runtimePath),
   };
   recents.slice(0, 3).forEach((entry, index) => {
-    widgets[`tether-recent-${index + 1}`] = commandWidget(basename(entry.path), entry.path, "file-lines", ["recent", String(index + 1)], 1092 + index, mdreviewPath, runtimePath);
+    widgets[`tether-recent-${index + 1}`] = commandWidget(basename(entry.path), entry.path, "file-lines", ["recent", String(index + 1)], 1091 + index, mdreviewPath, runtimePath);
   });
   return widgets;
 }
@@ -72,7 +72,7 @@ export async function waveLauncherStatus(options: WaveLauncherOptions = {}) {
   const widgets = await readWidgets(resolved.widgetsPath);
   const installed = WAVE_WIDGET_IDS.filter((id) => Object.hasOwn(widgets, id));
   const recentCount = installed.filter((id) => id.startsWith("tether-recent-")).length;
-  const complete = installed.includes("tether-markdown") && installed.includes("tether-recents");
+  const complete = installed.includes("tether-recents");
   return { widgetsPath: resolved.widgetsPath, installed, recentCount, complete };
 }
 

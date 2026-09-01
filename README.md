@@ -27,14 +27,14 @@ TETHER_PROFILE=preview ./mdreview daemon stop
 
 ## Wave installation
 
-Install or refresh the five canonical Tether launchers. This atomically removes retired legacy and preview widget definitions while preserving unrelated widgets:
+Install or refresh the four canonical Tether launchers. This atomically removes retired legacy, preview, and duplicate widget definitions while preserving unrelated widgets:
 
 ```sh
 ./mdreview wave status
 ./mdreview wave install
 ```
 
-The launchers use the established `TETHER_PROFILE=preview` data profile for continuity: Tether Markdown, Tether Recents, and recent positions 1–3. They launch a short-lived command block, then place the actual editor or Recents page in a hidden-navigation web block. Remove the Tether launchers with:
+The launchers use the established `TETHER_PROFILE=preview` data profile for continuity: Tether Recents and recent positions 1–3. They launch a short-lived command block, then place the Recents page or editor in a hidden-navigation web block. Remove the Tether launchers with:
 
 ```sh
 ./mdreview wave uninstall

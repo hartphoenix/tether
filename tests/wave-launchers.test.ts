@@ -30,7 +30,8 @@ test("atomically replaces legacy and preview widgets with canonical Tether launc
   expect(JSON.parse(await readFile(installed.backupPath, "utf8"))).toEqual(original);
   const widgets = JSON.parse(await readFile(widgetsPath, "utf8")) as Record<string, any>;
   expect(widgets.existing).toEqual(original.existing);
-  expect(Object.keys(widgets).filter((key) => WAVE_WIDGET_IDS.includes(key as typeof WAVE_WIDGET_IDS[number]))).toHaveLength(5);
+  expect(Object.keys(widgets).filter((key) => WAVE_WIDGET_IDS.includes(key as typeof WAVE_WIDGET_IDS[number]))).toHaveLength(4);
+  expect(widgets["tether-markdown"]).toBeUndefined();
   expect(widgets["agent-markdown"]).toBeUndefined();
   expect(widgets["tether-preview-recents"]).toBeUndefined();
   expect(widgets["tether-recents"].blockdef.meta).toMatchObject({
