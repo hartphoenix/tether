@@ -383,6 +383,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         service.close(pending.grant);
         return error("launch_failed", cause instanceof Error ? cause.message : String(cause), 500);
       }
+      if (hostAdapter.recentsChanged) {
+        const entries = await recents.list();
+        void hostAdapter.recentsChanged(entries, pending.target).catch(() => {});
+      }
       const root = sessionRoutes(id).root;
       return new Response(null, { status: 302, headers: {
         location: root,

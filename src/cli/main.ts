@@ -95,7 +95,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const canonicalPath = await realpath(resolve(path));
       const host = await launchHost(dependencies);
       const launch = await controlLaunch(config, canonicalPath, host.launchTarget?.());
-      if (host.id === "wave" && !dependencies.host) await startWaveBridge(config);
+      if (host.id === "wave" && !dependencies.host) await startWaveBridge(config, process.env, { wait: false });
       if (process.env.TETHER_SUPPRESS_BROWSER !== "1") {
         try { await host.openView(launch.url, host.launchTarget?.()); }
         catch (cause) { await cancelLaunch(config, launch.url); throw cause; }
@@ -105,14 +105,14 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     if (argv[0] === "recents") {
       const host = await launchHost(dependencies);
       const launch = await controlRecentsLaunch(config, host.launchTarget?.());
-      if (host.id === "wave" && !dependencies.host) await startWaveBridge(config);
+      if (host.id === "wave" && !dependencies.host) await startWaveBridge(config, process.env, { wait: false });
       if (process.env.TETHER_SUPPRESS_BROWSER !== "1") await host.openView(launch.url, host.launchTarget?.());
       return { response: success("recents", { expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" }), exitCode: 0 };
     }
     if (argv[0] === "daemon" && argv[1] === "status") return { response: success(command, await statusDaemon(config)), exitCode: 0 };
     if (argv[0] === "daemon" && argv[1] === "stop") return { response: success(command, await stopDaemon(config)), exitCode: 0 };
     if (argv[0] === "wave" && argv[1] === "status") return { response: success(command, await waveLauncherStatus()), exitCode: 0 };
-    if (argv[0] === "wave" && argv[1] === "install") return { response: success(command, await installWaveLaunchers()), exitCode: 0 };
+    if (argv[0] === "wave" && argv[1] === "install") return { response: success(command, await installWaveLaunchers({ recents: await new RecentsRegistry(config.recentsPath).list() })), exitCode: 0 };
     if (argv[0] === "wave" && argv[1] === "uninstall") return { response: success(command, await uninstallWaveLaunchers()), exitCode: 0 };
 
     if (argv[0] === "document" && argv[1] === "read") {

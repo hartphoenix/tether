@@ -12,7 +12,14 @@ test("installs and removes only distinct preview widgets with an atomic backup",
   const widgetsPath = join(directory, "widgets.json");
   const original = { existing: { label: "Keep me" } };
   await writeFile(widgetsPath, JSON.stringify(original));
-  const options = { widgetsPath, mdreviewPath: "/product/mdreview", runtimePath: "/runtime/bun" };
+  const options = {
+    widgetsPath, mdreviewPath: "/product/mdreview", runtimePath: "/runtime/bun",
+    recents: [
+      { path: "/docs/alpha.md", createdAt: 3 },
+      { path: "/docs/beta.md", createdAt: 2 },
+      { path: "/docs/gamma.md", createdAt: 1 },
+    ],
+  };
   const installed = await installWaveLaunchers(options);
   expect(installed.complete).toBe(true);
   expect(JSON.parse(await readFile(installed.backupPath, "utf8"))).toEqual(original);
@@ -20,9 +27,10 @@ test("installs and removes only distinct preview widgets with an atomic backup",
   expect(widgets.existing).toEqual(original.existing);
   expect(Object.keys(widgets).filter((key) => PREVIEW_WIDGET_IDS.includes(key as typeof PREVIEW_WIDGET_IDS[number]))).toHaveLength(5);
   expect(widgets["tether-preview-recents"].blockdef.meta).toMatchObject({
-    controller: "cmd", cmd: "/runtime/bun", "cmd:args": ["/product/mdreview", "recents"], "cmd:shell": false,
-    "cmd:jwt": true, "cmd:closeonexit": true, "cmd:env": { TETHER_PROFILE: "preview" },
+    controller: "shell", "cmd:jwt": true,
+    "cmd:initscript": "exec '/usr/bin/env' 'TETHER_PROFILE=preview' 'TETHER_WAVE_LAUNCHER=1' '/runtime/bun' '/product/mdreview' 'recents'",
   });
+  expect(widgets["tether-preview-recent-1"]).toMatchObject({ label: "alpha.md", description: "/docs/alpha.md" });
   await installWaveLaunchers(options);
   expect(JSON.parse(await readFile(installed.backupPath, "utf8"))).toEqual(original);
   const removed = await uninstallWaveLaunchers(options);

@@ -1,13 +1,15 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { basename } from "node:path";
+import type { RecentEntry } from "../recents/registry";
 
 export const PREVIEW_WIDGET_IDS = [
   "tether-preview-markdown", "tether-preview-recents", "tether-preview-recent-1", "tether-preview-recent-2", "tether-preview-recent-3",
 ] as const;
 
 type Widgets = Record<string, unknown>;
-export type WaveLauncherOptions = { widgetsPath?: string; mdreviewPath?: string; runtimePath?: string };
+export type WaveLauncherOptions = { widgetsPath?: string; mdreviewPath?: string; runtimePath?: string; recents?: RecentEntry[] };
 
 function paths(options: WaveLauncherOptions = {}) {
   const widgetsPath = resolve(options.widgetsPath ?? join(process.env.WAVETERM_CONFIG_DIR ?? join(homedir(), ".config", "waveterm"), "widgets.json"));
@@ -31,24 +33,25 @@ async function readWidgets(path: string): Promise<Widgets> {
 }
 
 function commandWidget(label: string, description: string, icon: string, args: string[], order: number, mdreviewPath: string, runtimePath: string) {
+  const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+  const command = ["/usr/bin/env", "TETHER_PROFILE=preview", "TETHER_WAVE_LAUNCHER=1", runtimePath, mdreviewPath, ...args].map(quote).join(" ");
   return {
     "display:order": order, icon, label, description,
     blockdef: { meta: {
-      view: "term", controller: "cmd", cmd: runtimePath,
-      "cmd:args": [mdreviewPath, ...args], "cmd:shell": false, "cmd:jwt": true, "cmd:closeonexit": true,
-      "cmd:env": { TETHER_PROFILE: "preview" },
+      view: "term", controller: "shell", "cmd:initscript": `exec ${command}`, "cmd:jwt": true,
     } },
   };
 }
 
-function previewWidgets(mdreviewPath: string, runtimePath: string): Widgets {
-  return {
+function previewWidgets(mdreviewPath: string, runtimePath: string, recents: RecentEntry[] = []): Widgets {
+  const widgets: Widgets = {
     "tether-preview-markdown": commandWidget("Tether Markdown (Preview)", "Open Tether’s recent Markdown picker", "file-pen", ["recents"], 1090, mdreviewPath, runtimePath),
     "tether-preview-recents": commandWidget("Tether Recents (Preview)", "Browse recent Tether Markdown files", "clock-rotate-left", ["recents"], 1091, mdreviewPath, runtimePath),
-    "tether-preview-recent-1": commandWidget("Tether Recent 1 (Preview)", "Open the most recent Tether Markdown file", "file-lines", ["recent", "1"], 1092, mdreviewPath, runtimePath),
-    "tether-preview-recent-2": commandWidget("Tether Recent 2 (Preview)", "Open the second recent Tether Markdown file", "file-lines", ["recent", "2"], 1093, mdreviewPath, runtimePath),
-    "tether-preview-recent-3": commandWidget("Tether Recent 3 (Preview)", "Open the third recent Tether Markdown file", "file-lines", ["recent", "3"], 1094, mdreviewPath, runtimePath),
   };
+  recents.slice(0, 3).forEach((entry, index) => {
+    widgets[`tether-preview-recent-${index + 1}`] = commandWidget(basename(entry.path), entry.path, "file-lines", ["recent", String(index + 1)], 1092 + index, mdreviewPath, runtimePath);
+  });
+  return widgets;
 }
 
 async function atomicWrite(path: string, value: Widgets): Promise<void> {
@@ -64,7 +67,9 @@ export async function waveLauncherStatus(options: WaveLauncherOptions = {}) {
   const resolved = paths(options);
   const widgets = await readWidgets(resolved.widgetsPath);
   const installed = PREVIEW_WIDGET_IDS.filter((id) => Object.hasOwn(widgets, id));
-  return { widgetsPath: resolved.widgetsPath, installed, complete: installed.length === PREVIEW_WIDGET_IDS.length };
+  const recentCount = installed.filter((id) => id.startsWith("tether-preview-recent-")).length;
+  const complete = installed.includes("tether-preview-markdown") && installed.includes("tether-preview-recents");
+  return { widgetsPath: resolved.widgetsPath, installed, recentCount, complete };
 }
 
 export async function installWaveLaunchers(options: WaveLauncherOptions = {}) {
@@ -74,9 +79,14 @@ export async function installWaveLaunchers(options: WaveLauncherOptions = {}) {
     await copyFile(resolved.widgetsPath, resolved.backupPath);
     await chmod(resolved.backupPath, 0o600).catch(() => {});
   }
-  Object.assign(widgets, previewWidgets(resolved.mdreviewPath, resolved.runtimePath));
+  for (const id of PREVIEW_WIDGET_IDS) delete widgets[id];
+  Object.assign(widgets, previewWidgets(resolved.mdreviewPath, resolved.runtimePath, options.recents));
   await atomicWrite(resolved.widgetsPath, widgets);
   return { ...(await waveLauncherStatus(options)), backupPath: resolved.backupPath };
+}
+
+export async function syncWaveRecentLaunchers(entries: RecentEntry[], options: WaveLauncherOptions = {}) {
+  return installWaveLaunchers({ ...options, recents: entries });
 }
 
 export async function uninstallWaveLaunchers(options: WaveLauncherOptions = {}) {

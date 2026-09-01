@@ -3,6 +3,7 @@ import type { HostCapabilities } from "../shared/contracts";
 import { readControlToken, type TetherConfig } from "../server/config";
 import type { HostAdapter, HostTarget } from "./host-adapter";
 import { SUPPORTED_WAVE_VERSION } from "./wave";
+import type { RecentEntry } from "../recents/registry";
 
 const LOOPBACK = "127.0.0.1";
 
@@ -78,8 +79,10 @@ export async function waitForWaveBridge(config: TetherConfig, attempts = 100): P
   throw new Error("Wave bridge did not become ready.");
 }
 
-export async function startWaveBridge(config: TetherConfig, env = process.env): Promise<WaveBridgeRecord> {
+export async function startWaveBridge(config: TetherConfig, env = process.env, options: { wait?: boolean } = {}): Promise<WaveBridgeRecord | null> {
   if (!env.WAVETERM_JWT) throw new Error("Wave bridge requires WAVETERM_JWT.");
+  const existing = await readWaveBridge(config);
+  if (existing && await waveBridgeHealthy(config)) return existing;
   await stopWaveBridge(config);
   const childEnv: NodeJS.ProcessEnv = {
     PATH: env.PATH, TMPDIR: env.TMPDIR, LANG: env.LANG, LC_ALL: env.LC_ALL,
@@ -92,7 +95,7 @@ export async function startWaveBridge(config: TetherConfig, env = process.env): 
     env: childEnv, detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore",
   });
   child.unref();
-  return waitForWaveBridge(config);
+  return options.wait === false ? null : waitForWaveBridge(config);
 }
 
 const browserCapabilities: HostCapabilities = {
@@ -121,6 +124,12 @@ export class HostGateway implements HostAdapter {
       try { message = ((await response.json()) as { error?: { message?: string } }).error?.message ?? message; } catch { /* use default */ }
       throw new Error(message);
     }
+  }
+  async recentsChanged(entries: RecentEntry[], target?: HostTarget): Promise<void> {
+    if (target?.host !== "wave") return;
+    await waitForWaveBridge(this.config, 40);
+    const response = await bridgeRequest(this.config, "/recents", { entries });
+    if (!response.ok) throw new Error("Wave bridge could not update recent launchers.");
   }
   openExternal(pathOrUrl: string): Promise<void> { return this.fallback.openExternal(pathOrUrl); }
   revealFile(path: string): Promise<void> { return this.fallback.revealFile?.(path) ?? Promise.resolve(); }

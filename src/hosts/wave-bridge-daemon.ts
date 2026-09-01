@@ -2,6 +2,8 @@ import { createWaveHost } from "./wave";
 import { removeWaveBridge, writeWaveBridge } from "./wave-bridge";
 import { prepareConfig, readControlToken, resolveConfig } from "../server/config";
 import type { HostTarget } from "./host-adapter";
+import { syncWaveRecentLaunchers } from "./wave-launchers";
+import type { RecentEntry } from "../recents/registry";
 
 const config = resolveConfig();
 await prepareConfig(config);
@@ -35,6 +37,18 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
       return json({ opened: true });
     } catch (cause) {
       return json({ error: { code: "open_failed", message: cause instanceof Error ? cause.message : String(cause) } }, 502);
+    }
+  }
+  if (request.method === "POST" && url.pathname === "/recents") {
+    try {
+      const body = await request.json() as { entries?: unknown };
+      if (!Array.isArray(body.entries) || body.entries.some((entry) => !entry || typeof entry !== "object" || typeof (entry as RecentEntry).path !== "string" || typeof (entry as RecentEntry).createdAt !== "number")) {
+        throw new Error("A valid recent-entry list is required.");
+      }
+      await syncWaveRecentLaunchers(body.entries as RecentEntry[]);
+      return json({ updated: true });
+    } catch (cause) {
+      return json({ error: { code: "recents_failed", message: cause instanceof Error ? cause.message : String(cause) } }, 400);
     }
   }
   return json({ error: { code: "not_found", message: "Not found." } }, 404);

@@ -53,6 +53,26 @@ test("uses the documented web-open fallback outside the verified Wave version", 
   expect(commands.at(-1)).toEqual(["wsh", "web", "open", "http://127.0.0.1:8420/"]);
 });
 
+test("resolves a cmd widget's containing tab from its JWT-bound block", async () => {
+  const payload = Buffer.from(JSON.stringify({ blockid: "launcher-block" })).toString("base64url");
+  const calls: Array<{ command: string[]; env: NodeJS.ProcessEnv }> = [];
+  const adapter = new WaveHostAdapter({
+    wshPath: "wsh",
+    env: { WAVETERM: "1", WAVETERM_JWT: `header.${payload}.signature` },
+    run: async (command, env) => {
+      calls.push({ command, env });
+      if (command[1] === "version") return { exitCode: 0, stdout: "wsh v0.14.5", stderr: "" };
+      if (command[1] === "blocks") return { exitCode: 0, stdout: JSON.stringify([{ blockid: "launcher-block", tabid: "resolved-tab", workspaceid: "resolved-workspace" }]), stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  });
+  expect(await adapter.detect()).toBe(true);
+  expect(adapter.launchTarget()).toMatchObject({ blockId: "launcher-block" });
+  await adapter.openView("http://127.0.0.1:8420/");
+  expect(calls.at(-2)?.command).toEqual(["wsh", "blocks", "list", "--json"]);
+  expect(calls.at(-1)?.env).toMatchObject({ WAVETERM_TABID: "resolved-tab", WAVETERM_WORKSPACEID: "resolved-workspace" });
+});
+
 test("does not claim Wave outside Wave or place a view without its injected JWT", async () => {
   const outside = new WaveHostAdapter({ env: {}, wshPath: "wsh", run: async () => ({ exitCode: 0, stdout: "wsh v0.14.5", stderr: "" }) });
   expect(await outside.detect()).toBe(false);
@@ -63,4 +83,23 @@ test("does not claim Wave outside Wave or place a view without its injected JWT"
   });
   expect(await missingCredential.detect()).toBe(true);
   expect(missingCredential.openView("http://127.0.0.1:8420/")).rejects.toThrow("WAVETERM_JWT");
+});
+
+test("a Wave widget removes its launcher block immediately after placing the web view", async () => {
+  const calls: Array<{ command: string[]; env: NodeJS.ProcessEnv }> = [];
+  const adapter = new WaveHostAdapter({
+    wshPath: "wsh",
+    env: { WAVETERM: "1", WAVETERM_JWT: "jwt", WAVETERM_BLOCKID: "launcher", WAVETERM_TABID: "tab", TETHER_WAVE_LAUNCHER: "1" },
+    run: async (command, env) => {
+      calls.push({ command, env });
+      return { exitCode: 0, stdout: command[1] === "version" ? "wsh v0.14.5" : "", stderr: "" };
+    },
+  });
+  expect(await adapter.detect()).toBe(true);
+  await adapter.openView("http://127.0.0.1:8420/", adapter.launchTarget());
+  expect(calls.slice(-2).map(({ command }) => command)).toEqual([
+    ["wsh", "createblock", "web", "url=http://127.0.0.1:8420/", "web:hidenav=true"],
+    ["wsh", "deleteblock", "-b", "launcher"],
+  ]);
+  expect(calls.at(-1)?.env.WAVETERM_BLOCKID).toBe("launcher");
 });
