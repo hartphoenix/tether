@@ -250,7 +250,7 @@ case "$*" in
   *--version*) /bin/cat '${versionFile}' ;;
   *identify*) echo '{"caller":{"window_id":"${ids.window}","workspace_id":"${ids.workspace}","surface_id":"${ids.surface}","surface_type":"terminal"}}' ;;
   *tree*) echo '{"windows":[{"id":"${ids.window}","workspaces":[{"id":"${ids.workspace}","panes":[{"id":"${ids.pane}","surfaces":[{"id":"${ids.surface}","type":"terminal","title":"shell"}]}]}]}]}' ;;
-  *'rpc pane.create'*) echo '{"window_id":"${ids.window}","workspace_id":"${ids.workspace}","pane_id":"${ids.pane}","surface_id":"${ids.created}"}' ;;
+  *'rpc browser.open_split'*) echo '{"window_id":"${ids.window}","workspace_id":"${ids.workspace}","source_pane_id":"${ids.pane}","target_pane_id":"${ids.pane}","surface_id":"${ids.created}","created_split":true,"placement_strategy":"split_right","show_omnibar":false}' ;;
   *rename-tab*) echo '{"surface_id":"${ids.created}"}' ;;
   *ping*) echo 'PONG' ;;
   *) echo '{}' ;;
@@ -295,7 +295,8 @@ esac
   });
   const commands = await readFile(log, "utf8");
   expect(commands).toContain("ping");
-  expect(commands).toContain("rpc pane.create");
+  expect(commands).toContain("rpc browser.open_split");
+  expect(commands).toContain('"show_omnibar":false');
   expect(commands).toContain("rename-tab");
   expect(commands).not.toContain("in-memory-only");
   await expect(openThroughCmuxBridge(config, {

@@ -38,6 +38,24 @@ const env = {
 };
 
 const ok = (value: unknown): CmuxCommandResult => ({ exitCode: 0, stdout: JSON.stringify(value), stderr: "" });
+const openSplit = (overrides: Record<string, unknown> = {}) => ({
+  window_id: ids.window,
+  workspace_id: ids.workspace,
+  source_pane_id: ids.sourcePane,
+  target_pane_id: ids.reviewPane,
+  surface_id: ids.createdSurface,
+  created_split: true,
+  placement_strategy: "split_right",
+  show_omnibar: false,
+  ...overrides,
+});
+const placement = (paneId: string, overrides: Record<string, unknown> = {}) => ({
+  window_id: ids.window,
+  workspace_id: ids.workspace,
+  surface_id: ids.createdSurface,
+  pane_id: paneId,
+  ...overrides,
+});
 const identity = {
   caller: { window_id: ids.window, workspace_id: ids.workspace, surface_id: ids.source, surface_type: "terminal" },
   focused: { window_id: ids.window, workspace_id: ids.workspace, surface_id: ids.source, surface_type: "terminal" },
@@ -112,20 +130,20 @@ test("returns false when the cmux executable cannot be started", async () => {
   expect(await host.detect()).toBe(false);
 });
 
-test("creates the first review browser beside the exact captured surface through pane.create", async () => {
+test("creates the first review browser beside the exact captured surface without an omnibar", async () => {
   const commands: string[][] = [];
   const host = await detected(async (command) => {
     commands.push(command);
     if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
     if (command.includes("identify")) return ok(identity);
     if (command.includes("tree")) return ok(tree());
-    if (command.includes("rpc")) return ok({ window_id: ids.window, workspace_id: ids.workspace, pane_id: ids.reviewPane, surface_id: ids.createdSurface });
+    if (command.includes("rpc")) return ok(openSplit());
     return ok({ action: "rename", surface_id: ids.createdSurface });
   });
   await host.openView({ url: "http://127.0.0.1:8420/launch?ticket=one", kind: "document", focus: false, target: host.launchTarget() });
   const rpc = commands.find((command) => command.includes("rpc"))!;
-  expect(rpc.slice(1, -1)).toEqual(["--json", "--id-format", "both", "rpc", "pane.create"]);
-  expect(JSON.parse(rpc.at(-1)!)).toEqual({ window_id: ids.window, workspace_id: ids.workspace, surface_id: ids.source, direction: "right", type: "browser", focus: false });
+  expect(rpc.slice(1, -1)).toEqual(["--json", "--id-format", "both", "rpc", "browser.open_split"]);
+  expect(JSON.parse(rpc.at(-1)!)).toEqual({ window_id: ids.window, workspace_id: ids.workspace, surface_id: ids.source, focus: false, show_omnibar: false });
   const renameIndex = commands.findIndex((command) => command.includes("rename-tab"));
   const navigateIndex = commands.findIndex((command) => command.includes("navigate"));
   expect(renameIndex).toBeGreaterThan(commands.indexOf(rpc));
@@ -133,23 +151,125 @@ test("creates the first review browser beside the exact captured surface through
   expect(commands[navigateIndex]).toContain("http://127.0.0.1:8420/launch?ticket=one");
 });
 
-test("discovers one live review pane and adds later documents as selected, non-focused surfaces", async () => {
+test("isolates the first chromeless review when cmux reuses a right sibling pane", async () => {
+  const commands: string[][] = [];
+  const host = await detected(async (command) => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(identity);
+    if (command.includes("tree")) return ok(tree());
+    if (command.includes("rpc")) return ok(openSplit({ created_split: false, placement_strategy: "reuse_right_sibling" }));
+    if (command.includes("split-off")) return ok(placement(ids.otherPane));
+    return ok({ surface_id: ids.createdSurface });
+  });
+  await host.openView({ url: "http://127.0.0.1:8420/reused", kind: "document", focus: true, target: host.launchTarget() });
+  expect(JSON.parse(commands.find((command) => command.includes("browser.open_split"))!.at(-1)!)).toMatchObject({ focus: false, show_omnibar: false });
+  const splitOff = commands.find((command) => command.includes("split-off"))!;
+  expect(splitOff).toEqual([
+    "cmux", "--json", "--id-format", "both", "split-off", "--surface", ids.createdSurface, "right",
+    "--workspace", ids.workspace, "--window", ids.window, "--focus", "false",
+  ]);
+  const renameIndex = commands.findIndex((command) => command.includes("rename-tab"));
+  const focusIndex = commands.findIndex((command) => command.includes("focus-panel"));
+  const navigateIndex = commands.findIndex((command) => command.includes("navigate"));
+  expect(renameIndex).toBeGreaterThan(commands.indexOf(splitOff));
+  expect(focusIndex).toBeGreaterThan(renameIndex);
+  expect(navigateIndex).toBeGreaterThan(focusIndex);
+});
+
+test("discovers one live review pane and adds later documents there without an omnibar", async () => {
   const commands: string[][] = [];
   const host = await detected(async (command) => {
     commands.push(command);
     if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
     if (command.includes("identify")) return ok(identity);
     if (command.includes("tree")) return ok(tree([{ id: ids.reviewPane, surfaces: [{ id: ids.reviewSurface, type: "browser", title: TETHER_REVIEW_TAB_TITLE }] }]));
-    if (command.includes("new-surface")) return ok({ pane_id: ids.reviewPane, surface_id: ids.createdSurface });
+    if (command.includes("rpc")) return ok(openSplit({ created_split: false, placement_strategy: "reuse_right_sibling" }));
     return ok({ action: "rename" });
   });
   await host.openView({ url: "http://127.0.0.1:8420/launch?ticket=two", kind: "document", focus: false, target: host.launchTarget() });
-  const create = commands.find((command) => command.includes("new-surface"))!;
-  expect(create).toContain(ids.reviewPane);
-  expect(create).not.toContain("--url");
-  expect(create.slice(-2)).toEqual(["--focus", "false"]);
+  const create = commands.find((command) => command.includes("rpc"))!;
+  expect(JSON.parse(create.at(-1)!)).toMatchObject({ surface_id: ids.source, focus: false, show_omnibar: false });
+  expect(commands.some((command) => command.includes("move-surface"))).toBe(false);
   expect(commands.findIndex((command) => command.includes("navigate"))).toBeGreaterThan(commands.findIndex((command) => command.includes("rename-tab")));
-  expect(commands.some((command) => command.includes("rpc"))).toBe(false);
+});
+
+test("moves a newly hidden browser into the discovered review pane when cmux places it elsewhere", async () => {
+  const commands: string[][] = [];
+  const host = await detected(async (command) => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(identity);
+    if (command.includes("tree")) return ok(tree([{ id: ids.reviewPane, surfaces: [{ id: ids.reviewSurface, type: "browser", title: TETHER_REVIEW_TAB_TITLE }] }]));
+    if (command.includes("rpc")) return ok(openSplit({ target_pane_id: ids.otherPane }));
+    if (command.includes("move-surface")) return ok(placement(ids.reviewPane));
+    return ok({ surface_id: ids.createdSurface });
+  });
+  await host.openView({ url: "http://127.0.0.1:8420/moved", kind: "document", focus: false, target: host.launchTarget() });
+  const move = commands.find((command) => command.includes("move-surface"))!;
+  expect(move).toEqual([
+    "cmux", "--json", "--id-format", "both", "move-surface", "--surface", ids.createdSurface,
+    "--pane", ids.reviewPane, "--workspace", ids.workspace, "--window", ids.window, "--focus", "false",
+  ]);
+  expect(commands.findIndex((command) => command.includes("rename-tab"))).toBeGreaterThan(commands.indexOf(move));
+});
+
+test("rejects and closes a browser when cmux does not confirm hidden chrome", async () => {
+  const commands: string[][] = [];
+  const host = await detected(async (command) => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(identity);
+    if (command.includes("tree")) return ok(tree());
+    if (command.includes("rpc")) return ok(openSplit({ show_omnibar: true }));
+    return ok({ closed: true });
+  });
+  await expect(host.openView({ url: "http://127.0.0.1:8420/chrome", kind: "document", focus: false, target: host.launchTarget() })).rejects.toMatchObject({ code: "invalid_response" });
+  expect(commands.some((command) => command.includes("close-surface") && command.includes(ids.createdSurface))).toBe(true);
+  expect(commands.some((command) => command.includes("navigate"))).toBe(false);
+});
+
+test("closes an uninitialized browser when review-pane isolation or relocation fails", async () => {
+  for (const scenario of [
+    { name: "split-off", existingReview: false, targetPaneId: ids.reviewPane },
+    { name: "move-surface", existingReview: true, targetPaneId: ids.otherPane },
+  ]) {
+    const commands: string[][] = [];
+    const host = await detected(async (command) => {
+      commands.push(command);
+      if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+      if (command.includes("identify")) return ok(identity);
+      if (command.includes("tree")) return ok(tree(scenario.existingReview
+        ? [{ id: ids.reviewPane, surfaces: [{ id: ids.reviewSurface, type: "browser", title: TETHER_REVIEW_TAB_TITLE }] }]
+        : []));
+      if (command.includes("rpc")) return ok(openSplit({
+        target_pane_id: scenario.targetPaneId,
+        created_split: scenario.existingReview,
+        placement_strategy: scenario.existingReview ? "split_right" : "reuse_right_sibling",
+      }));
+      if (command.includes(scenario.name)) return { exitCode: 1, stdout: "", stderr: `${scenario.name} failed` };
+      return ok({ closed: true });
+    });
+    await expect(host.openView({ url: `http://127.0.0.1:8420/${scenario.name}`, kind: "document", focus: true, target: host.launchTarget() })).rejects.toMatchObject({ code: "command_failed" });
+    expect(commands.filter((command) => command.includes("close-surface"))).toHaveLength(1);
+    expect(commands.some((command) => command.includes("rename-tab") || command.includes("focus-panel") || command.includes("navigate"))).toBe(false);
+  }
+});
+
+test("rejects mismatched placement handles before consuming the launch URL", async () => {
+  const commands: string[][] = [];
+  const host = await detected(async (command) => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(identity);
+    if (command.includes("tree")) return ok(tree());
+    if (command.includes("rpc")) return ok(openSplit({ created_split: false, placement_strategy: "reuse_right_sibling" }));
+    if (command.includes("split-off")) return ok(placement(ids.otherPane, { workspace_id: ids.otherWorkspace }));
+    return ok({ closed: true });
+  });
+  await expect(host.openView({ url: "http://127.0.0.1:8420/mismatch", kind: "document", focus: false, target: host.launchTarget() })).rejects.toMatchObject({ code: "invalid_response" });
+  expect(commands.filter((command) => command.includes("close-surface"))).toHaveLength(1);
+  expect(commands.some((command) => command.includes("rename-tab") || command.includes("navigate"))).toBe(false);
 });
 
 test("does not guess when live review-pane discovery is ambiguous", async () => {
@@ -177,16 +297,15 @@ test("validates a missing source before review-pane reuse and allows same-worksp
     if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
     if (command.includes("identify")) return ok(command.includes("--no-caller") ? focused : identity);
     if (command.includes("tree")) { treeReads++; return ok(fallbackTree); }
-    if (command.includes("new-surface")) return ok({ surface_id: ids.createdSurface });
+    if (command.includes("rpc")) return ok(openSplit({ created_split: false, placement_strategy: "reuse_right_sibling" }));
     return ok({ action: "rename" });
   });
   const target = host.launchTarget()!;
   await expect(host.openView({ url: "http://127.0.0.1:8420/a", kind: "document", focus: false, allowFocusedFallback: false, target })).rejects.toMatchObject({ code: "placement_anchor_missing" });
-  expect(commands.some((command) => command.includes("new-surface"))).toBe(false);
+  expect(commands.some((command) => command.includes("rpc"))).toBe(false);
   await host.openView({ url: "http://127.0.0.1:8420/b", kind: "document", focus: true, allowFocusedFallback: true, target });
-  const create = [...commands].reverse().find((command) => command.includes("new-surface"))!;
-  expect(create).toContain(ids.workspace);
-  expect(create).toContain(ids.reviewPane);
+  const create = [...commands].reverse().find((command) => command.includes("rpc"))!;
+  expect(JSON.parse(create.at(-1)!)).toMatchObject({ workspace_id: ids.workspace, surface_id: ids.otherSurface, show_omnibar: false });
   expect(treeReads).toBe(3);
 });
 
@@ -202,14 +321,17 @@ test("foreground fallback follows global focus into another workspace and reuses
     if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
     if (command.includes("identify")) return ok(command.includes("--no-caller") ? focused : identity);
     if (command.includes("tree")) return ok(command.includes(ids.otherWorkspace) ? otherTree : { windows: [{ id: ids.window, workspaces: [{ id: ids.workspace, panes: [] }] }] });
-    if (command.includes("new-surface")) return ok({ surface_id: ids.createdSurface });
+    if (command.includes("rpc")) return ok(openSplit({
+      window_id: ids.otherWindow,
+      workspace_id: ids.otherWorkspace,
+      created_split: false,
+      placement_strategy: "reuse_right_sibling",
+    }));
     return ok({ action: "rename" });
   });
   await host.openView({ url: "http://127.0.0.1:8420/cross", kind: "document", focus: true, allowFocusedFallback: true, target: host.launchTarget() });
-  const create = commands.find((command) => command.includes("new-surface"))!;
-  expect(create).toContain(ids.otherWorkspace);
-  expect(create).toContain(ids.otherWindow);
-  expect(create).toContain(ids.reviewPane);
+  const create = commands.find((command) => command.includes("rpc"))!;
+  expect(JSON.parse(create.at(-1)!)).toMatchObject({ window_id: ids.otherWindow, workspace_id: ids.otherWorkspace, surface_id: ids.otherSurface, show_omnibar: false });
 });
 
 test("foreground fallback recovers when the original workspace vanished", async () => {
@@ -222,7 +344,7 @@ test("foreground fallback recovers when the original workspace vanished", async 
     if (command.includes("identify")) return ok(command.includes("--no-caller") ? focused : identity);
     if (command.includes("tree") && command.includes(ids.workspace)) return { exitCode: 1, stdout: "", stderr: "Workspace not found" };
     if (command.includes("tree")) return ok(otherTree);
-    if (command.includes("rpc")) return ok({ surface_id: ids.createdSurface });
+    if (command.includes("rpc")) return ok(openSplit({ window_id: ids.otherWindow, workspace_id: ids.otherWorkspace, target_pane_id: ids.otherPane }));
     return ok({ action: "rename" });
   });
   await host.openView({ url: "http://127.0.0.1:8420/missing", kind: "document", focus: true, allowFocusedFallback: true, target: host.launchTarget() });
@@ -240,7 +362,7 @@ test("foreground fallback recovers when the original window vanished", async () 
     if (command.includes("identify")) return ok(command.includes("--no-caller") ? focused : identity);
     if (command.includes("tree") && command.includes(ids.window)) return { exitCode: 1, stdout: "", stderr: "Window not found" };
     if (command.includes("tree")) return ok(otherTree);
-    if (command.includes("rpc")) return ok({ surface_id: ids.createdSurface });
+    if (command.includes("rpc")) return ok(openSplit({ window_id: ids.otherWindow, workspace_id: ids.otherWorkspace, target_pane_id: ids.otherPane }));
     return ok({ action: "rename" });
   });
   await host.openView({ url: "http://127.0.0.1:8420/window-missing", kind: "document", focus: true, allowFocusedFallback: true, target: host.launchTarget() });
@@ -369,8 +491,11 @@ test("serializes concurrent placement per workspace so the second open can reuse
       if (treeReads === 1) await firstTreeGate;
       return ok(tree(reviewCreated ? [{ id: ids.reviewPane, surfaces: [{ id: ids.reviewSurface, type: "browser", title: TETHER_REVIEW_TAB_TITLE }] }] : []));
     }
-    if (command.includes("rpc")) { reviewCreated = true; return ok({ surface_id: ids.createdSurface }); }
-    if (command.includes("new-surface")) return ok({ surface_id: ids.dockSurface });
+    if (command.includes("rpc")) {
+      const createdSplit = !reviewCreated;
+      reviewCreated = true;
+      return ok(openSplit({ created_split: createdSplit, placement_strategy: createdSplit ? "split_right" : "reuse_right_sibling" }));
+    }
     return ok({ action: "rename" });
   });
   const target = host.launchTarget();
@@ -381,8 +506,8 @@ test("serializes concurrent placement per workspace so the second open can reuse
   expect(treeReads).toBe(1);
   releaseFirstTree();
   await Promise.all([first, second]);
-  expect(commands.filter((command) => command.includes("rpc"))).toHaveLength(1);
-  expect(commands.filter((command) => command.includes("new-surface"))).toHaveLength(1);
+  expect(commands.filter((command) => command.includes("rpc"))).toHaveLength(2);
+  expect(commands.filter((command) => command.includes("new-surface"))).toHaveLength(0);
 });
 
 test("closes a newly created review surface when stable naming fails", async () => {
@@ -392,7 +517,7 @@ test("closes a newly created review surface when stable naming fails", async () 
     if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
     if (command.includes("identify")) return ok(identity);
     if (command.includes("tree")) return ok(tree());
-    if (command.includes("rpc")) return ok({ surface_id: ids.createdSurface });
+    if (command.includes("rpc")) return ok(openSplit());
     if (command.includes("rename-tab")) return { exitCode: 1, stdout: "", stderr: "rename failed" };
     return ok({ closed: true });
   });
@@ -417,23 +542,28 @@ test("never passes a Dock surface ID to rename-tab", async () => {
   expect(commands.some((command) => command.includes("rename-tab") && command.includes(ids.dockSurface))).toBe(false);
 });
 
-test("closes a newly created review surface when post-naming navigation fails", async () => {
+test("closes a newly created review surface and restores source focus when navigation fails", async () => {
   const commands: string[][] = [];
   const host = await detected(async (command) => {
     commands.push(command);
     if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
     if (command.includes("identify")) return ok(identity);
     if (command.includes("tree")) return ok(tree());
-    if (command.includes("rpc")) return ok({ surface_id: ids.createdSurface });
+    if (command.includes("rpc")) return ok(openSplit());
     if (command.includes("navigate")) return { exitCode: 1, stdout: "", stderr: "navigation failed" };
     return ok({ surface_id: ids.createdSurface });
   });
-  await expect(host.openView({ url: "http://127.0.0.1:8420/navigation-failure", kind: "document", focus: false, target: host.launchTarget() })).rejects.toMatchObject({ code: "command_failed" });
+  await expect(host.openView({ url: "http://127.0.0.1:8420/navigation-failure", kind: "document", focus: true, target: host.launchTarget() })).rejects.toMatchObject({ code: "command_failed" });
   const renameIndex = commands.findIndex((command) => command.includes("rename-tab"));
   const navigateIndex = commands.findIndex((command) => command.includes("navigate"));
   const closeIndex = commands.findIndex((command) => command.includes("close-surface"));
+  const focusCommands = commands.filter((command) => command.includes("focus-panel"));
   expect(navigateIndex).toBeGreaterThan(renameIndex);
   expect(closeIndex).toBeGreaterThan(navigateIndex);
+  expect(focusCommands).toHaveLength(2);
+  expect(focusCommands[0]).toContain(ids.createdSurface);
+  expect(focusCommands[1]).toContain(ids.source);
+  expect(commands.indexOf(focusCommands[1]!)).toBeGreaterThan(closeIndex);
 });
 
 test("closes a newly created Dock surface when navigation fails", async () => {

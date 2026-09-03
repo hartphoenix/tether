@@ -166,6 +166,13 @@ function requireUuid(value: string | undefined, field: string): string {
   return value;
 }
 
+function requireResponseUuid(value: unknown, field: string): string {
+  if (typeof value !== "string" || !uuidPattern.test(value)) {
+    throw new CmuxHostError("invalid_response", `cmux returned an invalid ${field}.`);
+  }
+  return value;
+}
+
 /** cmux 0.64.22 adapter using only structured CLI/socket responses. */
 export class CmuxHostAdapter implements HostAdapter {
   readonly id = "cmux" as const;
@@ -312,27 +319,58 @@ export class CmuxHostAdapter implements HostAdapter {
 
     if (reviewPanes.length === 1) {
       const paneId = requireUuid(stringField(reviewPanes[0], "id"), "pane ID");
-      const created = await this.runJson<Record<string, unknown>>([
-        "--json", "--id-format", "both", "new-surface", "--type", "browser",
-        "--pane", paneId, "--workspace", target.workspaceId, "--window", target.windowId,
-        "--focus", String(request.focus),
-      ], target);
-      await this.initializeCreatedSurface(requireUuid(stringField(created, "surface_id"), "surface ID"), TETHER_REVIEW_TAB_TITLE, request.url, target);
+      await this.openChromelessReviewSurface(request, target, paneId);
       return;
     }
 
+    await this.openChromelessReviewSurface(request, target);
+  }
+
+  private async openChromelessReviewSurface(
+    request: OpenViewRequest,
+    target: HostTarget & { windowId: string; workspaceId: string; surfaceId: string },
+    reviewPaneId?: string,
+  ): Promise<void> {
     const params = JSON.stringify({
       window_id: target.windowId,
       workspace_id: target.workspaceId,
       surface_id: target.surfaceId,
-      direction: "right",
-      type: "browser",
-      focus: request.focus,
+      focus: false,
+      show_omnibar: false,
     });
     const created = await this.runJson<Record<string, unknown>>([
-      "--json", "--id-format", "both", "rpc", "pane.create", params,
+      "--json", "--id-format", "both", "rpc", "browser.open_split", params,
     ], target);
-    await this.initializeCreatedSurface(requireUuid(stringField(created, "surface_id"), "surface ID"), TETHER_REVIEW_TAB_TITLE, request.url, target);
+    const surfaceId = requireResponseUuid(created.surface_id, "surface ID");
+    let changedFocus = false;
+    try {
+      if (created.show_omnibar !== false || typeof created.created_split !== "boolean") {
+        throw new CmuxHostError("invalid_response", "cmux did not confirm chromeless browser placement.");
+      }
+      const targetPaneId = requireResponseUuid(created.target_pane_id, "target pane ID");
+      if (reviewPaneId && targetPaneId !== reviewPaneId) {
+        const moved = await this.moveSurface(surfaceId, reviewPaneId, target);
+        this.validatePlacementResult(moved, surfaceId, target, reviewPaneId);
+      } else if (!reviewPaneId && !created.created_split) {
+        const split = await this.splitOffSurface(surfaceId, target);
+        this.validatePlacementResult(split, surfaceId, target);
+      }
+      await this.nameSurface(surfaceId, TETHER_REVIEW_TAB_TITLE, target);
+      if (request.focus) {
+        await this.focusSurface(surfaceId, target);
+        changedFocus = true;
+      }
+      await this.navigateSurface(surfaceId, request.url, target);
+    }
+    catch (cause) {
+      try { await this.closeSurface(surfaceId, target); }
+      catch { /* preserve the placement or initialization failure after best-effort compensation */ }
+      if (changedFocus) {
+        try { await this.focusSurface(target.surfaceId, target); }
+        catch { /* preserve the initialization failure after best-effort focus restoration */ }
+      }
+      throw cause;
+    }
   }
 
   private workspaceHasSurface(workspace: CmuxWorkspace, surfaceId: string): boolean {
@@ -404,18 +442,6 @@ export class CmuxHostAdapter implements HostAdapter {
     ], target);
   }
 
-  private async initializeCreatedSurface(surfaceId: string, title: string, url: string, target: HostTarget & { windowId: string; workspaceId: string }): Promise<void> {
-    try {
-      await this.nameSurface(surfaceId, title, target);
-      await this.navigateSurface(surfaceId, url, target);
-    }
-    catch (cause) {
-      try { await this.closeSurface(surfaceId, target); }
-      catch { /* preserve the initialization failure after best-effort compensation */ }
-      throw cause;
-    }
-  }
-
   private async initializeCreatedDockSurface(surfaceId: string, url: string, target: HostTarget & { windowId: string; workspaceId: string }): Promise<void> {
     try { await this.navigateSurface(surfaceId, url, target); }
     catch (cause) {
@@ -427,6 +453,43 @@ export class CmuxHostAdapter implements HostAdapter {
 
   private navigateSurface(surfaceId: string, url: string, target: HostTarget): Promise<Record<string, unknown>> {
     return this.runJson(["--json", "--id-format", "both", "browser", "--surface", surfaceId, "navigate", url], target);
+  }
+
+  private moveSurface(surfaceId: string, paneId: string, target: HostTarget & { windowId: string; workspaceId: string }): Promise<Record<string, unknown>> {
+    return this.runJson([
+      "--json", "--id-format", "both", "move-surface", "--surface", surfaceId,
+      "--pane", paneId, "--workspace", target.workspaceId, "--window", target.windowId,
+      "--focus", "false",
+    ], target);
+  }
+
+  private splitOffSurface(surfaceId: string, target: HostTarget & { windowId: string; workspaceId: string }): Promise<Record<string, unknown>> {
+    return this.runJson([
+      "--json", "--id-format", "both", "split-off", "--surface", surfaceId, "right",
+      "--workspace", target.workspaceId, "--window", target.windowId, "--focus", "false",
+    ], target);
+  }
+
+  private validatePlacementResult(
+    result: Record<string, unknown>,
+    surfaceId: string,
+    target: HostTarget & { windowId: string; workspaceId: string },
+    expectedPaneId?: string,
+  ): void {
+    const windowId = requireResponseUuid(result.window_id, "placed window ID");
+    const workspaceId = requireResponseUuid(result.workspace_id, "placed workspace ID");
+    const movedSurfaceId = requireResponseUuid(result.surface_id, "placed surface ID");
+    const paneId = requireResponseUuid(result.pane_id, "placed pane ID");
+    if (windowId !== target.windowId || workspaceId !== target.workspaceId || movedSurfaceId !== surfaceId || (expectedPaneId && paneId !== expectedPaneId)) {
+      throw new CmuxHostError("invalid_response", "cmux returned mismatched browser placement handles.");
+    }
+  }
+
+  private focusSurface(surfaceId: string, target: HostTarget & { windowId: string; workspaceId: string }): Promise<Record<string, unknown>> {
+    return this.runJson([
+      "--json", "--id-format", "both", "focus-panel", "--panel", surfaceId,
+      "--workspace", target.workspaceId, "--window", target.windowId,
+    ], target);
   }
 
   private closeSurface(surfaceId: string, target: HostTarget & { windowId: string; workspaceId: string }): Promise<Record<string, unknown>> {
