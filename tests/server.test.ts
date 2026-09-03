@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { JSDOM } from "jsdom";
 import { bodyRevision } from "../src/core/annotation-ledger";
 import { DocumentAccessError, DocumentService } from "../src/documents/document-service";
 import { resolveConfig } from "../src/server/config";
@@ -43,6 +44,10 @@ function sessionFetch(daemon: TetherDaemon, location: string, cookie: string, pa
   });
 }
 
+function recentsUrl(daemon: TetherDaemon, location: string, pathname = ""): string {
+  return new URL(pathname, `${daemon.origin}${location}`).href;
+}
+
 describe("browser launch authorization", () => {
   test("serves and authorizes every Recents context-menu action", async () => {
     const file = await fixture();
@@ -75,13 +80,13 @@ describe("browser launch authorization", () => {
     const exchanged = await fetch(launch.url, { redirect: "manual" });
     const location = exchanged.headers.get("location")!;
     const cookie = exchanged.headers.get("set-cookie")!.split(";", 1)[0];
-    const action = (path: string, value: string) => fetch(`${daemon.origin}${location}api/action`, {
+    const action = (path: string, value: string) => fetch(recentsUrl(daemon, location, "api/action"), {
       method: "POST",
       headers: { cookie, origin: daemon.origin, "content-type": "application/json" },
       body: JSON.stringify({ path, action: value }),
     });
 
-    const page = await (await fetch(`${daemon.origin}${location}`, { headers: { cookie } })).text();
+    const page = await (await fetch(recentsUrl(daemon, location), { headers: { cookie } })).text();
     expect(page).toContain("Reveal in Finder");
     expect(page).toContain("Open in Default App");
     expect(page).toContain("Remove from Queue");
@@ -95,6 +100,46 @@ describe("browser launch authorization", () => {
     expect(trashed).toEqual([file.path]);
     expect(await registry.paths()).toEqual([]);
     expect(synchronized.at(-1)).toEqual([]);
+  });
+
+  test("renders responsive Recents paths, timestamps, and filename filtering", async () => {
+    const file = await fixture();
+    const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, web: () => new Response("web") });
+    daemons.push(daemon);
+    await daemon.ready;
+    const launch = await controlRecentsLaunch(file.config);
+    const exchanged = await fetch(launch.url, { redirect: "manual" });
+    const location = exchanged.headers.get("location")!;
+    const cookie = exchanged.headers.get("set-cookie")!.split(";", 1)[0];
+    const page = await (await fetch(recentsUrl(daemon, location), { headers: { cookie } })).text();
+    const today = new Date();
+    today.setSeconds(0, 0);
+    const older = new Date(2020, 0, 2, 23, 59);
+    const files = [
+      { path: "/Users/alice/Documents/Projects/alpha.md", directory: "/Users/alice/Documents/Projects", name: "alpha.md", createdAt: today.getTime() },
+      { path: "/Users/alice/Documents/beta.md", directory: "/Users/alice/Documents", name: "beta.md", createdAt: older.getTime() },
+    ];
+    const dom = new JSDOM(page, { runScripts: "outside-only", url: recentsUrl(daemon, location) });
+    Object.defineProperty(dom.window, "fetch", { value: async (input: string | URL | Request) => String(input).endsWith("/files") ? Response.json(files) : Response.json({ ok: true }) });
+    Object.defineProperty(dom.window, "setInterval", { value: () => 0 });
+    dom.window.eval(dom.window.document.querySelector("script")!.textContent!);
+    await Bun.sleep(0);
+
+    const input = dom.window.document.querySelector<HTMLInputElement>("#filter")!;
+    expect(input.placeholder).toBe("filter by filename");
+    expect(dom.window.document.querySelector("h1")).toBeNull();
+    expect([...dom.window.document.querySelectorAll(".dir")].map((node) => node.textContent)).toEqual(["~/Documents/Projects", "~/Documents"]);
+    expect([...dom.window.document.querySelectorAll(".dir bdi")].every((node) => node.getAttribute("dir") === "ltr")).toBe(true);
+    expect([...dom.window.document.querySelectorAll(".time")].map((node) => node.textContent)).toEqual([
+      `${String(today.getHours()).padStart(2, "0")}:${String(today.getMinutes()).padStart(2, "0")}`,
+      "1/2",
+    ]);
+    expect(page).toContain("text-overflow:ellipsis;direction:rtl;text-align:left");
+
+    input.value = "BETA";
+    input.dispatchEvent(new dom.window.Event("input"));
+    expect([...dom.window.document.querySelectorAll(".name")].map((node) => node.textContent)).toEqual(["beta.md"]);
+    dom.window.close();
   });
 
   test("awaits host recents synchronization and surfaces its failures", async () => {
@@ -131,16 +176,17 @@ describe("browser launch authorization", () => {
     const location = exchange.headers.get("location")!;
     const cookie = exchange.headers.get("set-cookie")!.split(";", 1)[0];
     expect(location).toStartWith("/r/");
-    expect((await fetch(`${daemon.origin}${location}api/files`, { headers: { cookie: "tether_recents=wrong" } })).status).toBe(401);
-    const files = await (await fetch(`${daemon.origin}${location}api/files`, { headers: { cookie } })).json() as Array<{ path: string }>;
+    expect(new URL(location, daemon.origin).searchParams.get("instance")).toBe(daemon.instanceId);
+    expect((await fetch(recentsUrl(daemon, location, "api/files"), { headers: { cookie: "tether_recents=wrong" } })).status).toBe(401);
+    const files = await (await fetch(recentsUrl(daemon, location, "api/files"), { headers: { cookie } })).json() as Array<{ path: string }>;
     expect(files.map((entry) => entry.path)).toEqual([file.other]);
-    const openedRecent = await fetch(`${daemon.origin}${location}api/open`, {
+    const openedRecent = await fetch(recentsUrl(daemon, location, "api/open"), {
       method: "POST", headers: { cookie, origin: daemon.origin, "content-type": "application/json" }, body: JSON.stringify({ path: file.other }),
     });
     expect(openedRecent.status).toBe(200);
     expect(opened).toHaveLength(1);
     expect((await fetch(opened[0], { redirect: "manual" })).status).toBe(302);
-    const denied = await fetch(`${daemon.origin}${location}api/open`, {
+    const denied = await fetch(recentsUrl(daemon, location, "api/open"), {
       method: "POST", headers: { cookie, origin: daemon.origin, "content-type": "application/json" }, body: JSON.stringify({ path: file.path }),
     });
     expect(denied.status).toBe(403);
@@ -335,7 +381,7 @@ test("Recents sessions survive expired presence leases", async () => {
   now += 20;
   await Bun.sleep(600);
 
-  expect((await fetch(`${daemon.origin}${location}api/files`, { headers: { cookie } })).status).toBe(200);
+  expect((await fetch(recentsUrl(daemon, location, "api/files"), { headers: { cookie } })).status).toBe(200);
 });
 
 test("idle shutdown resolves the daemon closed promise", async () => {

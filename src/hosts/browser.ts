@@ -1,5 +1,5 @@
 import type { HostCapabilities } from "../shared/contracts";
-import type { HostAdapter, HostTarget } from "./host-adapter";
+import type { HostAdapter, OpenViewRequest, OpenViewResult } from "./host-adapter";
 
 export type BrowserCommandRunner = (command: string[], env?: NodeJS.ProcessEnv) => Promise<void>;
 export type BrowserHostOptions = { run?: BrowserCommandRunner; open?: (url: string) => Promise<void>; env?: NodeJS.ProcessEnv };
@@ -46,7 +46,10 @@ export class BrowserHostAdapter implements HostAdapter {
 
   async detect(): Promise<boolean> { return true; }
   capabilities(): HostCapabilities { return { ...capabilities }; }
-  async openView(url: string, _target?: HostTarget): Promise<void> { await this.run(platformOpenCommand(url), this.environment); }
+  async openView(request: OpenViewRequest): Promise<OpenViewResult> {
+    await this.run(platformOpenCommand(request.url), this.environment);
+    return { launchConsumed: true };
+  }
   async openExternal(pathOrUrl: string): Promise<void> { await this.run(platformOpenCommand(pathOrUrl), this.environment); }
   async revealFile(path: string): Promise<void> {
     if (process.platform !== "darwin") throw new Error("Reveal in Finder is available only on macOS.");

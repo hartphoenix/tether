@@ -6,7 +6,8 @@ import { DocumentAccessError } from "../src/documents/document-service";
 import { runCli } from "../src/cli/main";
 import { resolveConfig } from "../src/server/config";
 import { createDaemon, type TetherDaemon } from "../src/server/server";
-import type { HostAdapter } from "../src/hosts/host-adapter";
+import type { HostAdapter, OpenViewRequest } from "../src/hosts/host-adapter";
+import { CmuxHostAdapter, SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT } from "../src/hosts/cmux";
 
 const directories: string[] = [];
 const daemons: TetherDaemon[] = [];
@@ -58,6 +59,172 @@ test("opens the indexed recent file through the normal path-scoped launch", asyn
   const result = await runCli(["recent", "2"], { config, open: async (url) => { opened.push(url); } });
   expect(result.response).toMatchObject({ ok: true, command: "recent", data: { path: await realpath(first), opened: true } });
   expect(opened).toHaveLength(1);
+});
+
+test("captures one host target per launch and propagates view kind and focus", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-cli-host-operation-"));
+  directories.push(directory);
+  const path = join(directory, "example.md");
+  await writeFile(path, "Example\n");
+  const config = resolveConfig({ profile: "host-operation", runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
+  const daemon = createDaemon({ config, startupGraceMs: 600_000, web: () => new Response("web") });
+  daemons.push(daemon);
+  await daemon.ready;
+  const requests: OpenViewRequest[] = [];
+  let captures = 0;
+  const host: HostAdapter = {
+    id: "browser",
+    detect: async () => true,
+    capabilities: () => ({ embeddedBrowser: false, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: true }),
+    launchTarget: () => ({ host: "browser", capture: String(++captures) }),
+    openView: async (request) => { requests.push(request); },
+    openExternal: async () => {},
+  };
+
+  expect((await runCli(["open", path, "--no-focus"], { config, host })).response).toMatchObject({ ok: true, command: "open" });
+  expect((await runCli(["recents", "--focus"], { config, host })).response).toMatchObject({ ok: true, command: "recents" });
+  expect(captures).toBe(2);
+  expect(requests).toEqual([
+    { url: expect.stringContaining("/launch?ticket="), kind: "document", focus: false, allowFocusedFallback: false, target: { host: "browser", capture: "1" } },
+    { url: expect.stringContaining("/recents/launch?ticket="), kind: "recents", focus: true, allowFocusedFallback: true, target: { host: "browser", capture: "2" } },
+  ]);
+
+  const conflicting = await runCli(["open", path, "--focus", "--no-focus"], { config, host });
+  expect(conflicting).toMatchObject({ exitCode: 2, response: { error: { code: "usage" } } });
+  expect(captures).toBe(2);
+
+  let unusedRecentsUrl = "";
+  const unused = await runCli(["recents"], {
+    config,
+    host: { ...host, openView: async (request) => { unusedRecentsUrl = request.url; return { launchConsumed: false }; } },
+  });
+  expect(unused).toMatchObject({ exitCode: 0, response: { data: { opened: true } } });
+  expect((await fetch(unusedRecentsUrl, { redirect: "manual" })).status).toBe(401);
+
+  const recentsFailure = await runCli(["recents", "--no-focus"], {
+    config,
+    host: { ...host, openView: async () => { throw Object.assign(new Error("Dock disabled"), { code: "dock_unavailable" }); } },
+  });
+  expect(recentsFailure).toMatchObject({ exitCode: 1, response: { command: "recents", error: { code: "dock_unavailable" } } });
+});
+
+test("reports cmux detection, direct placement, and callback readiness independently", async () => {
+  const windowId = "11111111-1111-4111-8111-111111111111";
+  const workspaceId = "22222222-2222-4222-8222-222222222222";
+  const surfaceId = "33333333-3333-4333-8333-333333333333";
+  const cmuxHost = new CmuxHostAdapter({
+    cmuxPath: "cmux",
+    env: { CMUX_WORKSPACE_ID: workspaceId, CMUX_SURFACE_ID: surfaceId, CMUX_SOCKET_PATH: "/tmp/cmux.sock" },
+    externalHost: { openExternal: async () => {}, revealFile: async () => {} },
+    run: async (command) => {
+      if (command.includes("--version")) return { exitCode: 0, stdout: `cmux 0.64.22 (${SUPPORTED_CMUX_BUILD}) [${SUPPORTED_CMUX_COMMIT}]`, stderr: "" };
+      if (command.includes("identify")) return { exitCode: 0, stdout: JSON.stringify({ caller: { window_id: windowId, workspace_id: workspaceId, surface_id: surfaceId } }), stderr: "" };
+      return { exitCode: 0, stdout: "PONG", stderr: "" };
+    },
+  });
+  const result = await runCli(["cmux", "status"], {
+    cmuxHost,
+    readCmuxBridgeStatus: async () => ({ running: true, callbackPlacementReady: true }),
+  });
+  expect(result).toEqual({
+    exitCode: 0,
+    response: {
+      protocol: 1,
+      ok: true,
+      command: "cmux.status",
+      data: {
+        detected: true,
+        supported: true,
+        version: "0.64.22",
+        build: SUPPORTED_CMUX_BUILD,
+        commit: SUPPORTED_CMUX_COMMIT,
+        directPlacementReady: true,
+        callbackPlacementReady: true,
+        directPlacement: { ready: true },
+        callbackPlacement: { ready: true },
+      },
+    },
+  });
+});
+
+test("keeps direct and callback placement issues separate in cmux status", async () => {
+  const windowId = "11111111-1111-4111-8111-111111111111";
+  const workspaceId = "22222222-2222-4222-8222-222222222222";
+  const surfaceId = "33333333-3333-4333-8333-333333333333";
+  const cmuxHost = new CmuxHostAdapter({
+    cmuxPath: "cmux",
+    env: { CMUX_WORKSPACE_ID: workspaceId, CMUX_SURFACE_ID: surfaceId, CMUX_SOCKET_PATH: "/tmp/cmux.sock" },
+    externalHost: { openExternal: async () => {}, revealFile: async () => {} },
+    run: async (command) => {
+      if (command.includes("--version")) return { exitCode: 0, stdout: `cmux 0.64.22 (${SUPPORTED_CMUX_BUILD}) [${SUPPORTED_CMUX_COMMIT}]`, stderr: "" };
+      if (command.includes("identify")) return { exitCode: 0, stdout: JSON.stringify({ caller: { window_id: windowId, workspace_id: workspaceId, surface_id: surfaceId } }), stderr: "" };
+      return { exitCode: 1, stdout: "", stderr: "Unauthorized" };
+    },
+  });
+  const result = await runCli(["cmux", "status"], {
+    cmuxHost,
+    readCmuxBridgeStatus: async () => ({
+      running: false,
+      callbackPlacementReady: false,
+      issue: { code: "bridge_relaunch_required", message: "Relaunch from cmux." },
+    }),
+  });
+  expect(result.response).toMatchObject({
+    ok: true,
+    data: {
+      directPlacement: { ready: false, issue: { code: "socket_unauthorized" } },
+      callbackPlacement: { ready: false, issue: { code: "bridge_relaunch_required" } },
+    },
+  });
+});
+
+test("does not report a matching cmux semver with the wrong build as supported", async () => {
+  const cmuxHost = new CmuxHostAdapter({
+    cmuxPath: "cmux",
+    env: {
+      CMUX_WORKSPACE_ID: "22222222-2222-4222-8222-222222222222",
+      CMUX_SURFACE_ID: "33333333-3333-4333-8333-333333333333",
+      CMUX_SOCKET_PATH: "/tmp/cmux.sock",
+    },
+    externalHost: { openExternal: async () => {}, revealFile: async () => {} },
+    run: async () => ({ exitCode: 0, stdout: `cmux 0.64.22 (${SUPPORTED_CMUX_BUILD + 1}) [${SUPPORTED_CMUX_COMMIT}]`, stderr: "" }),
+  });
+  const result = await runCli(["cmux", "status"], {
+    cmuxHost,
+    readCmuxBridgeStatus: async () => ({ running: true, callbackPlacementReady: true }),
+  });
+  expect(result.response).toMatchObject({
+    ok: true,
+    data: {
+      detected: true,
+      supported: false,
+      version: "0.64.22",
+      build: SUPPORTED_CMUX_BUILD + 1,
+      commit: SUPPORTED_CMUX_COMMIT,
+      directPlacement: { ready: false, issue: { code: "unsupported_version" } },
+      callbackPlacement: { ready: true },
+    },
+  });
+});
+
+test("rejects unknown or duplicate launch flags and non-exact cmux status commands", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-cli-flags-"));
+  directories.push(directory);
+  const path = join(directory, "example.md");
+  await writeFile(path, "Example\n");
+  const config = resolveConfig({ profile: "flags", runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
+  const invalid = [
+    ["open", path, "--unknown"],
+    ["open", path, "--focus", "--focus"],
+    ["recent", "1", "--no-focus", "--no-focus"],
+    ["recents", "--unknown"],
+    ["recents", "--focus", "--focus"],
+    ["recents", "add", path, "extra"],
+    ["cmux", "status", "extra"],
+  ];
+  for (const argv of invalid) {
+    expect(await runCli(argv, { config })).toMatchObject({ exitCode: 2, response: { error: { code: "usage" } } });
+  }
 });
 
 test("adds a recent file through the application transaction and reports host synchronization", async () => {

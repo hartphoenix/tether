@@ -1,7 +1,7 @@
 # Tether cmux adapter design brief
 
-**Status:** proposed Phase 4 design\
-**Research date:** 2026-09-01\
+**Status:** implemented and validated\
+**Research date:** 2026-09-01; implementation validated 2026-09-03\
 **Local reference build:** cmux 0.64.22 (102), commit `ddd4a01bc`
 
 ## Executive recommendation
@@ -13,7 +13,7 @@ Build the cmux adapter around two native cmux surfaces:
 
 Do not build a second Recents UI, replace Vault, depend on Canvas, or override cmux's built-in Markdown viewer in the first pass. Tether's existing Recents page and editor already fit cmux's browser surfaces.
 
-The main technical constraint is cmux socket authorization. The detached Tether daemon is no longer a live descendant of cmux, so cmux's default `cmuxOnly` ancestry check will reject daemon-initiated operations such as wikilink opens. The preferred solution is a narrow cmux-hosted bridge, analogous to Tether's Wave bridge. It remains inside cmux's process tree and exposes only Tether view-placement operations to the daemon. cmux's broader `automation` mode remains a later opt-in named **Direct cmux control (broad local access)**, not the default.
+The main technical constraint is cmux socket authorization. Exact-build inspection and live testing established that cmux 0.64.22 injects a signed `CMUX_SOCKET_CAPABILITY` into terminal processes specifically so inherited descendants remain authorized after detachment and reparenting. Tether therefore launches a narrow detached bridge that retains this capability only in process memory and exposes only authenticated Tether view-placement operations to the daemon. The bridge, its health record, and every callback are bound to the exact cmux build, socket fingerprint, and daemon instance. cmux's broader `automation` mode remains a later opt-in named **Direct cmux control (broad local access)**, not the default.
 
 ## Desired experience
 
@@ -95,13 +95,13 @@ The table distinguishes behavior verified from the installed 0.64.22 binary or i
 | Create browser split        | installed CLI help                                                    | `new-pane --type browser --direction right --url ...`                                            | candidate first-document placement; verify exact surface anchoring                      |
 | Add browser tab             | installed CLI help                                                    | `new-surface --type browser --pane ... --url ...`                                                | reuse a live-discovered workspace review pane                                            |
 | Target workspace            | installed CLI help                                                    | creation commands accept `--workspace`; caller workspace is the default                          | always pass the captured workspace explicitly                                           |
-| Target source surface       | installed CLI help                                                    | `new-pane` exposes no command-local `--surface`; `new-split` does                                | experimental gate before claiming “beside the invoking terminal”                        |
+| Target source surface       | exact-commit RPC source and live verification                         | `pane.create` accepts exact window, workspace, and source-surface UUIDs                          | anchor first-document placement to the captured invoking surface                        |
 | Control focus               | installed CLI help                                                    | creation commands accept `--focus true|false`                                                    | carry focus on each open request                                                        |
 | Right-sidebar browser       | installed CLI help and exact-commit Dock docs                         | `--placement dock` supports browser panes and surfaces                                           | lazily create, retain, reveal, and select one Recents tab                                |
-| Return created handles      | exact-commit Dock docs; live verification pending                     | creation responses document pane/surface handles; Dock uses `dock_pane_id` and `dock_surface_id` | use operation results and live inspection; persist no layout registry                    |
+| Return created handles      | exact-commit Dock docs and live verification                          | creation responses return pane/surface handles; Dock uses `dock_pane_id` and `dock_surface_id`   | use operation results and live inspection; persist no layout registry                    |
 | Session restore             | exact-commit Dock and session-restore docs                            | workspace and Dock browser state are restored                                                    | Phase 4 documents relaunch; durable in-place renewal belongs to Phase 4.5                |
 | Socket API                  | installed CLI help and official API docs                              | CLI and newline-delimited JSON socket APIs are available                                         | use CLI argument arrays first; keep socket protocol behind adapter                      |
-| Socket security             | official docs and issue-confirmed behavior; live verification pending | default `cmuxOnly` uses live process ancestry                                                    | retain it through a cmux-hosted bridge                                                  |
+| Socket security             | exact-commit source and live detached-child verification              | a signed terminal capability remains valid after detachment and reparenting                      | retain it only in a narrow, exact-instance-bound bridge process                          |
 | Same-user automation        | schema and issue-confirmed behavior; live verification pending        | `automation` removes ancestry checks and materially broadens same-user control                   | later **Direct cmux control (broad local access)** opt-in only                            |
 | Command Palette actions     | exact-commit schema and issue-confirmed behavior                      | command actions run through terminal surfaces                                                    | defer until they can select the retained Dock tab without transient terminal UI         |
 | Custom sidebars             | exact-commit docs                                                     | installed interpreted sidebars bind only to cmux-owned data and actions                          | cannot read live Tether Recents; do not use for Phase 4                                 |
@@ -184,7 +184,7 @@ Add `src/hosts/cmux.ts` with:
 * cmux executable resolution from `PATH` and the application bundle;
 * an allowlisted command environment;
 * structured JSON parsing;
-* `launchTarget()` containing only host, version, and immutable window/workspace/surface identifiers;
+* `launchTarget()` containing only host, exact build identity, and immutable window/workspace/surface identifiers;
 * `openView()` that uses or creates the workspace review pane;
 * `openRecents()` or a placement hint that uses the Dock;
 * system `open` and Finder reveal delegation through the existing browser adapter;
@@ -206,20 +206,21 @@ The existing server already carries `session.target` through document and Recent
 
 ### Narrow cmux bridge
 
-Run a small bridge inside a cmux-managed terminal surface so it remains within cmux's accepted process ancestry. A practical first experiment is a background tab in the Dock pane that also holds Recents; the Recents browser surface stays selected, so the bridge terminal does not occupy its own visible split.
+Launch a detached, credential-isolated bridge from the invoking cmux terminal. cmux 0.64.22's signed socket capability is designed to survive inheritance, detachment, and reparenting, so no hidden terminal or Dock surface is required. The bridge keeps the capability only in its allowlisted process environment; discovery records store only a SHA-256 fingerprint of the normalized socket path.
 
-The bridge should:
+The bridge:
 
-* connect only to the cmux instance and workspace context supplied by its host surface;
-* expose an authenticated loopback API using Tether's existing control credential;
-* accept only `open document`, `open Recents`, pane validation, and bridge health/stop operations;
-* reject non-loopback Tether URLs and arbitrary cmux commands;
-* retain no document content or filesystem authority;
-* serialize concurrent placement within the bridge process without persisting layout state;
-* return an explicit relaunch-required error when its cmux surface is gone.
+* independently requires exact cmux version, build, and commit before spawn;
+* binds its record and health contract to the cmux socket fingerprint and current Tether daemon instance;
+* rechecks the exact cmux build at startup, on health requests, and before every callback placement;
+* exposes an authenticated loopback API using Tether's existing control credential;
+* accepts only validated Tether document and Recents placement requests plus health and stop;
+* rejects non-loopback Tether URLs, stale targets, mismatched build identity, and arbitrary cmux commands;
+* retains no document content or filesystem authority;
+* serializes concurrent placement without persisting layout state;
+* exits when the daemon identity changes or it is explicitly stopped.
 
-Initial validation must establish that cmux can create and keep this bridge surface without opening Dock or stealing focus during a direct document open. If not, stop and reassess the authorization design; do not silently enable broader socket access.
-
+A stale, mismatched, or unavailable bridge returns an explicit structured error. Tether never falls back to the system browser for a requested cmux placement.
 ### Live review-pane discovery
 
 The first build keeps no layout registry. Before opening a document, inspect live cmux state for a Tether review pane in the target workspace. Reuse it when it can be identified unambiguously; otherwise create a new right split anchored to the captured source surface. Serialize placement per workspace within the running bridge so simultaneous opens do not race.
@@ -251,24 +252,21 @@ If it does not, use an exact surface-addressed RPC or the documented `new-split 
 
 ## Socket authorization decision
 
-### Observed problem
+### Verified behavior
 
-Tether deliberately starts a detached daemon with a sanitized environment. cmux's default `cmuxOnly` mode checks the connecting process's live parent chain. After detachment, the daemon is reparented and no longer qualifies, even if it retains cmux environment variables.
+The original ancestry-only assumption was incomplete. In the exact supported build, cmux signs a capability into each terminal environment; an inherited child retains authorization after becoming a detached process. A process with only the socket path and no valid capability remains unauthorized.
 
-Initial CLI placement can therefore work while later wikilink and Recents actions fail. This must be tested as a separate lifecycle case.
+Tether uses this narrower default instead of changing cmux's socket mode. The capability is never written to a discovery record, launch target, URL, log, configuration file, test fixture, or document.
 
-### Recommended setup
+### Implemented setup
 
-Keep cmux's default `cmuxOnly` mode and launch the narrow bridge from a cmux-managed surface. This preserves cmux's process-origin boundary while letting Tether's detached daemon request only the host actions exposed by the bridge.
+`mdreview open` and `mdreview recents` start or converge on one profile-scoped bridge for the current daemon and cmux socket. `mdreview cmux status` distinguishes:
 
-Offer `mdreview cmux status` to distinguish three states:
+1. **cmux detected** — terminal context and the exact supported binary are present;
+2. **direct placement ready** — the caller can reach the captured cmux instance;
+3. **callback placement ready** — the exact-instance bridge is healthy.
 
-1. **cmux detected** — environment and supported binary are present;
-2. **direct placement ready** — the caller process can reach cmux;
-3. **callback placement ready** — a healthy narrow bridge is available for Recents and wikilink actions.
-
-A failed socket probe inside detected cmux must return `socket_unavailable` or `socket_unauthorized`. It must not silently fall through to the system browser.
-
+A failed direct probe, bridge bootstrap, exact-build check, or callback returns its own stable issue. Requested cmux placement never silently falls through to the system browser.
 ### Direct cmux control (broad local access)
 
 After the isolated bridge path is tested, a later build may offer documented opt-in to `automation.socketControlMode: "automation"` under the user-facing name **Direct cmux control (broad local access)**. This allows external same-user processes to exercise cmux's broad control API, including terminal input and screen access. It is materially wider than Tether's document-scoped API and is not part of the first Phase 4 build.
@@ -312,7 +310,7 @@ If Tether later automates this setting, expose an explicit flag such as `--allow
 
 ### Slice 4 — authorization and lifecycle
 
-* Add `cmux status` and the narrow cmux-hosted bridge.
+* Add `cmux status` and the narrow signed-capability cmux bridge.
 * Verify direct placement, callback placement, and bridge-loss errors independently.
 * Return an explicit relaunch-required error rather than opening the system browser.
 * Record **Direct cmux control (broad local access)** as a deferred opt-in; do not mutate cmux socket configuration in the first build.
@@ -333,7 +331,7 @@ Automated tests should cover command construction, target propagation, live pane
 * closed-pane recovery;
 * explicit foreground fallback when the original surface disappears, with background opens failing instead;
 * cmux sleep/relaunch behavior, with stale Tether sessions requiring an explicit fresh `mdreview` launch;
-* default `cmuxOnly` bridge success and bridge-loss recovery;
+* signed-capability bridge success, exact-instance gating, and bridge-loss recovery;
 * no focus bounce or transient launcher pane.
 
 Browser DOM automation is not required for the adapter gate.
@@ -347,11 +345,13 @@ Phase 4 is complete when:
 * the first `mdreview recents` creates one product Recents tab in the right-sidebar Dock and later calls reveal and select it;
 * Recents and wikilinks open documents without replacing their source views;
 * multiple workspaces retain independent placement;
-* daemon-originated opens work through a narrow cmux-hosted bridge under the default socket mode;
+* daemon-originated opens work through the narrow signed-capability bridge without broadening cmux's socket mode;
 * stale panes recover clearly, while durable stale-URL recovery is assigned to the later cross-host reliability phase;
 * no cmux credential enters Tether launch targets, logs, Markdown, or browser content;
 * Wave and system-browser behavior remain unchanged;
 * unsupported file-navigator and widget parity remains explicit.
+
+Implementation checkpoint (2026-09-03): the exact cmux 0.64.22 build gate, immutable launch targets, direct placement, live review-pane reuse, focused fallback, Dock Recents, signed-capability callback bridge, structured status, stale-session recovery, and failure compensation are implemented. Live validation confirmed no-focus document placement, direct and callback readiness, first Dock creation, native Recents title discovery, and repeated reuse of the identical Dock surface and session. Automated unit, HTTP, CLI, lifecycle, bridge-process, type, and web-build checks pass. Phase 4 is complete; durable cross-host in-place renewal remains Phase 4.5.
 
 ## Deferred opportunities
 

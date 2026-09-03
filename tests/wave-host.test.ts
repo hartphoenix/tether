@@ -29,7 +29,7 @@ test("detects Wave 0.14.5 and creates a hidden-navigation web block", async () =
     revealFile: true,
   });
   expect(adapter.launchTarget()).toEqual({ host: "wave", version: SUPPORTED_WAVE_VERSION, workspaceId: "workspace-one", tabId: "tab-one" });
-  await adapter.openView("http://127.0.0.1:8420/launch?ticket=one", { workspaceId: "workspace-two", tabId: "tab-two" });
+  expect(await adapter.openView({ url: "http://127.0.0.1:8420/launch?ticket=one", kind: "document", focus: true, target: { workspaceId: "workspace-two", tabId: "tab-two" } })).toEqual({ launchConsumed: true });
   expect(calls.at(-1)?.command).toEqual([
     "wsh", "createblock", "web", "url=http://127.0.0.1:8420/launch?ticket=one", "web:hidenav=true",
   ]);
@@ -49,7 +49,7 @@ test("uses the documented web-open fallback outside the verified Wave version", 
   });
   expect(await adapter.detect()).toBe(true);
   expect(adapter.capabilities().hiddenNavigation).toBe(false);
-  await adapter.openView("http://127.0.0.1:8420/");
+  await adapter.openView({ url: "http://127.0.0.1:8420/", kind: "document", focus: true });
   expect(commands.at(-1)).toEqual(["wsh", "web", "open", "http://127.0.0.1:8420/"]);
 });
 
@@ -68,7 +68,7 @@ test("resolves a cmd widget's containing tab from its JWT-bound block", async ()
   });
   expect(await adapter.detect()).toBe(true);
   expect(adapter.launchTarget()).toMatchObject({ blockId: "launcher-block" });
-  await adapter.openView("http://127.0.0.1:8420/");
+  await adapter.openView({ url: "http://127.0.0.1:8420/", kind: "document", focus: true });
   expect(calls.at(-2)?.command).toEqual(["wsh", "blocks", "list", "--json"]);
   expect(calls.at(-1)?.env).toMatchObject({ WAVETERM_TABID: "resolved-tab", WAVETERM_WORKSPACEID: "resolved-workspace" });
 });
@@ -82,7 +82,7 @@ test("does not claim Wave outside Wave or place a view without its injected JWT"
     run: async () => ({ exitCode: 0, stdout: "wsh v0.14.5", stderr: "" }),
   });
   expect(await missingCredential.detect()).toBe(true);
-  expect(missingCredential.openView("http://127.0.0.1:8420/")).rejects.toThrow("WAVETERM_JWT");
+  expect(missingCredential.openView({ url: "http://127.0.0.1:8420/", kind: "document", focus: true })).rejects.toThrow("WAVETERM_JWT");
 });
 
 test("a Wave widget removes its launcher block immediately after placing the web view", async () => {
@@ -96,7 +96,7 @@ test("a Wave widget removes its launcher block immediately after placing the web
     },
   });
   expect(await adapter.detect()).toBe(true);
-  await adapter.openView("http://127.0.0.1:8420/", adapter.launchTarget());
+  await adapter.openView({ url: "http://127.0.0.1:8420/", kind: "document", focus: true, target: adapter.launchTarget() });
   expect(calls.slice(-2).map(({ command }) => command)).toEqual([
     ["wsh", "createblock", "web", "url=http://127.0.0.1:8420/", "web:hidenav=true"],
     ["wsh", "deleteblock", "-b", "launcher"],

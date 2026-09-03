@@ -9,7 +9,7 @@ import {
 } from "../shared/contracts";
 import type { HostAdapter, HostTarget } from "../hosts/host-adapter";
 import { createBrowserHost } from "../hosts/browser";
-import { HostGateway } from "../hosts/wave-bridge";
+import { HostGateway } from "../hosts/host-gateway";
 import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type DocumentSession } from "../documents/document-service";
 import { RecentsRegistry } from "../recents/registry";
 import { recordRecent, removeRecent } from "../recents/service";
@@ -67,6 +67,13 @@ function randomToken(): string {
 
 function json(data: unknown, init: ResponseInit = {}): Response {
   return Response.json(data, { ...init, headers: { "content-type": "application/json; charset=utf-8", ...init.headers } });
+}
+
+function codedError(cause: unknown, fallbackCode: string, fallbackStatus: number): Response {
+  const value = cause && typeof cause === "object" ? cause as { code?: unknown; status?: unknown; details?: unknown } : undefined;
+  const code = typeof value?.code === "string" ? value.code : fallbackCode;
+  const status = typeof value?.status === "number" ? value.status : fallbackStatus;
+  return error(code, cause instanceof Error ? cause.message : String(cause), status, value?.details);
 }
 
 function error(code: string, message: string, status: number, details?: unknown): Response {
@@ -191,11 +198,17 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     return { ticket, expiresAt, url: `${daemon.origin}/launch?ticket=${encodeURIComponent(ticket)}` };
   }
 
-  function discardTicket(ticket: string): void {
+  function discardTicket(ticket: string): boolean {
     const pending = tickets.get(ticket);
-    if (!pending) return;
+    if (!pending) return false;
     tickets.delete(ticket);
     service.close(pending.grant);
+    return true;
+  }
+
+  function discardLaunchTicket(ticket: string): boolean {
+    if (discardTicket(ticket)) return true;
+    return recentsTickets.delete(ticket);
   }
 
   function mintRecentsTicket(target?: HostTarget): Ticket {
@@ -206,13 +219,15 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   }
 
   const recentsHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Tether Recents</title><style>
-  :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#111;color:#eee;font:15px system-ui;padding:24px}h1{font-size:18px;margin:0 0 18px}.file{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;width:100%;text-align:left;background:#1d1d1d;color:inherit;border:1px solid #333;border-radius:8px;padding:12px;margin:8px 0;cursor:pointer}.name{font-weight:650}.dir{color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.time{color:#999;align-self:center}button:hover{border-color:#777}.empty,#status{color:#999}#status{min-height:20px;margin-top:12px}#menu{position:fixed;z-index:10;display:none;min-width:190px;padding:5px;border:1px solid #444;border-radius:8px;background:#282d33;box-shadow:0 10px 28px #0008}#menu.open{display:block}#menu button{display:block;width:100%;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:inherit;text-align:left;cursor:pointer}#menu button:hover{background:#3a414a}#menu button[data-action="trash"]{color:#ff9898}</style></head><body><h1>Recent Markdown</h1><main id="list"></main><div id="status"></div><div id="menu" role="menu"><button data-action="reveal" role="menuitem">Reveal in Finder</button><button data-action="default" role="menuitem">Open in Default App</button><button data-action="remove" role="menuitem">Remove from Queue</button><button data-action="trash" role="menuitem">Move to Trash</button></div><script type="module">
-  const api='./api';const list=document.querySelector('#list');const status=document.querySelector('#status');const menu=document.querySelector('#menu');let selectedPath=null;
-  function closeMenu(){menu.classList.remove('open');selectedPath=null}function openMenu(event,path){event.preventDefault();selectedPath=path;menu.classList.add('open');const bounds=menu.getBoundingClientRect();menu.style.left=Math.max(4,Math.min(event.clientX,innerWidth-bounds.width-4))+'px';menu.style.top=Math.max(4,Math.min(event.clientY,innerHeight-bounds.height-4))+'px'}
-  async function post(endpoint,body){const response=await fetch(api+'/'+endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!response.ok)throw new Error((await response.json()).error?.message||'Action failed');return response.json()}
-  async function load(){const r=await fetch(api+'/files');if(!r.ok){list.textContent='Session expired.';return}const files=await r.json();list.innerHTML=files.length?'':'<p class="empty">No recent Markdown files.</p>';for(const file of files){const b=document.createElement('button');b.className='file';b.innerHTML='<span><span class="name"></span><br><span class="dir"></span></span><span class="time"></span>';b.querySelector('.name').textContent=file.name;b.querySelector('.dir').textContent=file.directory;b.querySelector('.time').textContent=new Date(file.createdAt).toLocaleString();b.onclick=async()=>{b.disabled=true;status.textContent='Opening…';try{await post('open',{path:file.path});status.textContent='Opened.'}catch(error){status.textContent=error.message}finally{b.disabled=false}};b.addEventListener('contextmenu',(event)=>openMenu(event,file.path));list.append(b)}}
-  menu.addEventListener('click',async(event)=>{const button=event.target.closest('button[data-action]');if(!button||!selectedPath)return;const action=button.dataset.action;const path=selectedPath;closeMenu();if(action==='trash'&&!confirm('Move this file to the Trash?'))return;status.textContent='Working…';try{await post('action',{path,action});status.textContent='';if(action==='remove'||action==='trash')await load()}catch(error){status.textContent=error.message}});
-  document.addEventListener('click',(event)=>{if(!menu.contains(event.target))closeMenu()});document.addEventListener('keydown',(event)=>{if(event.key==='Escape')closeMenu()});addEventListener('scroll',closeMenu,true);setInterval(()=>fetch(api+'/lease',{method:'POST'}),30000);fetch(api+'/lease',{method:'POST'});load();
+  :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#111;color:#eee;font:15px system-ui;padding:24px}#filter{width:100%;margin:0 0 12px;padding:9px 11px;border:1px solid #444;border-radius:7px;background:#1d1d1d;color:inherit;font:inherit;outline:none}#filter:focus{border-color:#888}.file{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;width:100%;text-align:left;background:#1d1d1d;color:inherit;border:1px solid #333;border-radius:8px;padding:12px;margin:8px 0;cursor:pointer}.file-main{min-width:0}.name{font-weight:650}.dir{display:block;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}.time{color:#999;align-self:start;justify-self:end;text-align:right;white-space:nowrap}button:hover{border-color:#777}.empty,#status{color:#999}#status{min-height:20px;margin-top:12px}#menu{position:fixed;z-index:10;display:none;min-width:190px;padding:5px;border:1px solid #444;border-radius:8px;background:#282d33;box-shadow:0 10px 28px #0008}#menu.open{display:block}#menu button{display:block;width:100%;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:inherit;text-align:left;cursor:pointer}#menu button:hover{background:#3a414a}#menu button[data-action="trash"]{color:#ff9898}@media(max-width:420px){body{padding:14px}.file{padding:10px}.time{font-size:12px}}</style></head><body><input id="filter" type="search" placeholder="filter by filename" aria-label="Filter by filename" autocomplete="off"><main id="list"></main><div id="status"></div><div id="menu" role="menu"><button data-action="reveal" role="menuitem">Reveal in Finder</button><button data-action="default" role="menuitem">Open in Default App</button><button data-action="remove" role="menuitem">Remove from Queue</button><button data-action="trash" role="menuitem">Move to Trash</button></div><script type="module">
+  const api='./api';const list=document.querySelector('#list');const status=document.querySelector('#status');const menu=document.querySelector('#menu');const filter=document.querySelector('#filter');let files=[];let selectedPath=null;
+  const closeMenu=()=>{menu.classList.remove('open');selectedPath=null};const openMenu=(event,path)=>{event.preventDefault();selectedPath=path;menu.classList.add('open');const bounds=menu.getBoundingClientRect();menu.style.left=Math.max(4,Math.min(event.clientX,innerWidth-bounds.width-4))+'px';menu.style.top=Math.max(4,Math.min(event.clientY,innerHeight-bounds.height-4))+'px'};
+  const compactDirectory=path=>path.replace(/^\\/Users\\/[^/]+(?=\\/|$)/,'~');const compactTime=value=>{const date=new Date(value);const today=new Date();if(date.getFullYear()===today.getFullYear()&&date.getMonth()===today.getMonth()&&date.getDate()===today.getDate())return String(date.getHours()).padStart(2,'0')+':'+String(date.getMinutes()).padStart(2,'0');return (date.getMonth()+1)+'/'+date.getDate()};
+  const post=async(endpoint,body)=>{const response=await fetch(api+'/'+endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!response.ok)throw new Error((await response.json()).error?.message||'Action failed');return response.json()};
+  const render=()=>{const query=filter.value.trim().toLocaleLowerCase();const visible=files.filter(file=>file.name.toLocaleLowerCase().includes(query));list.innerHTML=visible.length?'':'<p class="empty">'+(files.length?'No matching files.':'No recent Markdown files.')+'</p>';for(const file of visible){const b=document.createElement('button');b.className='file';b.innerHTML='<span class="file-main"><span class="name"></span><br><span class="dir"></span></span><span class="time"></span>';b.querySelector('.name').textContent=file.name;const directory=compactDirectory(file.directory);const dir=b.querySelector('.dir');const dirValue=document.createElement('bdi');dirValue.dir='ltr';dirValue.textContent=directory;dir.append(dirValue);dir.title=directory;b.querySelector('.time').textContent=compactTime(file.createdAt);b.onclick=async()=>{b.disabled=true;status.textContent='Opening…';try{await post('open',{path:file.path});status.textContent='Opened.'}catch(error){status.textContent=error.message}finally{b.disabled=false}};b.addEventListener('contextmenu',(event)=>openMenu(event,file.path));list.append(b)}};
+  const refreshFiles=async()=>{const r=await fetch(api+'/files');if(!r.ok){list.textContent='Session expired.';return}files=await r.json();render()};
+  menu.addEventListener('click',async(event)=>{const button=event.target.closest('button[data-action]');if(!button||!selectedPath)return;const action=button.dataset.action;const path=selectedPath;closeMenu();if(action==='trash'&&!confirm('Move this file to the Trash?'))return;status.textContent='Working…';try{await post('action',{path,action});status.textContent='';if(action==='remove'||action==='trash')await refreshFiles()}catch(error){status.textContent=error.message}});
+  filter.addEventListener('input',render);document.addEventListener('click',(event)=>{if(!menu.contains(event.target))closeMenu()});document.addEventListener('keydown',(event)=>{if(event.key==='Escape')closeMenu()});addEventListener('scroll',closeMenu,true);setInterval(()=>fetch(api+'/lease',{method:'POST'}),30000);fetch(api+'/lease',{method:'POST'});refreshFiles();
   </script></body></html>`;
 
   function sessionFrom(request: Request, pathname: string): Session | Response {
@@ -335,7 +350,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         if (typeof body.target !== "string" || !body.target.trim()) throw new Error("A wikilink target is required.");
         const grant = await resolveTarget(session.grant.path, body.target, service);
         const ticket = mintTicket(grant, session.target);
-        try { await hostAdapter.openView(ticket.url, session.target); }
+        try { await hostAdapter.openView({ url: ticket.url, kind: "document", focus: true, allowFocusedFallback: true, target: session.target }); }
         catch (cause) { discardTicket(ticket.ticket); throw cause; }
         return json({ path: grant.path, resolvedPath: grant.realPath, opened: true });
       }
@@ -352,6 +367,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       return error("not_found", "API endpoint not found.", 404);
     } catch (cause) {
       const status = cause instanceof DocumentConflictError ? 409 : cause instanceof DocumentReadOnlyError ? 422 : 400;
+      if (cause && typeof cause === "object" && typeof (cause as { code?: unknown }).code === "string") return codedError(cause, "invalid_request", status);
       return error(status === 409 ? "conflict" : status === 422 ? "ledger_invalid" : "invalid_request", (cause as Error).message || "Request failed.", status);
     }
   }
@@ -405,7 +421,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       recentsSessions.set(id, session);
       const root = `/r/${encodeURIComponent(id)}/`;
       return new Response(null, { status: 302, headers: {
-        location: root,
+        location: `${root}?instance=${encodeURIComponent(daemon.instanceId)}`,
         "set-cookie": `tether_recents=${session.cookie}; Path=${root}; HttpOnly; SameSite=Strict`,
         "cache-control": "no-store", "referrer-policy": "no-referrer",
       } });
@@ -429,10 +445,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const grant = await service.open(body.path);
           if (!allowed.includes(grant.realPath)) { service.close(grant); return error("document_unauthorized", "The path is not in Tether Recents.", 403); }
           const launch = mintTicket(grant, session.target);
-          try { await hostAdapter.openView(launch.url, session.target); }
+          try { await hostAdapter.openView({ url: launch.url, kind: "document", focus: true, allowFocusedFallback: true, target: session.target }); }
           catch (cause) { discardTicket(launch.ticket); throw cause; }
           return json({ opened: true, path: grant.path });
-        } catch (cause) { return error("open_failed", cause instanceof Error ? cause.message : String(cause), 400); }
+        } catch (cause) { return codedError(cause, "open_failed", 400); }
       }
       if (request.method === "POST" && suffix === "/api/action") {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
@@ -487,8 +503,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         if (pathname === "/control/cancel" && request.method === "POST") {
           const body = await requestJson(request);
           if (typeof body.ticket !== "string" || !body.ticket) return error("invalid_request", "A launch ticket is required.", 400);
-          discardTicket(body.ticket);
-          return json({ cancelled: true });
+          return json({ cancelled: discardLaunchTicket(body.ticket) });
         }
         if (request.method === "POST" && (pathname.startsWith("/control/document/") || pathname.startsWith("/control/review/"))) {
           const body = await requestJson(request);

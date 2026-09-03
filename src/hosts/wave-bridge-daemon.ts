@@ -1,7 +1,7 @@
 import { createWaveHost } from "./wave";
 import { removeWaveBridge, writeWaveBridge } from "./wave-bridge";
 import { prepareConfig, readControlToken, resolveConfig } from "../server/config";
-import type { HostTarget } from "./host-adapter";
+import type { OpenViewRequest } from "./host-adapter";
 import { syncWaveRecentLaunchers } from "./wave-launchers";
 import type { RecentEntry } from "../recents/registry";
 
@@ -29,11 +29,19 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
   if (request.method === "POST" && url.pathname === "/stop") { queueMicrotask(() => shutdown()); return json({ stopping: true }); }
   if (request.method === "POST" && url.pathname === "/open") {
     try {
-      const body = await request.json() as { url?: unknown; target?: HostTarget };
+      const body = await request.json() as Partial<OpenViewRequest>;
       if (typeof body.url !== "string") throw new Error("A URL is required.");
+      if (body.kind !== "document" && body.kind !== "recents") throw new Error("A view kind is required.");
+      if (typeof body.focus !== "boolean") throw new Error("A focus preference is required.");
       const destination = new URL(body.url);
       if (destination.protocol !== "http:" || destination.hostname !== "127.0.0.1") throw new Error("Only Tether loopback URLs may be opened.");
-      await host.openView(destination.toString(), body.target);
+      await host.openView({
+        url: destination.toString(),
+        kind: body.kind,
+        focus: body.focus,
+        ...(typeof body.allowFocusedFallback === "boolean" ? { allowFocusedFallback: body.allowFocusedFallback } : {}),
+        ...(body.target ? { target: body.target } : {}),
+      });
       return json({ opened: true });
     } catch (cause) {
       return json({ error: { code: "open_failed", message: cause instanceof Error ? cause.message : String(cause) } }, 502);

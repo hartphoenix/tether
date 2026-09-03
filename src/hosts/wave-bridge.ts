@@ -1,8 +1,6 @@
 import { chmod, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import type { HostCapabilities } from "../shared/contracts";
 import { readControlToken, type TetherConfig } from "../server/config";
-import type { HostAdapter, HostTarget } from "./host-adapter";
-import { SUPPORTED_WAVE_VERSION } from "./wave";
+import type { OpenViewRequest } from "./host-adapter";
 import type { RecentEntry } from "../recents/registry";
 
 const LOOPBACK = "127.0.0.1";
@@ -54,6 +52,21 @@ async function bridgeRequest(config: TetherConfig, pathname: string, body?: unkn
   } catch { throw new Error("Wave bridge unavailable. Relaunch Tether from Wave."); }
 }
 
+export async function openThroughWaveBridge(config: TetherConfig, request: OpenViewRequest): Promise<void> {
+  const response = await bridgeRequest(config, "/open", request);
+  if (!response.ok) {
+    let message = "Wave bridge could not open the view. Relaunch Tether from Wave.";
+    try { message = ((await response.json()) as { error?: { message?: string } }).error?.message ?? message; } catch { /* use default */ }
+    throw new Error(message);
+  }
+}
+
+export async function updateWaveRecentsThroughBridge(config: TetherConfig, entries: RecentEntry[]): Promise<void> {
+  await waitForWaveBridge(config, 40);
+  const response = await bridgeRequest(config, "/recents", { entries });
+  if (!response.ok) throw new Error("Wave bridge could not update recent launchers.");
+}
+
 export async function waveBridgeHealthy(config: TetherConfig): Promise<boolean> {
   try { return (await bridgeRequest(config, "/health")).ok; } catch { return false; }
 }
@@ -97,42 +110,3 @@ export async function startWaveBridge(config: TetherConfig, env = process.env, o
   child.unref();
   return options.wait === false ? null : waitForWaveBridge(config);
 }
-
-const browserCapabilities: HostCapabilities = {
-  embeddedBrowser: false, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: true,
-};
-
-export class HostGateway implements HostAdapter {
-  readonly id = "browser" as const;
-  constructor(private readonly config: TetherConfig, private readonly fallback: HostAdapter) {}
-  async detect(): Promise<boolean> { return true; }
-  capabilities(target?: HostTarget): HostCapabilities {
-    if (target?.host !== "wave") return this.fallback.capabilities(target);
-    return {
-      embeddedBrowser: true,
-      hiddenNavigation: target.version === SUPPORTED_WAVE_VERSION,
-      widgetInstallation: true,
-      fileNavigatorHook: false,
-      revealFile: true,
-    };
-  }
-  async openView(url: string, target?: HostTarget): Promise<void> {
-    if (target?.host !== "wave") return this.fallback.openView(url, target);
-    const response = await bridgeRequest(this.config, "/open", { url, target });
-    if (!response.ok) {
-      let message = "Wave bridge could not open the view. Relaunch Tether from Wave.";
-      try { message = ((await response.json()) as { error?: { message?: string } }).error?.message ?? message; } catch { /* use default */ }
-      throw new Error(message);
-    }
-  }
-  async recentsChanged(entries: RecentEntry[], target?: HostTarget): Promise<void> {
-    if (target?.host !== "wave") return;
-    await waitForWaveBridge(this.config, 40);
-    const response = await bridgeRequest(this.config, "/recents", { entries });
-    if (!response.ok) throw new Error("Wave bridge could not update recent launchers.");
-  }
-  openExternal(pathOrUrl: string): Promise<void> { return this.fallback.openExternal(pathOrUrl); }
-  revealFile(path: string): Promise<void> { return this.fallback.revealFile?.(path) ?? Promise.resolve(); }
-}
-
-export function waveCapabilitiesUnavailable(): HostCapabilities { return { ...browserCapabilities }; }

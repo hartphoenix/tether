@@ -1,5 +1,5 @@
 import type { HostCapabilities } from "../shared/contracts";
-import type { HostAdapter, HostTarget } from "./host-adapter";
+import type { HostAdapter, HostTarget, OpenViewRequest, OpenViewResult } from "./host-adapter";
 import type { RecentEntry } from "../recents/registry";
 import { syncWaveRecentLaunchers } from "./wave-launchers";
 import { homedir } from "node:os";
@@ -127,7 +127,8 @@ export class WaveHostAdapter implements HostAdapter {
     };
   }
 
-  async openView(url: string, target?: HostTarget): Promise<void> {
+  async openView(request: OpenViewRequest): Promise<OpenViewResult> {
+    const { url, target } = request;
     if (!this.env.WAVETERM_JWT) throw new Error("Wave view placement requires WAVETERM_JWT. Relaunch Tether from a Wave widget or terminal.");
     const destination = await this.resolveTarget(target);
     const command = this.version === SUPPORTED_WAVE_VERSION
@@ -142,6 +143,7 @@ export class WaveHostAdapter implements HostAdapter {
       // its single-use ticket. Cleanup failure must not make the CLI cancel it.
       void closed;
     }
+    return { launchConsumed: true };
   }
 
   async openExternal(pathOrUrl: string): Promise<void> {

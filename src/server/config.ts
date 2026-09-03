@@ -15,6 +15,7 @@ export type TetherConfig = {
   recentsPath: string;
   preferencesPath: string;
   waveBridgePath: string;
+  cmuxBridgePath: string;
 };
 
 const PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -54,6 +55,7 @@ export function resolveConfig(input: Partial<Pick<TetherConfig, "profile" | "run
     recentsPath: join(configDir, "recent-files.json"),
     preferencesPath: join(configDir, "preferences.json"),
     waveBridgePath: join(runtimeDir, "wave-bridge.json"),
+    cmuxBridgePath: join(runtimeDir, "cmux-bridge.json"),
   };
 }
 

@@ -50,6 +50,29 @@ The installer preserves unrelated Wave widgets and creates a one-time `widgets.j
 
 `TETHER_RUNTIME_DIR` and `TETHER_CONFIG_DIR` can set exact private directories for an isolated run. CLI stdout is one protocol-v1 JSON object. Exit code `0` is success, `1` is an operational failure, and `2` is invalid usage.
 
+## cmux integration
+
+Tether currently gates cmux support to the exact verified build `0.64.22 (102) [ddd4a01bc]`. From a cmux terminal, opening a document creates or reuses one Tether review pane beside the invoking surface; later documents become tabs in that pane:
+
+```sh
+TETHER_PROFILE=preview ./mdreview open /absolute/path/to/document.md
+TETHER_PROFILE=preview ./mdreview open /absolute/path/to/document.md --no-focus
+```
+
+Open Tether Recents in cmux's right-sidebar Dock with:
+
+```sh
+TETHER_PROFILE=preview ./mdreview recents
+```
+
+The Dock beta feature must be enabled in cmux. Tether reports `dock_unavailable` when it is disabled and never substitutes the system browser for requested cmux placement. Check direct and daemon-callback readiness independently:
+
+```sh
+TETHER_PROFILE=preview ./mdreview cmux status
+```
+
+Daemon callbacks use cmux's signed terminal capability through a narrow Tether bridge. The capability remains only in bridge process memory; it is not stored in launch targets, discovery records, logs, URLs, or documents.
+
 ## Agent review CLI
 
 Agent commands use the same daemon and serialized document service as the browser. Start with compact pending state, inspect individual threads, and request the full body only when needed:
