@@ -102,6 +102,7 @@ test("authenticates bridge calls and preserves the complete open operation", asy
     kind: "document" as const,
     focus: false,
     allowFocusedFallback: false,
+    targetPolicy: "focused-workspace" as const,
     target: {
       host: "cmux",
       version: "0.64.22",

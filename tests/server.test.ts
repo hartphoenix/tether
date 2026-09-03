@@ -7,7 +7,7 @@ import { DocumentAccessError, DocumentService } from "../src/documents/document-
 import { resolveConfig } from "../src/server/config";
 import { createDaemon, type TetherDaemon } from "../src/server/server";
 import { controlRecentsLaunch } from "../src/server/lifecycle";
-import type { HostAdapter } from "../src/hosts/host-adapter";
+import type { HostAdapter, OpenViewRequest } from "../src/hosts/host-adapter";
 
 const directories: string[] = [];
 const daemons: TetherDaemon[] = [];
@@ -190,6 +190,33 @@ describe("browser launch authorization", () => {
       method: "POST", headers: { cookie, origin: daemon.origin, "content-type": "application/json" }, body: JSON.stringify({ path: file.path }),
     });
     expect(denied.status).toBe(403);
+  });
+
+  test("asks cmux to resolve the focused workspace for Recents document opens", async () => {
+    const file = await fixture();
+    const requests: OpenViewRequest[] = [];
+    const host = {
+      id: "cmux" as const,
+      detect: async () => true,
+      capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: true }),
+      openView: async (request: OpenViewRequest) => { requests.push(request); },
+      openExternal: async () => {},
+    };
+    const daemon = createDaemon({ config: file.config, hostAdapter: host, startupGraceMs: 600_000, web: () => new Response("web") });
+    daemons.push(daemon);
+    await daemon.ready;
+    await new (await import("../src/recents/registry")).RecentsRegistry(file.config.recentsPath).add(file.other);
+    const target = { host: "cmux", version: "0.64.22", build: "102", commit: "ddd4a01bc", windowId: "window", workspaceId: "workspace", surfaceId: "surface" };
+    const launch = await controlRecentsLaunch(file.config, target);
+    const exchange = await fetch(launch.url, { redirect: "manual" });
+    const location = exchange.headers.get("location")!;
+    const cookie = exchange.headers.get("set-cookie")!.split(";", 1)[0];
+    const opened = await fetch(recentsUrl(daemon, location, "api/open"), {
+      method: "POST", headers: { cookie, origin: daemon.origin, "content-type": "application/json" }, body: JSON.stringify({ path: file.other }),
+    });
+    expect(opened.status).toBe(200);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ kind: "document", focus: true, targetPolicy: "focused-workspace", target });
   });
 
   test("uses expiring single-use tickets and distinct path-scoped cookie sessions", async () => {

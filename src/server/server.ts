@@ -445,7 +445,16 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const grant = await service.open(body.path);
           if (!allowed.includes(grant.realPath)) { service.close(grant); return error("document_unauthorized", "The path is not in Tether Recents.", 403); }
           const launch = mintTicket(grant, session.target);
-          try { await hostAdapter.openView({ url: launch.url, kind: "document", focus: true, allowFocusedFallback: true, target: session.target }); }
+          try {
+            await hostAdapter.openView({
+              url: launch.url,
+              kind: "document",
+              focus: true,
+              allowFocusedFallback: true,
+              ...(session.target?.host === "cmux" ? { targetPolicy: "focused-workspace" as const } : {}),
+              target: session.target,
+            });
+          }
           catch (cause) { discardTicket(launch.ticket); throw cause; }
           return json({ opened: true, path: grant.path });
         } catch (cause) { return codedError(cause, "open_failed", 400); }

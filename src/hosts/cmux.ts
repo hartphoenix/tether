@@ -39,8 +39,8 @@ export type CmuxHostOptions = {
   externalHost?: Pick<BrowserHostAdapter, "openExternal" | "revealFile">;
 };
 
-type CmuxSurface = { id?: unknown; type?: unknown; title?: unknown; url?: unknown };
-type CmuxPane = { id?: unknown; dock_scope?: unknown; surfaces?: unknown };
+type CmuxSurface = { id?: unknown; type?: unknown; title?: unknown; url?: unknown; active?: unknown; selected?: unknown };
+type CmuxPane = { id?: unknown; dock_scope?: unknown; active?: unknown; selected_surface_id?: unknown; surfaces?: unknown };
 type CmuxWorkspace = { id?: unknown; panes?: unknown };
 type CmuxWindow = { id?: unknown; workspaces?: unknown };
 type CmuxTree = { windows?: unknown };
@@ -256,8 +256,15 @@ export class CmuxHostAdapter implements HostAdapter {
     if (!safeLoopbackUrl(request.url)) throw new CmuxHostError("invalid_target", "cmux placement accepts only loopback Tether URLs.");
     const target = this.validatedTarget(request.target ?? this.capturedTarget);
     if (request.kind === "recents") return this.serialized(target.workspaceId, () => this.openRecents(request, target));
+    if (request.targetPolicy === "focused-workspace") {
+      const effectiveTarget = await this.resolveFocusedDocumentTarget();
+      return this.serialized(effectiveTarget.workspaceId, async () => {
+        await this.openDocument(request, effectiveTarget, true);
+        return { launchConsumed: true };
+      });
+    }
     return this.serialized(target.workspaceId, async () => {
-      const effectiveTarget = await this.resolveDocumentTarget(request, target);
+      const effectiveTarget = await this.resolveCapturedDocumentTarget(request, target);
       const place = async (): Promise<CmuxOpenResult> => {
         await this.openDocument(request, effectiveTarget);
         return { launchConsumed: true };
@@ -308,7 +315,11 @@ export class CmuxHostAdapter implements HostAdapter {
     }
   }
 
-  private async openDocument(request: OpenViewRequest, target: HostTarget & { windowId: string; workspaceId: string; surfaceId: string }): Promise<void> {
+  private async openDocument(
+    request: OpenViewRequest,
+    target: HostTarget & { windowId: string; workspaceId: string; surfaceId: string },
+    splitFromAnchor = false,
+  ): Promise<void> {
     const tree = await this.tree(target);
     const workspace = workspaceFromTree(tree, target.workspaceId);
     if (!workspace || !this.workspaceHasSurface(workspace, target.surfaceId)) {
@@ -323,13 +334,16 @@ export class CmuxHostAdapter implements HostAdapter {
       return;
     }
 
-    await this.openChromelessReviewSurface(request, target);
+    const anchorPane = panes(workspace).find((pane) => surfaces(pane).some((surface) => surface.id === target.surfaceId));
+    const anchorPaneId = requireUuid(stringField(anchorPane, "id"), "anchor pane ID");
+    await this.openChromelessReviewSurface(request, target, undefined, splitFromAnchor ? anchorPaneId : undefined);
   }
 
   private async openChromelessReviewSurface(
     request: OpenViewRequest,
     target: HostTarget & { windowId: string; workspaceId: string; surfaceId: string },
     reviewPaneId?: string,
+    splitAnchorPaneId?: string,
   ): Promise<void> {
     const params = JSON.stringify({
       window_id: target.windowId,
@@ -351,6 +365,10 @@ export class CmuxHostAdapter implements HostAdapter {
         const moved = await this.moveSurface(surfaceId, reviewPaneId, target);
         this.validatePlacementResult(moved, surfaceId, target, reviewPaneId);
       } else if (!reviewPaneId && !created.created_split) {
+        if (splitAnchorPaneId && targetPaneId !== splitAnchorPaneId) {
+          const moved = await this.moveSurface(surfaceId, splitAnchorPaneId, target);
+          this.validatePlacementResult(moved, surfaceId, target, splitAnchorPaneId);
+        }
         const split = await this.splitOffSurface(surfaceId, target);
         this.validatePlacementResult(split, surfaceId, target);
       }
@@ -374,7 +392,7 @@ export class CmuxHostAdapter implements HostAdapter {
     return panes(workspace).some((pane) => surfaces(pane).some((surface) => surface.id === surfaceId));
   }
 
-  private async resolveDocumentTarget(
+  private async resolveCapturedDocumentTarget(
     request: OpenViewRequest,
     target: HostTarget & { windowId: string; workspaceId: string; surfaceId: string },
   ): Promise<HostTarget & { windowId: string; workspaceId: string; surfaceId: string }> {
@@ -398,6 +416,36 @@ export class CmuxHostAdapter implements HostAdapter {
       workspaceId: requireUuid(stringField(focused, "workspace_id"), "focused workspace ID"),
       surfaceId: requireUuid(stringField(focused, "surface_id"), "focused surface ID"),
     };
+  }
+
+  private async resolveFocusedDocumentTarget(): Promise<HostTarget & { windowId: string; workspaceId: string; surfaceId: string }> {
+    const identity = await this.runJson<CmuxIdentity>(["--json", "--id-format", "uuids", "identify", "--no-caller"], undefined, true);
+    const focused = identity.focused;
+    const windowId = requireUuid(stringField(focused, "window_id"), "focused window ID");
+    const workspaceId = requireUuid(stringField(focused, "workspace_id"), "focused workspace ID");
+    const focusedSurfaceId = requireUuid(stringField(focused, "surface_id"), "focused surface ID");
+    const target = {
+      host: "cmux",
+      version: SUPPORTED_CMUX_VERSION,
+      build: String(SUPPORTED_CMUX_BUILD),
+      commit: SUPPORTED_CMUX_COMMIT,
+      windowId,
+      workspaceId,
+      surfaceId: focusedSurfaceId,
+    };
+    const workspace = workspaceFromTree(await this.tree(target), workspaceId);
+    if (!workspace) throw new CmuxHostError("target_missing", "The focused cmux workspace is no longer available.");
+    const mainPanes = panes(workspace).filter((pane) => pane.dock_scope === undefined);
+    const focusedMainPane = mainPanes.find((pane) => surfaces(pane).some((surface) => surface.id === focusedSurfaceId));
+    const activeMainPanes = mainPanes.filter((pane) => pane.active === true);
+    const anchorPane = focusedMainPane ?? (activeMainPanes.length === 1 ? activeMainPanes[0] : undefined) ?? (mainPanes.length === 1 ? mainPanes[0] : undefined);
+    if (!anchorPane) throw new CmuxHostError("placement_anchor_missing", "The focused cmux workspace has no unambiguous active main pane.");
+    const paneSurfaces = surfaces(anchorPane);
+    const selectedSurfaceId = stringField(anchorPane, "selected_surface_id");
+    const anchorSurface = paneSurfaces.find((surface) => surface.id === selectedSurfaceId)
+      ?? paneSurfaces.find((surface) => surface.active === true || surface.selected === true)
+      ?? (paneSurfaces.length === 1 ? paneSurfaces[0] : undefined);
+    return { ...target, surfaceId: requireUuid(stringField(anchorSurface, "id"), "active main surface ID") };
   }
 
   private async openRecents(request: OpenViewRequest, target: HostTarget & { windowId: string; workspaceId: string; surfaceId: string }): Promise<CmuxOpenResult> {

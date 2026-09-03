@@ -8,6 +8,7 @@ export type OpenViewRequest = {
   kind: "document" | "recents";
   focus: boolean;
   allowFocusedFallback?: boolean;
+  targetPolicy?: "focused-workspace";
   target?: HostTarget;
 };
 export type OpenViewResult = { launchConsumed: boolean };

@@ -334,6 +334,84 @@ test("foreground fallback follows global focus into another workspace and reuses
   expect(JSON.parse(create.at(-1)!)).toMatchObject({ window_id: ids.otherWindow, workspace_id: ids.otherWorkspace, surface_id: ids.otherSurface, show_omnibar: false });
 });
 
+test("focused-workspace policy ignores a live captured target and reuses the focused workspace review pane", async () => {
+  const commands: string[][] = [];
+  const focused = { focused: { window_id: ids.otherWindow, workspace_id: ids.otherWorkspace, surface_id: ids.otherSurface } };
+  const otherTree = { windows: [{ id: ids.otherWindow, workspaces: [{ id: ids.otherWorkspace, panes: [
+    { id: ids.otherPane, active: true, selected_surface_id: ids.otherSurface, surfaces: [{ id: ids.otherSurface, type: "terminal", active: true }] },
+    { id: ids.reviewPane, surfaces: [{ id: ids.reviewSurface, type: "browser", title: TETHER_REVIEW_TAB_TITLE }] },
+  ] }] }] };
+  const host = await detected(async (command) => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(command.includes("--no-caller") ? focused : identity);
+    if (command.includes("tree")) return ok(otherTree);
+    if (command.includes("rpc")) return ok(openSplit({
+      window_id: ids.otherWindow,
+      workspace_id: ids.otherWorkspace,
+      source_pane_id: ids.otherPane,
+      target_pane_id: ids.reviewPane,
+      created_split: false,
+    }));
+    return ok({ action: "rename" });
+  });
+  await host.openView({
+    url: "http://127.0.0.1:8420/focused-review",
+    kind: "document",
+    focus: true,
+    targetPolicy: "focused-workspace",
+    target: host.launchTarget(),
+  });
+  const create = commands.find((command) => command.includes("rpc"))!;
+  expect(JSON.parse(create.at(-1)!)).toMatchObject({
+    window_id: ids.otherWindow,
+    workspace_id: ids.otherWorkspace,
+    surface_id: ids.otherSurface,
+  });
+  expect(commands.some((command) => command.includes("tree") && command.includes(ids.workspace))).toBe(false);
+  expect(commands.some((command) => command.includes("move-surface") || command.includes("split-off"))).toBe(false);
+});
+
+test("focused-workspace policy splits right from the active main pane when Recents has Dock focus", async () => {
+  const commands: string[][] = [];
+  const focused = { focused: { window_id: ids.otherWindow, workspace_id: ids.otherWorkspace, surface_id: ids.dockSurface } };
+  const otherTree = { windows: [{ id: ids.otherWindow, workspaces: [{ id: ids.otherWorkspace, panes: [
+    { id: ids.otherPane, active: true, selected_surface_id: ids.otherSurface, surfaces: [{ id: ids.otherSurface, type: "terminal", active: true }] },
+    { id: ids.dockPane, dock_scope: "global", focused: true, selected_surface_id: ids.dockSurface, surfaces: [{ id: ids.dockSurface, type: "browser", title: TETHER_RECENTS_TAB_TITLE }] },
+    { id: ids.reviewPane, surfaces: [{ id: ids.reviewSurface, type: "terminal" }] },
+  ] }] }] };
+  const host = await detected(async (command) => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(command.includes("--no-caller") ? focused : identity);
+    if (command.includes("tree")) return ok(otherTree);
+    if (command.includes("rpc")) return ok(openSplit({
+      window_id: ids.otherWindow,
+      workspace_id: ids.otherWorkspace,
+      source_pane_id: ids.otherPane,
+      target_pane_id: ids.reviewPane,
+      created_split: false,
+    }));
+    if (command.includes("move-surface")) return ok(placement(ids.otherPane, { window_id: ids.otherWindow, workspace_id: ids.otherWorkspace }));
+    if (command.includes("split-off")) return ok(placement(ids.reviewPane, { window_id: ids.otherWindow, workspace_id: ids.otherWorkspace }));
+    return ok({ action: "rename" });
+  });
+  await host.openView({
+    url: "http://127.0.0.1:8420/focused-split",
+    kind: "document",
+    focus: true,
+    targetPolicy: "focused-workspace",
+    target: host.launchTarget(),
+  });
+  const create = commands.find((command) => command.includes("rpc"))!;
+  expect(JSON.parse(create.at(-1)!)).toMatchObject({ surface_id: ids.otherSurface });
+  const move = commands.find((command) => command.includes("move-surface"))!;
+  const split = commands.find((command) => command.includes("split-off"))!;
+  expect(move).toContain(ids.otherPane);
+  expect(split).toContain("right");
+  expect(commands.indexOf(move)).toBeLessThan(commands.indexOf(split));
+});
+
 test("foreground fallback recovers when the original workspace vanished", async () => {
   const commands: string[][] = [];
   const focused = { focused: { window_id: ids.otherWindow, workspace_id: ids.otherWorkspace, surface_id: ids.otherSurface } };
