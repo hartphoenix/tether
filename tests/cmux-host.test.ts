@@ -173,8 +173,8 @@ test("isolates the first chromeless review when cmux reuses a right sibling pane
   const focusIndex = commands.findIndex((command) => command.includes("focus-panel"));
   const navigateIndex = commands.findIndex((command) => command.includes("navigate"));
   expect(renameIndex).toBeGreaterThan(commands.indexOf(splitOff));
-  expect(focusIndex).toBeGreaterThan(renameIndex);
-  expect(navigateIndex).toBeGreaterThan(focusIndex);
+  expect(navigateIndex).toBeGreaterThan(renameIndex);
+  expect(focusIndex).toBeGreaterThan(navigateIndex);
 });
 
 test("discovers one live review pane and adds later documents there without an omnibar", async () => {
@@ -542,7 +542,7 @@ test("never passes a Dock surface ID to rename-tab", async () => {
   expect(commands.some((command) => command.includes("rename-tab") && command.includes(ids.dockSurface))).toBe(false);
 });
 
-test("closes a newly created review surface and restores source focus when navigation fails", async () => {
+test("closes a newly created review surface without changing focus when navigation fails", async () => {
   const commands: string[][] = [];
   const host = await detected(async (command) => {
     commands.push(command);
@@ -560,10 +560,7 @@ test("closes a newly created review surface and restores source focus when navig
   const focusCommands = commands.filter((command) => command.includes("focus-panel"));
   expect(navigateIndex).toBeGreaterThan(renameIndex);
   expect(closeIndex).toBeGreaterThan(navigateIndex);
-  expect(focusCommands).toHaveLength(2);
-  expect(focusCommands[0]).toContain(ids.createdSurface);
-  expect(focusCommands[1]).toContain(ids.source);
-  expect(commands.indexOf(focusCommands[1]!)).toBeGreaterThan(closeIndex);
+  expect(focusCommands).toHaveLength(0);
 });
 
 test("closes a newly created Dock surface when navigation fails", async () => {

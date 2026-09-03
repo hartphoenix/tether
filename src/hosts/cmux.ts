@@ -342,7 +342,6 @@ export class CmuxHostAdapter implements HostAdapter {
       "--json", "--id-format", "both", "rpc", "browser.open_split", params,
     ], target);
     const surfaceId = requireResponseUuid(created.surface_id, "surface ID");
-    let changedFocus = false;
     try {
       if (created.show_omnibar !== false || typeof created.created_split !== "boolean") {
         throw new CmuxHostError("invalid_response", "cmux did not confirm chromeless browser placement.");
@@ -356,19 +355,17 @@ export class CmuxHostAdapter implements HostAdapter {
         this.validatePlacementResult(split, surfaceId, target);
       }
       await this.nameSurface(surfaceId, TETHER_REVIEW_TAB_TITLE, target);
+      // cmux treats a focused about:blank surface as a new tab and forcibly
+      // reveals its omnibar. Consume the launch URL before focusing so the
+      // hidden-chrome creation state survives foreground activation.
+      await this.navigateSurface(surfaceId, request.url, target);
       if (request.focus) {
         await this.focusSurface(surfaceId, target);
-        changedFocus = true;
       }
-      await this.navigateSurface(surfaceId, request.url, target);
     }
     catch (cause) {
       try { await this.closeSurface(surfaceId, target); }
       catch { /* preserve the placement or initialization failure after best-effort compensation */ }
-      if (changedFocus) {
-        try { await this.focusSurface(target.surfaceId, target); }
-        catch { /* preserve the initialization failure after best-effort focus restoration */ }
-      }
       throw cause;
     }
   }
