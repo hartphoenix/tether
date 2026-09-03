@@ -357,13 +357,25 @@ Implementation checkpoint (2026-09-01): the exact-version Wave adapter, destinat
 
 Begin with a versioned documentation and capability audit of cmux. Record the supported commands and constraints for browser/split creation, workspace and surface targeting, URL opening, process lifecycle, close detection, environment context, installation, and any extension or plugin boundary. Convert the findings into a small capability matrix before fixing the adapter contract; distinguish documented behavior from behavior verified experimentally.
 
-Implement browser-pane placement with cmux's CLI and workspace/surface context. Do not promise widget-bar or file-navigator parity where cmux exposes no equivalent capability; expose those differences honestly through adapter capabilities. cmux currently provides an embedded browser plus CLI/socket automation, so opening the same product URL in a split is the natural first integration. [cmux](https://cmux.com/), [cmux browser automation](https://cmux.com/docs/browser-automation)
+Implement browser-pane placement with cmux's CLI and captured workspace/surface context. Open documents beside the invoking terminal and derive any reusable review pane from live cmux state; do not persist layout memory in the first build. If the source disappears, an explicit human-triggered open may fall back to the currently focused pane, while background or agent-triggered opens fail explicitly.
 
-Exit condition: the versioned capability matrix is recorded; `mdreview open file.md` invoked inside cmux opens beside the calling terminal; and wikilinks open additional product views without replacing their source view.
+Lazily create one dedicated Tether Recents browser tab in the right-sidebar Dock, then retain and reuse it. Explicit Recents actions reveal and select that tab; background actions do not switch the visible Dock mode. Document launches from Recents remain targeted to the originating workspace rather than the Dock.
+
+Keep cmux's default ancestry-restricted socket mode and validate a narrow cmux-hosted bridge for daemon callbacks. Do not change cmux socket configuration in the first build. A later opt-in may be named **Direct cmux control (broad local access)** and use `--allow-external-cmux-control`; it must clearly disclose that other same-user processes gain cmux's broad automation authority.
+
+Do not promise widget-bar or file-navigator parity where cmux exposes no equivalent capability; expose those differences honestly through adapter capabilities. Remove the Dock TUI and dedicated-workspace alternatives from scope. cmux currently provides an embedded browser plus CLI/socket automation, so opening the same product URL in a split is the natural first integration. [cmux](https://cmux.com/), [cmux browser automation](https://cmux.com/docs/browser-automation)
+
+Exit condition: the versioned capability matrix is recorded; `mdreview open file.md` invoked inside cmux opens beside the calling terminal; live inspection reuses a review pane without a persisted registry; the first Recents open creates one Dock tab and later opens select it; daemon callbacks work through the narrow bridge; and wikilinks open additional product views without replacing their source view.
+
+### Phase 4.5 — restore durable host sessions
+
+Add cross-host recovery for browser panes restored with stale dynamic URLs. A restored Wave or cmux view should recognize that its scoped session is obsolete, obtain a fresh document-scoped session through the host adapter, and resume without requiring the user to relaunch or rearrange the view. Keep this out of Phase 4 so initial cmux placement is testable independently from the broader lifecycle protocol.
+
+Exit condition: a supported host view restored after daemon replacement, reboot, or laptop sleep can renew its authorization and reload the same artifact in place without broadening file access.
 
 ### Phase 5 — package agent integrations
 
-Treat the Phase 2.5 CLI response schema as the baseline, then add a focused review-workflow skill. Add MCP only when tool discovery or structured mutation materially improves actual harness use. Both integrations use the same daemon client and event protocol rather than reimplementing file mutations.
+Treat the Phase 2.5 CLI response schema as the baseline, then package a shared review protocol plus the environment-specific guidance needed to run it correctly in Wave, cmux, and later hosts. Provide per-adapter skill material or install checklists where terminal/tab behavior changes the workflow; keep universal thread semantics in one source. Add MCP only when tool discovery or structured mutation materially improves actual harness use. All integrations use the same daemon client and event protocol rather than reimplementing file mutations.
 
 Exit condition: Codex and Claude Code can inspect pending threads, answer or resolve them, and acknowledge only the sequence they received without reading the full document by default.
 
@@ -382,6 +394,10 @@ Exit condition: each adapter passes the same open/read/review/save contract test
 * package splitting before independent consumers exist;
 * a general migration system for ephemeral prototype documents;
 * cmux emulation of Wave-only concepts;
+* a cmux Command Palette action or hotkey until it can reveal and select the retained Tether Dock tab without transient terminal UI;
+* overriding cmux's Markdown handler until Phase 4 is proven and cmux exposes a supported interception point;
+* a persisted cmux layout registry unless live inspection fails and observed duplicate-pane behavior justifies one;
+* broad same-user cmux socket control unless explicitly enabled as **Direct cmux control (broad local access)**;
 * Calyx or Obsidian integration before their host capabilities and security constraints are audited.
 
 ## Main risks
