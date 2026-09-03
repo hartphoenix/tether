@@ -26,6 +26,7 @@ const schema = new Schema({
     doc: { content: "block+" },
     paragraph: { content: "inline*", group: "block" },
     heading: { content: "inline*", group: "block", attrs: { level: { default: 1 } } },
+    hardbreak: { inline: true, group: "inline", atom: true, attrs: { isInline: { default: false } } },
     image: { inline: true, group: "inline", atom: true, attrs: { src: { default: "" } } },
     text: { group: "inline" },
   },
@@ -221,6 +222,21 @@ describe("rendered text projection and anchors", () => {
   test("emits one separator between textblocks and U+FFFC for inline atoms", () => {
     const doc = schema.topNodeType.create(null, [paragraph(text("left"), schema.nodes.image.create({ src: "x" })), paragraph(text("right"))]);
     expect(renderedTextProjection(doc).projection).toBe("left\uFFFC\nright");
+  });
+
+  test("projects soft and hard breaks as clean whitespace", () => {
+    const doc = schema.topNodeType.create(null, [
+      paragraph(
+        text("serious"),
+        schema.nodes.hardbreak.create({ isInline: true }),
+        text("product"),
+        schema.nodes.hardbreak.create(),
+        text("does"),
+      ),
+    ]);
+    const projection = renderedTextProjection(doc);
+    expect(projection.projection).toBe("serious product\ndoes");
+    expect(createAnchor(projection, 0, 15, bodyRevision("body")).exact).toBe("serious product");
   });
 
   test("relocates a uniquely contextualized quote and orphans an ambiguous quote", () => {

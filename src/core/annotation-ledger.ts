@@ -647,6 +647,8 @@ export type RenderedTextProjection = {
 };
 
 type NodeLike = {
+  type?: { name?: string };
+  attrs?: Record<string, unknown>;
   isText?: boolean;
   isInline?: boolean;
   isTextblock?: boolean;
@@ -690,6 +692,10 @@ function appendInline(
   if (node.isText) {
     const text = node.text ?? "";
     appendProjectionUnit(output, "text", text, nodePosition, nodePosition + text.length);
+    return;
+  }
+  if (node.type?.name === "hardbreak") {
+    appendProjectionUnit(output, "text", node.attrs?.isInline === true ? " " : "\n", nodePosition, nodePosition + node.nodeSize);
     return;
   }
   if (node.isInline) {
