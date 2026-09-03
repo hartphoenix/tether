@@ -1,0 +1,138 @@
+@import "@milkdown/crepe/theme/common/style.css";
+
+:root {
+  font-family: system-ui, sans-serif;
+  background: var(--wm-page-background, #17191c);
+  color: var(--wm-page-color, #e7e9ec);
+}
+
+* { box-sizing: border-box; }
+
+html, body { min-height: 100%; margin: 0; }
+
+body {
+  background: var(--wm-page-background, #17191c);
+  color: var(--wm-page-color, #e7e9ec);
+}
+
+#conflict button {
+  border: 1px solid #444b55;
+  border-radius: 6px;
+  background: #24282e;
+  color: inherit;
+  font: inherit;
+}
+
+#conflict button { padding: 5px 9px; cursor: pointer; }
+#conflict button:hover { background: #30363e; }
+
+#conflict {
+  position: sticky;
+  z-index: 19;
+  top: 0;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #745f2d;
+  background: #382f1e;
+  color: #f1d997;
+  font-size: 13px;
+}
+
+#conflict:not([hidden]) { display: flex; }
+#conflict span { flex: 1; }
+
+#editor { min-width: 0; min-height: 100vh; }
+#workspace { min-height: 100vh; }
+
+#workspace:has(.wm-annotation-rail:not([hidden])) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(228px, 300px);
+}
+
+#annotations { min-width: 0; }
+
+#workspace .wm-annotation-rail {
+  position: sticky;
+  inset: auto;
+  top: 0;
+  width: 100%;
+  height: 100vh;
+  max-height: 100vh;
+}
+
+.milkdown-diff-review {
+  scroll-margin-top: 58px;
+}
+
+.milkdown {
+  min-height: 100vh;
+}
+
+.milkdown .ProseMirror {
+  min-height: calc(100vh - 44px);
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 36px 44px 120px;
+  zoom: var(--wm-editor-zoom, 1);
+}
+
+.milkdown .milkdown-top-bar {
+  position: sticky;
+  z-index: 18;
+  top: 0;
+  flex-wrap: nowrap;
+}
+
+.milkdown .milkdown-top-bar .top-bar-inner {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  flex-wrap: nowrap;
+}
+
+.milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-heading-label { min-width: 24px; }
+
+.milkdown .milkdown-top-bar .top-bar-divider { display: none; }
+
+.milkdown .ProseMirror th,
+.milkdown .ProseMirror td {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.milkdown .ProseMirror th code,
+.milkdown .ProseMirror td code {
+  display: inline;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Preserve raw HTML comments in Markdown while keeping them out of the visual document. */
+.milkdown .ProseMirror span[data-type="html"][data-value^="<!--"] {
+  display: none;
+}
+
+.milkdown .ProseMirror p:has(> span[data-type="html"][data-value^="<!--"]:only-child) {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  #conflict { align-items: flex-start; flex-wrap: wrap; padding-inline: 9px; }
+  .milkdown .ProseMirror { padding: 24px 20px 100px; }
+
+  #workspace:has(.wm-annotation-rail:not([hidden])) {
+    display: block;
+  }
+
+  #workspace .wm-annotation-rail {
+    position: fixed;
+    z-index: 22;
+    inset: 0 0 0 auto;
+    width: min(300px, 86vw);
+    height: 100vh;
+    max-height: 100vh;
+  }
+}
