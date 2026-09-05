@@ -21,6 +21,7 @@ export const reviewNoteIconSvg =
 
 export interface SelectionUiOptions {
   onNotice: (message: string) => void;
+  onCodeComment?: (view: EditorView) => void;
 }
 
 export interface SelectionUiController {
@@ -44,12 +45,40 @@ interface AnchorPoint {
   above?: boolean;
 }
 
+interface Bounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+}
+
 interface StyleDraft {
   read(): string | null;
   commit(css: string): void;
 }
 
 const NOOP = () => undefined;
+
+export function isCodeBlockTextSelection(selection: Selection): selection is TextSelection {
+  return selection instanceof TextSelection
+    && !selection.empty
+    && selection.$from.parent === selection.$to.parent
+    && selection.$from.parent.type.name === "code_block";
+}
+
+export function codeBlockSelectionBounds(codeBlock: HTMLElement): Bounds | null {
+  const rectangles = [...codeBlock.querySelectorAll<HTMLElement>(".cm-selectionBackground")]
+    .map((element) => element.getBoundingClientRect())
+    .filter((bounds) => bounds.width > 0 || bounds.height > 0);
+  if (!rectangles.length) return null;
+  const left = Math.min(...rectangles.map((bounds) => bounds.left));
+  const top = Math.min(...rectangles.map((bounds) => bounds.top));
+  const right = Math.max(...rectangles.map((bounds) => bounds.right));
+  const bottom = Math.max(...rectangles.map((bounds) => bounds.bottom));
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
 
 function normalizeDescriptor(descriptor: TagDescriptor): NormalizedDescriptor {
   const kind = descriptor.id === "mark:link"
@@ -164,11 +193,12 @@ class SelectionUi implements SelectionUiController {
   plugin!: MilkdownPlugin;
 
   private readonly notice: (message: string) => void;
+  private readonly codeComment: (view: EditorView) => void;
   private readonly scopeClass = `wm-editor-scope-${crypto.randomUUID().replaceAll("-", "")}`;
   private readonly styleOverrides = new Map<string, string>();
   private readonly styleElement: HTMLStyleElement | null;
   private readonly onDocumentKeydown = (event: KeyboardEvent): void => {
-    if (event.key === "Escape" && this.overlay) {
+    if (event.key === "Escape" && (this.overlay || this.codeCommentToolbar)) {
       event.preventDefault();
       this.close();
     }
@@ -178,12 +208,14 @@ class SelectionUi implements SelectionUiController {
     if (this.overlay && target instanceof Node && !this.overlay.contains(target)) this.close();
   };
   private overlay: HTMLElement | null = null;
+  private codeCommentToolbar: HTMLElement | null = null;
   private editorView: EditorView | null = null;
   private selectionSnapshot: Selection | null = null;
   private destroyed = false;
 
   constructor(options: SelectionUiOptions) {
     this.notice = options.onNotice ?? NOOP;
+    this.codeComment = options.onCodeComment ?? NOOP;
     this.styleElement = typeof document === "undefined" ? null : document.createElement("style");
     if (this.styleElement) {
       this.styleElement.dataset.waveMarkdownStyles = this.scopeClass;
@@ -198,6 +230,7 @@ class SelectionUi implements SelectionUiController {
   attachView(view: EditorView): void {
     this.editorView = view;
     view.dom.classList.add(this.scopeClass);
+    this.updateCodeCommentToolbar(view);
   }
 
   detachView(view: EditorView): void {
@@ -208,6 +241,7 @@ class SelectionUi implements SelectionUiController {
   close(): void {
     this.overlay?.remove();
     this.overlay = null;
+    this.hideCodeCommentToolbar();
     this.selectionSnapshot = null;
   }
 
@@ -271,6 +305,63 @@ class SelectionUi implements SelectionUiController {
     });
     this.mount(popover, this.selectionAnchor(view));
     textarea.focus();
+  }
+
+  private updateCodeCommentToolbar(view: EditorView): void {
+    const selection = view.state.selection;
+    const root = view.dom.getRootNode() as Document | ShadowRoot;
+    const active = root.activeElement;
+    const codeBlock = active instanceof Element ? active.closest<HTMLElement>(".milkdown-code-block") : null;
+    if (!view.editable || !codeBlock || !isCodeBlockTextSelection(selection)) {
+      this.hideCodeCommentToolbar();
+      return;
+    }
+
+    this.hideCodeCommentToolbar();
+    const toolbar = element("div", "milkdown-toolbar wm-code-comment-toolbar");
+    toolbar.dataset.show = "true";
+    toolbar.setAttribute("role", "toolbar");
+    toolbar.setAttribute("aria-label", "Selection actions");
+    const comment = button("", "toolbar-item");
+    comment.dataset.toolbarItem = "comment";
+    comment.title = "Comment";
+    comment.setAttribute("aria-label", "Comment");
+    comment.innerHTML = reviewNoteIconSvg;
+    comment.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      this.hideCodeCommentToolbar();
+      this.codeComment(view);
+    });
+    toolbar.append(comment);
+    (view.dom.parentElement ?? view.dom).append(toolbar);
+    this.codeCommentToolbar = toolbar;
+    this.positionCodeCommentToolbar(toolbar, codeBlock);
+  }
+
+  private positionCodeCommentToolbar(toolbar: HTMLElement, codeBlock: HTMLElement): void {
+    const renderedSelectionBounds = codeBlockSelectionBounds(codeBlock);
+    let bounds: Bounds = renderedSelectionBounds ?? codeBlock.getBoundingClientRect();
+    const nativeSelection = codeBlock.ownerDocument.getSelection();
+    if (!renderedSelectionBounds && nativeSelection && !nativeSelection.isCollapsed && nativeSelection.rangeCount > 0) {
+      const range = nativeSelection.getRangeAt(0);
+      const rangeBounds = typeof range.getBoundingClientRect === "function" ? range.getBoundingClientRect() : null;
+      if (rangeBounds && (rangeBounds.width || rangeBounds.height)) bounds = rangeBounds;
+    }
+    const margin = 8;
+    const width = toolbar.offsetWidth || 44;
+    const height = toolbar.offsetHeight || 44;
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 320;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 240;
+    const left = clampPosition(bounds.left + bounds.width / 2 - width / 2, margin, viewportWidth - width - margin);
+    let top = bounds.top - height - 10;
+    if (top < margin) top = bounds.bottom + 10;
+    toolbar.style.left = `${left}px`;
+    toolbar.style.top = `${clampPosition(top, margin, viewportHeight - height - margin)}px`;
+  }
+
+  private hideCodeCommentToolbar(): void {
+    this.codeCommentToolbar?.remove();
+    this.codeCommentToolbar = null;
   }
 
   handleContextMenu(view: EditorView, event: MouseEvent): boolean {

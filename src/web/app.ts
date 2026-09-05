@@ -8,6 +8,7 @@ import { cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncom
 import { prepareMarkdown, restoreMarkdown, wikilinkRoute } from "../core/markdown-codec";
 import { createSelectionUi, reviewNoteIconSvg, type SelectionUiController } from "./selection-ui";
 import { createThemePicker, type CrepeTheme } from "./themes";
+import { documentTabTitle, filenameStem } from "./document-title";
 import type { SessionBootstrap } from "../shared/contracts";
 import "./annotations-ui.css";
 import "./chrome.css";
@@ -81,7 +82,11 @@ let readOnly = false;
 
 const chrome = createChromeControls({
   saveIndicator, notice, zoomButton, zoomMenu, zoomSlider, zoomLabel,
-  onZoomChange: (scale) => editorRoot.style.setProperty("--wm-editor-zoom", String(scale / 100)),
+  onZoomChange: (scale) => {
+    const zoom = scale / 100;
+    editorRoot.style.setProperty("--wm-editor-zoom", String(zoom));
+    annotationUi?.setZoom(zoom);
+  },
 });
 let themePicker: { destroy(): void } | null = null;
 
@@ -333,10 +338,16 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     currentLedgerRevision = documentResponse.ledgerRevision;
     annotationState = documentResponse.annotations;
     readOnly = Boolean(documentResponse.readOnly);
-    document.title = currentPath.split("/").at(-1) || "Markdown";
+    document.title = filenameStem(currentPath);
     const prepared = prepareMarkdown(documentResponse.body);
     currentFrontmatter = prepared.frontmatter;
-    const nextSelectionUi = createSelectionUi({ onNotice: (message) => chrome.setNotice(message) });
+    const nextSelectionUi = createSelectionUi({
+      onNotice: (message) => chrome.setNotice(message),
+      onCodeComment: (view) => {
+        const anchor = captureAnchor(view, currentBodyRevision);
+        if (anchor) nextAnnotationUi.openCommentComposer(anchor);
+      },
+    });
     let nextAnnotationUi!: AnnotationUiController;
     const nextCrepe = new Crepe({
       root: editorRoot,
@@ -383,6 +394,10 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
         commentButton.title = count ? `Threads · ${count} need your attention` : "Threads";
         commentButton.setAttribute("aria-label", commentButton.title);
       },
+      onRailOpenChange: (open) => {
+        commentButton.classList.toggle("is-active", open);
+        commentButton.setAttribute("aria-pressed", String(open));
+      },
       onCreateComment: async ({ body, anchor }) => {
         const annotationPath = documentResponse.path;
         if (!(await save())) throw new Error("Save the document before commenting.");
@@ -396,6 +411,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       onEdit: async ({ thread, targetId, body }) => postAnnotation("/api/annotations/edit", { threadId: thread.id, targetId, body }, generation, documentResponse.path),
       onDelete: async ({ thread, targetId }) => postAnnotation("/api/annotations/delete", { threadId: thread.id, targetId }, generation, documentResponse.path),
     });
+    nextAnnotationUi.setZoom(chrome.getZoom() / 100);
     const annotationPlugin = $prose(() => nextAnnotationUi.plugin);
     nextCrepe.editor.use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
     try { await nextCrepe.create(); }
@@ -404,7 +420,10 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     selectionUi = nextSelectionUi;
     annotationUi = nextAnnotationUi;
     const view = getEditorView();
-    if (view) nextAnnotationUi.attachEditorView(view);
+    if (view) {
+      nextAnnotationUi.attachEditorView(view);
+      document.title = documentTabTitle(currentPath, view.state.doc);
+    }
     integrateToolbarControls();
     labelCrepeTools();
     toolbarLabelObserver = new MutationObserver(labelCrepeTools);
@@ -414,6 +433,8 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     if (readOnly) editorElement?.setAttribute("contenteditable", "false");
     savedEditorMarkdown = crepe.getMarkdown();
     crepe.on((listener) => listener.markdownUpdated(() => {
+      const currentView = getEditorView();
+      if (currentView) document.title = documentTabTitle(currentPath, currentView.state.doc);
       if (incomingReview && crepe) saveReviewButton.disabled = incomingDiffActive(crepe.editor);
       scheduleSave();
     }));
@@ -508,8 +529,6 @@ commentButton.addEventListener("click", () => {
   if (!annotationUi) return;
   const open = !annotationUi.isRailOpen();
   annotationUi.setRailOpen(open);
-  commentButton.classList.toggle("is-active", open);
-  commentButton.setAttribute("aria-pressed", String(open));
 });
 async function copyCompleteDocument(): Promise<void> {
   if (!(await save())) { chrome.setNotice("Resolve the conflict before copying the complete Markdown."); return; }
