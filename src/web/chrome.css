@@ -100,29 +100,6 @@
   line-height: 15px;
 }
 
-.wm-save-indicator {
-  display: inline-flex;
-  flex: 0 0 20px;
-  align-items: center;
-  justify-content: center;
-  inline-size: 20px;
-  block-size: 20px;
-  color: #aab1ba;
-}
-
-.wm-save-indicator[data-save-state="saved"] { color: #59c785; }
-.wm-save-indicator[data-save-state="dirty"],
-.wm-save-indicator[data-save-state="saving"] { color: #e4bd58; }
-.wm-save-indicator[data-save-state="conflict"] { color: #ed6868; }
-.wm-save-indicator[data-save-state="error"] { color: #df9350; }
-.wm-save-indicator[data-save-state="loading"] { color: #aab1ba; }
-
-.wm-save-icon {
-  display: block;
-  inline-size: 20px;
-  block-size: 20px;
-}
-
 .wm-notice {
   position: fixed;
   z-index: 40;

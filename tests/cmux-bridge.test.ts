@@ -102,6 +102,7 @@ test("authenticates bridge calls and preserves the complete open operation", asy
     kind: "document" as const,
     focus: false,
     allowFocusedFallback: false,
+    targetPolicy: "focused-workspace" as const,
     target: {
       host: "cmux",
       version: "0.64.22",
@@ -297,7 +298,7 @@ esac
   expect(commands).toContain("ping");
   expect(commands).toContain("rpc browser.open_split");
   expect(commands).toContain('"show_omnibar":false');
-  expect(commands).toContain("rename-tab");
+  expect(commands).not.toContain("rename-tab");
   expect(commands).not.toContain("in-memory-only");
   await expect(openThroughCmuxBridge(config, {
     url: "https://example.com/launch?ticket=opaque",

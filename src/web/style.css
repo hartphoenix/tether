@@ -66,22 +66,44 @@ body {
 }
 
 .milkdown {
-  min-height: 100vh;
-}
-
-.milkdown .ProseMirror {
-  min-height: calc(100vh - 44px);
-  max-width: 880px;
-  margin: 0 auto;
-  padding: 36px 44px 120px;
+  min-height: calc(100vh / var(--wm-editor-zoom, 1));
+  /* Keep document measurements and floating controls in one zoom space.
+     Older WebKit divides DOM rects by CSS zoom. */
   zoom: var(--wm-editor-zoom, 1);
 }
 
+.milkdown .ProseMirror {
+  min-height: calc((100vh - 44px) / var(--wm-editor-zoom, 1));
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 36px 44px 120px;
+}
+
 .milkdown .milkdown-top-bar {
+  zoom: calc(1 / var(--wm-editor-zoom, 1));
   position: sticky;
   z-index: 18;
   top: 0;
   flex-wrap: nowrap;
+}
+
+.milkdown .milkdown-block-handle {
+  z-index: 12;
+  width: max-content;
+  transition: opacity 0.2s;
+}
+
+.milkdown .milkdown-block-handle[data-placement="above"] {
+  background: var(--crepe-color-background);
+  border-radius: 4px;
+}
+
+.milkdown .milkdown-toolbar {
+  /* Selection actions take precedence over hover controls and other overlays. */
+  z-index: 1001;
+  width: max-content;
+  max-width: calc(100vw / var(--wm-editor-zoom, 1) - 16px);
+  flex-wrap: wrap;
 }
 
 .milkdown .milkdown-top-bar .top-bar-inner {

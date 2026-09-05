@@ -51,8 +51,10 @@ export class HostGateway implements HostAdapter {
     return result ?? { launchConsumed: true };
   }
 
-  async recentsChanged(entries: RecentEntry[], target?: HostTarget): Promise<void> {
-    if (target?.host === "wave") await updateWaveRecentsThroughBridge(this.config, entries);
+  async recentsChanged(entries: RecentEntry[], target?: HostTarget): Promise<boolean> {
+    if (target?.host !== "wave") return false;
+    await updateWaveRecentsThroughBridge(this.config, entries);
+    return true;
   }
 
   openExternal(pathOrUrl: string): Promise<void> { return this.fallback.openExternal(pathOrUrl); }

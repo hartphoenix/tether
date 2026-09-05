@@ -1,4 +1,4 @@
-import { basename, dirname } from "node:path";
+import { dirname } from "node:path";
 import { readFile, realpath } from "node:fs/promises";
 import {
   PROTOCOL_VERSION,
@@ -12,8 +12,8 @@ import { createBrowserHost } from "../hosts/browser";
 import { HostGateway } from "../hosts/host-gateway";
 import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type DocumentSession } from "../documents/document-service";
 import { RecentsRegistry } from "../recents/registry";
-import { recordRecent, removeRecent } from "../recents/service";
-import { moveToTrash } from "../recents/actions";
+import { RecentsService, type RecentsSnapshot } from "../recents/service";
+import { moveToTrash, pickMarkdownFiles } from "../recents/actions";
 import { ensureControlToken, prepareConfig, readControlToken, removeDiscovery, resolveConfig, writeDiscovery, type TetherConfig } from "./config";
 
 const LOOPBACK = "127.0.0.1";
@@ -43,6 +43,7 @@ export type DaemonOptions = {
   web?: (request: Request, session: Session) => Response | Promise<Response>;
   opener?: (url: string) => Promise<void>;
   trashFile?: (path: string) => Promise<void>;
+  pickFiles?: () => Promise<string[]>;
 };
 
 export type TetherDaemon = {
@@ -143,6 +144,11 @@ function expectedBodyRevision(body: Record<string, unknown>): string | undefined
   return typeof value === "string" ? value : undefined;
 }
 
+function hostTarget(value: unknown): HostTarget | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
 function preferencesFrom(value: unknown): AppPreferences {
   const theme = value && typeof value === "object" && typeof (value as Record<string, unknown>).theme === "string" ? (value as Record<string, unknown>).theme : "frame-dark";
   const allowed = new Set<AppPreferences["theme"]>(["frame-dark", "crepe-dark", "nord-dark", "frame", "crepe", "nord"]);
@@ -164,14 +170,16 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const startupGraceMs = options.startupGraceMs ?? Number(process.env.TETHER_STARTUP_GRACE_MS ?? DEFAULT_STARTUP_GRACE_MS);
   const idleMs = options.idleMs ?? Number(process.env.TETHER_IDLE_MS ?? DEFAULT_IDLE_MS);
   const service = options.service ?? new DocumentService({ now });
-  const recents = options.recents ?? new RecentsRegistry({ path: config.recentsPath, now });
   const trashFile = options.trashFile ?? moveToTrash;
+  const pickFiles = options.pickFiles ?? (process.platform === "darwin" ? pickMarkdownFiles : undefined);
   const hostAdapter = options.hostAdapter ?? new HostGateway(config, createBrowserHost({ open: options.opener }));
+  const recents = new RecentsService(options.recents ?? new RecentsRegistry({ path: config.recentsPath, now }), hostAdapter);
   const instanceId = crypto.randomUUID();
   const tickets = new Map<string, { grant: DocumentSession; expiresAt: number; target?: HostTarget }>();
   const recentsTickets = new Map<string, { expiresAt: number; target?: HostTarget }>();
   const sessions = new Map<string, Session>();
   const recentsSessions = new Map<string, RecentsSession>();
+  const recentsStreamClosers = new Set<() => void>();
   const startedAt = now();
   let emptySince = 0;
   let stopped = false;
@@ -182,6 +190,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   let rejectReady!: (error: unknown) => void;
   const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   let readySettled = false;
+  let pickerOpen = false;
   const settleReady = (cause?: unknown) => {
     if (readySettled) return;
     readySettled = true;
@@ -218,16 +227,75 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     return { ticket, expiresAt, url: `${daemon.origin}/recents/launch?ticket=${encodeURIComponent(ticket)}` };
   }
 
-  const recentsHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Tether Recents</title><style>
-  :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#111;color:#eee;font:15px system-ui;padding:24px}#filter{width:100%;margin:0 0 12px;padding:9px 11px;border:1px solid #444;border-radius:7px;background:#1d1d1d;color:inherit;font:inherit;outline:none}#filter:focus{border-color:#888}.file{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;width:100%;text-align:left;background:#1d1d1d;color:inherit;border:1px solid #333;border-radius:8px;padding:12px;margin:8px 0;cursor:pointer}.file-main{min-width:0}.name{font-weight:650}.dir{display:block;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}.time{color:#999;align-self:start;justify-self:end;text-align:right;white-space:nowrap}button:hover{border-color:#777}.empty,#status{color:#999}#status{min-height:20px;margin-top:12px}#menu{position:fixed;z-index:10;display:none;min-width:190px;padding:5px;border:1px solid #444;border-radius:8px;background:#282d33;box-shadow:0 10px 28px #0008}#menu.open{display:block}#menu button{display:block;width:100%;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:inherit;text-align:left;cursor:pointer}#menu button:hover{background:#3a414a}#menu button[data-action="trash"]{color:#ff9898}@media(max-width:420px){body{padding:14px}.file{padding:10px}.time{font-size:12px}}</style></head><body><input id="filter" type="search" placeholder="filter by filename" aria-label="Filter by filename" autocomplete="off"><main id="list"></main><div id="status"></div><div id="menu" role="menu"><button data-action="reveal" role="menuitem">Reveal in Finder</button><button data-action="default" role="menuitem">Open in Default App</button><button data-action="remove" role="menuitem">Remove from Queue</button><button data-action="trash" role="menuitem">Move to Trash</button></div><script type="module">
-  const api='./api';const list=document.querySelector('#list');const status=document.querySelector('#status');const menu=document.querySelector('#menu');const filter=document.querySelector('#filter');let files=[];let selectedPath=null;
-  const closeMenu=()=>{menu.classList.remove('open');selectedPath=null};const openMenu=(event,path)=>{event.preventDefault();selectedPath=path;menu.classList.add('open');const bounds=menu.getBoundingClientRect();menu.style.left=Math.max(4,Math.min(event.clientX,innerWidth-bounds.width-4))+'px';menu.style.top=Math.max(4,Math.min(event.clientY,innerHeight-bounds.height-4))+'px'};
+  function recentsEventStream(request: Request): Response {
+    const encoder = new TextEncoder();
+    let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    let unsubscribe = () => {};
+    let closed = false;
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      unsubscribe();
+      if (heartbeat) clearInterval(heartbeat);
+      heartbeat = undefined;
+      request.signal.removeEventListener("abort", cleanup);
+      recentsStreamClosers.delete(cleanup);
+      try { controller?.close(); } catch { /* the stream may already be cancelled or errored */ }
+    };
+    const send = (value: string) => {
+      if (closed || !controller) return;
+      try { controller.enqueue(encoder.encode(value)); }
+      catch { cleanup(); }
+    };
+    const sendSnapshot = (snapshot: RecentsSnapshot) => {
+      send(`id: ${snapshot.sequence}\nevent: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`);
+    };
+    const stream = new ReadableStream<Uint8Array>({
+      start(value) {
+        controller = value;
+        unsubscribe = recents.subscribe(sendSnapshot);
+        recentsStreamClosers.add(cleanup);
+        request.signal.addEventListener("abort", cleanup, { once: true });
+        heartbeat = setInterval(() => send(": keepalive\n\n"), 20_000);
+        void recents.snapshot().then(sendSnapshot).catch((cause) => {
+          if (!closed) {
+            try { controller?.error(cause); } catch { /* already closed */ }
+          }
+          cleanup();
+        });
+        if (request.signal.aborted) cleanup();
+      },
+      cancel() { cleanup(); },
+    });
+    return new Response(stream, { headers: {
+      "cache-control": "no-store",
+      "content-type": "text/event-stream; charset=utf-8",
+      connection: "keep-alive",
+    } });
+  }
+
+  const recentsHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Recents</title><style>
+  #controls{grid-column:2 / -1;justify-self:end}
+  :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#111;color:#eee;font:15px system-ui;padding:24px}button{font:inherit}.button{padding:8px 11px;border:1px solid #444;border-radius:7px;background:#242424;color:inherit;cursor:pointer}.button:hover:not(:disabled){border-color:#777}.button:disabled{color:#777;cursor:default}#add{min-width:38px;font-size:20px;line-height:20px}.picker-slot{min-width:38px}#filter{width:100%;margin:0 0 12px;padding:9px 11px;border:1px solid #444;border-radius:7px;background:#1d1d1d;color:inherit;font:inherit;outline:none}#filter:focus{border-color:#888}.file-row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:10px;margin:8px 0}.file-row:not(.selecting){display:block}.file-check{width:17px;height:17px;margin:0 0 0 3px;accent-color:#8caee8}.file{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;width:100%;text-align:left;background:#1d1d1d;color:inherit;border:1px solid #333;border-radius:8px;padding:12px;cursor:pointer}.file-main{min-width:0}.name{font-weight:650}.dir{display:block;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}.time{color:#999;align-self:start;justify-self:end;text-align:right;white-space:nowrap}.empty,#status,#freshness{color:#999}#freshness{margin:0 0 10px}#freshness[hidden],#status:empty{display:none}.footer{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;margin-top:12px;min-height:38px}.controls{display:flex;gap:8px}#menu,#confirm-popover{position:fixed;z-index:10;display:none;min-width:190px;padding:5px;border:1px solid #444;border-radius:8px;background:#282d33;box-shadow:0 10px 28px #0008}#menu.open,#confirm-popover.open{display:block}#menu button{display:block;width:100%;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:inherit;text-align:left;cursor:pointer}#menu button:hover{background:#3a414a}#menu button[data-action="trash"],#batch-trash,#confirm-action.danger{color:#ff9898}#confirm-popover{width:min(300px,calc(100vw - 16px));padding:12px}#confirm-message{margin:0 0 12px}.confirm-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:420px){body{padding:14px}.file{padding:10px}.time{font-size:12px}.footer{align-items:end}.controls{flex-wrap:wrap;justify-content:flex-end}}</style></head><body><input id="filter" type="search" placeholder="filter by filename" aria-label="Filter by filename" autocomplete="off"><p id="freshness" role="status" aria-live="polite" hidden></p><main id="list" aria-busy="true"></main><footer class="footer"><div class="picker-slot"><button id="add" class="button" aria-label="Add Markdown files" title="Add Markdown files"${pickFiles ? "" : " hidden"}>+</button></div><div id="status" role="status" aria-live="polite"></div><div id="controls" class="controls"><button id="batch-remove" class="button" hidden>Remove from Queue</button><button id="batch-trash" class="button" hidden>Move to Trash</button><button id="select" class="button">Select</button></div></footer><div id="menu" role="menu"><button data-action="reveal" role="menuitem">Reveal in Finder</button><button data-action="default" role="menuitem">Open in Default App</button><button data-action="remove" role="menuitem">Remove from Queue</button><button data-action="trash" role="menuitem">Move to Trash</button></div><div id="confirm-popover" role="dialog" aria-modal="true" aria-labelledby="confirm-message"><p id="confirm-message"></p><div class="confirm-actions"><button id="confirm-cancel" class="button">Cancel</button><button id="confirm-action" class="button">Confirm</button></div></div><script type="module">
+  const api='./api';const pickerAvailable=${pickFiles !== undefined};const list=document.querySelector('#list');const status=document.querySelector('#status');const freshness=document.querySelector('#freshness');const menu=document.querySelector('#menu');const filter=document.querySelector('#filter');const controls=document.querySelector('#controls');const addButton=document.querySelector('#add');const selectButton=document.querySelector('#select');const batchRemove=document.querySelector('#batch-remove');const batchTrash=document.querySelector('#batch-trash');const confirmPopover=document.querySelector('#confirm-popover');const confirmMessage=document.querySelector('#confirm-message');const confirmAction=document.querySelector('#confirm-action');const confirmCancel=document.querySelector('#confirm-cancel');let files=[];let selectedPath=null;let selectionMode=false;let busy=false;let pendingBatchAction=null;let statusTimer=0;let lastSequence=-1;let verified=false;let revalidationFloor=-1;let revalidationToken=0;let errorRefreshQueued=false;const selected=new Set();
+  const setStatus=(message)=>{clearTimeout(statusTimer);status.textContent=message;statusTimer=message?setTimeout(()=>{status.textContent='';statusTimer=0},10000):0};
+  const closeMenu=()=>{menu.classList.remove('open');selectedPath=null};const openMenu=(event,path)=>{if(!verified||selectionMode)return;event.preventDefault();selectedPath=path;menu.classList.add('open');const bounds=menu.getBoundingClientRect();menu.style.left=Math.max(4,Math.min(event.clientX,innerWidth-bounds.width-4))+'px';menu.style.top=Math.max(4,Math.min(event.clientY,innerHeight-bounds.height-4))+'px'};
+  const closeConfirm=()=>{confirmPopover.classList.remove('open');pendingBatchAction=null};const openConfirm=(action,anchor)=>{if(!selected.size||busy)return;pendingBatchAction=action;const count=selected.size;confirmMessage.textContent=action==='trash'?'Move '+count+' selected file'+(count===1?'':'s')+' to the Trash?':'Remove '+count+' selected file'+(count===1?'':'s')+' from the queue?';confirmAction.classList.toggle('danger',action==='trash');confirmPopover.classList.add('open');const anchorBounds=anchor.getBoundingClientRect();const bounds=confirmPopover.getBoundingClientRect();confirmPopover.style.left=Math.max(8,Math.min(anchorBounds.right-bounds.width,innerWidth-bounds.width-8))+'px';confirmPopover.style.top=Math.max(8,anchorBounds.top-bounds.height-8)+'px';confirmAction.focus()};
   const compactDirectory=path=>path.replace(/^\\/Users\\/[^/]+(?=\\/|$)/,'~');const compactTime=value=>{const date=new Date(value);const today=new Date();if(date.getFullYear()===today.getFullYear()&&date.getMonth()===today.getMonth()&&date.getDate()===today.getDate())return String(date.getHours()).padStart(2,'0')+':'+String(date.getMinutes()).padStart(2,'0');return (date.getMonth()+1)+'/'+date.getDate()};
   const post=async(endpoint,body)=>{const response=await fetch(api+'/'+endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!response.ok)throw new Error((await response.json()).error?.message||'Action failed');return response.json()};
-  const render=()=>{const query=filter.value.trim().toLocaleLowerCase();const visible=files.filter(file=>file.name.toLocaleLowerCase().includes(query));list.innerHTML=visible.length?'':'<p class="empty">'+(files.length?'No matching files.':'No recent Markdown files.')+'</p>';for(const file of visible){const b=document.createElement('button');b.className='file';b.innerHTML='<span class="file-main"><span class="name"></span><br><span class="dir"></span></span><span class="time"></span>';b.querySelector('.name').textContent=file.name;const directory=compactDirectory(file.directory);const dir=b.querySelector('.dir');const dirValue=document.createElement('bdi');dirValue.dir='ltr';dirValue.textContent=directory;dir.append(dirValue);dir.title=directory;b.querySelector('.time').textContent=compactTime(file.createdAt);b.onclick=async()=>{b.disabled=true;status.textContent='Opening…';try{await post('open',{path:file.path});status.textContent='Opened.'}catch(error){status.textContent=error.message}finally{b.disabled=false}};b.addEventListener('contextmenu',(event)=>openMenu(event,file.path));list.append(b)}};
-  const refreshFiles=async()=>{const r=await fetch(api+'/files');if(!r.ok){list.textContent='Session expired.';return}files=await r.json();render()};
-  menu.addEventListener('click',async(event)=>{const button=event.target.closest('button[data-action]');if(!button||!selectedPath)return;const action=button.dataset.action;const path=selectedPath;closeMenu();if(action==='trash'&&!confirm('Move this file to the Trash?'))return;status.textContent='Working…';try{await post('action',{path,action});status.textContent='';if(action==='remove'||action==='trash')await refreshFiles()}catch(error){status.textContent=error.message}});
-  filter.addEventListener('input',render);document.addEventListener('click',(event)=>{if(!menu.contains(event.target))closeMenu()});document.addEventListener('keydown',(event)=>{if(event.key==='Escape')closeMenu()});addEventListener('scroll',closeMenu,true);setInterval(()=>fetch(api+'/lease',{method:'POST'}),30000);fetch(api+'/lease',{method:'POST'});refreshFiles();
+  const renderControls=()=>{addButton.hidden=!pickerAvailable||selectionMode;addButton.disabled=busy||!verified;selectButton.textContent=selectionMode?'Cancel':'Select';batchRemove.hidden=!selectionMode;batchTrash.hidden=!selectionMode;batchRemove.disabled=busy||!verified||!selected.size;batchTrash.disabled=busy||!verified||!selected.size;selectButton.disabled=busy||!verified};
+  const syncAvailability=()=>{list.inert=!verified;menu.inert=!verified;list.setAttribute('aria-busy',String(!verified));renderControls()};
+  const render=()=>{const paths=new Set(files.map(file=>file.path));let selectionChanged=false;for(const path of selected)if(!paths.has(path)){selected.delete(path);selectionChanged=true}if(selectedPath&&!paths.has(selectedPath))closeMenu();if(selectionChanged&&confirmPopover.classList.contains('open'))closeConfirm();const query=filter.value.trim().toLocaleLowerCase();const visible=files.filter(file=>file.name.toLocaleLowerCase().includes(query));list.innerHTML=visible.length?'':'<p class="empty">'+(files.length?'No matching files.':'No recent Markdown files.')+'</p>';for(const file of visible){const row=document.createElement('div');row.className='file-row'+(selectionMode?' selecting':'');if(selectionMode){const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='file-check';checkbox.checked=selected.has(file.path);checkbox.setAttribute('aria-label','Select '+file.name);checkbox.onchange=()=>{checkbox.checked?selected.add(file.path):selected.delete(file.path);renderControls()};row.append(checkbox)}const b=document.createElement('button');b.className='file';b.innerHTML='<span class="file-main"><span class="name"></span><br><span class="dir"></span></span><span class="time"></span>';b.querySelector('.name').textContent=file.name;const directory=compactDirectory(file.directory);const dir=b.querySelector('.dir');const dirValue=document.createElement('bdi');dirValue.dir='ltr';dirValue.textContent=directory;dir.append(dirValue);dir.title=directory;b.querySelector('.time').textContent=compactTime(file.createdAt);b.onclick=async()=>{if(!verified)return;if(selectionMode){selected.has(file.path)?selected.delete(file.path):selected.add(file.path);render();return}b.disabled=true;setStatus('Opening…');try{await post('open',{path:file.path});setStatus('Opened.')}catch(error){setStatus(error.message)}finally{b.disabled=false}};b.addEventListener('contextmenu',(event)=>openMenu(event,file.path));row.append(b);list.append(row)}syncAvailability()};
+  const setUnverified=(message='')=>{verified=false;freshness.hidden=!message;freshness.textContent=message;closeConfirm();syncAvailability()};
+  const applySnapshot=(snapshot,mayVerify=false)=>{if(!snapshot||!Number.isSafeInteger(snapshot.sequence)||snapshot.sequence<0||!Array.isArray(snapshot.files)||snapshot.sequence<=lastSequence)return false;const changed=!list.firstChild||JSON.stringify(files)!==JSON.stringify(snapshot.files);lastSequence=snapshot.sequence;files=snapshot.files;if(!verified&&(mayVerify||snapshot.sequence>revalidationFloor)){verified=true;freshness.hidden=true;freshness.textContent=''}if(changed){closeMenu();render()}else syncAvailability();return true};
+  const refreshFiles=async(token=null,required=false)=>{const baseline=lastSequence;try{const r=await fetch(api+'/snapshot');if(!r.ok){if(r.status===401){files=[];lastSequence=-1;setUnverified('Session expired.')}else if(required&&token===revalidationToken&&lastSequence<=baseline)setUnverified('Unable to verify Recents; retrying…');return}applySnapshot(await r.json(),token===null||token===revalidationToken)}catch{if(required&&token===revalidationToken&&lastSequence<=baseline)setUnverified('Unable to verify Recents; retrying…')}};
+  const revalidate=()=>{revalidationFloor=lastSequence;const token=++revalidationToken;setUnverified();void refreshFiles(token,true)};
+  const runBatch=async()=>{const action=pendingBatchAction;if(!action)return;const paths=[...selected];closeConfirm();busy=true;renderControls();setStatus('Working…');let completed=0;try{for(const path of paths){await post('action',{path,action});selected.delete(path);completed++}selectionMode=false;selected.clear();setStatus(action==='trash'?'Moved '+completed+' file'+(completed===1?'':'s')+' to Trash.':'Removed '+completed+' file'+(completed===1?'':'s')+' from queue.')}catch(error){setStatus(error.message)}finally{await refreshFiles();busy=false;renderControls()}};
+  addButton.addEventListener('click',async()=>{if(!verified||busy||selectionMode||!pickerAvailable)return;busy=true;renderControls();try{const result=await post('pick',{});if(!result.cancelled){await refreshFiles();setStatus('Added '+result.added+' file'+(result.added===1?'':'s')+'.')}}catch(error){setStatus(error.message)}finally{busy=false;renderControls()}});
+  selectButton.addEventListener('click',()=>{if(!verified)return;if(selectionMode){selectionMode=false;selected.clear();closeConfirm()}else selectionMode=true;render()});batchRemove.addEventListener('click',()=>openConfirm('remove',batchRemove));batchTrash.addEventListener('click',()=>openConfirm('trash',batchTrash));confirmCancel.addEventListener('click',closeConfirm);confirmAction.addEventListener('click',runBatch);
+  menu.addEventListener('click',async(event)=>{const button=event.target.closest('button[data-action]');if(!button||!selectedPath)return;const action=button.dataset.action;const path=selectedPath;closeMenu();if(action==='trash'&&!confirm('Move this file to the Trash?'))return;setStatus('Working…');try{await post('action',{path,action});setStatus('');if(action==='remove'||action==='trash')await refreshFiles()}catch(error){setStatus(error.message)}});
+  filter.addEventListener('input',render);document.addEventListener('click',(event)=>{if(!menu.contains(event.target))closeMenu();if(confirmPopover.classList.contains('open')&&!confirmPopover.contains(event.target)&&!controls.contains(event.target))closeConfirm()});document.addEventListener('keydown',(event)=>{if(event.key==='Escape'){closeMenu();closeConfirm()}});document.addEventListener('visibilitychange',()=>{if(document.hidden)setUnverified();else revalidate()});addEventListener('pagehide',()=>setUnverified());addEventListener('pageshow',revalidate);addEventListener('scroll',closeMenu,true);if(typeof EventSource!=='undefined'){const events=new EventSource(api+'/events');events.addEventListener('snapshot',(event)=>{try{applySnapshot(JSON.parse(event.data))}catch{}});events.onerror=()=>{if(errorRefreshQueued)return;errorRefreshQueued=true;queueMicrotask(()=>{errorRefreshQueued=false;revalidate()})}}setInterval(()=>fetch(api+'/lease',{method:'POST'}),30000);fetch(api+'/lease',{method:'POST'});revalidate();
   </script></body></html>`;
 
   function sessionFrom(request: Request, pathname: string): Session | Response {
@@ -273,11 +341,6 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, document, capabilities: hostAdapter.capabilities(session.target), preferences: await preferences(), actor: options.actor ?? "assistant" });
       }
       if (apiPath === "/file" && request.method === "GET") return json(await service.read(session.grant));
-      if (apiPath === "/export" && request.method === "GET" || apiPath === "/file/export" && request.method === "GET") {
-        const { document, source } = await service.readExactSnapshot(session.grant);
-        if (document.readOnly) return error("ledger_invalid", document.ledgerError ?? "The document ledger is malformed.", 422);
-        return new Response(source, { headers: { "content-type": "text/markdown; charset=utf-8", "content-disposition": `attachment; filename="${basename(session.grant.path).replaceAll('"', "")}"` } });
-      }
       if (apiPath === "/file" && request.method === "PUT") {
         const body = await requestJson(request);
         const content = typeof body.content === "string" ? body.content : typeof body.body === "string" ? body.body : undefined;
@@ -395,7 +458,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const createdAt = now();
       const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt, lastSeen: createdAt, leases: new Map(), ...(pending.target ? { target: pending.target } : {}) };
       sessions.set(id, session);
-      try { await recordRecent(recents, hostAdapter, pending.grant.realPath, pending.target); }
+      try { await recents.record(pending.grant.realPath, pending.target); }
       catch (cause) {
         sessions.delete(id);
         service.close(pending.grant);
@@ -435,7 +498,22 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const suffix = `/${match![2]}`;
       if (request.method === "GET" && suffix === "/") return new Response(recentsHtml, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       if (request.method === "GET" && suffix === "/api/files") return json(await recents.files());
+      if (request.method === "GET" && suffix === "/api/snapshot") return json(await recents.snapshot());
+      if (request.method === "GET" && suffix === "/api/events") return recentsEventStream(request);
       if (request.method === "POST" && suffix === "/api/lease") { session.leaseUntil = now() + leaseMs; return json({ ok: true }); }
+      if (request.method === "POST" && suffix === "/api/pick") {
+        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
+        if (!pickFiles) return error("picker_unavailable", "The native Markdown picker is unavailable on this platform.", 501);
+        if (pickerOpen) return error("picker_busy", "The native Markdown picker is already open.", 409);
+        pickerOpen = true;
+        try {
+          const paths = await pickFiles();
+          if (!paths.length) return json({ cancelled: true, added: 0 });
+          const result = await recents.recordMany(paths, session.target);
+          return json({ cancelled: false, added: result.added.length });
+        } catch (cause) { return codedError(cause, "pick_failed", 400); }
+        finally { pickerOpen = false; }
+      }
       if (request.method === "POST" && suffix === "/api/open") {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
         try {
@@ -445,7 +523,16 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const grant = await service.open(body.path);
           if (!allowed.includes(grant.realPath)) { service.close(grant); return error("document_unauthorized", "The path is not in Tether Recents.", 403); }
           const launch = mintTicket(grant, session.target);
-          try { await hostAdapter.openView({ url: launch.url, kind: "document", focus: true, allowFocusedFallback: true, target: session.target }); }
+          try {
+            await hostAdapter.openView({
+              url: launch.url,
+              kind: "document",
+              focus: true,
+              allowFocusedFallback: true,
+              ...(session.target?.host === "cmux" ? { targetPolicy: "focused-workspace" as const } : {}),
+              target: session.target,
+            });
+          }
           catch (cause) { discardTicket(launch.ticket); throw cause; }
           return json({ opened: true, path: grant.path });
         } catch (cause) { return codedError(cause, "open_failed", 400); }
@@ -466,11 +553,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
               await hostAdapter.openExternal(path);
               break;
             case "remove":
-              await removeRecent(recents, hostAdapter, path, session.target);
+              await recents.remove(path, session.target);
               break;
             case "trash":
               await trashFile(path);
-              await removeRecent(recents, hostAdapter, path, session.target);
+              await recents.remove(path, session.target);
               break;
             default:
               throw new Error("Unknown recent-file action.");
@@ -487,18 +574,23 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         if (pathname === "/control/launch" && request.method === "POST") {
           const body = await requestJson(request);
           const grant = await service.open(typeof body.path === "string" ? body.path : "");
-          const target = body.target && typeof body.target === "object" && !Array.isArray(body.target)
-            ? Object.fromEntries(Object.entries(body.target).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
-            : undefined;
+          const target = hostTarget(body.target);
           const ticket = mintTicket(grant, target);
           return json({ ...ticket, path: grant.path });
         }
         if (pathname === "/control/recents/launch" && request.method === "POST") {
           const body = await requestJson(request);
-          const target = body.target && typeof body.target === "object" && !Array.isArray(body.target)
-            ? Object.fromEntries(Object.entries(body.target).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
-            : undefined;
-          return json(mintRecentsTicket(target));
+          return json(mintRecentsTicket(hostTarget(body.target)));
+        }
+        if (pathname === "/control/recents/add" && request.method === "POST") {
+          try {
+            const body = await requestJson(request);
+            if (typeof body.path !== "string" || !body.path.trim()) throw new Error("A recent Markdown path is required.");
+            const result = await recents.record(body.path, hostTarget(body.target));
+            return json({ path: result.entry.path, recentCount: result.entries.length, hostSynchronized: result.hostSynchronized });
+          } catch (cause) {
+            return error("command_failed", cause instanceof Error ? cause.message : String(cause), 500);
+          }
         }
         if (pathname === "/control/cancel" && request.method === "POST") {
           const body = await requestJson(request);
@@ -593,6 +685,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       tickets.clear();
       recentsTickets.clear();
       recentsSessions.clear();
+      for (const close of [...recentsStreamClosers]) close();
       await bunServer.stop();
       await removeDiscovery(config, instanceId);
       settleReady();

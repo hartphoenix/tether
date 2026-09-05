@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { prepareConfig, readDiscovery, resolveConfig, validateProfile } from "../src/server/config";
 import { controlLaunch, discoverDaemon } from "../src/server/lifecycle";
+import { RecentsRegistry } from "../src/recents/registry";
 
 const directories: string[] = [];
 const daemonPids = new Set<number>();
@@ -109,6 +110,19 @@ test("simultaneous source-checkout launchers recover stale state, reuse one daem
   expect(JSON.parse(agentSave.stdout)).toMatchObject({ protocol: 1, ok: true, command: "document.save" });
   expect(await readFile(path, "utf8")).toBe("# Revised through stdin\n\nSecond line.\n");
   expect((await discoverDaemon(config))?.instanceId).toBe(discovery!.instanceId);
+
+  const recentOne = join(directory, "recent-one.md");
+  const recentTwo = join(directory, "recent-two.md");
+  await writeFile(recentOne, "One\n");
+  await writeFile(recentTwo, "Two\n");
+  const recentAdds = await Promise.all([
+    command(["mdreview", "recents", "add", recentOne], env),
+    command(["mdreview", "recents", "add", recentTwo], env),
+  ]);
+  expect(recentAdds.every((result) => result.exitCode === 0)).toBe(true);
+  const recentPaths = await new RecentsRegistry(config.recentsPath).paths();
+  expect(recentPaths).toContain(await realpath(recentOne));
+  expect(recentPaths).toContain(await realpath(recentTwo));
 
   const launch = await controlLaunch(config, path);
   const exchange = await fetch(launch.url, { redirect: "manual" });

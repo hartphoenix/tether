@@ -2,7 +2,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { resolveConfig, type TetherConfig } from "../server/config";
-import { cancelLaunch, controlLaunch, controlRecentsLaunch, controlRequest, ControlRequestError, statusDaemon, stopDaemon } from "../server/lifecycle";
+import { cancelLaunch, controlLaunch, controlRecentsAdd, controlRecentsLaunch, controlRequest, ControlRequestError, ensureDaemon, statusDaemon, stopDaemon } from "../server/lifecycle";
 import { createBrowserHost } from "../hosts/browser";
 import { createWaveHost } from "../hosts/wave";
 import { startWaveBridge } from "../hosts/wave-bridge";
@@ -11,7 +11,6 @@ import { cmuxBridgeStatus, startCmuxBridge, stopCmuxBridge, type CmuxBridgeStatu
 import type { HostAdapter } from "../hosts/host-adapter";
 import type { ProtocolResponse } from "../shared/contracts";
 import { RecentsRegistry } from "../recents/registry";
-import { recordRecent } from "../recents/service";
 import { installWaveLaunchers, uninstallWaveLaunchers, waveLauncherStatus } from "../hosts/wave-launchers";
 
 export type CliDependencies = {
@@ -147,11 +146,14 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     if (argv[0] === "recents" && argv[1] === "add") {
       if (!argv[2] || argv.length !== 3) usage();
       const host = await launchHost(dependencies);
-      const result = await recordRecent(new RecentsRegistry(config.recentsPath), host, resolve(argv[2]), host.launchTarget?.());
+      const target = host.launchTarget?.();
+      await ensureDaemon({ config });
+      if (host.id === "wave" && !dependencies.host) await startWaveBridge(config, process.env, { wait: false }).catch(() => null);
+      const result = await controlRecentsAdd(config, resolve(argv[2]), target);
       return {
         response: success(command, {
-          path: result.entry.path,
-          recentCount: result.entries.length,
+          path: result.path,
+          recentCount: result.recentCount,
           host: host.id,
           hostSynchronized: result.hostSynchronized,
         }),

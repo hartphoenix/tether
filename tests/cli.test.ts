@@ -243,6 +243,9 @@ test("adds a recent file through the application transaction and reports host sy
     openExternal: async () => {},
     recentsChanged: async (entries) => { synchronized.push(entries.map((entry) => entry.path)); },
   };
+  const daemon = createDaemon({ config, hostAdapter: host, startupGraceMs: 600_000, web: () => new Response("web") });
+  daemons.push(daemon);
+  await daemon.ready;
 
   const result = await runCli(["recents", "add", path], { config, host });
   expect(result).toMatchObject({
@@ -266,9 +269,13 @@ test("returns a failed recents add when host synchronization fails", async () =>
     openExternal: async () => {},
     recentsChanged: async () => { throw new Error("Wave update failed"); },
   };
+  const daemon = createDaemon({ config, hostAdapter: host, startupGraceMs: 600_000, web: () => new Response("web") });
+  daemons.push(daemon);
+  await daemon.ready;
 
   const result = await runCli(["recents", "add", path], { config, host });
-  expect(result).toMatchObject({ exitCode: 1, response: { ok: false, command: "recents.add", error: { message: "Wave update failed" } } });
+  expect(result).toMatchObject({ exitCode: 1, response: { ok: false, command: "recents.add", error: { code: "command_failed", message: "Wave update failed" } } });
+  expect(await new (await import("../src/recents/registry")).RecentsRegistry(config.recentsPath).paths()).toEqual([await realpath(path)]);
 });
 
 test("uses a documented structured usage failure", async () => {

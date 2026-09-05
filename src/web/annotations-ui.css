@@ -10,8 +10,6 @@
   display: flex;
   width: min(300px, 28vw);
   min-width: 228px;
-  flex-direction: column;
-  gap: 8px;
   overflow: auto;
   padding: 12px 10px 36px;
   border-left: 1px solid var(--wm-annotation-border);
@@ -21,8 +19,16 @@
 }
 
 .wm-annotation-rail[hidden] { display: none; }
+.wm-annotation-rail-content {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 8px;
+  zoom: var(--wm-annotation-zoom, 1);
+}
 
 .wm-annotation-rail-header,
+.wm-annotation-rail-controls,
 .wm-annotation-actions,
 .wm-thread-identity,
 .wm-thread-reply-meta {
@@ -37,6 +43,21 @@
 }
 
 .wm-unresolved-filter { color: var(--wm-annotation-muted); font-size: 11px; white-space: nowrap; }
+.wm-annotation-rail-controls { gap: 5px; }
+.wm-hide-threads {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 2px;
+  place-items: center;
+  border: 0;
+  color: var(--wm-annotation-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.wm-hide-threads:hover { color: inherit; }
+.wm-hide-threads:focus-visible { border-radius: 3px; outline: 2px solid currentColor; outline-offset: 1px; }
+.wm-hide-threads svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
 .wm-empty-comments { margin: 8px 2px; color: var(--wm-annotation-muted); font-size: 12px; }
 
 .wm-annotation-rail-header h2,
@@ -211,6 +232,7 @@
   background: var(--wm-annotation-surface, #fffdf9);
   box-shadow: 0 12px 36px rgb(25 20 15 / 28%);
   color: #3a332c;
+  zoom: var(--wm-annotation-zoom, 1);
 }
 
 .wm-thread-popover { padding: 24px 10px 10px; }
