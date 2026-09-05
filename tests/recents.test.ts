@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { RecentsRegistry, moveToTrash, recordRecent, removeRecent } from "../src/recents/index";
+import { RecentsRegistry, moveToTrash, pickMarkdownFiles, recordRecent, recordRecents, removeRecent } from "../src/recents/index";
 import type { HostAdapter } from "../src/hosts/host-adapter";
 
 const directories: string[] = [];
@@ -29,6 +29,24 @@ test("stores canonical Markdown paths in deduplicated MRU order", async () => {
   const raw = JSON.parse(await readFile(registry.path, "utf8")) as Array<{ path: string }>;
   expect(raw.map((entry) => entry.path)).toEqual([canonicalPath, canonicalSecond]);
   expect((await stat(registry.path)).mode & 0o077).toBe(0);
+});
+
+test("adds multiple Markdown paths atomically in selection order", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-recents-many-"));
+  directories.push(directory);
+  const first = join(directory, "first.md");
+  const second = join(directory, "second.markdown");
+  const invalid = join(directory, "invalid.txt");
+  await writeFile(first, "First\n");
+  await writeFile(second, "Second\n");
+  await writeFile(invalid, "Invalid\n");
+  const registry = new RecentsRegistry(join(directory, "recent-files.json"));
+
+  const added = await registry.addMany([first, second, first]);
+  expect(added.map((entry) => entry.path)).toEqual([await realpath(first), await realpath(second)]);
+  expect(await registry.paths()).toEqual([await realpath(first), await realpath(second)]);
+  await expect(registry.addMany([second, invalid])).rejects.toThrow("Only .md and .markdown files");
+  expect(await registry.paths()).toEqual([await realpath(first), await realpath(second)]);
 });
 
 test("tolerates malformed and stale entries without authorizing documents", async () => {
@@ -78,6 +96,31 @@ test("records a recent document and synchronizes the active host", async () => {
   const result = await recordRecent(registry, host, path, { host: "wave" });
   expect(result).toMatchObject({ entry: { path: await realpath(path) }, hostSynchronized: true });
   expect(synchronized).toEqual([[await realpath(path)]]);
+});
+
+test("records several recent documents with one host synchronization", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-recents-service-many-"));
+  directories.push(directory);
+  const paths = await Promise.all(["one.md", "two.md"].map(async (name) => {
+    const path = join(directory, name);
+    await writeFile(path, name);
+    return path;
+  }));
+  const registry = new RecentsRegistry(join(directory, "recent-files.json"));
+  const synchronized: string[][] = [];
+  const host: HostAdapter = {
+    id: "wave",
+    detect: async () => true,
+    capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: true, widgetInstallation: true, fileNavigatorHook: false, revealFile: true }),
+    openView: async () => {},
+    openExternal: async () => {},
+    recentsChanged: async (entries) => { synchronized.push(entries.map((entry) => entry.path)); },
+  };
+
+  const result = await recordRecents(registry, host, paths, { host: "wave" });
+  const canonicalPaths = await Promise.all(paths.map((path) => realpath(path)));
+  expect(result.added.map((entry) => entry.path)).toEqual(canonicalPaths);
+  expect(synchronized).toEqual([canonicalPaths]);
 });
 
 test("surfaces host synchronization failures", async () => {
@@ -131,4 +174,19 @@ test("uses Finder for an authorized macOS trash operation", async () => {
   expect(commands).toHaveLength(1);
   expect(commands[0]?.[0]).toBe("osascript");
   expect(commands[0]?.at(-1)).toBe("/tmp/review.md");
+});
+
+test("configures the macOS picker for multiple Markdown files and validates its response", async () => {
+  if (process.platform !== "darwin") return;
+  const commands: string[][] = [];
+  const paths = await pickMarkdownFiles(async (command) => {
+    commands.push(command);
+    return JSON.stringify(["/tmp/one.md", "/tmp/two.markdown"]);
+  });
+  expect(paths).toEqual(["/tmp/one.md", "/tmp/two.markdown"]);
+  expect(commands[0]?.slice(0, 4)).toEqual(["/usr/bin/osascript", "-l", "JavaScript", "-e"]);
+  expect(commands[0]?.at(-1)).toContain('panel.prompt = "Add Files"');
+  expect(commands[0]?.at(-1)).toContain('panel.allowedFileTypes = ["md", "markdown"]');
+  await expect(pickMarkdownFiles(async () => "not-json")).rejects.toThrow("invalid response");
+  await expect(pickMarkdownFiles(async () => JSON.stringify([""]))).rejects.toThrow("invalid paths");
 });

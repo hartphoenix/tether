@@ -7,6 +7,7 @@ export type SyncRecentsResult = {
 };
 
 export type RecordRecentResult = SyncRecentsResult & { entry: RecentEntry };
+export type RecordRecentsResult = SyncRecentsResult & { added: RecentEntry[] };
 
 async function synchronizeHost(host: HostAdapter, entries: RecentEntry[], target?: HostTarget): Promise<boolean> {
   const hostSynchronized = typeof host.recentsChanged === "function";
@@ -21,10 +22,23 @@ export async function recordRecent(
   path: string,
   target?: HostTarget,
 ): Promise<RecordRecentResult> {
-  const entry = await registry.add(path);
+  const result = await recordRecents(registry, host, [path], target);
+  const entry = result.added[0];
+  if (!entry) throw new Error("A recent Markdown path is required.");
+  return { ...result, entry };
+}
+
+/** Record several recent documents with one registry write and host update. */
+export async function recordRecents(
+  registry: RecentsRegistry,
+  host: HostAdapter,
+  paths: string[],
+  target?: HostTarget,
+): Promise<RecordRecentsResult> {
+  const added = await registry.addMany(paths);
   const entries = await registry.list();
   const hostSynchronized = await synchronizeHost(host, entries, target);
-  return { entry, entries, hostSynchronized };
+  return { added, entries, hostSynchronized };
 }
 
 /** Remove one recent document and synchronously update the active host. */

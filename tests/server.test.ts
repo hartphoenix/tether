@@ -87,6 +87,7 @@ describe("browser launch authorization", () => {
     });
 
     const page = await (await fetch(recentsUrl(daemon, location), { headers: { cookie } })).text();
+    expect(page).toContain("<title>Recents</title>");
     expect(page).toContain("Reveal in Finder");
     expect(page).toContain("Open in Default App");
     expect(page).toContain("Remove from Queue");
@@ -102,9 +103,9 @@ describe("browser launch authorization", () => {
     expect(synchronized.at(-1)).toEqual([]);
   });
 
-  test("renders responsive Recents paths, timestamps, and filename filtering", async () => {
+  test("renders responsive Recents filtering, timed status, and confirmed batch selection actions", async () => {
     const file = await fixture();
-    const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, web: () => new Response("web") });
+    const daemon = createDaemon({ config: file.config, pickFiles: async () => [], startupGraceMs: 600_000, web: () => new Response("web") });
     daemons.push(daemon);
     await daemon.ready;
     const launch = await controlRecentsLaunch(file.config);
@@ -119,9 +120,20 @@ describe("browser launch authorization", () => {
       { path: "/Users/alice/Documents/Projects/alpha.md", directory: "/Users/alice/Documents/Projects", name: "alpha.md", createdAt: today.getTime() },
       { path: "/Users/alice/Documents/beta.md", directory: "/Users/alice/Documents", name: "beta.md", createdAt: older.getTime() },
     ];
+    const actionRequests: Array<{ path: string; action: string }> = [];
+    let pickerRequests = 0;
+    const timers = new Map<number, () => void>();
+    let nextTimer = 1;
     const dom = new JSDOM(page, { runScripts: "outside-only", url: recentsUrl(daemon, location) });
-    Object.defineProperty(dom.window, "fetch", { value: async (input: string | URL | Request) => String(input).endsWith("/files") ? Response.json(files) : Response.json({ ok: true }) });
+    Object.defineProperty(dom.window, "fetch", { value: async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/files")) return Response.json(files);
+      if (String(input).endsWith("/action")) actionRequests.push(JSON.parse(String(init?.body)));
+      if (String(input).endsWith("/pick")) { pickerRequests++; return Response.json({ cancelled: false, added: 2 }); }
+      return Response.json({ ok: true });
+    } });
     Object.defineProperty(dom.window, "setInterval", { value: () => 0 });
+    Object.defineProperty(dom.window, "setTimeout", { value: (callback: () => void) => { const id = nextTimer++; timers.set(id, callback); return id; } });
+    Object.defineProperty(dom.window, "clearTimeout", { value: (id: number) => { timers.delete(id); } });
     dom.window.eval(dom.window.document.querySelector("script")!.textContent!);
     await Bun.sleep(0);
 
@@ -139,7 +151,136 @@ describe("browser launch authorization", () => {
     input.value = "BETA";
     input.dispatchEvent(new dom.window.Event("input"));
     expect([...dom.window.document.querySelectorAll(".name")].map((node) => node.textContent)).toEqual(["beta.md"]);
+
+    input.value = "";
+    input.dispatchEvent(new dom.window.Event("input"));
+    const add = dom.window.document.querySelector<HTMLButtonElement>("#add")!;
+    const select = dom.window.document.querySelector<HTMLButtonElement>("#select")!;
+    const remove = dom.window.document.querySelector<HTMLButtonElement>("#batch-remove")!;
+    const trash = dom.window.document.querySelector<HTMLButtonElement>("#batch-trash")!;
+    expect(add.textContent).toBe("+");
+    expect(add.hidden).toBe(false);
+    add.click();
+    await Bun.sleep(0);
+    expect(pickerRequests).toBe(1);
+    expect(dom.window.document.querySelector("#status")?.textContent).toBe("Added 2 files.");
+
+    select.click();
+    expect(select.textContent).toBe("Cancel");
+    expect(add.hidden).toBe(true);
+    expect(remove.hidden).toBe(false);
+    expect(trash.hidden).toBe(false);
+    expect(remove.disabled).toBe(true);
+    const checkboxes = [...dom.window.document.querySelectorAll<HTMLInputElement>(".file-check")];
+    expect(checkboxes).toHaveLength(2);
+    checkboxes.forEach((checkbox) => checkbox.click());
+    expect(remove.disabled).toBe(false);
+
+    remove.click();
+    const popover = dom.window.document.querySelector<HTMLElement>("#confirm-popover")!;
+    expect(popover.classList.contains("open")).toBe(true);
+    expect(dom.window.document.querySelector("#confirm-message")?.textContent).toBe("Remove 2 selected files from the queue?");
+    expect(actionRequests).toHaveLength(0);
+    dom.window.document.querySelector<HTMLButtonElement>("#confirm-action")!.click();
+    await Bun.sleep(10);
+    expect(actionRequests).toEqual(files.map((entry) => ({ path: entry.path, action: "remove" })));
+    expect(select.textContent).toBe("Select");
+    expect(add.hidden).toBe(false);
+    expect(remove.hidden).toBe(true);
+
+    select.click();
+    [...dom.window.document.querySelectorAll<HTMLInputElement>(".file-check")].forEach((checkbox) => checkbox.click());
+    trash.click();
+    expect(dom.window.document.querySelector("#confirm-message")?.textContent).toBe("Move 2 selected files to the Trash?");
+    dom.window.document.querySelector<HTMLButtonElement>("#confirm-action")!.click();
+    await Bun.sleep(10);
+    expect(actionRequests.slice(2)).toEqual(files.map((entry) => ({ path: entry.path, action: "trash" })));
+    expect(select.textContent).toBe("Select");
+    expect(add.hidden).toBe(false);
+
+    select.click();
+    dom.window.document.querySelector<HTMLInputElement>(".file-check")!.click();
+    expect(remove.disabled).toBe(false);
+    select.click();
+    expect(select.textContent).toBe("Select");
+    expect(dom.window.document.querySelectorAll(".file-check")).toHaveLength(0);
+    expect(remove.hidden).toBe(true);
+    expect(add.hidden).toBe(false);
+    dom.window.document.querySelector<HTMLButtonElement>(".file")!.click();
+    await Bun.sleep(0);
+    expect(dom.window.document.querySelector("#status")?.textContent).toBe("Opened.");
+    expect(timers.size).toBe(1);
+    timers.values().next().value?.();
+    expect(dom.window.document.querySelector("#status")?.textContent).toBe("");
     dom.window.close();
+  });
+
+  test("adds native-picker results through the scoped Recents session", async () => {
+    const file = await fixture();
+    const synchronized: string[][] = [];
+    let pickerCalls = 0;
+    const host: HostAdapter = {
+      id: "wave",
+      detect: async () => true,
+      capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: true, widgetInstallation: true, fileNavigatorHook: false, revealFile: true }),
+      openView: async () => {},
+      openExternal: async () => {},
+      recentsChanged: async (entries) => { synchronized.push(entries.map((entry) => entry.path)); },
+    };
+    const registry = new (await import("../src/recents/registry")).RecentsRegistry(file.config.recentsPath);
+    const daemon = createDaemon({
+      config: file.config,
+      hostAdapter: host,
+      recents: registry,
+      pickFiles: async () => pickerCalls++ === 0 ? [file.path, file.other] : [],
+      startupGraceMs: 600_000,
+      web: () => new Response("web"),
+    });
+    daemons.push(daemon);
+    await daemon.ready;
+    const launch = await controlRecentsLaunch(file.config, { host: "wave" });
+    const exchanged = await fetch(launch.url, { redirect: "manual" });
+    const location = exchanged.headers.get("location")!;
+    const cookie = exchanged.headers.get("set-cookie")!.split(";", 1)[0];
+    const pick = () => fetch(recentsUrl(daemon, location, "api/pick"), {
+      method: "POST",
+      headers: { cookie, origin: daemon.origin, "content-type": "application/json" },
+      body: "{}",
+    });
+
+    const added = await pick();
+    expect(added.status).toBe(200);
+    expect(await added.json()).toEqual({ cancelled: false, added: 2 });
+    expect(await registry.paths()).toEqual([file.path, file.other]);
+    expect(synchronized).toEqual([[file.path, file.other]]);
+    expect(await (await pick()).json()).toEqual({ cancelled: true, added: 0 });
+    expect(synchronized).toHaveLength(1);
+  });
+
+  test("rejects concurrent native picker requests", async () => {
+    const file = await fixture();
+    let releasePicker!: (paths: string[]) => void;
+    const picker = new Promise<string[]>((resolve) => { releasePicker = resolve; });
+    const daemon = createDaemon({ config: file.config, pickFiles: () => picker, startupGraceMs: 600_000, web: () => new Response("web") });
+    daemons.push(daemon);
+    await daemon.ready;
+    const launch = await controlRecentsLaunch(file.config);
+    const exchanged = await fetch(launch.url, { redirect: "manual" });
+    const location = exchanged.headers.get("location")!;
+    const cookie = exchanged.headers.get("set-cookie")!.split(";", 1)[0];
+    const request = () => fetch(recentsUrl(daemon, location, "api/pick"), {
+      method: "POST",
+      headers: { cookie, origin: daemon.origin, "content-type": "application/json" },
+      body: "{}",
+    });
+
+    const first = request();
+    await Bun.sleep(0);
+    const second = await request();
+    expect(second.status).toBe(409);
+    expect(await second.json()).toMatchObject({ error: { code: "picker_busy" } });
+    releasePicker([]);
+    expect((await first).status).toBe(200);
   });
 
   test("awaits host recents synchronization and surfaces its failures", async () => {

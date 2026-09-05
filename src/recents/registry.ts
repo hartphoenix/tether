@@ -126,19 +126,35 @@ export class RecentsRegistry {
 
   /** Canonicalize and move one existing Markdown file to the front. */
   async add(requestedPath: string): Promise<RecentEntry> {
+    const [entry] = await this.addMany([requestedPath]);
+    if (!entry) throw new Error("A recent Markdown path is required.");
+    return entry;
+  }
+
+  /** Canonicalize and move existing Markdown files to the front as one write. */
+  async addMany(requestedPaths: string[]): Promise<RecentEntry[]> {
     return this.mutate(async () => {
-      const requested = resolve(requestedPath);
-      if (!isMarkdown(requested)) throw new Error("Only .md and .markdown files can be added to Recents.");
-      let canonical: string;
-      try {
-        if (!(await stat(requested)).isFile()) throw new Error("not-file");
-        canonical = await realpath(requested);
-      } catch {
-        throw new Error("The recent Markdown file does not exist.");
+      const additions: RecentEntry[] = [];
+      const addedPaths = new Set<string>();
+      const createdAt = this.now();
+      for (const requestedPath of requestedPaths) {
+        const requested = resolve(requestedPath);
+        if (!isMarkdown(requested)) throw new Error("Only .md and .markdown files can be added to Recents.");
+        let canonical: string;
+        try {
+          if (!(await stat(requested)).isFile()) throw new Error("not-file");
+          canonical = await realpath(requested);
+        } catch {
+          throw new Error("The recent Markdown file does not exist.");
+        }
+        if (addedPaths.has(canonical)) continue;
+        addedPaths.add(canonical);
+        additions.push({ path: canonical, createdAt });
       }
+      if (!additions.length) return additions;
       const existing = await this.readStored();
-      const entries: RecentEntry[] = [{ path: canonical, createdAt: this.now() }];
-      const seen = new Set([canonical]);
+      const entries: RecentEntry[] = [...additions];
+      const seen = new Set(additions.map((entry) => entry.path));
       for (const entry of existing) {
         const path = resolve(entry.path);
         let normalized: string | null = null;
@@ -153,7 +169,7 @@ export class RecentsRegistry {
         entries.push({ path: normalized ?? path, createdAt: entry.createdAt });
       }
       await this.writeStored(entries);
-      return entries[0];
+      return additions;
     });
   }
 
