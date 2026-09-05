@@ -4,6 +4,7 @@ import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose } from "@milkdown/kit/utils";
 import { createAnnotationUi, captureAnchor, type AnnotationThread, type AnnotationUiController } from "./annotations-ui";
 import { createChromeControls } from "./chrome-controls";
+import { blockHandle } from "./block-handle";
 import { cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
 import { prepareMarkdown, restoreMarkdown, wikilinkRoute } from "../core/markdown-codec";
 import { createSelectionUi, reviewNoteIconSvg, type SelectionUiController } from "./selection-ui";
@@ -354,6 +355,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       defaultValue: prepared.editorMarkdown,
       features: { [Crepe.Feature.TopBar]: true },
       featureConfigs: {
+        [Crepe.Feature.BlockEdit]: { blockHandle },
         [Crepe.Feature.TopBar]: {
           headingOptions: [
             { label: "P", level: null },

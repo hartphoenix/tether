@@ -2,6 +2,7 @@ import { NodeSelection, Plugin, TextSelection, type EditorState, type Selection 
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose } from "@milkdown/kit/utils";
 import type { MilkdownPlugin } from "@milkdown/kit/ctx";
+import { TooltipProvider } from "@milkdown/kit/plugin/tooltip";
 
 import {
   createReviewNote,
@@ -209,6 +210,7 @@ class SelectionUi implements SelectionUiController {
   };
   private overlay: HTMLElement | null = null;
   private codeCommentToolbar: HTMLElement | null = null;
+  private codeCommentProvider: TooltipProvider | null = null;
   private editorView: EditorView | null = null;
   private selectionSnapshot: Selection | null = null;
   private destroyed = false;
@@ -335,10 +337,12 @@ class SelectionUi implements SelectionUiController {
     toolbar.append(comment);
     (view.dom.parentElement ?? view.dom).append(toolbar);
     this.codeCommentToolbar = toolbar;
-    this.positionCodeCommentToolbar(toolbar, codeBlock);
+    const provider = new TooltipProvider({ content: toolbar, offset: 10 });
+    this.codeCommentProvider = provider;
+    provider.show({ getBoundingClientRect: () => this.codeCommentBounds(codeBlock) }, view);
   }
 
-  private positionCodeCommentToolbar(toolbar: HTMLElement, codeBlock: HTMLElement): void {
+  private codeCommentBounds(codeBlock: HTMLElement): DOMRect {
     const renderedSelectionBounds = codeBlockSelectionBounds(codeBlock);
     let bounds: Bounds = renderedSelectionBounds ?? codeBlock.getBoundingClientRect();
     const nativeSelection = codeBlock.ownerDocument.getSelection();
@@ -347,19 +351,12 @@ class SelectionUi implements SelectionUiController {
       const rangeBounds = typeof range.getBoundingClientRect === "function" ? range.getBoundingClientRect() : null;
       if (rangeBounds && (rangeBounds.width || rangeBounds.height)) bounds = rangeBounds;
     }
-    const margin = 8;
-    const width = toolbar.offsetWidth || 44;
-    const height = toolbar.offsetHeight || 44;
-    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 320;
-    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 240;
-    const left = clampPosition(bounds.left + bounds.width / 2 - width / 2, margin, viewportWidth - width - margin);
-    let top = bounds.top - height - 10;
-    if (top < margin) top = bounds.bottom + 10;
-    toolbar.style.left = `${left}px`;
-    toolbar.style.top = `${clampPosition(top, margin, viewportHeight - height - margin)}px`;
+    return new DOMRect(bounds.left, bounds.top, bounds.width, bounds.height);
   }
 
   private hideCodeCommentToolbar(): void {
+    this.codeCommentProvider?.destroy();
+    this.codeCommentProvider = null;
     this.codeCommentToolbar?.remove();
     this.codeCommentToolbar = null;
   }
