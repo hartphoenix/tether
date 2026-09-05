@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { RecentsRegistry, moveToTrash, pickMarkdownFiles, recordRecent, recordRecents, removeRecent } from "../src/recents/index";
+import { RecentsRegistry, RecentsService, moveToTrash, pickMarkdownFiles, recordRecent, recordRecents, removeRecent } from "../src/recents/index";
 import type { HostAdapter } from "../src/hosts/host-adapter";
 
 const directories: string[] = [];
@@ -165,6 +165,69 @@ test("removes a recent document and synchronizes the remaining launchers", async
   await removeRecent(registry, host, second, { host: "wave" });
   expect(await registry.paths()).toEqual([await realpath(first)]);
   expect(synchronized).toEqual([[await realpath(first)]]);
+});
+
+test("publishes ordered snapshots and recovers its queue after host synchronization fails", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-recents-coordinator-"));
+  directories.push(directory);
+  const first = join(directory, "first.md");
+  const second = join(directory, "second.md");
+  await writeFile(first, "First\n");
+  await writeFile(second, "Second\n");
+  let syncCalls = 0;
+  const host: HostAdapter = {
+    id: "wave",
+    detect: async () => true,
+    capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: true, widgetInstallation: true, fileNavigatorHook: false, revealFile: true }),
+    openView: async () => {},
+    openExternal: async () => {},
+    recentsChanged: async () => { if (syncCalls++ === 0) throw new Error("Wave update failed"); },
+  };
+  const service = new RecentsService(new RecentsRegistry(join(directory, "recent-files.json")), host);
+  const received: Array<{ sequence: number; paths: string[] }> = [];
+  const unsubscribe = service.subscribe((snapshot) => received.push({ sequence: snapshot.sequence, paths: snapshot.files.map((file) => file.path) }));
+  service.subscribe(() => { throw new Error("closed view"); });
+
+  await expect(service.record(first, { host: "wave" })).rejects.toThrow("Wave update failed");
+  const secondResult = await service.record(second, { host: "wave" });
+  const final = await service.snapshot();
+
+  expect(secondResult.hostSynchronized).toBe(true);
+  expect(received.map(({ sequence }) => sequence)).toEqual([1, 2]);
+  expect(received[0]?.paths).toEqual([await realpath(first)]);
+  expect(received[1]?.paths).toEqual([await realpath(second), await realpath(first)]);
+  expect(final.sequence).toBe(3);
+  expect(final.files.map((file) => file.path)).toEqual([await realpath(second), await realpath(first)]);
+
+  unsubscribe();
+  await service.remove(first, { host: "wave" });
+  expect(received).toHaveLength(2);
+});
+
+test("serializes concurrent service mutations and reports a real host synchronization", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-recents-service-concurrent-"));
+  directories.push(directory);
+  const paths = await Promise.all(["one.md", "two.md"].map(async (name) => {
+    const path = join(directory, name);
+    await writeFile(path, name);
+    return path;
+  }));
+  const snapshots: number[] = [];
+  const host: HostAdapter = {
+    id: "browser",
+    detect: async () => true,
+    capabilities: () => ({ embeddedBrowser: false, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: true }),
+    openView: async () => {},
+    openExternal: async () => {},
+    recentsChanged: async () => false,
+  };
+  const service = new RecentsService(new RecentsRegistry(join(directory, "recent-files.json")), host);
+  service.subscribe((snapshot) => { snapshots.push(snapshot.sequence); });
+
+  const results = await Promise.all(paths.map((path) => service.record(path)));
+  expect(snapshots).toEqual([1, 2]);
+  expect(results.every((result) => result.hostSynchronized === false)).toBe(true);
+  expect((await service.paths()).sort()).toEqual((await Promise.all(paths.map((path) => realpath(path)))).sort());
 });
 
 test("uses Finder for an authorized macOS trash operation", async () => {

@@ -21,6 +21,6 @@ export interface HostAdapter {
   openView(request: OpenViewRequest): Promise<OpenViewResult | void>;
   openExternal(pathOrUrl: string): Promise<void>;
   revealFile?(path: string): Promise<void>;
-  recentsChanged?(entries: RecentEntry[], target?: HostTarget): Promise<void>;
+  recentsChanged?(entries: RecentEntry[], target?: HostTarget): Promise<boolean | void>;
   installLaunchers?(): Promise<InstallResult>;
 }
