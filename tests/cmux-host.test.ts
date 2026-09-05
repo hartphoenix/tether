@@ -144,10 +144,9 @@ test("creates the first review browser beside the exact captured surface without
   const rpc = commands.find((command) => command.includes("rpc"))!;
   expect(rpc.slice(1, -1)).toEqual(["--json", "--id-format", "both", "rpc", "browser.open_split"]);
   expect(JSON.parse(rpc.at(-1)!)).toEqual({ window_id: ids.window, workspace_id: ids.workspace, surface_id: ids.source, focus: false, show_omnibar: false });
-  const renameIndex = commands.findIndex((command) => command.includes("rename-tab"));
   const navigateIndex = commands.findIndex((command) => command.includes("navigate"));
-  expect(renameIndex).toBeGreaterThan(commands.indexOf(rpc));
-  expect(navigateIndex).toBeGreaterThan(renameIndex);
+  expect(commands.some((command) => command.includes("rename-tab"))).toBe(false);
+  expect(navigateIndex).toBeGreaterThan(commands.indexOf(rpc));
   expect(commands[navigateIndex]).toContain("http://127.0.0.1:8420/launch?ticket=one");
 });
 
@@ -169,11 +168,10 @@ test("isolates the first chromeless review when cmux reuses a right sibling pane
     "cmux", "--json", "--id-format", "both", "split-off", "--surface", ids.createdSurface, "right",
     "--workspace", ids.workspace, "--window", ids.window, "--focus", "false",
   ]);
-  const renameIndex = commands.findIndex((command) => command.includes("rename-tab"));
   const focusIndex = commands.findIndex((command) => command.includes("focus-panel"));
   const navigateIndex = commands.findIndex((command) => command.includes("navigate"));
-  expect(renameIndex).toBeGreaterThan(commands.indexOf(splitOff));
-  expect(navigateIndex).toBeGreaterThan(renameIndex);
+  expect(commands.some((command) => command.includes("rename-tab"))).toBe(false);
+  expect(navigateIndex).toBeGreaterThan(commands.indexOf(splitOff));
   expect(focusIndex).toBeGreaterThan(navigateIndex);
 });
 
@@ -183,7 +181,9 @@ test("discovers one live review pane and adds later documents there without an o
     commands.push(command);
     if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
     if (command.includes("identify")) return ok(identity);
-    if (command.includes("tree")) return ok(tree([{ id: ids.reviewPane, surfaces: [{ id: ids.reviewSurface, type: "browser", title: TETHER_REVIEW_TAB_TITLE }] }]));
+    if (command.includes("tree")) return ok(tree([{ id: ids.reviewPane, surfaces: [{
+      id: ids.reviewSurface, type: "browser", title: "Existing document", url: "http://127.0.0.1:8420/s/existing/",
+    }] }]));
     if (command.includes("rpc")) return ok(openSplit({ created_split: false, placement_strategy: "reuse_right_sibling" }));
     return ok({ action: "rename" });
   });
@@ -191,7 +191,8 @@ test("discovers one live review pane and adds later documents there without an o
   const create = commands.find((command) => command.includes("rpc"))!;
   expect(JSON.parse(create.at(-1)!)).toMatchObject({ surface_id: ids.source, focus: false, show_omnibar: false });
   expect(commands.some((command) => command.includes("move-surface"))).toBe(false);
-  expect(commands.findIndex((command) => command.includes("navigate"))).toBeGreaterThan(commands.findIndex((command) => command.includes("rename-tab")));
+  expect(commands.some((command) => command.includes("rename-tab"))).toBe(false);
+  expect(commands.some((command) => command.includes("navigate"))).toBe(true);
 });
 
 test("moves a newly hidden browser into the discovered review pane when cmux places it elsewhere", async () => {
@@ -211,7 +212,8 @@ test("moves a newly hidden browser into the discovered review pane when cmux pla
     "cmux", "--json", "--id-format", "both", "move-surface", "--surface", ids.createdSurface,
     "--pane", ids.reviewPane, "--workspace", ids.workspace, "--window", ids.window, "--focus", "false",
   ]);
-  expect(commands.findIndex((command) => command.includes("rename-tab"))).toBeGreaterThan(commands.indexOf(move));
+  expect(commands.some((command) => command.includes("rename-tab"))).toBe(false);
+  expect(commands.findIndex((command) => command.includes("navigate"))).toBeGreaterThan(commands.indexOf(move));
 });
 
 test("rejects and closes a browser when cmux does not confirm hidden chrome", async () => {
@@ -485,6 +487,7 @@ test("reveals a retained live Recents session without consuming the new launch t
       title: TETHER_RECENTS_TAB_TITLE,
       url: `http://127.0.0.1:8420/r/live-session/?instance=${daemonInstanceId}`,
     }] }]));
+    if (command.includes("right-sidebar")) return { exitCode: 0, stdout: "", stderr: "" };
     return ok({ surface_id: ids.dockSurface });
   });
   const result = await host.openView({ url: "http://127.0.0.1:8420/recents/launch?ticket=unused", kind: "recents", focus: true, target: host.launchTarget() });
@@ -516,6 +519,45 @@ test("navigates previous-daemon Recents once, then retains it on reruns", async 
   expect(await host.openView({ url: "http://127.0.0.1:8420/recents/launch?ticket=unused", kind: "recents", focus: false, target })).toEqual({ launchConsumed: false });
   expect(commands.filter((command) => command.includes("navigate"))).toHaveLength(1);
   expect(commands.filter((command) => command.includes("rename-tab") && command.includes(ids.dockSurface))).toHaveLength(0);
+});
+
+test("recognizes a stale Recents error page after cmux replaces its title", async () => {
+  const commands: string[][] = [];
+  const staleUrl = "http://127.0.0.1:9000/r/stale-session/?instance=previous-daemon";
+  const host = await detected(async (command) => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(identity);
+    if (command.includes("tree")) return ok(tree([{ id: ids.dockPane, dock_scope: "global", surfaces: [{
+      id: ids.dockSurface,
+      type: "browser",
+      title: staleUrl,
+      url: staleUrl,
+    }] }]));
+    return ok({ surface_id: ids.dockSurface });
+  });
+
+  expect(await host.openView({ url: "http://127.0.0.1:8420/recents/launch?ticket=fresh", kind: "recents", focus: false, target: host.launchTarget() })).toEqual({ launchConsumed: true });
+  expect(commands.some((command) => command.includes("navigate") && command.includes(ids.dockSurface))).toBe(true);
+  expect(commands.some((command) => command.includes("new-surface"))).toBe(false);
+});
+
+test("prefers one live Recents surface over a stale duplicate", async () => {
+  const commands: string[][] = [];
+  const host = await detected(async (command) => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(identity);
+    if (command.includes("tree")) return ok(tree([{ id: ids.dockPane, dock_scope: "global", surfaces: [
+      { id: ids.dockSurface, type: "browser", title: "Dead page", url: "http://127.0.0.1:9000/r/stale/?instance=previous-daemon" },
+      { id: ids.otherSurface, type: "browser", title: TETHER_RECENTS_TAB_TITLE, url: `http://127.0.0.1:8420/r/live/?instance=${daemonInstanceId}` },
+    ] }]));
+    return ok({ surface_id: ids.otherSurface });
+  });
+
+  expect(await host.openView({ url: "http://127.0.0.1:8420/recents/launch?ticket=unused", kind: "recents", focus: true, target: host.launchTarget() })).toEqual({ launchConsumed: false });
+  expect(commands.some((command) => command.includes("navigate") || command.includes("new-surface"))).toBe(false);
+  expect(commands.find((command) => command.includes("focus-panel"))).toContain(ids.otherSurface);
 });
 
 test("leaves an existing stale Recents surface undisguised when navigation fails", async () => {
@@ -588,7 +630,7 @@ test("serializes concurrent placement per workspace so the second open can reuse
   expect(commands.filter((command) => command.includes("new-surface"))).toHaveLength(0);
 });
 
-test("closes a newly created review surface when stable naming fails", async () => {
+test("leaves a document surface title under browser-page control", async () => {
   const commands: string[][] = [];
   const host = await detected(async (command) => {
     commands.push(command);
@@ -596,13 +638,11 @@ test("closes a newly created review surface when stable naming fails", async () 
     if (command.includes("identify")) return ok(identity);
     if (command.includes("tree")) return ok(tree());
     if (command.includes("rpc")) return ok(openSplit());
-    if (command.includes("rename-tab")) return { exitCode: 1, stdout: "", stderr: "rename failed" };
-    return ok({ closed: true });
+    return ok({ surface_id: ids.createdSurface });
   });
-  await expect(host.openView({ url: "http://127.0.0.1:8420/name-failure", kind: "document", focus: false, target: host.launchTarget() })).rejects.toMatchObject({ code: "command_failed" });
-  const close = commands.find((command) => command.includes("close-surface"))!;
-  expect(close).toContain(ids.createdSurface);
-  expect(commands.find((command) => command.includes("rename-tab"))?.at(-1)).toBe(TETHER_REVIEW_TAB_TITLE);
+  await expect(host.openView({ url: "http://127.0.0.1:8420/launch?ticket=title", kind: "document", focus: false, target: host.launchTarget() })).resolves.toEqual({ launchConsumed: true });
+  expect(commands.some((command) => command.includes("rename-tab"))).toBe(false);
+  expect(commands.some((command) => command.includes("navigate"))).toBe(true);
 });
 
 test("never passes a Dock surface ID to rename-tab", async () => {
@@ -632,11 +672,11 @@ test("closes a newly created review surface without changing focus when navigati
     return ok({ surface_id: ids.createdSurface });
   });
   await expect(host.openView({ url: "http://127.0.0.1:8420/navigation-failure", kind: "document", focus: true, target: host.launchTarget() })).rejects.toMatchObject({ code: "command_failed" });
-  const renameIndex = commands.findIndex((command) => command.includes("rename-tab"));
   const navigateIndex = commands.findIndex((command) => command.includes("navigate"));
   const closeIndex = commands.findIndex((command) => command.includes("close-surface"));
   const focusCommands = commands.filter((command) => command.includes("focus-panel"));
-  expect(navigateIndex).toBeGreaterThan(renameIndex);
+  expect(commands.some((command) => command.includes("rename-tab"))).toBe(false);
+  expect(navigateIndex).toBeGreaterThan(-1);
   expect(closeIndex).toBeGreaterThan(navigateIndex);
   expect(focusCommands).toHaveLength(0);
 });

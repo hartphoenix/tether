@@ -5,8 +5,9 @@ import { PROTOCOL_VERSION, SERVICE_ID, type HostCapabilities } from "../shared/c
 export const SUPPORTED_CMUX_VERSION = "0.64.22";
 export const SUPPORTED_CMUX_BUILD = 102;
 export const SUPPORTED_CMUX_COMMIT = "ddd4a01bc";
+// Retained only to rediscover review panes created before document-derived titles.
 export const TETHER_REVIEW_TAB_TITLE = "Tether Review";
-export const TETHER_RECENTS_TAB_TITLE = "Tether Recents";
+export const TETHER_RECENTS_TAB_TITLE = "Recents";
 
 export type CmuxCommandResult = { exitCode: number; stdout: string; stderr: string };
 export type CmuxCommandRunner = (command: string[], env: NodeJS.ProcessEnv) => Promise<CmuxCommandResult>;
@@ -139,6 +140,22 @@ function liveRecentsUrl(raw: unknown, launchUrl: string, daemonInstanceId: strin
     const current = new URL(raw);
     return current.origin === new URL(launchUrl).origin && /^\/r\/[^/]+\/$/.test(current.pathname) &&
       current.searchParams.size === 1 && current.searchParams.get("instance") === daemonInstanceId && !current.hash;
+  } catch { return false; }
+}
+
+function tetherRecentsUrl(raw: unknown): boolean {
+  if (typeof raw !== "string" || !safeLoopbackUrl(raw)) return false;
+  try {
+    const url = new URL(raw);
+    return /^\/r\/[^/]+\/$/.test(url.pathname) && url.searchParams.has("instance") && !url.hash;
+  } catch { return false; }
+}
+
+function liveTetherDocumentUrl(raw: unknown, launchUrl: string): boolean {
+  if (typeof raw !== "string") return false;
+  try {
+    const current = new URL(raw);
+    return current.origin === new URL(launchUrl).origin && /^\/s\/[^/]+\/$/.test(current.pathname) && !current.hash;
   } catch { return false; }
 }
 
@@ -325,7 +342,8 @@ export class CmuxHostAdapter implements HostAdapter {
     if (!workspace || !this.workspaceHasSurface(workspace, target.surfaceId)) {
       throw new CmuxHostError("placement_anchor_missing", "The cmux placement anchor is no longer available.");
     }
-    const reviewPanes = panes(workspace).filter((pane) => pane.dock_scope === undefined && surfaces(pane).some((surface) => surface.type === "browser" && surface.title === TETHER_REVIEW_TAB_TITLE));
+    const reviewPanes = panes(workspace).filter((pane) => pane.dock_scope === undefined && surfaces(pane).some((surface) =>
+      surface.type === "browser" && (surface.title === TETHER_REVIEW_TAB_TITLE || liveTetherDocumentUrl(surface.url, request.url))));
     if (reviewPanes.length > 1) throw new CmuxHostError("ambiguous_review_pane", "Multiple Tether review panes were found in the target workspace.");
 
     if (reviewPanes.length === 1) {
@@ -372,7 +390,6 @@ export class CmuxHostAdapter implements HostAdapter {
         const split = await this.splitOffSurface(surfaceId, target);
         this.validatePlacementResult(split, surfaceId, target);
       }
-      await this.nameSurface(surfaceId, TETHER_REVIEW_TAB_TITLE, target);
       // cmux treats a focused about:blank surface as a new tab and forcibly
       // reveals its omnibar. Consume the launch URL before focusing so the
       // hidden-chrome creation state survives foreground activation.
@@ -452,10 +469,12 @@ export class CmuxHostAdapter implements HostAdapter {
     const daemonInstanceId = await this.daemonInstance(request.url);
     const workspace = workspaceFromTree(await this.tree(target), target.workspaceId);
     if (!workspace) throw new CmuxHostError("target_missing", "The originating cmux workspace is no longer available.");
-    const matches = panes(workspace)
+    const candidates = panes(workspace)
       .filter((pane) => pane.dock_scope === "workspace" || pane.dock_scope === "global")
       .flatMap((pane) => surfaces(pane))
-      .filter((surface) => surface.type === "browser" && surface.title === TETHER_RECENTS_TAB_TITLE);
+      .filter((surface) => surface.type === "browser" && (surface.title === TETHER_RECENTS_TAB_TITLE || tetherRecentsUrl(surface.url)));
+    const liveMatches = candidates.filter((surface) => liveRecentsUrl(surface.url, request.url, daemonInstanceId));
+    const matches = liveMatches.length === 1 ? liveMatches : candidates;
     if (matches.length > 1) throw new CmuxHostError("ambiguous_recents_surface", "Multiple Tether Recents surfaces were found in the cmux Dock.");
 
     let surfaceId: string;
@@ -474,17 +493,10 @@ export class CmuxHostAdapter implements HostAdapter {
     }
 
     if (request.focus) {
-      await this.runJson(["--json", "--id-format", "both", "right-sidebar", "set", "dock", "--workspace", target.workspaceId, "--window", target.windowId, "--no-focus"], target);
+      await this.runVoid(["--json", "--id-format", "both", "right-sidebar", "set", "dock", "--workspace", target.workspaceId, "--window", target.windowId, "--no-focus"], target);
       await this.runJson(["--json", "--id-format", "both", "focus-panel", "--panel", surfaceId, "--workspace", target.workspaceId, "--window", target.windowId], target);
     }
     return { launchConsumed };
-  }
-
-  private async nameSurface(surfaceId: string, title: string, target: HostTarget & { windowId: string; workspaceId: string }): Promise<void> {
-    await this.runJson([
-      "--json", "--id-format", "both", "rename-tab", "--surface", surfaceId,
-      "--workspace", target.workspaceId, "--window", target.windowId, title,
-    ], target);
   }
 
   private async initializeCreatedDockSurface(surfaceId: string, url: string, target: HostTarget & { windowId: string; workspaceId: string }): Promise<void> {
@@ -563,6 +575,21 @@ export class CmuxHostAdapter implements HostAdapter {
   }
 
   private async runJson<T = Record<string, unknown>>(args: string[], target?: HostTarget, omitContext = false): Promise<T> {
+    const result = await this.runCommand(args, target, omitContext);
+    try {
+      const parsed = JSON.parse(result.stdout) as T;
+      if (!parsed || typeof parsed !== "object") throw new Error("not an object");
+      return parsed;
+    } catch {
+      throw new CmuxHostError("invalid_response", "cmux returned an invalid structured response.");
+    }
+  }
+
+  private async runVoid(args: string[], target?: HostTarget, omitContext = false): Promise<void> {
+    await this.runCommand(args, target, omitContext);
+  }
+
+  private async runCommand(args: string[], target?: HostTarget, omitContext = false): Promise<CmuxCommandResult> {
     let result: CmuxCommandResult;
     const environment = cmuxEnvironment(this.env, target);
     if (omitContext) {
@@ -574,13 +601,7 @@ export class CmuxHostAdapter implements HostAdapter {
       throw new CmuxHostError("cmux_not_detected", "The cmux executable could not be started.", error instanceof Error ? error.message : String(error));
     }
     if (result.exitCode !== 0) this.throwCommandFailure(result);
-    try {
-      const parsed = JSON.parse(result.stdout) as T;
-      if (!parsed || typeof parsed !== "object") throw new Error("not an object");
-      return parsed;
-    } catch {
-      throw new CmuxHostError("invalid_response", "cmux returned an invalid structured response.");
-    }
+    return result;
   }
 
   private throwCommandFailure(result: CmuxCommandResult): never {
