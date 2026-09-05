@@ -43,19 +43,16 @@ const notice = document.querySelector<HTMLElement>("#notice")!;
 const toolbarControls = document.querySelector<HTMLElement>("#toolbar-controls")!;
 const themeButton = document.querySelector<HTMLButtonElement>("#theme")!;
 const themeMenu = document.querySelector<HTMLElement>("#theme-menu")!;
-const saveIndicator = document.querySelector<HTMLElement>("#save-status")!;
 const zoomButton = document.querySelector<HTMLButtonElement>("#zoom")!;
 const zoomMenu = document.querySelector<HTMLElement>("#zoom-menu")!;
 const zoomSlider = document.querySelector<HTMLInputElement>("#zoom-slider")!;
 const zoomLabel = document.querySelector<HTMLElement>("#zoom-label")!;
 const commentButton = document.querySelector<HTMLButtonElement>("#comment")!;
-const copyDocumentButton = document.querySelector<HTMLButtonElement>("#copy-document")!;
 const pendingCount = document.querySelector<HTMLElement>("#pending-count")!;
 const editorRoot = document.querySelector<HTMLElement>("#editor")!;
 const annotationsRoot = document.querySelector<HTMLElement>("#annotations")!;
 const conflictBar = document.querySelector<HTMLElement>("#conflict")!;
 const conflictMessage = document.querySelector<HTMLElement>("#conflict-message")!;
-const copyButton = document.querySelector<HTMLButtonElement>("#copy")!;
 const reloadButton = document.querySelector<HTMLButtonElement>("#reload")!;
 const saveReviewButton = document.querySelector<HTMLButtonElement>("#save-review")!;
 const cancelReviewButton = document.querySelector<HTMLButtonElement>("#cancel-review")!;
@@ -82,7 +79,7 @@ let documentGeneration = 0;
 let readOnly = false;
 
 const chrome = createChromeControls({
-  saveIndicator, notice, zoomButton, zoomMenu, zoomSlider, zoomLabel,
+  notice, zoomButton, zoomMenu, zoomSlider, zoomLabel,
   onZoomChange: (scale) => {
     const zoom = scale / 100;
     editorRoot.style.setProperty("--wm-editor-zoom", String(zoom));
@@ -216,15 +213,9 @@ function currentMarkdown(): string {
   try { return crepe.getMarkdown(); }
   catch { return savedEditorMarkdown; }
 }
-function syncSaveState(): void {
-  if (conflicted) chrome.setSaveState("conflict");
-  else if (currentMarkdown() === savedEditorMarkdown) chrome.setSaveState("saved");
-  else chrome.setSaveState("dirty");
-}
 function setReviewControls(reviewing: boolean): void {
   saveReviewButton.hidden = !reviewing;
   cancelReviewButton.hidden = !reviewing;
-  copyButton.hidden = true;
   saveReviewButton.disabled = reviewing && Boolean(crepe?.editor.status === EditorStatus.Created && incomingDiffActive(crepe.editor));
 }
 function showConflict(message = "This file changed elsewhere. Your unsaved version has not been overwritten."): void {
@@ -232,7 +223,6 @@ function showConflict(message = "This file changed elsewhere. Your unsaved versi
   conflictMessage.textContent = message;
   conflictBar.hidden = false;
   setReviewControls(Boolean(incomingReview));
-  chrome.setSaveState("conflict");
   if (saveTimer != null) clearTimeout(saveTimer);
 }
 function clearConflict(): void {
@@ -269,7 +259,6 @@ async function refreshAnnotations(generation = documentGeneration, path = curren
 
 function scheduleSave(): void {
   if (readOnly || conflicted || incomingReview || switching || currentMarkdown() === savedEditorMarkdown) return;
-  chrome.setSaveState("dirty");
   if (saveTimer != null) clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => void save(), 600);
 }
@@ -279,10 +268,9 @@ async function save(): Promise<boolean> {
   if (conflicted || incomingReview) return false;
   if (saveInFlight) { saveAgain = true; return false; }
   const markdown = currentMarkdown();
-  if (markdown === savedEditorMarkdown) { chrome.setSaveState("saved"); return true; }
+  if (markdown === savedEditorMarkdown) return true;
   saveInFlight = true;
   let succeeded = true;
-  chrome.setSaveState("saving");
   try {
     const result = await api<DocumentResponse>("api/file", {
       method: "PUT",
@@ -292,11 +280,10 @@ async function save(): Promise<boolean> {
     currentLedgerRevision = result.ledgerRevision;
     annotationState = result.annotations;
     savedEditorMarkdown = markdown;
-    syncSaveState();
   } catch (error) {
     succeeded = false;
     if ((error as Error & { status?: number }).status === 409) showConflict();
-    else { chrome.setSaveState("error"); chrome.setNotice(`Save failed: ${(error as Error).message}`, 0); }
+    else chrome.setNotice(`Save failed: ${(error as Error).message}`, 0);
   } finally {
     saveInFlight = false;
     if (saveAgain) { saveAgain = false; return await save(); }
@@ -317,7 +304,6 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
   if (crepe && !discardCurrent && !(await save())) throw new Error("Resolve the current file conflict before switching files.");
   switching = true;
   clearConflict();
-  chrome.setSaveState("loading");
   try {
     const documentResponse = prefetched ?? await loadDocument();
     if (generation !== documentGeneration) return;
@@ -442,10 +428,8 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     }));
     applyAnnotationState(documentResponse.annotations);
     if (readOnly) {
-      chrome.setSaveState("error");
       chrome.setNotice(`Read-only: ${documentResponse.ledgerError ?? "Malformed annotation ledger."}`, 0);
     } else {
-      chrome.setSaveState("saved");
       chrome.setNotice("");
     }
   } finally { if (generation === documentGeneration) switching = false; }
@@ -485,7 +469,6 @@ async function saveReviewed(): Promise<void> {
     currentLedgerRevision = result.ledgerRevision;
     savedEditorMarkdown = markdown;
     clearConflict();
-    chrome.setSaveState("saved");
     await refreshAnnotations();
   } catch (error) {
     chrome.setNotice(`Reviewed save failed: ${(error as Error).message}`, 0);
@@ -507,7 +490,6 @@ async function lease(generation = documentGeneration, path = currentPath): Promi
     if ((error as Error & { status?: number }).status === 422) {
       readOnly = true;
       editorRoot.querySelector<HTMLElement>(".ProseMirror")?.setAttribute("contenteditable", "false");
-      chrome.setSaveState("error");
       chrome.setNotice(`Read-only: ${(error as Error).message}`, 0);
       return;
     }
@@ -532,14 +514,6 @@ commentButton.addEventListener("click", () => {
   const open = !annotationUi.isRailOpen();
   annotationUi.setRailOpen(open);
 });
-async function copyCompleteDocument(): Promise<void> {
-  if (!(await save())) { chrome.setNotice("Resolve the conflict before copying the complete Markdown."); return; }
-  const source = await (await fetchResponse("api/export")).text();
-  await navigator.clipboard.writeText(source);
-  chrome.setNotice("Copied complete Markdown");
-}
-copyDocumentButton.addEventListener("click", () => void copyCompleteDocument());
-copyButton.addEventListener("click", () => void copyCompleteDocument());
 reloadButton.addEventListener("click", async () => openDocument(true));
 saveReviewButton.addEventListener("click", () => void saveReviewed());
 cancelReviewButton.addEventListener("click", () => {
@@ -574,4 +548,4 @@ addEventListener("pagehide", () => {
   chrome.destroy();
 });
 setInterval(() => void lease(), 15_000);
-void start().catch((error) => { chrome.setSaveState("error"); chrome.setNotice(`Startup failed: ${error.message}`, 0); });
+void start().catch((error) => chrome.setNotice(`Startup failed: ${error.message}`, 0));

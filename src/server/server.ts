@@ -1,4 +1,4 @@
-import { basename, dirname } from "node:path";
+import { dirname } from "node:path";
 import { readFile, realpath } from "node:fs/promises";
 import {
   PROTOCOL_VERSION,
@@ -341,11 +341,6 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, document, capabilities: hostAdapter.capabilities(session.target), preferences: await preferences(), actor: options.actor ?? "assistant" });
       }
       if (apiPath === "/file" && request.method === "GET") return json(await service.read(session.grant));
-      if (apiPath === "/export" && request.method === "GET" || apiPath === "/file/export" && request.method === "GET") {
-        const { document, source } = await service.readExactSnapshot(session.grant);
-        if (document.readOnly) return error("ledger_invalid", document.ledgerError ?? "The document ledger is malformed.", 422);
-        return new Response(source, { headers: { "content-type": "text/markdown; charset=utf-8", "content-disposition": `attachment; filename="${basename(session.grant.path).replaceAll('"', "")}"` } });
-      }
       if (apiPath === "/file" && request.method === "PUT") {
         const body = await requestJson(request);
         const content = typeof body.content === "string" ? body.content : typeof body.body === "string" ? body.body : undefined;

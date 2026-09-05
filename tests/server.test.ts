@@ -589,35 +589,6 @@ describe("browser launch authorization", () => {
 });
 
 describe("session API", () => {
-  test("serves annotations and exact export from one document source read", async () => {
-    const file = await fixture("One source snapshot\n");
-    let reads = 0;
-    const service = new DocumentService({
-      readText: async (path) => {
-        reads += 1;
-        return await readFile(path, "utf8");
-      },
-    });
-    const daemon = createDaemon({ config: file.config, service, startupGraceMs: 600_000, web: () => new Response("web") });
-    daemons.push(daemon);
-    await daemon.ready;
-    const session = await exchange(daemon, file.path);
-
-    reads = 0;
-    const annotations = await sessionFetch(daemon, session.location, session.cookie, "api/annotations?actor=assistant");
-    expect(annotations.status).toBe(200);
-    const payload = await annotations.json() as { bodyRevision: string; ledgerRevision: string; annotations: { events: unknown[] } };
-    expect(reads).toBe(1);
-    expect(payload.bodyRevision).toBe(bodyRevision("One source snapshot\n"));
-    expect(payload.annotations.events).toEqual([]);
-
-    reads = 0;
-    const exported = await sessionFetch(daemon, session.location, session.cookie, "api/export");
-    expect(exported.status).toBe(200);
-    expect(await exported.text()).toBe("One source snapshot\n");
-    expect(reads).toBe(1);
-  });
-
   test("requires same origin for mutations and preserves concurrent review events", async () => {
     const file = await fixture("Concurrent target\n");
     const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, web: () => new Response("web") });
