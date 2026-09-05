@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
-import { EditorState } from "@milkdown/kit/prose/state";
+import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import { Schema } from "@milkdown/kit/prose/model";
 import { JSDOM } from "jsdom";
 import {
   actorColor,
   annotationUiPluginKey,
+  captureAnchor,
   createAnnotationDecorations,
   createAnnotationUi,
   projectDocument,
@@ -106,6 +107,22 @@ test("includes a soft break in the quoted text and highlight ranges", () => {
   });
 });
 
+test("captures code-block text through the canonical annotation projection", () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: "block+" },
+      code_block: { content: "text*", group: "block", code: true },
+      text: {},
+    },
+  });
+  const doc = schema.node("doc", null, schema.node("code_block", null, schema.text("const value = 1;")));
+  const state = EditorState.create({ schema, doc, selection: TextSelection.create(doc, 1, 6) });
+  const captured = captureAnchor({ state } as unknown as import("@milkdown/kit/prose/view").EditorView, bodyRevision);
+
+  expect(captured?.exact).toBe("const");
+  expect(captured?.bodyRevision).toBe(bodyRevision);
+});
+
 test("ambiguous exact quotes become unresolved instead of attaching arbitrarily", () => {
   const { doc } = documentWith("same passage", "same passage");
   expect(resolveAnchor(doc, anchor("same passage"))).toBeNull();
@@ -187,6 +204,7 @@ test("the rail orders threads, isolates orphans, and exposes resolve/reply contr
   editable.querySelector<HTMLButtonElement>(".wm-button-danger")!.click();
   await Promise.resolve();
   expect(deleted).toBe("c-late");
+  expect(document.querySelector(".wm-thread-popover")).toBeNull();
   ui.destroy();
   expect(root.querySelector(".wm-annotation-rail")).toBeNull();
 });
@@ -200,20 +218,30 @@ test("an open drawer expands threads inline while a closed drawer uses a canvas-
   document.body.append(editorRoot, root);
   editorRoot.getBoundingClientRect = () => ({ left: 10, top: 10, right: 900, bottom: 700, width: 890, height: 690, x: 10, y: 10, toJSON: () => ({}) });
   trigger.getBoundingClientRect = () => ({ left: 850, top: 650, right: 866, bottom: 666, width: 16, height: 16, x: 850, y: 650, toJSON: () => ({}) });
-  const ui = createAnnotationUi({ root, editorRoot });
+  const railStates: boolean[] = [];
+  const ui = createAnnotationUi({ root, editorRoot, onRailOpenChange: (open) => railStates.push(open) });
   ui.setState({ threads: [thread()] });
 
   ui.setRailOpen(true);
+  ui.setZoom(1.5);
+  expect(root.querySelector<HTMLElement>(".wm-annotation-rail")!.style.getPropertyValue("--wm-annotation-zoom")).toBe("1.5");
   root.querySelector<HTMLButtonElement>(".wm-thread-summary")!.click();
   expect(root.querySelector<HTMLElement>(".wm-thread-details")!.hidden).toBe(false);
   expect(document.querySelector(".wm-thread-popover")).toBeNull();
 
-  ui.setRailOpen(false);
+  const hide = root.querySelector<HTMLButtonElement>(".wm-hide-threads")!;
+  expect(hide.title).toBe("Hide threads");
+  expect(hide.textContent).toBe("");
+  hide.click();
+  expect(ui.isRailOpen()).toBe(false);
+  expect(root.querySelector<HTMLElement>(".wm-annotation-rail")!.hidden).toBe(true);
+  expect(railStates).toEqual([true, false]);
   ui.openThread("c-1", trigger);
   const popover = document.querySelector<HTMLElement>(".wm-thread-popover")!;
-  expect(Number.parseFloat(popover.style.left)).toBeGreaterThanOrEqual(22);
-  expect(Number.parseFloat(popover.style.left) + 340).toBeLessThanOrEqual(888);
-  expect(Number.parseFloat(popover.style.top)).toBeGreaterThanOrEqual(22);
+  expect(popover.style.getPropertyValue("--wm-annotation-zoom")).toBe("1.5");
+  expect(Number.parseFloat(popover.style.left) * 1.5).toBeGreaterThanOrEqual(22);
+  expect((Number.parseFloat(popover.style.left) + Number.parseFloat(popover.style.width)) * 1.5).toBeLessThanOrEqual(888);
+  expect(Number.parseFloat(popover.style.top) * 1.5).toBeGreaterThanOrEqual(22);
   ui.destroy();
 });
 

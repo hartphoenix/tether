@@ -156,8 +156,9 @@ export class WaveHostAdapter implements HostAdapter {
     if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout || `open exited with status ${result.exitCode}`);
   }
 
-  async recentsChanged(entries: RecentEntry[]): Promise<void> {
+  async recentsChanged(entries: RecentEntry[]): Promise<boolean> {
     await this.syncRecents(entries);
+    return true;
   }
 }
 

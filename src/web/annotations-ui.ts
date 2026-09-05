@@ -65,6 +65,7 @@ export interface AnnotationUiOptions {
   onEdit?: (draft: { thread: AnnotationThread; targetId: string; body: string }) => void | Promise<void>;
   onDelete?: (draft: { thread: AnnotationThread; targetId: string }) => void | Promise<void>;
   onPendingCountChange?: (count: number) => void;
+  onRailOpenChange?: (open: boolean) => void;
   onSelectThread?: (thread: AnnotationThread) => void;
   onNotice?: (message: string) => void;
   /** Actor using this viewer; any other latest author hands the thread to them. */
@@ -82,6 +83,7 @@ export interface AnnotationUiController {
   openThread(threadId: string, trigger?: HTMLElement): void;
   setRailOpen(open: boolean): void;
   isRailOpen(): boolean;
+  setZoom(scale: number): void;
   closeFootnotePopover(): void;
   destroy(): void;
 }
@@ -345,6 +347,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     onEdit = NOOP,
     onDelete = NOOP,
     onPendingCountChange = NOOP,
+    onRailOpenChange = NOOP,
     onSelectThread = NOOP,
     onNotice = NOOP,
     getEditorView,
@@ -356,9 +359,11 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   let destroyed = false;
   let activeThreadId: string | null = null;
   let composer: HTMLElement | null = null;
+  let composerAnchor: AnnotationAnchor | undefined;
   let threadPopover: HTMLElement | null = null;
   let railOpen = false;
   let showResolved = false;
+  let annotationZoom = 1;
   const rail = createElement("aside", "wm-annotation-rail");
   rail.setAttribute("aria-label", "Threads");
   root.append(rail);
@@ -387,7 +392,9 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     openCommentComposer(anchor) {
       if (destroyed) return;
       composer?.remove();
+      composerAnchor = anchor;
       composer = createCommentComposer(anchor);
+      applyZoom(composer);
       document.body.append(composer);
       positionPopover(composer, anchor);
       composer.querySelector<HTMLTextAreaElement>("textarea")?.focus();
@@ -409,9 +416,24 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       threadPopover?.remove();
       threadPopover = null;
       renderRail();
+      onRailOpenChange(open);
     },
     isRailOpen() {
       return railOpen;
+    },
+    setZoom(scale) {
+      if (!Number.isFinite(scale) || scale <= 0) return;
+      annotationZoom = scale;
+      applyZoom(rail);
+      if (composer) {
+        applyZoom(composer);
+        positionPopover(composer, composerAnchor);
+      }
+      if (threadPopover) {
+        applyZoom(threadPopover);
+        const thread = activeThreadId ? state.threads.find((candidate) => candidate.id === activeThreadId) : undefined;
+        positionPopover(threadPopover, thread?.anchor);
+      }
     },
     closeFootnotePopover() {
       editorRoot?.querySelector(".wm-footnote-popover")?.remove();
@@ -423,6 +445,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       editorRoot?.querySelector(".wm-footnote-popover")?.remove();
       composer?.remove();
       composer = null;
+      composerAnchor = undefined;
       threadPopover?.remove();
       threadPopover = null;
       rail.remove();
@@ -433,6 +456,10 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
 
   function currentView(): EditorView | null {
     return getEditorView?.() ?? editorView;
+  }
+
+  function applyZoom(node: HTMLElement): void {
+    node.style.setProperty("--wm-annotation-zoom", String(annotationZoom));
   }
 
   function navigateToThread(thread: AnnotationThread, trigger?: HTMLElement): void {
@@ -462,16 +489,22 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
         reference = coordinates;
       } catch {}
     }
+    const availableWidth = Math.max(0, bounds.right - bounds.left);
+    const availableHeight = Math.max(0, bounds.bottom - bounds.top);
+    const localWidth = Math.min(340, availableWidth / annotationZoom);
+    const localMaxHeight = Math.min(560, availableHeight / annotationZoom);
+    node.style.width = `${localWidth}px`;
+    node.style.maxHeight = `${localMaxHeight}px`;
     const box = node.getBoundingClientRect();
-    const width = box.width || Math.min(340, Math.max(0, bounds.right - bounds.left));
-    const height = box.height || Math.min(560, Math.max(0, bounds.bottom - bounds.top));
+    const width = box.width || localWidth * annotationZoom;
+    const height = box.height || localMaxHeight * annotationZoom;
     let left = reference?.left ?? bounds.left;
     let top = (reference?.bottom ?? bounds.top) + 8;
     if (reference && top + height > bounds.bottom) top = reference.top - height - 8;
     left = Math.max(bounds.left, Math.min(left, bounds.right - width));
     top = Math.max(bounds.top, Math.min(top, bounds.bottom - height));
-    node.style.left = `${left}px`;
-    node.style.top = `${top}px`;
+    node.style.left = `${left / annotationZoom}px`;
+    node.style.top = `${top / annotationZoom}px`;
   }
 
   function showThreadPopover(thread: AnnotationThread, trigger?: HTMLElement): void {
@@ -493,6 +526,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       renderRail();
     });
     popover.append(close, details);
+    applyZoom(popover);
     document.body.append(popover);
     threadPopover = popover;
     positionPopover(popover, thread.anchor, trigger);
@@ -522,6 +556,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     cancel.addEventListener("click", () => {
       composer?.remove();
       composer = null;
+      composerAnchor = undefined;
       section.remove();
     });
     form.addEventListener("submit", (event) => {
@@ -543,6 +578,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       setBusy(submit, true);
       Promise.resolve(onCreateComment({ body, anchor: resolvedAnchor })).then(() => {
         composer = null;
+        composerAnchor = undefined;
         section.remove();
       }).catch((reason: unknown) => {
         setBusy(submit, false);
@@ -623,10 +659,17 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       });
       remove.addEventListener("click", () => {
         setBusy(remove, true);
-        Promise.resolve(onDelete({ thread, targetId })).catch((reason: unknown) => {
-          setBusy(remove, false);
-          onNotice(reason instanceof Error ? reason.message : "Comment could not be deleted.");
-        });
+        Promise.resolve(onDelete({ thread, targetId }))
+          .then(() => {
+            threadPopover?.remove();
+            threadPopover = null;
+            activeThreadId = null;
+            renderRail();
+          })
+          .catch((reason: unknown) => {
+            setBusy(remove, false);
+            onNotice(reason instanceof Error ? reason.message : "Comment could not be deleted.");
+          });
       });
     });
     container.append(body, edit);
@@ -737,6 +780,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
 
   function renderRail(): void {
     rail.replaceChildren();
+    const content = createElement("div", "wm-annotation-rail-content");
     const allThreads = state.threads.filter((thread) => !thread.deleted);
     const threads = visibleThreads().sort(threadSort);
     const view = currentView();
@@ -763,22 +807,31 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     checkbox.checked = showResolved;
     checkbox.addEventListener("change", () => { showResolved = checkbox.checked; renderRail(); syncDecorations(); });
     filter.append(checkbox, document.createTextNode(" Show resolved"));
-    header.append(title, filter, badge);
-    rail.append(header);
+    const controls = createElement("div", "wm-annotation-rail-controls");
+    const hide = createElement("button", "wm-hide-threads");
+    hide.type = "button";
+    hide.title = "Hide threads";
+    hide.setAttribute("aria-label", "Hide threads");
+    hide.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h10m-4-4 4 4-4 4m7-10v12"/></svg>';
+    hide.addEventListener("click", () => controller.setRailOpen(false));
+    controls.append(filter, hide);
+    header.append(title, controls, badge);
+    content.append(header);
     if (threads.length === 0) {
       const empty = createElement("p", "wm-empty-comments");
       empty.textContent = allThreads.length ? "No open threads." : "No threads.";
-      rail.append(empty);
+      content.append(empty);
     }
-    for (const thread of validThreads) rail.append(renderThread(thread, false));
+    for (const thread of validThreads) content.append(renderThread(thread, false));
     if (orphanedThreads.length > 0) {
       const group = createElement("section", "wm-orphan-group");
       const heading = createElement("h3");
       heading.textContent = "Orphaned threads";
       group.append(heading);
       for (const thread of orphanedThreads) group.append(renderThread(thread, true));
-      rail.append(group);
+      content.append(group);
     }
+    rail.append(content);
     renderRailVisibility();
   }
 

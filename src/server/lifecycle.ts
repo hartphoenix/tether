@@ -188,6 +188,14 @@ export async function controlRecentsLaunch(config: TetherConfig, target?: HostTa
   return controlRequest(config, "/control/recents/launch", { ...(target ? { target } : {}) });
 }
 
+export async function controlRecentsAdd(
+  config: TetherConfig,
+  path: string,
+  target?: HostTarget,
+): Promise<{ path: string; recentCount: number; hostSynchronized: boolean }> {
+  return controlRequest(config, "/control/recents/add", { path, ...(target ? { target } : {}) });
+}
+
 export async function cancelLaunch(config: TetherConfig, url: string): Promise<void> {
   const discovery = await discoverDaemon(config);
   if (!discovery) return;

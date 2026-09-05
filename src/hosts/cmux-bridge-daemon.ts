@@ -49,7 +49,7 @@ const authorized = (request: Request) => request.headers.get("authorization") ==
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const requestKeys = new Set(["url", "kind", "focus", "allowFocusedFallback", "target"]);
+const requestKeys = new Set(["url", "kind", "focus", "allowFocusedFallback", "targetPolicy", "target"]);
 const targetKeys = new Set(["host", "version", "build", "commit", "windowId", "workspaceId", "surfaceId"]);
 
 class BridgeServiceError extends Error {
@@ -75,7 +75,8 @@ function openRequest(value: unknown): OpenViewRequest {
   const body = object(value);
   if (!body || Object.keys(body).some((key) => !requestKeys.has(key)) || typeof body.url !== "string" ||
     (body.kind !== "document" && body.kind !== "recents") || typeof body.focus !== "boolean" ||
-    (body.allowFocusedFallback !== undefined && typeof body.allowFocusedFallback !== "boolean")) {
+    (body.allowFocusedFallback !== undefined && typeof body.allowFocusedFallback !== "boolean") ||
+    (body.targetPolicy !== undefined && (body.kind !== "document" || body.targetPolicy !== "focused-workspace"))) {
     throw new BridgeServiceError("invalid_request", "A valid cmux open-view request is required.", 400);
   }
   const target = validTarget(body.target);
@@ -93,6 +94,7 @@ function openRequest(value: unknown): OpenViewRequest {
     kind: body.kind,
     focus: body.focus,
     ...(body.allowFocusedFallback === undefined ? {} : { allowFocusedFallback: body.allowFocusedFallback }),
+    ...(body.targetPolicy === undefined ? {} : { targetPolicy: body.targetPolicy }),
     target,
   };
 }
