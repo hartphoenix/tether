@@ -3,6 +3,7 @@ import { EditorStatus, editorViewCtx } from "@milkdown/kit/core";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose } from "@milkdown/kit/utils";
 import { createAnnotationUi, captureAnchor, type AnnotationThread, type AnnotationUiController } from "./annotations-ui";
+import { apiErrorMessage } from "./api-error";
 import { createChromeControls } from "./chrome-controls";
 import { blockHandle } from "./block-handle";
 import { cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
@@ -182,9 +183,7 @@ async function fetchResponse(pathname: string, init: RequestInit = {}): Promise<
   });
   if (!response.ok) {
     const text = await response.text();
-    let message = text || response.statusText;
-    try { message = (JSON.parse(text) as { error?: string }).error || message; } catch {}
-    const error = new Error(message) as Error & { status?: number };
+    const error = new Error(apiErrorMessage(text, response.statusText)) as Error & { status?: number };
     error.status = response.status;
     throw error;
   }
