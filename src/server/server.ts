@@ -1,3 +1,4 @@
+import { preferencesFrom, updatePreferences } from "../shared/themes";
 import { dirname } from "node:path";
 import { readFile, realpath } from "node:fs/promises";
 import {
@@ -149,13 +150,8 @@ function hostTarget(value: unknown): HostTarget | undefined {
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 }
 
-function preferencesFrom(value: unknown): AppPreferences {
-  const theme = value && typeof value === "object" && typeof (value as Record<string, unknown>).theme === "string" ? (value as Record<string, unknown>).theme : "frame-dark";
-  const allowed = new Set<AppPreferences["theme"]>(["frame-dark", "crepe-dark", "nord-dark", "frame", "crepe", "nord"]);
-  return { theme: allowed.has(theme as AppPreferences["theme"]) ? theme as AppPreferences["theme"] : "frame-dark" };
-}
 
-const fallbackHtml = `<!doctype html><meta charset="utf-8"><title>Tether</title><main id="app">Tether session</main>`;
+const fallbackHtml = `<!doctype html><meta charset="utf-8"><title>Tether</title><link rel="icon" type="image/png" href="/favicon.png"><main id="app">Tether session</main>`;
 
 /**
  * Create one loopback daemon. The document and Recents dependencies are
@@ -275,7 +271,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     } });
   }
 
-  const recentsHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Recents</title><style>
+  const recentsHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Recents</title><link rel="icon" type="image/png" href="/favicon.png"><style>
   #controls{grid-column:2 / -1;justify-self:end}
   :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#111;color:#eee;font:15px system-ui;padding:24px}button{font:inherit}.button{padding:8px 11px;border:1px solid #444;border-radius:7px;background:#242424;color:inherit;cursor:pointer}.button:hover:not(:disabled){border-color:#777}.button:disabled{color:#777;cursor:default}#add{min-width:38px;font-size:20px;line-height:20px}.picker-slot{min-width:38px}#filter{width:100%;margin:0 0 12px;padding:9px 11px;border:1px solid #444;border-radius:7px;background:#1d1d1d;color:inherit;font:inherit;outline:none}#filter:focus{border-color:#888}.file-row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:10px;margin:8px 0}.file-row:not(.selecting){display:block}.file-check{width:17px;height:17px;margin:0 0 0 3px;accent-color:#8caee8}.file{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;width:100%;text-align:left;background:#1d1d1d;color:inherit;border:1px solid #333;border-radius:8px;padding:12px;cursor:pointer}.file-main{min-width:0}.name{font-weight:650}.dir{display:block;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}.time{color:#999;align-self:start;justify-self:end;text-align:right;white-space:nowrap}.empty,#status,#freshness{color:#999}#freshness{margin:0 0 10px}#freshness[hidden],#status:empty{display:none}.footer{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;margin-top:12px;min-height:38px}.controls{display:flex;gap:8px}#menu,#confirm-popover{position:fixed;z-index:10;display:none;min-width:190px;padding:5px;border:1px solid #444;border-radius:8px;background:#282d33;box-shadow:0 10px 28px #0008}#menu.open,#confirm-popover.open{display:block}#menu button{display:block;width:100%;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:inherit;text-align:left;cursor:pointer}#menu button:hover{background:#3a414a}#menu button[data-action="trash"],#batch-trash,#confirm-action.danger{color:#ff9898}#confirm-popover{width:min(300px,calc(100vw - 16px));padding:12px}#confirm-message{margin:0 0 12px}.confirm-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:420px){body{padding:14px}.file{padding:10px}.time{font-size:12px}.footer{align-items:end}.controls{flex-wrap:wrap;justify-content:flex-end}}</style></head><body><input id="filter" type="search" placeholder="filter by filename" aria-label="Filter by filename" autocomplete="off"><p id="freshness" role="status" aria-live="polite" hidden></p><main id="list" aria-busy="true"></main><footer class="footer"><div class="picker-slot"><button id="add" class="button" aria-label="Add Markdown files" title="Add Markdown files"${pickFiles ? "" : " hidden"}>+</button></div><div id="status" role="status" aria-live="polite"></div><div id="controls" class="controls"><button id="batch-remove" class="button" hidden>Remove from Queue</button><button id="batch-trash" class="button" hidden>Move to Trash</button><button id="select" class="button">Select</button></div></footer><div id="menu" role="menu"><button data-action="reveal" role="menuitem">Reveal in Finder</button><button data-action="default" role="menuitem">Open in Default App</button><button data-action="remove" role="menuitem">Remove from Queue</button><button data-action="trash" role="menuitem">Move to Trash</button></div><div id="confirm-popover" role="dialog" aria-modal="true" aria-labelledby="confirm-message"><p id="confirm-message"></p><div class="confirm-actions"><button id="confirm-cancel" class="button">Cancel</button><button id="confirm-action" class="button">Confirm</button></div></div><script type="module">
   const api='./api';const pickerAvailable=${pickFiles !== undefined};const list=document.querySelector('#list');const status=document.querySelector('#status');const freshness=document.querySelector('#freshness');const menu=document.querySelector('#menu');const filter=document.querySelector('#filter');const controls=document.querySelector('#controls');const addButton=document.querySelector('#add');const selectButton=document.querySelector('#select');const batchRemove=document.querySelector('#batch-remove');const batchTrash=document.querySelector('#batch-trash');const confirmPopover=document.querySelector('#confirm-popover');const confirmMessage=document.querySelector('#confirm-message');const confirmAction=document.querySelector('#confirm-action');const confirmCancel=document.querySelector('#confirm-cancel');let files=[];let selectedPath=null;let selectionMode=false;let busy=false;let pendingBatchAction=null;let statusTimer=0;let lastSequence=-1;let verified=false;let revalidationFloor=-1;let revalidationToken=0;let errorRefreshQueued=false;const selected=new Set();
@@ -309,6 +305,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     session.lastSeen = now();
     return session;
   }
+
+  let preferenceWrites: Promise<unknown> = Promise.resolve();
 
   async function preferences(): Promise<AppPreferences> {
     try { return preferencesFrom(JSON.parse(await readFile(config.preferencesPath, "utf8"))); } catch { return preferencesFrom(null); }
@@ -419,12 +417,17 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       if (apiPath === "/preferences" && request.method === "PUT") {
         const body = await requestJson(request);
-        const value = preferencesFrom(body);
-        const { mkdir, writeFile, rename } = await import("node:fs/promises");
-        await mkdir(dirname(config.preferencesPath), { recursive: true, mode: 0o700 });
-        const temp = `${config.preferencesPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
-        await writeFile(temp, JSON.stringify(value), { mode: 0o600 });
-        await rename(temp, config.preferencesPath);
+        const operation = preferenceWrites.then(async () => {
+          const value = updatePreferences(await preferences(), body);
+          const { mkdir, writeFile, rename } = await import("node:fs/promises");
+          await mkdir(dirname(config.preferencesPath), { recursive: true, mode: 0o700 });
+          const temp = `${config.preferencesPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+          await writeFile(temp, JSON.stringify(value), { mode: 0o600 });
+          await rename(temp, config.preferencesPath);
+          return value;
+        });
+        preferenceWrites = operation.catch(() => {});
+        const value = await operation;
         return json(value);
       }
       return error("not_found", "API endpoint not found.", 404);
@@ -444,6 +447,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     const url = new URL(request.url);
     const pathname = url.pathname;
     if (pathname === "/health" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId });
+    if (pathname === "/favicon.png" && request.method === "GET") {
+      return new Response(Bun.file(new URL("../web/favicon.png", import.meta.url)), {
+        headers: { "content-type": "image/png", "cache-control": "public, max-age=3600", "x-content-type-options": "nosniff" },
+      });
+    }
     if (pathname === "/launch" && request.method === "GET") {
       const ticket = url.searchParams.get("ticket");
       if (!ticket) return error("ticket_missing", "A launch ticket is required.", 400);

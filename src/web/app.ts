@@ -9,7 +9,7 @@ import { blockHandle } from "./block-handle";
 import { cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
 import { prepareMarkdown, restoreMarkdown, wikilinkRoute } from "../core/markdown-codec";
 import { createSelectionUi, reviewNoteIconSvg, type SelectionUiController } from "./selection-ui";
-import { createThemePicker, type CrepeTheme } from "./themes";
+import { createThemePicker } from "./themes";
 import { documentTabTitle, filenameStem } from "./document-title";
 import type { SessionBootstrap } from "../shared/contracts";
 import "./annotations-ui.css";
@@ -17,6 +17,9 @@ import "./chrome.css";
 import "./selection-ui.css";
 import "./themes.css";
 import "./style.css";
+import "./fonts.css";
+import "./theme-maker.css";
+import "./thread-layout.css";
 
 type ServerComment = { id: string; seq: number; actor: string; createdAt: string; body: string; anchor: AnnotationThread["anchor"] };
 type ServerReply = { id: string; seq: number; actor: string; createdAt: string; body: string };
@@ -378,7 +381,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       onPendingCountChange: (count) => {
         pendingCount.textContent = String(count);
         pendingCount.hidden = count === 0;
-        commentButton.title = count ? `Threads · ${count} need your attention` : "Threads";
+        commentButton.title = count ? `Threads · ${count} ${count === 1 ? "needs" : "need"} your attention` : "Threads";
         commentButton.setAttribute("aria-label", commentButton.title);
       },
       onRailOpenChange: (open) => {
@@ -500,10 +503,10 @@ async function start(): Promise<void> {
   const bootstrap = await api<SessionBootstrap>("api/bootstrap");
   themePicker = createThemePicker(themeButton, themeMenu, editorRoot, {
     initialTheme: bootstrap.preferences.theme,
-    onChange: (theme) => void api("api/preferences", {
-      method: "PUT",
-      body: JSON.stringify({ theme }),
-    }).catch((error) => chrome.setNotice(`Theme preference failed: ${(error as Error).message}`)),
+    customThemes: bootstrap.preferences.customThemes,
+    makerButton: document.querySelector<HTMLButtonElement>("#theme-maker")!,
+    persist: (mutation) => api("api/preferences", { method: "PUT", body: JSON.stringify(mutation) }),
+    onError: (message) => chrome.setNotice(message),
   });
   await openDocument(false, bootstrap.document as DocumentResponse);
 }

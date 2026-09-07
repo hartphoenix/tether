@@ -3,7 +3,7 @@ title: Tether — architecture and extraction plan
 status: active — Tether primary; Phase 4 complete; Phase 4.5 next
 created: 2026-08-28
 ---
-# Tether
+# tether
 
 ## Product boundary
 
@@ -402,6 +402,7 @@ Exit condition: each adapter passes the same open/read/review/save contract test
 * overriding cmux's Markdown handler until Phase 4 is proven and cmux exposes a supported interception point;
 * a persisted cmux layout registry unless live inspection fails and observed duplicate-pane behavior justifies one;
 * broad same-user cmux socket control unless explicitly enabled as **Direct cmux control (broad local access)**;
+* [filesystem-backed wikilink autocomplete](deferred-wikilink-autocomplete.md) until Tether has an explicit link-browsing scope that permits sibling and parent-directory discovery without introducing a vault model;
 * Calyx or Obsidian integration before their host capabilities and security constraints are audited.
 
 ## Main risks
@@ -427,4 +428,7 @@ Exit condition: each adapter passes the same open/read/review/save contract test
 {"type":"resolve","id":"a-13cdfca0-91af-4ad0-9934-6c50fba4bb92","seq":4,"actor":"hart","createdAt":"2026-09-01T17:32:12.968Z","threadId":"a-70ad5a20-6c6a-465f-ab9f-b53b40267951"}
 {"type":"comment","id":"a-7039028b-2714-4bfd-af7b-3e26664b25d4","seq":5,"actor":"hart","createdAt":"2026-09-03T16:54:33.837Z","anchor":{"exact":"annotation","prefix":" should own:\nMilkdown/Crepe editing and rendering;\nthe embedded ","suffix":" ledger and anchor resolution;\nbody and annotation conflict hand","projectionStart":234,"projectionEnd":244,"bodyRevision":"sha256:01cf43a14c0d21f6c595dc3439a11973fd0fe021ed1a9bd1b679bb5f23ce2d9e"},"body":"comment"}
 {"type":"delete","id":"a-da9935d8-b2f1-4b71-ab2a-427b0e3959ba","seq":6,"actor":"hart","createdAt":"2026-09-05T21:18:54.298Z","targetId":"a-7039028b-2714-4bfd-af7b-3e26664b25d4","threadId":"a-7039028b-2714-4bfd-af7b-3e26664b25d4"}
+{"type":"comment","id":"a-0df88549-1add-4dae-9cbe-23fdcbf9ae8a","seq":7,"actor":"hart","createdAt":"2026-09-06T18:10:42.043Z","anchor":{"exact":"Markdown","prefix":"Tether\nProduct boundary\nTether is a local ","suffix":" review environment for human–agent dialogue. Wave Terminal is i","projectionStart":42,"projectionEnd":50,"bodyRevision":"sha256:dc96b445bab1a390b1007b5295a30fd493e73888ea222bc7a408ce83c49e43c7"},"body":"comment"}
+{"type":"reply","id":"a-418e27f1-c2f4-4f70-8497-d3b48ccc8bd2","seq":8,"actor":"hart","createdAt":"2026-09-06T18:10:53.700Z","threadId":"a-0df88549-1add-4dae-9cbe-23fdcbf9ae8a","body":"reply"}
+{"type":"reply","id":"a-ed244332-777c-4fab-ba9a-fd1fc19a9893","seq":9,"actor":"hart","createdAt":"2026-09-06T18:11:38.024Z","threadId":"a-0df88549-1add-4dae-9cbe-23fdcbf9ae8a","body":"reply 2\n- thing\n- nother thing"}
 -->

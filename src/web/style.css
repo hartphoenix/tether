@@ -79,6 +79,12 @@ body {
   padding: 36px 44px 120px;
 }
 
+/* Overlay scrollbars must sit below the final code line, including a new empty
+   line. Keep clearance inside CodeMirror's measured content at every zoom. */
+.milkdown .milkdown-code-block .cm-content {
+  padding-bottom: max(20px, calc(20px / var(--wm-editor-zoom, 1)));
+}
+
 .milkdown .milkdown-top-bar {
   zoom: calc(1 / var(--wm-editor-zoom, 1));
   position: sticky;

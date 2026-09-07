@@ -121,6 +121,11 @@ describe("browser launch authorization", () => {
 
     const page = await (await fetch(recentsUrl(daemon, location), { headers: { cookie } })).text();
     expect(page).toContain("<title>Recents</title>");
+    expect(page).toContain('rel="icon" type="image/png" href="/favicon.png"');
+    const icon = await fetch(`${daemon.origin}/favicon.png`);
+    expect(icon.status).toBe(200);
+    expect(icon.headers.get("content-type")).toBe("image/png");
+    expect(Buffer.from(await icon.arrayBuffer())).toEqual(Buffer.from(await Bun.file("src/web/favicon.png").arrayBuffer()));
     expect(page).toContain("Reveal in Finder");
     expect(page).toContain("Open in Default App");
     expect(page).toContain("Remove from Queue");
@@ -702,4 +707,44 @@ test("idle shutdown resolves the daemon closed promise", async () => {
   daemons.push(daemon);
   await daemon.ready;
   await Promise.race([daemon.closed, Bun.sleep(2_000).then(() => { throw new Error("daemon did not stop"); })]);
+});
+
+test('custom theme writes serialize across views, survive reload, and reject invalid changes atomically', async () => {
+  const { tetherDesign } = await import('../src/shared/themes');
+  const file = await fixture();
+  const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000 });
+  daemons.push(daemon); await daemon.ready;
+  const a = await exchange(daemon, file.path), b = await exchange(daemon, file.other);
+  const put = (session: typeof a, body: unknown) => sessionFetch(daemon, session.location, session.cookie, 'api/preferences', { method: 'PUT', headers: { origin: daemon.origin }, body: JSON.stringify(body) });
+  const themes = ['one', 'two'].map(id => ({ ...tetherDesign(true), id: `custom-${id}`, name: id }));
+  const results = await Promise.all([put(a, { saveTheme: themes[0] }), put(b, { saveTheme: themes[1] })]);
+  expect(results.map(r => r.status)).toEqual([200, 200]);
+  expect((await put(a, { theme: 'custom-one' })).status).toBe(200);
+  const before = await readFile(file.config.preferencesPath, 'utf8');
+  expect(JSON.parse(before).customThemes).toHaveLength(2);
+  expect((await put(a, { saveTheme: { ...themes[0], metrics: { bodySize: 500 } } })).status).toBe(400);
+  expect(await readFile(file.config.preferencesPath, 'utf8')).toBe(before);
+  const bootstrap = await (await sessionFetch(daemon, b.location, b.cookie, 'api/bootstrap')).json() as { preferences: { theme: string; customThemes: unknown[] } };
+  expect(bootstrap.preferences.theme).toBe('custom-one'); expect(bootstrap.preferences.customThemes).toHaveLength(2);
+});
+
+test('reader tab icons load without webview cookies while document resources remain protected', async () => {
+  const { createWebBundleResponder } = await import('../src/web/bundle');
+  const respond = await createWebBundleResponder();
+  const file = await fixture();
+  const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, web: request => respond(request) });
+  daemons.push(daemon); await daemon.ready;
+  const session = await exchange(daemon, file.path);
+  const page = await (await sessionFetch(daemon, session.location, session.cookie, '')).text();
+  const iconHref = /<link[^>]*rel="icon"[^>]*href="([^\"]+)"/.exec(page)![1];
+  const iconUrl = new URL(iconHref, `${daemon.origin}${session.location}`);
+  expect(iconUrl.pathname).toBe('/favicon.png');
+  // Mirrors cmux's native URLSession request, which has no WKWebView session cookie.
+  const icon = await fetch(iconUrl);
+  expect(icon.status).toBe(200);
+  expect(icon.headers.get('content-type')).toBe('image/png');
+  expect(Buffer.from(await icon.arrayBuffer())).toEqual(Buffer.from(await Bun.file('src/web/favicon.png').arrayBuffer()));
+  const privateScript = /src="(\.\/[^\"]+\.js)"/.exec(page)![1];
+  expect((await fetch(new URL(privateScript, `${daemon.origin}${session.location}`))).status).toBe(401);
+  expect((await fetch(new URL('api/bootstrap', `${daemon.origin}${session.location}`))).status).toBe(401);
 });

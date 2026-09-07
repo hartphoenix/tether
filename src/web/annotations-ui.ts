@@ -1,3 +1,4 @@
+import { renderCommentBody } from "./comment-body";
 import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
@@ -561,7 +562,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     });
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      const body = textarea.value.trim();
+      const body = textarea.value;
       const view = currentView();
       const resolvedAnchor = anchor ?? (view ? captureAnchor(view) : null);
       if (!resolvedAnchor) {
@@ -569,7 +570,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
         error.hidden = false;
         return;
       }
-      if (!body) {
+      if (!body.trim()) {
         error.textContent = "A comment cannot be empty.";
         error.hidden = false;
         return;
@@ -605,8 +606,8 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     form.append(textarea, error, actions);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      const body = textarea.value.trim();
-      if (!body) {
+      const body = textarea.value;
+      if (!body.trim()) {
         error.textContent = "A reply cannot be empty.";
         error.hidden = false;
         return;
@@ -622,17 +623,34 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     return form;
   }
 
-  function editableAnnotation(thread: AnnotationThread, targetId: string, value: string, className: string): HTMLElement {
+  function editableAnnotation(thread: AnnotationThread, targetId: string, value: string, className: string, actor: string, createdAt: string, includeDate: boolean): HTMLElement {
     const container = createElement("div", "wm-editable-annotation");
-    const body = createElement("p", className);
-    body.textContent = value;
+    container.classList.toggle("is-assistant", actorMatches(actor, "assistant"));
+    const header = createElement("header", "wm-message-header");
+    const author = createElement("span", "wm-message-author");
+    author.textContent = actor;
+    const meta = createElement("time", "wm-thread-time");
+    meta.dateTime = createdAt;
+    meta.title = formatTimestamp(createdAt);
+    meta.setAttribute("aria-label", meta.title);
+    const date = new Date(createdAt);
+    meta.textContent = Number.isFinite(date.getTime())
+      ? new Intl.DateTimeFormat(undefined, includeDate
+        ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
+        : { hour: "numeric", minute: "2-digit" }).format(date)
+      : createdAt;
+    header.append(author, meta);
+    const body = renderCommentBody(value);
+    body.className = className;
     const edit = createElement("button", "wm-inline-edit");
     edit.type = "button";
     edit.textContent = "Edit";
-    edit.setAttribute("aria-label", "Edit comment");
+    edit.setAttribute("aria-label", targetId === thread.id ? "Edit comment" : "Edit reply");
+    header.append(edit);
     edit.addEventListener("click", () => {
       const textarea = createElement("textarea", "wm-annotation-textarea");
       textarea.value = value;
+      textarea.setAttribute("aria-label", targetId === thread.id ? "Edit comment text" : "Edit reply text");
       textarea.rows = 3;
       const actions = createElement("div", "wm-annotation-actions");
       const remove = createElement("button", "wm-button wm-button-danger");
@@ -647,10 +665,10 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       actions.append(remove, cancel, save);
       container.replaceChildren(textarea, actions);
       textarea.focus();
-      cancel.addEventListener("click", () => container.replaceChildren(body, edit));
+      cancel.addEventListener("click", () => container.replaceChildren(header, body));
       save.addEventListener("click", () => {
-        const next = textarea.value.trim();
-        if (!next) { textarea.focus(); return; }
+        const next = textarea.value;
+        if (!next.trim()) { textarea.focus(); return; }
         setBusy(save, true);
         Promise.resolve(onEdit({ thread, targetId, body: next })).catch((reason: unknown) => {
           setBusy(save, false);
@@ -672,31 +690,35 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
           });
       });
     });
-    container.append(body, edit);
+    container.append(header, body);
     return container;
   }
 
   function renderThreadDetails(thread: AnnotationThread, orphaned: boolean): HTMLElement {
     const details = createElement("div", "wm-thread-details");
-    const meta = createElement("time", "wm-thread-time");
-    meta.dateTime = thread.createdAt;
-    meta.textContent = formatTimestamp(thread.createdAt);
-    details.append(meta);
     const quote = createElement("blockquote", "wm-thread-quote");
     quote.textContent = thread.anchor.exact || "(No quoted passage)";
-    details.append(quote);
-    details.append(editableAnnotation(thread, thread.id, thread.body, "wm-thread-body"));
+    if (thread.anchor.exact.length > 180) {
+      const context = createElement("details", "wm-thread-context");
+      const summary = createElement("summary");
+      summary.textContent = `${thread.anchor.exact.slice(0, 160)}…`;
+      summary.title = "Expand quoted passage";
+      context.append(summary, quote);
+      details.append(context);
+    } else details.append(quote);
+    details.append(editableAnnotation(thread, thread.id, thread.body, "wm-thread-body", thread.actor, thread.createdAt, true));
     const replies = createElement("div", "wm-thread-replies");
+    let previousDate = new Date(thread.createdAt).toDateString();
     for (const reply of thread.replies ?? []) {
       const item = createElement("article", "wm-thread-reply");
-      const replyMeta = createElement("div", "wm-thread-reply-meta");
-      replyMeta.textContent = `${reply.actor} · ${formatTimestamp(reply.createdAt)}`;
-      item.append(replyMeta, editableAnnotation(thread, reply.id, reply.body, "wm-thread-body"));
+      const date = new Date(reply.createdAt).toDateString();
+      item.append(editableAnnotation(thread, reply.id, reply.body, "wm-thread-body", reply.actor, reply.createdAt, date !== previousDate));
+      previousDate = date;
       replies.append(item);
     }
     details.append(replies);
-    details.append(replyForm(thread));
-    const threadActions = createElement("div", "wm-annotation-actions");
+    const form = replyForm(thread);
+    details.append(form);
     const stateButton = createElement("button", "wm-button wm-button-secondary");
     stateButton.type = "button";
     stateButton.textContent = thread.resolved ? "Reopen" : "Resolve";
@@ -706,8 +728,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
         onNotice(reason instanceof Error ? reason.message : "Comment state could not be changed.");
       });
     });
-    threadActions.append(stateButton);
-    details.append(threadActions);
+    form.querySelector(".wm-annotation-actions")!.prepend(stateButton);
     return details;
   }
 
@@ -735,6 +756,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     card.dataset.actorColor = actorColor(latest.actor);
     if (thread.id === activeThreadId) card.classList.add("is-active");
     if (orphaned) card.classList.add("is-orphaned");
+    if (thread.resolved) card.classList.add("is-resolved");
     const summary = createElement("button", "wm-thread-summary");
     summary.type = "button";
     summary.setAttribute("aria-expanded", String(thread.id === activeThreadId));
@@ -757,7 +779,13 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     }
     const excerpt = createElement("span", "wm-thread-excerpt");
     excerpt.textContent = latest.body;
-    summary.append(identity, labels, excerpt);
+    const count = createElement("span", "wm-thread-count");
+    const replyCount = thread.replies?.length ?? 0;
+    count.textContent = replyCount ? `${replyCount} ${replyCount === 1 ? "reply" : "replies"}` : "Comment";
+    const expandedTitle = createElement("span", "wm-thread-expanded-title");
+    expandedTitle.textContent = "Conversation";
+    labels.append(count);
+    summary.append(identity, expandedTitle, labels, excerpt);
     card.append(summary);
 
     const details = renderThreadDetails(thread, orphaned);
@@ -798,9 +826,9 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     title.textContent = "Threads";
     const badge = createElement("span", "wm-pending-badge");
     const pending = attentionCount();
-    badge.textContent = `${pending} need attention`;
+    badge.textContent = `${pending} ${pending === 1 ? "needs" : "need"} attention`;
     badge.hidden = pending === 0;
-    badge.setAttribute("aria-label", `${pending} open threads need your attention`);
+    badge.setAttribute("aria-label", `${pending} open ${pending === 1 ? "thread needs" : "threads need"} your attention`);
     const filter = createElement("label", "wm-unresolved-filter");
     const checkbox = createElement("input");
     checkbox.type = "checkbox";

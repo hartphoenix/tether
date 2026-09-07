@@ -169,6 +169,8 @@ test("the rail orders threads, isolates orphans, and exposes resolve/reply contr
     ],
   });
   expect(pending).toBe(1);
+  expect(root.querySelector(".wm-pending-badge")!.textContent).toBe("1 needs attention");
+  expect(root.querySelector(".wm-pending-badge")!.getAttribute("aria-label")).toBe("1 open thread needs your attention");
   expect(root.querySelector('[data-thread-id="c-late"]')).not.toBeNull();
   expect(root.querySelector('[data-thread-id="c-late"] .wm-thread-status')?.textContent).toBe("Open");
   expect(root.querySelector('[data-thread-id="c-late"] .wm-thread-excerpt')?.textContent).toBe("Choose a direction.");
@@ -313,4 +315,36 @@ test("ordinary footnote references open a read-only popover", () => {
   ui.closeFootnotePopover();
   expect(editorRoot.querySelector(".wm-footnote-popover")).toBeNull();
   ui.destroy();
+});
+
+test('conversation headers identify the original author and replies without repeating full dates', () => {
+  installDom();
+  const root = document.createElement('div'); document.body.append(root);
+  const ui = createAnnotationUi({root});
+  ui.setState({threads:[thread({actor:'hart', replies:[{id:'r-1',actor:'assistant',createdAt:'2026-08-28T12:05:00.000Z',body:'First line\nSecond line'}]})]});
+  root.querySelector<HTMLButtonElement>('.wm-thread-summary')!.click();
+  const details = document.querySelector('.wm-thread-popover .wm-thread-details')!;
+  expect([...details.querySelectorAll('.wm-message-author')].map(n=>n.textContent)).toEqual(['hart','assistant']);
+  expect(details.querySelectorAll('time[datetime]')).toHaveLength(2);
+  expect(details.querySelector('.wm-thread-reply .wm-thread-body')!.textContent).toBe('First line\nSecond line');
+  const actions = details.querySelector('.wm-annotation-reply-form .wm-annotation-actions')!;
+  expect([...actions.querySelectorAll('button')].map(n=>n.textContent)).toEqual(['Resolve','Reply']);
+  ui.destroy();
+});
+
+test('reply and edit submission preserve leading, trailing, and internal whitespace', async () => {
+  installDom();
+  const root = document.createElement('div'); document.body.append(root);
+  let replied = '', edited = '';
+  const ui = createAnnotationUi({root,onReply:({body})=>{replied=body;},onEdit:({body})=>{edited=body;}});
+  ui.setState({threads:[thread()]}); root.querySelector<HTMLButtonElement>('.wm-thread-summary')!.click();
+  const details = document.querySelector('.wm-thread-popover .wm-thread-details')!;
+  const value = '  first\n\n\tsecond\n';
+  const form = details.querySelector<HTMLFormElement>('.wm-annotation-reply-form')!;
+  form.querySelector('textarea')!.value=value; form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+  expect(replied).toBe(value);
+  details.querySelector<HTMLButtonElement>('.wm-inline-edit')!.click();
+  const editable = details.querySelector('.wm-editable-annotation')!;
+  editable.querySelector('textarea')!.value=value; editable.querySelector<HTMLButtonElement>('.wm-button-primary')!.click();
+  expect(edited).toBe(value); ui.destroy();
 });

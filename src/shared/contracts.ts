@@ -19,9 +19,7 @@ export type HostCapabilities = {
   revealFile: boolean;
 };
 
-export type AppPreferences = {
-  theme: "frame-dark" | "crepe-dark" | "nord-dark" | "frame" | "crepe" | "nord";
-};
+export type AppPreferences = import("./themes").ThemePreferences;
 
 export type SerializableAnnotationState = {
   header?: { baseBodyRevision?: string; documentId?: string };
