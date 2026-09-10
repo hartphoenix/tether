@@ -1,5 +1,5 @@
 import type { HostAdapter, HostTarget } from "../hosts/host-adapter";
-import type { FolioEntry, FolioMutationResult, FolioRetention, ListFolioOptions, RecentEntry, RecentsRegistry } from "./registry";
+import type { FolioEntry, FolioMutationResult, FolioRetention, ListFolioOptions, RecentEntry, RecentsRegistry, SavedFilter } from "./registry";
 
 export type RecentFile = RecentEntry & { name: string; directory: string };
 
@@ -12,6 +12,7 @@ export type FolioSnapshot = {
   sequence: number;
   files: FolioEntry[];
   retention: FolioRetention;
+  filters: SavedFilter[];
 };
 
 export type SyncRecentsResult = {
@@ -83,7 +84,7 @@ export class RecentsService {
       this.registry.listFolio({ ...options, view: options.view ?? "all" }),
       this.registry.getRetention(),
     ]);
-    return { sequence, files, retention };
+    return { sequence, files, retention, filters: await this.registry.getFilters() };
   }
 
   private async synchronize(snapshot: RecentsSnapshot, target?: HostTarget): Promise<SyncRecentsResult> {
@@ -123,6 +124,18 @@ export class RecentsService {
 
   files(): Promise<RecentFile[]> {
     return this.queued(() => this.registry.files());
+  }
+
+  changeFilter(action: "save" | "set-active" | "delete", text: string, active?: boolean): Promise<FolioSnapshot> {
+    return this.queued(async () => {
+      if (this.sequence >= Number.MAX_SAFE_INTEGER) throw new Error("The Folio snapshot sequence is exhausted.");
+      await this.registry.changeFilter(action, text, active);
+      const snapshot = await this.folioSnapshotAt(++this.sequence);
+      for (const subscriber of [...this.folioSubscribers]) {
+        try { subscriber(snapshot); } catch { /* A closed view must not fail a saved filter. */ }
+      }
+      return snapshot;
+    });
   }
 
   paths(): Promise<string[]> {

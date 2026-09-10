@@ -649,6 +649,16 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       if (request.method === "GET" && suffix === "/api/snapshot") return json({ ...await recents.folioSnapshot({ view: "all" }), instanceId });
       if (request.method === "GET" && suffix === "/api/events") return recentsEventStream(request);
+      if (request.method === "POST" && suffix === "/api/filters") {
+        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
+        try {
+          const body = await requestJson(request);
+          if (!["save", "set-active", "delete"].includes(String(body.action)) || typeof body.text !== "string" || !body.text.trim() || body.text.length > 1000 || (body.action === "set-active" && typeof body.active !== "boolean")) {
+            throw invalidRequest("Provide a filter of 1–1000 characters and a valid filter action.");
+          }
+          return json({ ...await recents.changeFilter(body.action as "save" | "set-active" | "delete", body.text, body.active as boolean | undefined), instanceId });
+        } catch (cause) { return controlError(cause); }
+      }
       if (request.method === "POST" && suffix === "/api/lease") { session.leaseUntil = now() + leaseMs; return json({ ok: true }); }
       if (request.method === "POST" && suffix === "/api/pick") {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);

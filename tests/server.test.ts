@@ -709,3 +709,33 @@ test("local links reveal non-Markdown files without creating document sessions",
   expect(opened).toHaveLength(1);
   expect((await sessionFetch(daemon, session.location, session.cookie, "api/file")).status).toBe(200);
 });
+
+test("filter bank requires scoped same-origin access and survives daemon replacement", async () => {
+  const file = await fixture();
+  let daemon = createDaemon({ config: file.config, opener: async () => {} });
+  daemons.push(daemon);
+  let session = await exchangeRecents(daemon, file.config);
+  const url = recentsUrl(daemon, session.location, "api/filters");
+  const change = (body: unknown, origin = daemon.origin, cookie = session.cookie) => fetch(url, {
+    method: "POST", headers: { cookie, origin, "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  expect((await change({ action: "save", text: "notes" }, "https://example.com")).status).toBe(403);
+  expect((await change({ action: "save", text: "notes" }, daemon.origin, "tether_recents=wrong")).status).toBe(401);
+  for (const body of [{ action: "save", text: " " }, { action: "toggle", text: "notes" }, { action: "set-active", text: "notes", active: "yes" }, { action: "save", text: "x".repeat(1001) }]) {
+    expect((await change(body)).status).toBe(400);
+  }
+  const saved = await (await change({ action: "save", text: " Notes " })).json();
+  expect(saved.filters).toEqual([{ text: "Notes", active: true }]);
+  await Promise.all([change({ action: "save", text: "red" }), change({ action: "save", text: "blue" })]);
+  const duplicate = await (await change({ action: "save", text: "NOTES" })).json();
+  expect(duplicate.filters).toHaveLength(3);
+  await change({ action: "set-active", text: "notes", active: false });
+  await change({ action: "delete", text: "blue" });
+  await daemon.stop();
+  daemons.splice(daemons.indexOf(daemon), 1);
+  daemon = createDaemon({ config: file.config, opener: async () => {} });
+  daemons.push(daemon);
+  session = await exchangeRecents(daemon, file.config);
+  const restored = await (await fetch(recentsUrl(daemon, session.location, "api/snapshot"), { headers: { cookie: session.cookie } })).json();
+  expect(restored.filters).toEqual([{ text: "Notes", active: false }, { text: "red", active: true }]);
+});

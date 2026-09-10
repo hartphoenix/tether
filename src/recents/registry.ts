@@ -12,6 +12,7 @@ export type RecentEntry = {
 };
 
 export type FolioView = "active" | "archive";
+export type SavedFilter = { text: string; active: boolean };
 export type FolioSort = "opened" | "modified" | "activity" | "added" | "created" | "name";
 export type FolioRetention = { mode: "days"; days: number } | { mode: "forever" } | { mode: "immediate" };
 
@@ -531,6 +532,28 @@ export class RecentsRegistry {
       deleted.push(found.path);
     }
     return { deleted };
+  }
+
+  async getFilters(): Promise<SavedFilter[]> {
+    if (!this.database) return [];
+    const row = this.database.query("SELECT value FROM settings WHERE key=?").get("folio_filters") as { value: string } | null;
+    return row ? JSON.parse(row.value) : [];
+  }
+
+  async changeFilter(action: "save" | "set-active" | "delete", text: string, active?: boolean): Promise<void> {
+    await this.mutate(async () => {
+      if (!this.database) throw new Error("Filter storage is unavailable.");
+      const filters = await this.getFilters();
+      const key = text.trim().toLowerCase();
+      const index = filters.findIndex(filter => filter.text.toLowerCase() === key);
+      if (action === "delete") {
+        if (index >= 0) filters.splice(index, 1);
+      } else if (action === "save") {
+        if (index >= 0) filters[index]!.active = true;
+        else filters.push({ text: text.trim(), active: true });
+      } else if (index >= 0) filters[index]!.active = active!;
+      this.database.query("INSERT OR REPLACE INTO settings(key,value) VALUES (?,?)").run("folio_filters", JSON.stringify(filters));
+    });
   }
 
   async getRetention(): Promise<FolioRetention> {

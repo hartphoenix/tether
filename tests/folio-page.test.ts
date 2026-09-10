@@ -6,6 +6,7 @@ function runPage(snapshot: Record<string, unknown>, savedView?: string) {
   const html = folioHtml({ pickerAvailable: true });
   const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://127.0.0.1/r/test/" });
   if (savedView !== undefined) dom.window.localStorage.setItem("tether.folio.view.v1", savedView);
+  let currentSnapshot = { ...snapshot };
   const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
   class FakeEventSource {
     static instance: FakeEventSource;
@@ -17,10 +18,20 @@ function runPage(snapshot: Record<string, unknown>, savedView?: string) {
   }
   Object.defineProperty(dom.window, "EventSource", { value: FakeEventSource });
   Object.defineProperty(dom.window, "setInterval", { value: () => 0 });
-  Object.defineProperty(dom.window, "fetch", { value: async (input: string | URL, init?: RequestInit) => {
+  Object.defineProperty(dom.window, "fetch", { configurable: true, value: async (input: string | URL, init?: RequestInit) => {
     const endpoint = String(input).split("/api/")[1] ?? "";
-    if (endpoint === "snapshot") return Response.json(snapshot);
+    if (endpoint === "snapshot") return Response.json(currentSnapshot);
     if (init?.body) requests.push({ endpoint, body: JSON.parse(String(init.body)) });
+    if (endpoint === "filters") {
+      const body = JSON.parse(String(init?.body));
+      const filters = ((currentSnapshot.filters ?? []) as Array<{ text: string; active: boolean }>).map(item => ({ ...item }));
+      const index = filters.findIndex(item => item.text.toLowerCase() === body.text.toLowerCase());
+      if (body.action === "delete") { if (index >= 0) filters.splice(index, 1); }
+      else if (index >= 0) filters[index]!.active = body.action === "save" ? true : body.active;
+      else filters.push({ text: body.text, active: true });
+      currentSnapshot = { ...currentSnapshot, sequence: Number(currentSnapshot.sequence) + 1, filters };
+      return Response.json(currentSnapshot);
+    }
     return Response.json({ ok: true });
   } });
   const script = dom.window.document.querySelector("script")?.textContent;
@@ -174,4 +185,76 @@ test("ignores corrupt or obsolete saved view choices", async () => {
     expect(dom.window.document.querySelector<HTMLInputElement>("#filter")!.value).toBe("");
     dom.window.close();
   }
+});
+
+
+test("filter bank saves, combines, sorts, toggles and deletes while preserving input focus", async () => {
+  const { dom, requests } = runPage({ sequence: 1, filters: [], files: [
+    { path: "/notes/red.md", name: "Red", view: "active" },
+    { path: "/notes/blue.md", name: "Blue", view: "active" },
+    { path: "/other/red.md", name: "Other red", view: "active" },
+  ] });
+  await Bun.sleep(0);
+  const doc = dom.window.document, input = doc.querySelector<HTMLInputElement>("#filter")!;
+  const type = (text: string) => { input.value = text; input.dispatchEvent(new dom.window.Event("input")); };
+  const names = () => [...doc.querySelectorAll(".name")].map(node => node.textContent);
+  const pills = () => [...doc.querySelectorAll<HTMLButtonElement>(".filter-pill > button:first-child")];
+  type("notes");
+  input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", isComposing: true }));
+  expect(requests).toEqual([]);
+  input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter" }));
+  await Bun.sleep(0);
+  expect(input.value).toBe("");
+  expect(doc.activeElement).toBe(input);
+  expect(names()).toEqual(["Blue", "Red"]);
+  type("red");
+  expect(names()).toEqual(["Red"]);
+  doc.querySelector<HTMLButtonElement>("#filter-save")!.click();
+  await Bun.sleep(0);
+  expect(pills().map(node => node.textContent)).toEqual(["notes", "red"]);
+  pills()[0]!.click();
+  await Bun.sleep(0);
+  expect(pills().map(node => node.textContent)).toEqual(["red", "notes"]);
+  expect(pills().map(node => node.getAttribute("aria-pressed"))).toEqual(["true", "false"]);
+  expect(names()).toEqual(["Other red", "Red"]);
+  pills()[0]!.click();
+  await Bun.sleep(0);
+  expect(pills().map(node => node.textContent)).toEqual(["notes", "red"]);
+  type(" NOTES ");
+  doc.querySelector<HTMLButtonElement>("#filter-save")!.click();
+  await Bun.sleep(0);
+  expect(pills()).toHaveLength(2);
+  expect(names()).toEqual(["Blue", "Red"]);
+  type("blue");
+  doc.querySelector<HTMLButtonElement>("#filter-clear")!.click();
+  expect(input.value).toBe("");
+  expect(doc.activeElement).toBe(input);
+  doc.querySelector<HTMLButtonElement>(".filter-delete")!.click();
+  await Bun.sleep(0);
+  expect(pills().map(node => node.textContent)).toEqual(["red"]);
+  expect(names()).toHaveLength(3);
+  expect(doc.querySelector("#confirm-dialog.open")).toBeNull();
+  dom.window.close();
+});
+
+test("restores filter bank from daemon snapshots and retains text when saving fails", async () => {
+  const snapshot = { instanceId: "new", sequence: 1, filters: [{ text: "red", active: true }, { text: "notes", active: false }], files: [
+    { path: "/red.md", name: "Red", view: "active" }, { path: "/blue.md", name: "Blue", view: "active" },
+  ] };
+  const { dom, events } = runPage(snapshot);
+  await Bun.sleep(0);
+  const doc = dom.window.document;
+  expect(doc.querySelectorAll(".file")).toHaveLength(1);
+  events().emit({ ...snapshot, sequence: 2, filters: [{ text: "red", active: false }] });
+  expect(doc.querySelectorAll(".file")).toHaveLength(2);
+  Object.defineProperty(dom.window, "fetch", { value: async () => Response.json({ error: { message: "Disk full" } }, { status: 500 }) });
+  const input = doc.querySelector<HTMLInputElement>("#filter")!;
+  input.value = "blue";
+  input.dispatchEvent(new dom.window.Event("input"));
+  doc.querySelector<HTMLButtonElement>("#filter-save")!.click();
+  await Bun.sleep(0);
+  expect(input.value).toBe("blue");
+  expect(doc.querySelector("#status")?.textContent).toContain("Disk full");
+  expect(doc.querySelectorAll(".filter-pill")).toHaveLength(1);
+  dom.window.close();
 });
