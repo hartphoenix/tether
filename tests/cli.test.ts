@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { bodyRevision, splitAnnotationLedger } from "../src/core/annotation-ledger";
+import { bodyRevision } from "../src/core/annotation-ledger";
 import { DocumentAccessError } from "../src/documents/document-service";
 import { runCli } from "../src/cli/main";
 import { resolveConfig } from "../src/server/config";
@@ -51,10 +51,9 @@ test("opens the indexed recent file through the normal path-scoped launch", asyn
   const daemon = createDaemon({ config, startupGraceMs: 600_000, web: () => new Response("web") });
   daemons.push(daemon);
   await daemon.ready;
-  const { RecentsRegistry } = await import("../src/recents/registry");
-  const registry = new RecentsRegistry(config.recentsPath);
-  await registry.add(first);
-  await registry.add(second);
+  await runCli(["folio", "add", first], { config });
+  await Bun.sleep(2);
+  await runCli(["folio", "add", second], { config });
   const opened: string[] = [];
   const result = await runCli(["recent", "2"], { config, open: async (url) => { opened.push(url); } });
   expect(result.response).toMatchObject({ ok: true, command: "recent", data: { path: await realpath(first), opened: true } });
@@ -250,9 +249,9 @@ test("adds a recent file through the application transaction and reports host sy
   const result = await runCli(["recents", "add", path], { config, host });
   expect(result).toMatchObject({
     exitCode: 0,
-    response: { ok: true, command: "recents.add", data: { path: await realpath(path), recentCount: 1, host: "wave", hostSynchronized: true } },
+    response: { ok: true, command: "recents.add", data: { added: [{ path: await realpath(path) }], hostSynchronized: true } },
   });
-  expect(synchronized).toEqual([[await realpath(path)]]);
+  expect(synchronized.at(-1)).toEqual([await realpath(path)]);
 });
 
 test("returns a failed recents add when host synchronization fails", async () => {
@@ -274,14 +273,78 @@ test("returns a failed recents add when host synchronization fails", async () =>
   await daemon.ready;
 
   const result = await runCli(["recents", "add", path], { config, host });
-  expect(result).toMatchObject({ exitCode: 1, response: { ok: false, command: "recents.add", error: { code: "command_failed", message: "Wave update failed" } } });
-  expect(await new (await import("../src/recents/registry")).RecentsRegistry(config.recentsPath).paths()).toEqual([await realpath(path)]);
+  expect(result).toMatchObject({
+    exitCode: 0,
+    response: {
+      ok: true,
+      command: "recents.add",
+      data: {
+        added: [{ path: await realpath(path) }],
+        hostSynchronized: false,
+        hostIssue: { code: "host_sync_failed", message: "Wave update failed" },
+      },
+    },
+  });
 });
 
 test("uses a documented structured usage failure", async () => {
   const result = await runCli(["unknown"]);
   expect(result.exitCode).toBe(2);
   expect(result.response).toMatchObject({ protocol: 1, ok: false, command: "unknown", error: { code: "usage" } });
+});
+
+test("rejects malformed review input before reading a body or discovering a daemon", async () => {
+  let reads = 0;
+  const path = "/tmp/--literal.md";
+  for (const argv of [
+    ["pending", path, "--actor", "assistant", "--unknown"],
+    ["pending", path, "--actor", "assistant", "--actor", "other"],
+    ["reply", path, "thread-1", "--actor", "assistant", "--body-file", "-"],
+    ["acknowledge", path, "--actor", "assistant", "--through", "3"],
+    ["threads", path, "--status", "stale"],
+    ["resolve", path, "thread-1", "--actor", "assistant", "--operation-id", "op", "--expected-thread-sequence", "0"],
+  ]) {
+    const result = await runCli(argv, { readBody: async () => { reads += 1; return "must not be read"; } });
+    expect(result).toMatchObject({ exitCode: 2, response: { error: { code: "usage" } } });
+  }
+  expect(reads).toBe(0);
+});
+
+test("provides command-specific help without daemon work", async () => {
+  const global = await runCli(["--help"]);
+  expect(global).toMatchObject({ exitCode: 0, response: { ok: true, command: "help", data: { commands: expect.any(Array) } } });
+  const command = await runCli(["acknowledge", "--help"]);
+  expect(command).toEqual({
+    exitCode: 0,
+    response: {
+      protocol: 1,
+      ok: true,
+      command: "help",
+      data: {
+        command: "acknowledge",
+        usage: "mdreview acknowledge <file> --actor <actor> --cursor <cursor> --operation-id <id> [--consumer <consumer>]",
+      },
+    },
+  });
+});
+
+test("creates a private comment from a server-resolved quote", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-cli-comment-"));
+  directories.push(directory);
+  const path = join(directory, "review.md");
+  await writeFile(path, "A quoted passage.\n");
+  const config = resolveConfig({ profile: "comment", runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
+  const daemon = createDaemon({ config, startupGraceMs: 600_000, web: () => new Response("web") });
+  daemons.push(daemon);
+  await daemon.ready;
+
+  const created = await runCli([
+    "comment", path, "--actor", "assistant", "--quote", "quoted passage",
+    "--body-file", "-", "--operation-id", "comment-1",
+  ], { config, readBody: async () => "Please review this passage." });
+  expect(created.response).toMatchObject({ ok: true, command: "comment", data: { mutation: { operationId: "comment-1", sequence: 1 } } });
+  expect(await readFile(path, "utf8")).toBe("A quoted passage.\n");
+  expect((await runCli(["threads", path, "--status", "open"], { config })).response).toMatchObject({ ok: true, command: "threads", data: { threads: [{ status: "open" }] } });
 });
 
 test("requires control authentication and closes each command's temporary grant", async () => {
@@ -306,7 +369,7 @@ test("requires control authentication and closes each command's temporary grant"
   await expect(daemon.service.read(await realpath(path))).rejects.toBeInstanceOf(DocumentAccessError);
 });
 
-test("runs the complete agent document and thread workflow through a reused daemon", async () => {
+test("runs the private review workflow with cursors and retry-safe mutations", async () => {
   const directory = await mkdtemp(join("/tmp", "tether-agent-cli-"));
   directories.push(directory);
   const path = join(directory, "review.md");
@@ -321,6 +384,7 @@ test("runs the complete agent document and thread workflow through a reused daem
   const seeded = await daemon.service.appendComment({
     session: seedGrant,
     actor: "hart",
+    operationId: "seed-comment",
     expectedBodyRevision: initial.bodyRevision,
     body: "Please revise and explain.",
     anchor: { exact: "Review", prefix: "", suffix: " target", projectionStart: 0, projectionEnd: 6, bodyRevision: initial.bodyRevision },
@@ -328,43 +392,34 @@ test("runs the complete agent document and thread workflow through a reused daem
   daemon.service.close(seedGrant);
   const threadId = (seeded.annotations.events[0] as { id: string }).id;
 
-  // Keep a browser session open while the CLI mutates the same canonical file.
-  const browserGrant = await daemon.service.open(path);
-  const launch = daemon.mintTicket(browserGrant);
-  const exchange = await fetch(launch.url, { redirect: "manual" });
-  const location = exchange.headers.get("location")!;
-  const cookie = exchange.headers.get("set-cookie")!.split(";", 1)[0];
-
   const read = await runCli(["document", "read", path], { config });
   expect(read.exitCode).toBe(0);
   expect(read.response).toMatchObject({ protocol: 1, ok: true, command: "document.read", data: { body: "Review target\n", bodyRevision: initial.bodyRevision } });
 
   const pending = await runCli(["pending", path, "--actor", "assistant"], { config });
-  expect(pending.response).toMatchObject({ ok: true, command: "review.pending", data: { events: [{ id: threadId, type: "comment" }], maxSequence: 1 } });
+  expect(pending.response).toMatchObject({ ok: true, command: "pending", data: { events: [{ id: threadId, type: "comment" }], maxSequence: 1 } });
   expect(JSON.stringify(pending.response)).not.toContain('"thread"');
   expect(JSON.stringify(pending.response)).not.toContain("Review target");
+  const cursor = (pending.response as { data: { cursor: string } }).data.cursor;
+  expect(typeof cursor).toBe("string");
 
-  expect((await runCli(["thread", path, threadId], { config })).response).toMatchObject({ ok: true, command: "review.thread", data: { thread: { id: threadId, status: "open" } } });
-  expect((await runCli(["reply", path, threadId, "--actor", "assistant", "--body-file", "-"], { config, readBody: async () => "Applied the requested revision.\nSecond line." })).response).toMatchObject({ ok: true, command: "review.reply", data: { maxSequence: 2 } });
-  expect((await runCli(["resolve", path, threadId, "--actor", "assistant"], { config })).response).toMatchObject({ ok: true, command: "review.resolve", data: { maxSequence: 3, unresolvedCount: 0 } });
-  const reopened = await runCli(["reopen", path, threadId, "--actor", "assistant"], { config });
-  expect(reopened.response).toMatchObject({ ok: true, command: "review.reopen", data: { maxSequence: 4, unresolvedCount: 1 } });
+  expect((await runCli(["thread", path, threadId], { config })).response).toMatchObject({ ok: true, command: "thread", data: { thread: { id: threadId, status: "open" } } });
+  const replyArgs = ["reply", path, threadId, "--actor", "assistant", "--body-file", "-", "--operation-id", "reply-1"];
+  const reply = await runCli(replyArgs, { config, readBody: async () => "Applied the requested revision.\nSecond line." });
+  expect(reply.response).toMatchObject({ ok: true, command: "reply", data: { mutation: { operationId: "reply-1", sequence: 2, replayed: false } } });
+  const replay = await runCli(replyArgs, { config, readBody: async () => "Applied the requested revision.\nSecond line." });
+  expect(replay.response).toMatchObject({ ok: true, command: "reply", data: { mutation: { operationId: "reply-1", sequence: 2, replayed: true } } });
+  expect((await runCli(["resolve", path, threadId, "--actor", "assistant", "--operation-id", "resolve-1", "--expected-thread-sequence", "2"], { config })).response).toMatchObject({ ok: true, command: "resolve", data: { mutation: { operationId: "resolve-1", sequence: 3 } } });
 
-  const ledgerBeforeSave = splitAnnotationLedger(await readFile(path, "utf8")).ledgerText;
+  expect(await readFile(path, "utf8")).toBe("Review target\n");
   const saved = await runCli(["document", "save", path, "--expected-body-revision", initial.bodyRevision, "--body-file", "-"], {
     config,
     readBody: async () => "Revised by agent.\n\nMultiline body.\n",
   });
   expect(saved.response).toMatchObject({ ok: true, command: "document.save", data: { bodyRevision: bodyRevision("Revised by agent.\n\nMultiline body.\n"), ledgerRevision: expect.any(String) } });
-  expect(splitAnnotationLedger(await readFile(path, "utf8")).ledgerText).toBe(ledgerBeforeSave);
-  const ledgerAfterSave = splitAnnotationLedger(await readFile(path, "utf8")).ledgerText;
-  expect(ledgerAfterSave).toContain("Applied the requested revision.");
+  expect(await readFile(path, "utf8")).toBe("Revised by agent.\n\nMultiline body.\n");
 
-  const browserRead = await fetch(`${daemon.origin}${location}api/file`, { headers: { cookie } });
-  expect((await browserRead.json() as { body: string }).body).toBe("Revised by agent.\n\nMultiline body.\n");
-
-  const savedRevision = bodyRevision("Revised by agent.\n\nMultiline body.\n");
-  expect((await runCli(["acknowledge", path, "--actor", "assistant", "--through", "4", "--body-revision", savedRevision], { config })).response).toMatchObject({ ok: true, command: "review.acknowledge", data: { maxSequence: 5 } });
+  expect((await runCli(["acknowledge", path, "--actor", "assistant", "--cursor", cursor, "--operation-id", "ack-1"], { config })).response).toMatchObject({ ok: true, command: "acknowledge", data: { mutation: { operationId: "ack-1", sequence: 1, replayed: false } } });
   expect((await runCli(["pending", path, "--actor", "assistant"], { config })).response).toMatchObject({ ok: true, data: { events: [] } });
 
   const conflict = await runCli(["document", "save", path, "--expected-body-revision", initial.bodyRevision, "--body-file", "-"], { config, readBody: async () => "Stale overwrite\n" });
@@ -375,19 +430,47 @@ test("runs the complete agent document and thread workflow through a reused daem
   expect(invalidThread).toMatchObject({ exitCode: 1, response: { error: { code: "thread_not_found" } } });
 });
 
-test("reports a malformed ledger as read-only and refuses agent saves", async () => {
-  const directory = await mkdtemp(join("/tmp", "tether-agent-malformed-"));
-  directories.push(directory);
-  const path = join(directory, "broken.md");
-  await writeFile(path, "Body\n<!-- wave-annotations:v1\nnot-json\n-->\n");
-  const config = resolveConfig({ profile: "broken", runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
-  const daemon = createDaemon({ config, startupGraceMs: 600_000, web: () => new Response("web") });
-  daemons.push(daemon);
-  await daemon.ready;
+test("literal help is a pathname and unsupported mutation consumers fail before input reads", async () => {
+  let reads = 0;
+  const literal = await runCli(["open", "--", "--help"]);
+  expect(literal.response.command).toBe("open");
+  expect(literal.response.ok).toBe(false);
+  for (const action of ["reply", "resolve", "reopen", "edit", "delete"]) {
+    const result = await runCli([action, "/tmp/doc.md", "thread", ...(["edit", "delete"].includes(action) ? ["target"] : []), "--actor", "assistant", "--operation-id", "op", "--consumer", "ignored", ...(["edit", "reply"].includes(action) ? ["--body-file", "-"] : [])], { readBody: async () => { reads++; return "body"; } });
+    expect(result.exitCode).toBe(2);
+  }
+  expect(reads).toBe(0);
+  expect((await runCli(["folio", "list", "--help"])).response).toMatchObject({ data: { usage: expect.stringContaining("--directory") } });
+});
 
-  const read = await runCli(["document", "read", path], { config });
-  expect(read.response).toMatchObject({ ok: true, data: { body: "Body\n", readOnly: true, ledgerError: expect.any(String) } });
-  const revision = (read.response as { data: { bodyRevision: string } }).data.bodyRevision;
-  const save = await runCli(["document", "save", path, "--expected-body-revision", revision, "--body-file", "-"], { config, readBody: async () => "Replacement\n" });
-  expect(save).toMatchObject({ exitCode: 1, response: { error: { code: "ledger_invalid" } } });
+test("exports publish complete private files and require explicit overwrite", async () => {
+  const { writeExport, readBoundedInput } = await import("../src/cli/io");
+  const directory = await mkdtemp(join("/tmp", "tether-export-"));
+  directories.push(directory);
+  const output = join(directory, "review.tether");
+  await writeFile(output, "original");
+  await expect(writeExport(output, "replacement")).rejects.toMatchObject({ code: "destination_exists" });
+  expect(await readFile(output, "utf8")).toBe("original");
+  await writeExport(output, "replacement", true);
+  expect(await readFile(output, "utf8")).toBe("replacement");
+  await expect(readBoundedInput(output, 3)).rejects.toMatchObject({ code: "input_too_large" });
+});
+
+test("validates daemon success shapes instead of trusting JSON casts", async () => {
+  const { validateControlResponse } = await import("../src/server/lifecycle");
+  expect(validateControlResponse("/control/document/read", { body: "incomplete" })).toBe(false);
+  expect(validateControlResponse("/control/review/pending", { events: [], cursor: 3, maxSequence: 0 })).toBe(false);
+  expect(validateControlResponse("/control/launch", { url: "x", expiresAt: "tomorrow", path: "x" })).toBe(false);
+  expect(validateControlResponse("/control/folio/export", { format: "tether-review", version: 1, documents: [] })).toBe(true);
+  expect(validateControlResponse("/control/document/read", { path: "x", body: "", bodyRevision: "revision" })).toBe(true);
+});
+
+test("bounded reads and authoring commands expose only effective options", async () => {
+  const { parseCommand, readOptions } = await import("../src/cli/commands");
+  const page = parseCommand(["thread", "doc.md", "thread-1", "--limit", "3", "--max-bytes", "4096", "--continuation", "page"]);
+  expect(readOptions(page)).toEqual({ limit: 3, maxBytes: 4096, continuation: "page" });
+  expect(parseCommand(["document", "move", "old.md", "new.md"]).positionals).toEqual(["old.md", "new.md"]);
+  expect(parseCommand(["edit", "doc.md", "thread", "reply", "--actor", "assistant", "--body-file", "-", "--operation-id", "edit-1"]).positionals).toEqual(["doc.md", "thread", "reply"]);
+  expect(() => parseCommand(["document", "outline", "doc.md", "--max-bytes", "2"])).toThrow("between 2048 and 65536");
+  expect(() => parseCommand(["comment", "doc.md", "--actor", "assistant", "--quote", "quote", "--body-file", "-", "--operation-id", "op", "--candidate-id", "candidate"])).toThrow("requires --expected-body-revision");
 });

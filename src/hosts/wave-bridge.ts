@@ -1,5 +1,6 @@
 import { chmod, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { readControlToken, type TetherConfig } from "../server/config";
+import { runtimeEntry } from "../runtime-paths";
 import type { OpenViewRequest } from "./host-adapter";
 import type { RecentEntry } from "../recents/registry";
 
@@ -103,8 +104,9 @@ export async function startWaveBridge(config: TetherConfig, env = process.env, o
     WAVETERM_WSHBINARY: env.WAVETERM_WSHBINARY,
     WAVETERM_WORKSPACEID: env.WAVETERM_WORKSPACEID, WAVETERM_TABID: env.WAVETERM_TABID,
     TETHER_PROFILE: config.profile, TETHER_RUNTIME_DIR: config.runtimeDir, TETHER_CONFIG_DIR: config.configDir,
+    TETHER_INSTALL_ROOT: env.TETHER_INSTALL_ROOT,
   };
-  const child = Bun.spawn([process.execPath, `${import.meta.dir}/wave-bridge-daemon.ts`], {
+  const child = Bun.spawn([process.execPath, runtimeEntry("wave-bridge")], {
     env: childEnv, detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore",
   });
   child.unref();

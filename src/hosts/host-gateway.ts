@@ -1,9 +1,9 @@
 import type { HostCapabilities } from "../shared/contracts";
 import type { RecentEntry } from "../recents/registry";
 import type { TetherConfig } from "../server/config";
-import type { HostAdapter, HostTarget, OpenViewRequest, OpenViewResult } from "./host-adapter";
+import type { HostAdapter, HostTarget, OpenLocalFileRequest, OpenViewRequest, OpenViewResult } from "./host-adapter";
 import { SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT, SUPPORTED_CMUX_VERSION } from "./cmux";
-import { openThroughCmuxBridge } from "./cmux-bridge";
+import { openThroughCmuxBridge, openLocalFileThroughCmuxBridge } from "./cmux-bridge";
 import { openThroughWaveBridge, updateWaveRecentsThroughBridge } from "./wave-bridge";
 import { SUPPORTED_WAVE_VERSION } from "./wave";
 
@@ -49,6 +49,12 @@ export class HostGateway implements HostAdapter {
     }
     const result = await this.fallback.openView(request);
     return result ?? { launchConsumed: true };
+  }
+
+  async openLocalFile(request: OpenLocalFileRequest): Promise<void> {
+    if (request.target?.host === "cmux") return openLocalFileThroughCmuxBridge(this.config, request);
+    if (!this.fallback.openLocalFile) throw new Error("Native local-file opening is unavailable in this host.");
+    return this.fallback.openLocalFile(request);
   }
 
   async recentsChanged(entries: RecentEntry[], target?: HostTarget): Promise<boolean> {

@@ -1,3 +1,5 @@
+import { renderRelaunchNotice } from "./relaunch-notice";
+
 export interface ChromeControlsOptions {
   notice: HTMLElement;
   zoomButton: HTMLButtonElement;
@@ -60,6 +62,8 @@ export function createChromeControls(options: ChromeControlsOptions): ChromeCont
       noticeTimer = undefined;
     }
     if (destroyed) return;
+
+    if (renderRelaunchNotice(notice, message)) return;
 
     notice.textContent = message;
     if (message && timeout > 0 && Number.isFinite(timeout)) {

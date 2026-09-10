@@ -1,5 +1,5 @@
 import { createBrowserHost, type BrowserHostAdapter } from "./browser";
-import type { HostAdapter, HostTarget, OpenViewRequest } from "./host-adapter";
+import type { HostAdapter, HostTarget, OpenLocalFileRequest, OpenViewRequest } from "./host-adapter";
 import { PROTOCOL_VERSION, SERVICE_ID, type HostCapabilities } from "../shared/contracts";
 
 export const SUPPORTED_CMUX_VERSION = "0.64.22";
@@ -273,6 +273,14 @@ export class CmuxHostAdapter implements HostAdapter {
     if (!safeLoopbackUrl(request.url)) throw new CmuxHostError("invalid_target", "cmux placement accepts only loopback Tether URLs.");
     const target = this.validatedTarget(request.target ?? this.capturedTarget);
     if (request.kind === "recents") return this.serialized(target.workspaceId, () => this.openRecents(request, target));
+    if (request.targetPolicy === "source-pane") {
+      if (!request.sourceUrl) throw new CmuxHostError("invalid_target", "A source reader URL is required.");
+      const source = await this.resolveReaderTarget(request.sourceUrl);
+      return this.serialized(source.target.workspaceId, async () => {
+        await this.openChromelessReviewSurface(request, source.target, source.paneId);
+        return { launchConsumed: true };
+      });
+    }
     if (request.targetPolicy === "focused-workspace") {
       const effectiveTarget = await this.resolveFocusedDocumentTarget();
       return this.serialized(effectiveTarget.workspaceId, async () => {
@@ -288,6 +296,48 @@ export class CmuxHostAdapter implements HostAdapter {
       };
       return effectiveTarget.workspaceId === target.workspaceId ? place() : this.serialized(effectiveTarget.workspaceId, place);
     });
+  }
+
+  async openLocalFile(request: OpenLocalFileRequest): Promise<void> {
+    const source = await this.resolveReaderTarget(request.sourceUrl);
+    // Let cmux choose its file viewer, focus policy, and file-type behavior.
+    await this.runVoid(["open", request.path, "--workspace", source.target.workspaceId,
+      "--window", source.target.windowId, "--surface", source.target.surfaceId], source.target);
+  }
+
+  private async resolveReaderTarget(sourceUrl: string): Promise<{
+    target: HostTarget & { windowId: string; workspaceId: string; surfaceId: string }; paneId: string;
+  }> {
+    if (!safeLoopbackUrl(sourceUrl)) throw new CmuxHostError("invalid_target", "A local Tether reader URL is required.");
+    const source = new URL(sourceUrl);
+    const tree = await this.runJson<CmuxTree>(["--json", "--id-format", "uuids", "tree", "--all"], undefined, true);
+    const matches: Array<{ target: HostTarget & { windowId: string; workspaceId: string; surfaceId: string }; paneId: string }> = [];
+    for (const window of asArray<CmuxWindow>(tree.windows)) {
+      for (const workspace of asArray<CmuxWorkspace>(window.workspaces)) {
+        for (const pane of panes(workspace)) {
+          for (const surface of surfaces(pane)) {
+            if (surface.type !== "browser" || typeof surface.url !== "string") continue;
+            let url: URL;
+            try { url = new URL(surface.url); } catch { continue; }
+            if (url.origin !== source.origin || url.pathname.replace(/\/$/, "") !== source.pathname.replace(/\/$/, "")) continue;
+            matches.push({ target: {
+              host: "cmux", version: SUPPORTED_CMUX_VERSION, build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT,
+              windowId: requireUuid(stringField(window, "id"), "window ID"),
+              workspaceId: requireUuid(stringField(workspace, "id"), "workspace ID"),
+              surfaceId: requireUuid(stringField(surface, "id"), "surface ID"),
+            }, paneId: requireUuid(stringField(pane, "id"), "pane ID") });
+          }
+        }
+      }
+    }
+    if (matches.length === 1) return matches[0]!;
+    if (matches.length > 1) {
+      const identity = await this.runJson<CmuxIdentity>(["--json", "--id-format", "uuids", "identify", "--no-caller"], undefined, true);
+      const focused = matches.find(({ target }) => target.surfaceId === stringField(identity.focused, "surface_id"));
+      if (focused) return focused;
+      throw new CmuxHostError("ambiguous_review_pane", "This reader is duplicated in cmux. Focus the source reader and retry.");
+    }
+    throw new CmuxHostError("placement_anchor_missing", "The source Tether reader is no longer available in cmux.");
   }
 
   async openExternal(pathOrUrl: string): Promise<void> {
@@ -344,10 +394,12 @@ export class CmuxHostAdapter implements HostAdapter {
     }
     const reviewPanes = panes(workspace).filter((pane) => pane.dock_scope === undefined && surfaces(pane).some((surface) =>
       surface.type === "browser" && (surface.title === TETHER_REVIEW_TAB_TITLE || liveTetherDocumentUrl(surface.url, request.url))));
-    if (reviewPanes.length > 1) throw new CmuxHostError("ambiguous_review_pane", "Multiple Tether review panes were found in the target workspace.");
+    if (reviewPanes.length > 1 && !splitFromAnchor) throw new CmuxHostError("ambiguous_review_pane", "Multiple Tether review panes were found in the target workspace.");
 
-    if (reviewPanes.length === 1) {
-      const paneId = requireUuid(stringField(reviewPanes[0], "id"), "pane ID");
+    if (reviewPanes.length) {
+      const preferred = reviewPanes.find((pane) => surfaces(pane).some((surface) => surface.id === target.surfaceId))
+        ?? reviewPanes.find((pane) => pane.active === true) ?? reviewPanes[0];
+      const paneId = requireUuid(stringField(preferred, "id"), "pane ID");
       await this.openChromelessReviewSurface(request, target, paneId);
       return;
     }

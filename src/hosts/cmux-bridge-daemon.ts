@@ -1,6 +1,7 @@
 import { createCmuxHost, SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT, SUPPORTED_CMUX_VERSION } from "./cmux";
 import { fingerprintCmuxSocket, removeCmuxBridge, writeCmuxBridge } from "./cmux-bridge";
 import { prepareConfig, readControlToken, readDiscovery, resolveConfig } from "../server/config";
+import { isAbsolute } from "node:path";
 import type { HostTarget, OpenViewRequest } from "./host-adapter";
 
 const config = resolveConfig();
@@ -49,7 +50,7 @@ const authorized = (request: Request) => request.headers.get("authorization") ==
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const requestKeys = new Set(["url", "kind", "focus", "allowFocusedFallback", "targetPolicy", "target"]);
+const requestKeys = new Set(["url", "kind", "focus", "allowFocusedFallback", "targetPolicy", "sourceUrl", "target"]);
 const targetKeys = new Set(["host", "version", "build", "commit", "windowId", "workspaceId", "surfaceId"]);
 
 class BridgeServiceError extends Error {
@@ -71,16 +72,27 @@ function validTarget(value: unknown): HostTarget | null {
   return Object.fromEntries(Object.entries(target).map(([key, entry]) => [key, String(entry)]));
 }
 
+function validateSourceUrl(value: unknown): asserts value is string {
+  let url: URL;
+  try { url = new URL(typeof value === "string" ? value : ""); }
+  catch { throw new BridgeServiceError("invalid_target", "A source reader URL is required.", 400); }
+  if (url.origin !== discovery.origin || !/^\/s\/[^/]+\/$/.test(url.pathname) || url.search || url.hash || url.username || url.password) {
+    throw new BridgeServiceError("invalid_target", "Only a current Tether reader URL may identify the source pane.", 400);
+  }
+}
+
 function openRequest(value: unknown): OpenViewRequest {
   const body = object(value);
   if (!body || Object.keys(body).some((key) => !requestKeys.has(key)) || typeof body.url !== "string" ||
     (body.kind !== "document" && body.kind !== "recents") || typeof body.focus !== "boolean" ||
     (body.allowFocusedFallback !== undefined && typeof body.allowFocusedFallback !== "boolean") ||
-    (body.targetPolicy !== undefined && (body.kind !== "document" || body.targetPolicy !== "focused-workspace"))) {
+    (body.targetPolicy !== undefined && (body.kind !== "document" || !["focused-workspace", "source-pane"].includes(String(body.targetPolicy))))) {
     throw new BridgeServiceError("invalid_request", "A valid cmux open-view request is required.", 400);
   }
   const target = validTarget(body.target);
   if (!target) throw new BridgeServiceError("invalid_target", "A supported immutable cmux target is required.", 400);
+  if (body.sourceUrl !== undefined) validateSourceUrl(body.sourceUrl);
+  if (body.targetPolicy === "source-pane" && !body.sourceUrl) throw new BridgeServiceError("invalid_target", "A source reader URL is required.", 400);
   let destination: URL;
   try { destination = new URL(body.url); }
   catch { throw new BridgeServiceError("invalid_request", "A valid Tether launch URL is required.", 400); }
@@ -94,7 +106,8 @@ function openRequest(value: unknown): OpenViewRequest {
     kind: body.kind,
     focus: body.focus,
     ...(body.allowFocusedFallback === undefined ? {} : { allowFocusedFallback: body.allowFocusedFallback }),
-    ...(body.targetPolicy === undefined ? {} : { targetPolicy: body.targetPolicy }),
+    ...(body.targetPolicy === undefined ? {} : { targetPolicy: body.targetPolicy as "focused-workspace" | "source-pane" }),
+    ...(typeof body.sourceUrl === "string" ? { sourceUrl: body.sourceUrl } : {}),
     target,
   };
 }
@@ -152,6 +165,23 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
   if (request.method === "POST" && url.pathname === "/stop") {
     queueMicrotask(() => shutdown());
     return json({ stopping: true });
+  }
+  if (request.method === "POST" && url.pathname === "/open-local-file") {
+    try {
+      const body = object(await request.json());
+      const target = validTarget(body?.target);
+      if (!body || Object.keys(body).some((key) => !["path", "sourceUrl", "target"].includes(key)) || !target ||
+          typeof body.path !== "string" || !isAbsolute(body.path) || body.path.includes("\0")) {
+        throw new BridgeServiceError("invalid_request", "An absolute local file path and cmux target are required.", 400);
+      }
+      validateSourceUrl(body.sourceUrl);
+      await requireSupportedCmux();
+      await host.openLocalFile({ path: body.path, sourceUrl: body.sourceUrl, target });
+      return json({ opened: true });
+    } catch (cause) {
+      const error = issue(cause);
+      return json({ error: { code: error.code, message: error.message } }, error.status);
+    }
   }
   if (request.method === "POST" && url.pathname === "/open") {
     try {

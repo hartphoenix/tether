@@ -42,7 +42,24 @@
   padding: 0 2px 3px;
 }
 
-.wm-unresolved-filter { color: var(--wm-annotation-muted); font-size: 11px; white-space: nowrap; }
+.wm-rail-button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 3px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--wm-annotation-muted);
+  cursor: pointer;
+}
+.wm-rail-button:hover,
+.wm-rail-button[aria-pressed="true"] {
+  color: inherit;
+  background: var(--wm-color-hover, color-mix(in srgb, currentColor 12%, transparent));
+}
+.wm-rail-button:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
 .wm-annotation-rail-controls { gap: 5px; }
 .wm-hide-threads {
   display: grid;
@@ -196,12 +213,7 @@
 .wm-orphan-group h3 { color: var(--wm-annotation-muted); }
 
 .wm-annotation-highlight { border-radius: 2px; cursor: pointer; }
-.wm-annotation-highlight.wm-annotation-amber { background: rgb(241 190 92 / 42%); }
-.wm-annotation-highlight.wm-annotation-blue { background: rgb(118 166 225 / 35%); }
-.wm-annotation-highlight.wm-annotation-cyan { background: rgb(99 195 204 / 34%); }
-.wm-annotation-highlight.wm-annotation-green { background: rgb(132 193 139 / 36%); }
-.wm-annotation-highlight.wm-annotation-rose { background: rgb(222 142 157 / 34%); }
-.wm-annotation-highlight.wm-annotation-violet { background: rgb(163 143 214 / 34%); }
+.wm-annotation-highlight { background: color-mix(in srgb, var(--wm-color-annotation, #f1be5c) 42%, transparent); }
 .wm-annotation-highlight.wm-annotation-resolved { opacity: .6; }
 
 .wm-annotation-count {
@@ -285,12 +297,7 @@
 :root[data-wm-theme$="-dark"] .wm-button { color: #eee8df; background: #302a24; border-color: #64584d; }
 :root[data-wm-theme$="-dark"] .wm-footnote-popover { color: #eee8df; }
 
-:root[data-wm-theme$="-dark"] .wm-annotation-highlight.wm-annotation-amber { background: rgb(255 190 62 / 58%); }
-:root[data-wm-theme$="-dark"] .wm-annotation-highlight.wm-annotation-blue { background: rgb(74 144 255 / 52%); }
-:root[data-wm-theme$="-dark"] .wm-annotation-highlight.wm-annotation-cyan { background: rgb(38 190 210 / 50%); }
-:root[data-wm-theme$="-dark"] .wm-annotation-highlight.wm-annotation-green { background: rgb(67 181 96 / 50%); }
-:root[data-wm-theme$="-dark"] .wm-annotation-highlight.wm-annotation-rose { background: rgb(226 84 121 / 50%); }
-:root[data-wm-theme$="-dark"] .wm-annotation-highlight.wm-annotation-violet { background: rgb(143 105 226 / 52%); }
+:root[data-wm-theme$="-dark"] .wm-annotation-highlight { background: color-mix(in srgb, var(--wm-color-annotation, #ffbe3e) 58%, transparent); }
 :root[data-wm-theme$="-dark"] .wm-comment-popover,
 :root[data-wm-theme$="-dark"] .wm-thread-popover { color: #eee8df; background: #28231e; border-color: #514940; }
 :root[data-wm-theme$="-dark"] .wm-annotation-count { color: #f2d28b; background: #28231e; }

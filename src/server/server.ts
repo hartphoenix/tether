@@ -1,5 +1,18 @@
-import { dirname } from "node:path";
-import { readFile, realpath } from "node:fs/promises";
+import { preferencesFrom, updatePreferences } from "../shared/themes";
+import { runtimeRoot } from "../runtime-paths";
+import { seedWelcome } from "../onboarding";
+import { UpdateService } from "./updates";
+import { dirname, extname, join, resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { PrivateStore } from "../storage/private-store";
+import { ViewStore, cookieVerifier, verifiesCookie } from "./view-store";
+import { anchorForQuote, quoteCandidates } from "./quote-anchor";
+import { AgentReads } from "../documents/agent-reads";
+import { INPUT_LIMITS, invalidRequest, validateControlInput } from "../shared/control-input";
+import { AnnotationLedgerError } from "../core/index";
+import { PrivateStoreConflictError, PrivateStoreDocumentNotFoundError } from "../storage/private-store";
+import { folioHtml } from "../web/folio-page";
+import { readFile, realpath, stat } from "node:fs/promises";
 import {
   PROTOCOL_VERSION,
   SERVICE_ID,
@@ -10,9 +23,10 @@ import {
 import type { HostAdapter, HostTarget } from "../hosts/host-adapter";
 import { createBrowserHost } from "../hosts/browser";
 import { HostGateway } from "../hosts/host-gateway";
-import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type DocumentSession } from "../documents/document-service";
-import { RecentsRegistry } from "../recents/registry";
-import { RecentsService, type RecentsSnapshot } from "../recents/service";
+import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type AppendEventInput, type DocumentSession } from "../documents/document-service";
+import { chooseImportDirectory } from "./directory-picker";
+import { RecentsRegistry, type ListFolioOptions, type FolioRetention } from "../recents/registry";
+import { RecentsService, type FolioSnapshot } from "../recents/service";
 import { moveToTrash, pickMarkdownFiles } from "../recents/actions";
 import { ensureControlToken, prepareConfig, readControlToken, removeDiscovery, resolveConfig, writeDiscovery, type TetherConfig } from "./config";
 
@@ -24,8 +38,8 @@ const DEFAULT_IDLE_MS = 5_000;
 
 export type Clock = () => number;
 export type Ticket = { ticket: string; url: string; expiresAt: number };
-export type Session = { id: string; grant: DocumentSession; cookie: string; createdAt: number; lastSeen: number; leases: Map<string, number>; target?: HostTarget };
-type RecentsSession = { id: string; cookie: string; createdAt: number; lastSeen: number; leaseUntil: number; target?: HostTarget };
+export type Session = { id: string; grant: DocumentSession; cookie: string; verifier?: string; createdAt: number; lastSeen: number; leases: Map<string, number>; target?: HostTarget };
+type RecentsSession = { id: string; cookie: string; verifier?: string; createdAt: number; lastSeen: number; leaseUntil: number; target?: HostTarget };
 
 export type DaemonOptions = {
   config?: TetherConfig;
@@ -39,6 +53,10 @@ export type DaemonOptions = {
   startupGraceMs?: number;
   idleMs?: number;
   actor?: string;
+  restart?: () => Promise<void>;
+  update?: (tag: string) => Promise<void>;
+  updates?: Pick<UpdateService, "status" | "install" | "dismiss">;
+  persistentViews?: boolean;
   /** A production web build can supply the extracted editor response. */
   web?: (request: Request, session: Session) => Response | Promise<Response>;
   opener?: (url: string) => Promise<void>;
@@ -83,12 +101,20 @@ function error(code: string, message: string, status: number, details?: unknown)
 
 function controlError(cause: unknown): Response {
   const message = cause instanceof Error ? cause.message : String(cause);
-  if (cause instanceof DocumentConflictError) return error("conflict", message, 409);
+  if (cause instanceof PrivateStoreConflictError) return error("conflict", message, 409, { outcome: "not_applied" });
+  if (cause instanceof PrivateStoreDocumentNotFoundError) return error("document_not_found", message, 404);
+  if (cause instanceof AnnotationLedgerError) return error(cause.code === "missing-thread" ? "thread_not_found" : "invalid_annotation", message, 400, { outcome: "not_applied" });
+  const systemCode = (cause as NodeJS.ErrnoException | null)?.code;
+  if (systemCode === "ENOENT") return error("path_not_found", "The requested file or directory does not exist.", 404);
+  if (systemCode === "EACCES" || systemCode === "EPERM") return error("file_access_denied", "The operating system denied file access.", 403);
+  if (systemCode === "EEXIST") return error("destination_exists", "The destination already exists.", 409);
+  if (systemCode?.startsWith("SQLITE_") || systemCode === "ENOSPC" || systemCode === "EIO") return error("storage_unavailable", "Storage is unavailable. Inspect current state before retrying.", 503, { outcome: "outcome_unknown" });
+  if (cause && typeof cause === "object" && typeof (cause as { code?: unknown }).code === "string") return codedError(cause, "invalid_request", 400);
+  if (cause instanceof DocumentConflictError) return error("conflict", message, 409, cause.details);
   if (cause instanceof DocumentReadOnlyError) return error("ledger_invalid", message, 422, cause.ledgerError);
   if (cause instanceof DocumentNotFoundError) return error("document_not_found", message, 404);
   if (cause instanceof DocumentAccessError) return error("document_unauthorized", message, 403);
-  if (message.startsWith("Annotation thread not found:")) return error("thread_not_found", message, 404);
-  return error("invalid_request", message || "Request failed.", 400);
+  return error("internal_error", "The operation failed unexpectedly. Check storage availability before retrying.", 500, { outcome: "outcome_unknown" });
 }
 
 export function sameOrigin(request: Request, origin: string): boolean {
@@ -108,11 +134,29 @@ function cookieValue(request: Request, name: string): string | null {
 }
 
 async function requestJson(request: Request): Promise<Record<string, unknown>> {
+  const route = new URL(request.url).pathname;
+  const limit = route.includes("/import") ? INPUT_LIMITS.package : route.includes("/review/") ? 1024 * 1024 : INPUT_LIMITS.markdown + 1024 * 1024;
+  if (Number(request.headers.get("content-length")) > limit) throw Object.assign(invalidRequest("Request exceeds its byte limit."), { status: 413 });
+  const reader = request.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  if (reader) try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      bytes += next.value.byteLength;
+      if (bytes > limit) { await reader.cancel(); throw Object.assign(invalidRequest("Request exceeds its byte limit."), { status: 413 }); }
+      chunks.push(next.value);
+    }
+  } finally { reader.releaseLock(); }
+  let value: unknown;
   try {
-    const value = await request.json();
-    if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
-  } catch { /* handled below */ }
-  throw new Error("Invalid JSON request.");
+    value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch { throw invalidRequest("Invalid JSON request."); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidRequest("Invalid JSON request.");
+  const body = value as Record<string, unknown>;
+  validateControlInput(body, route);
+  return body;
 }
 
 function textBody(body: Record<string, unknown>): string | undefined {
@@ -126,8 +170,8 @@ function eventType(value: unknown): value is AnnotationEventInput["type"] {
 
 function selectEvent(body: Record<string, unknown>, forcedType?: string): AnnotationEventInput {
   const type = forcedType ?? body.type;
-  if (!eventType(type)) throw new Error("Invalid annotation event type.");
-  if (typeof body.actor !== "string" || !body.actor.trim()) throw new Error("An asserted actor is required.");
+  if (!eventType(type)) throw invalidRequest("Invalid annotation event type.");
+  if (typeof body.actor !== "string" || !body.actor.trim()) throw invalidRequest("An asserted actor is required.");
   const event: AnnotationEventInput = { ...body, type, actor: body.actor };
   for (const key of ["path", "expectedBodyRevision", "expectedRevision", "expectedLedgerRevision", "id", "seq", "createdAt", "through", "throughSeq"]) delete event[key];
   if (type !== "ack") delete event.bodyRevision;
@@ -149,13 +193,8 @@ function hostTarget(value: unknown): HostTarget | undefined {
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 }
 
-function preferencesFrom(value: unknown): AppPreferences {
-  const theme = value && typeof value === "object" && typeof (value as Record<string, unknown>).theme === "string" ? (value as Record<string, unknown>).theme : "frame-dark";
-  const allowed = new Set<AppPreferences["theme"]>(["frame-dark", "crepe-dark", "nord-dark", "frame", "crepe", "nord"]);
-  return { theme: allowed.has(theme as AppPreferences["theme"]) ? theme as AppPreferences["theme"] : "frame-dark" };
-}
 
-const fallbackHtml = `<!doctype html><meta charset="utf-8"><title>Tether</title><main id="app">Tether session</main>`;
+const fallbackHtml = `<!doctype html><meta charset="utf-8"><title>Tether</title><link rel="icon" type="image/png" href="/favicon.png"><main id="app">Tether session</main>`;
 
 /**
  * Create one loopback daemon. The document and Recents dependencies are
@@ -165,15 +204,25 @@ const fallbackHtml = `<!doctype html><meta charset="utf-8"><title>Tether</title>
 export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const config = options.config ?? resolveConfig();
   const now = options.now ?? Date.now;
+  const updates = options.updates ?? new UpdateService({ config, root: process.env.TETHER_INSTALL_ROOT, install: options.update });
   const ticketMs = options.ticketMs ?? DEFAULT_TICKET_MS;
   const leaseMs = options.leaseMs ?? Number(process.env.TETHER_LEASE_MS ?? DEFAULT_LEASE_MS);
   const startupGraceMs = options.startupGraceMs ?? Number(process.env.TETHER_STARTUP_GRACE_MS ?? DEFAULT_STARTUP_GRACE_MS);
   const idleMs = options.idleMs ?? Number(process.env.TETHER_IDLE_MS ?? DEFAULT_IDLE_MS);
-  const service = options.service ?? new DocumentService({ now });
+  const privateStore = options.service?.store ?? new PrivateStore(join(config.configDir, "tether.sqlite"));
+  const service = options.service ?? new DocumentService({ now, store: privateStore });
+  const agentReads = new AgentReads(privateStore);
+  const views = new ViewStore(privateStore.db);
   const trashFile = options.trashFile ?? moveToTrash;
   const pickFiles = options.pickFiles ?? (process.platform === "darwin" ? pickMarkdownFiles : undefined);
   const hostAdapter = options.hostAdapter ?? new HostGateway(config, createBrowserHost({ open: options.opener }));
-  const recents = new RecentsService(options.recents ?? new RecentsRegistry({ path: config.recentsPath, now }), hostAdapter);
+  const recents = new RecentsService(options.recents ?? new RecentsRegistry({ path: config.recentsPath, now, database: privateStore.db, deletePrivateData: async (path: string) => {
+    agentReads.forget(path);
+    await service.deleteConversation(path);
+    for (const [id, session] of sessions) if (session.grant.realPath === path) { service.close(session.grant); sessions.delete(id); }
+    for (const [ticket, pending] of tickets) if (pending.grant.realPath === path) { service.close(pending.grant); tickets.delete(ticket); }
+    views.forgetPath(path);
+  } }), hostAdapter);
   const instanceId = crypto.randomUUID();
   const tickets = new Map<string, { grant: DocumentSession; expiresAt: number; target?: HostTarget }>();
   const recentsTickets = new Map<string, { expiresAt: number; target?: HostTarget }>();
@@ -248,17 +297,17 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       try { controller.enqueue(encoder.encode(value)); }
       catch { cleanup(); }
     };
-    const sendSnapshot = (snapshot: RecentsSnapshot) => {
-      send(`id: ${snapshot.sequence}\nevent: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`);
+    const sendSnapshot = (snapshot: FolioSnapshot) => {
+      send(`id: ${snapshot.sequence}\nevent: snapshot\ndata: ${JSON.stringify({ ...snapshot, instanceId })}\n\n`);
     };
     const stream = new ReadableStream<Uint8Array>({
       start(value) {
         controller = value;
-        unsubscribe = recents.subscribe(sendSnapshot);
+        unsubscribe = recents.subscribeFolio(sendSnapshot);
         recentsStreamClosers.add(cleanup);
         request.signal.addEventListener("abort", cleanup, { once: true });
         heartbeat = setInterval(() => send(": keepalive\n\n"), 20_000);
-        void recents.snapshot().then(sendSnapshot).catch((cause) => {
+        void recents.folioSnapshot({ view: "all" }).then(sendSnapshot).catch((cause) => {
           if (!closed) {
             try { controller?.error(cause); } catch { /* already closed */ }
           }
@@ -275,28 +324,70 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     } });
   }
 
-  const recentsHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Recents</title><style>
-  #controls{grid-column:2 / -1;justify-self:end}
-  :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#111;color:#eee;font:15px system-ui;padding:24px}button{font:inherit}.button{padding:8px 11px;border:1px solid #444;border-radius:7px;background:#242424;color:inherit;cursor:pointer}.button:hover:not(:disabled){border-color:#777}.button:disabled{color:#777;cursor:default}#add{min-width:38px;font-size:20px;line-height:20px}.picker-slot{min-width:38px}#filter{width:100%;margin:0 0 12px;padding:9px 11px;border:1px solid #444;border-radius:7px;background:#1d1d1d;color:inherit;font:inherit;outline:none}#filter:focus{border-color:#888}.file-row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:10px;margin:8px 0}.file-row:not(.selecting){display:block}.file-check{width:17px;height:17px;margin:0 0 0 3px;accent-color:#8caee8}.file{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;width:100%;text-align:left;background:#1d1d1d;color:inherit;border:1px solid #333;border-radius:8px;padding:12px;cursor:pointer}.file-main{min-width:0}.name{font-weight:650}.dir{display:block;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}.time{color:#999;align-self:start;justify-self:end;text-align:right;white-space:nowrap}.empty,#status,#freshness{color:#999}#freshness{margin:0 0 10px}#freshness[hidden],#status:empty{display:none}.footer{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;margin-top:12px;min-height:38px}.controls{display:flex;gap:8px}#menu,#confirm-popover{position:fixed;z-index:10;display:none;min-width:190px;padding:5px;border:1px solid #444;border-radius:8px;background:#282d33;box-shadow:0 10px 28px #0008}#menu.open,#confirm-popover.open{display:block}#menu button{display:block;width:100%;padding:8px 10px;border:0;border-radius:5px;background:transparent;color:inherit;text-align:left;cursor:pointer}#menu button:hover{background:#3a414a}#menu button[data-action="trash"],#batch-trash,#confirm-action.danger{color:#ff9898}#confirm-popover{width:min(300px,calc(100vw - 16px));padding:12px}#confirm-message{margin:0 0 12px}.confirm-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:420px){body{padding:14px}.file{padding:10px}.time{font-size:12px}.footer{align-items:end}.controls{flex-wrap:wrap;justify-content:flex-end}}</style></head><body><input id="filter" type="search" placeholder="filter by filename" aria-label="Filter by filename" autocomplete="off"><p id="freshness" role="status" aria-live="polite" hidden></p><main id="list" aria-busy="true"></main><footer class="footer"><div class="picker-slot"><button id="add" class="button" aria-label="Add Markdown files" title="Add Markdown files"${pickFiles ? "" : " hidden"}>+</button></div><div id="status" role="status" aria-live="polite"></div><div id="controls" class="controls"><button id="batch-remove" class="button" hidden>Remove from Queue</button><button id="batch-trash" class="button" hidden>Move to Trash</button><button id="select" class="button">Select</button></div></footer><div id="menu" role="menu"><button data-action="reveal" role="menuitem">Reveal in Finder</button><button data-action="default" role="menuitem">Open in Default App</button><button data-action="remove" role="menuitem">Remove from Queue</button><button data-action="trash" role="menuitem">Move to Trash</button></div><div id="confirm-popover" role="dialog" aria-modal="true" aria-labelledby="confirm-message"><p id="confirm-message"></p><div class="confirm-actions"><button id="confirm-cancel" class="button">Cancel</button><button id="confirm-action" class="button">Confirm</button></div></div><script type="module">
-  const api='./api';const pickerAvailable=${pickFiles !== undefined};const list=document.querySelector('#list');const status=document.querySelector('#status');const freshness=document.querySelector('#freshness');const menu=document.querySelector('#menu');const filter=document.querySelector('#filter');const controls=document.querySelector('#controls');const addButton=document.querySelector('#add');const selectButton=document.querySelector('#select');const batchRemove=document.querySelector('#batch-remove');const batchTrash=document.querySelector('#batch-trash');const confirmPopover=document.querySelector('#confirm-popover');const confirmMessage=document.querySelector('#confirm-message');const confirmAction=document.querySelector('#confirm-action');const confirmCancel=document.querySelector('#confirm-cancel');let files=[];let selectedPath=null;let selectionMode=false;let busy=false;let pendingBatchAction=null;let statusTimer=0;let lastSequence=-1;let verified=false;let revalidationFloor=-1;let revalidationToken=0;let errorRefreshQueued=false;const selected=new Set();
-  const setStatus=(message)=>{clearTimeout(statusTimer);status.textContent=message;statusTimer=message?setTimeout(()=>{status.textContent='';statusTimer=0},10000):0};
-  const closeMenu=()=>{menu.classList.remove('open');selectedPath=null};const openMenu=(event,path)=>{if(!verified||selectionMode)return;event.preventDefault();selectedPath=path;menu.classList.add('open');const bounds=menu.getBoundingClientRect();menu.style.left=Math.max(4,Math.min(event.clientX,innerWidth-bounds.width-4))+'px';menu.style.top=Math.max(4,Math.min(event.clientY,innerHeight-bounds.height-4))+'px'};
-  const closeConfirm=()=>{confirmPopover.classList.remove('open');pendingBatchAction=null};const openConfirm=(action,anchor)=>{if(!selected.size||busy)return;pendingBatchAction=action;const count=selected.size;confirmMessage.textContent=action==='trash'?'Move '+count+' selected file'+(count===1?'':'s')+' to the Trash?':'Remove '+count+' selected file'+(count===1?'':'s')+' from the queue?';confirmAction.classList.toggle('danger',action==='trash');confirmPopover.classList.add('open');const anchorBounds=anchor.getBoundingClientRect();const bounds=confirmPopover.getBoundingClientRect();confirmPopover.style.left=Math.max(8,Math.min(anchorBounds.right-bounds.width,innerWidth-bounds.width-8))+'px';confirmPopover.style.top=Math.max(8,anchorBounds.top-bounds.height-8)+'px';confirmAction.focus()};
-  const compactDirectory=path=>path.replace(/^\\/Users\\/[^/]+(?=\\/|$)/,'~');const compactTime=value=>{const date=new Date(value);const today=new Date();if(date.getFullYear()===today.getFullYear()&&date.getMonth()===today.getMonth()&&date.getDate()===today.getDate())return String(date.getHours()).padStart(2,'0')+':'+String(date.getMinutes()).padStart(2,'0');return (date.getMonth()+1)+'/'+date.getDate()};
-  const post=async(endpoint,body)=>{const response=await fetch(api+'/'+endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!response.ok)throw new Error((await response.json()).error?.message||'Action failed');return response.json()};
-  const renderControls=()=>{addButton.hidden=!pickerAvailable||selectionMode;addButton.disabled=busy||!verified;selectButton.textContent=selectionMode?'Cancel':'Select';batchRemove.hidden=!selectionMode;batchTrash.hidden=!selectionMode;batchRemove.disabled=busy||!verified||!selected.size;batchTrash.disabled=busy||!verified||!selected.size;selectButton.disabled=busy||!verified};
-  const syncAvailability=()=>{list.inert=!verified;menu.inert=!verified;list.setAttribute('aria-busy',String(!verified));renderControls()};
-  const render=()=>{const paths=new Set(files.map(file=>file.path));let selectionChanged=false;for(const path of selected)if(!paths.has(path)){selected.delete(path);selectionChanged=true}if(selectedPath&&!paths.has(selectedPath))closeMenu();if(selectionChanged&&confirmPopover.classList.contains('open'))closeConfirm();const query=filter.value.trim().toLocaleLowerCase();const visible=files.filter(file=>file.name.toLocaleLowerCase().includes(query));list.innerHTML=visible.length?'':'<p class="empty">'+(files.length?'No matching files.':'No recent Markdown files.')+'</p>';for(const file of visible){const row=document.createElement('div');row.className='file-row'+(selectionMode?' selecting':'');if(selectionMode){const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='file-check';checkbox.checked=selected.has(file.path);checkbox.setAttribute('aria-label','Select '+file.name);checkbox.onchange=()=>{checkbox.checked?selected.add(file.path):selected.delete(file.path);renderControls()};row.append(checkbox)}const b=document.createElement('button');b.className='file';b.innerHTML='<span class="file-main"><span class="name"></span><br><span class="dir"></span></span><span class="time"></span>';b.querySelector('.name').textContent=file.name;const directory=compactDirectory(file.directory);const dir=b.querySelector('.dir');const dirValue=document.createElement('bdi');dirValue.dir='ltr';dirValue.textContent=directory;dir.append(dirValue);dir.title=directory;b.querySelector('.time').textContent=compactTime(file.createdAt);b.onclick=async()=>{if(!verified)return;if(selectionMode){selected.has(file.path)?selected.delete(file.path):selected.add(file.path);render();return}b.disabled=true;setStatus('Opening…');try{await post('open',{path:file.path});setStatus('Opened.')}catch(error){setStatus(error.message)}finally{b.disabled=false}};b.addEventListener('contextmenu',(event)=>openMenu(event,file.path));row.append(b);list.append(row)}syncAvailability()};
-  const setUnverified=(message='')=>{verified=false;freshness.hidden=!message;freshness.textContent=message;closeConfirm();syncAvailability()};
-  const applySnapshot=(snapshot,mayVerify=false)=>{if(!snapshot||!Number.isSafeInteger(snapshot.sequence)||snapshot.sequence<0||!Array.isArray(snapshot.files)||snapshot.sequence<=lastSequence)return false;const changed=!list.firstChild||JSON.stringify(files)!==JSON.stringify(snapshot.files);lastSequence=snapshot.sequence;files=snapshot.files;if(!verified&&(mayVerify||snapshot.sequence>revalidationFloor)){verified=true;freshness.hidden=true;freshness.textContent=''}if(changed){closeMenu();render()}else syncAvailability();return true};
-  const refreshFiles=async(token=null,required=false)=>{const baseline=lastSequence;try{const r=await fetch(api+'/snapshot');if(!r.ok){if(r.status===401){files=[];lastSequence=-1;setUnverified('Session expired.')}else if(required&&token===revalidationToken&&lastSequence<=baseline)setUnverified('Unable to verify Recents; retrying…');return}applySnapshot(await r.json(),token===null||token===revalidationToken)}catch{if(required&&token===revalidationToken&&lastSequence<=baseline)setUnverified('Unable to verify Recents; retrying…')}};
-  const revalidate=()=>{revalidationFloor=lastSequence;const token=++revalidationToken;setUnverified();void refreshFiles(token,true)};
-  const runBatch=async()=>{const action=pendingBatchAction;if(!action)return;const paths=[...selected];closeConfirm();busy=true;renderControls();setStatus('Working…');let completed=0;try{for(const path of paths){await post('action',{path,action});selected.delete(path);completed++}selectionMode=false;selected.clear();setStatus(action==='trash'?'Moved '+completed+' file'+(completed===1?'':'s')+' to Trash.':'Removed '+completed+' file'+(completed===1?'':'s')+' from queue.')}catch(error){setStatus(error.message)}finally{await refreshFiles();busy=false;renderControls()}};
-  addButton.addEventListener('click',async()=>{if(!verified||busy||selectionMode||!pickerAvailable)return;busy=true;renderControls();try{const result=await post('pick',{});if(!result.cancelled){await refreshFiles();setStatus('Added '+result.added+' file'+(result.added===1?'':'s')+'.')}}catch(error){setStatus(error.message)}finally{busy=false;renderControls()}});
-  selectButton.addEventListener('click',()=>{if(!verified)return;if(selectionMode){selectionMode=false;selected.clear();closeConfirm()}else selectionMode=true;render()});batchRemove.addEventListener('click',()=>openConfirm('remove',batchRemove));batchTrash.addEventListener('click',()=>openConfirm('trash',batchTrash));confirmCancel.addEventListener('click',closeConfirm);confirmAction.addEventListener('click',runBatch);
-  menu.addEventListener('click',async(event)=>{const button=event.target.closest('button[data-action]');if(!button||!selectedPath)return;const action=button.dataset.action;const path=selectedPath;closeMenu();if(action==='trash'&&!confirm('Move this file to the Trash?'))return;setStatus('Working…');try{await post('action',{path,action});setStatus('');if(action==='remove'||action==='trash')await refreshFiles()}catch(error){setStatus(error.message)}});
-  filter.addEventListener('input',render);document.addEventListener('click',(event)=>{if(!menu.contains(event.target))closeMenu();if(confirmPopover.classList.contains('open')&&!confirmPopover.contains(event.target)&&!controls.contains(event.target))closeConfirm()});document.addEventListener('keydown',(event)=>{if(event.key==='Escape'){closeMenu();closeConfirm()}});document.addEventListener('visibilitychange',()=>{if(document.hidden)setUnverified();else revalidate()});addEventListener('pagehide',()=>setUnverified());addEventListener('pageshow',revalidate);addEventListener('scroll',closeMenu,true);if(typeof EventSource!=='undefined'){const events=new EventSource(api+'/events');events.addEventListener('snapshot',(event)=>{try{applySnapshot(JSON.parse(event.data))}catch{}});events.onerror=()=>{if(errorRefreshQueued)return;errorRefreshQueued=true;queueMicrotask(()=>{errorRefreshQueued=false;revalidate()})}}setInterval(()=>fetch(api+'/lease',{method:'POST'}),30000);fetch(api+'/lease',{method:'POST'});revalidate();
-  </script></body></html>`;
+  async function folioOperation(action: string, body: Record<string, unknown>, target?: HostTarget, browser = false): Promise<unknown> {
+    const paths = Array.isArray(body.paths) && body.paths.every(p => typeof p === "string") ? body.paths as string[] : typeof body.path === "string" ? [body.path] : [];
+    if (paths.length > 200) throw invalidRequest("Select no more than 200 documents at once.");
+    if (action === "list") return { ...await recents.folioSnapshot(body as ListFolioOptions), instanceId };
+    if (action === "sync") return recents.retryHostSync(target);
+    if (action === "add") { if (!paths.length) throw invalidRequest("At least one Markdown path is required."); return recents.recordMany(paths, target); }
+    if (browser && paths.length) {
+      const known = new Set((await recents.folioSnapshot({ view: "all" })).files.map(file => file.path));
+      if (paths.some(path => !known.has(resolve(path)))) throw new DocumentAccessError("The selection is not in Folio.");
+    }
+    if (action === "archive" || action === "clear-unpinned") {
+      if ((await recents.getRetention()).mode === "immediate" && body.confirmed !== true) throw Object.assign(new Error("Confirm deleting the selected archived data."), { code: "confirmation_required" });
+      return action === "archive" ? recents.archive(paths, target) : recents.clearUnpinned(target);
+    }
+    if (action === "restore") return recents.restore(paths, target);
+    if (action === "pin" || action === "unpin") { await recents.setPinned(paths, action === "pin" && body.pinned !== false); return { updated: true }; }
+    if (action === "settings") {
+      if (body.retention === undefined) return { retention: await recents.getRetention() };
+      if (body.confirmed !== true) throw Object.assign(new Error("Confirm the archive retention change."), { code: "confirmation_required" });
+      return recents.setRetention(body.retention as FolioRetention, target);
+    }
+    if (action === "delete-conversation" || action === "start-fresh" || action === "delete") {
+      if (body.confirmed !== true) throw Object.assign(new Error("Confirm deleting the selected conversations."), { code: "confirmation_required" });
+      if (action === "delete") return recents.delete(paths, target);
+      for (const path of paths) { agentReads.forget(resolve(path)); privateStore.deleteConversation(resolve(path)); }
+      await recents.refresh();
+      return { cleared: paths };
+    }
+    if (action === "locate") {
+      let destination = typeof body.target === "string" ? body.target : undefined;
+      if (!destination && browser && pickFiles) destination = (await pickFiles())[0];
+      if (!paths[0]) throw invalidRequest("A source path is required.");
+      if (!destination) return { cancelled: true };
+      const entry = await recents.locate(paths[0], destination);
+      const parent = await stat(dirname(entry.path));
+      privateStore.db.query("UPDATE reader_views SET path=?,parent_dev=?,parent_ino=? WHERE path=?").run(entry.path, parent.dev, parent.ino, resolve(paths[0]));
+      return entry;
+    }
+    if (action === "export") {
+      const grants: DocumentSession[] = [];
+      try { for (const path of paths) grants.push(await service.open(path)); return await service.exportReviews(grants); }
+      finally { for (const grant of grants) service.close(grant); }
+    }
+    if (action === "import") {
+      const directory = browser ? await chooseImportDirectory() : typeof body.directory === "string" ? body.directory : null;
+      if (!directory) return { cancelled: true };
+      const result = await service.importReviewsResult(body.package, directory);
+      const livePaths: string[] = [];
+      for (const path of result.paths) if (privateStore.documentForPath(path) && await stat(path).then(info => info.isFile()).catch(() => false)) livePaths.push(path);
+      try {
+        const registration = livePaths.length ? await recents.recordMany(livePaths, target) : undefined;
+        return { ...result, ...(registration ? { registration } : {}) };
+      } catch (cause) {
+        return { ...result, registration: { outcome: "outcome_unknown", code: "folio_registration_failed", message: cause instanceof Error ? cause.message : String(cause), retry: "Retry the same import to register committed files." } };
+      }
+    }
+    if (action === "service") {
+      if (body.action !== "restart" && body.action !== "quit") throw invalidRequest("Unknown service action.");
+      if (body.action === "restart" && !options.restart) throw invalidRequest("Restart is unavailable in this embedded test service.");
+      setTimeout(() => { void (body.action === "restart" ? options.restart!() : daemon.stop()); }, 250);
+      return { restarting: body.action === "restart", quitting: body.action === "quit" };
+    }
+    throw invalidRequest("Unknown Folio action.");
+  }
 
   function sessionFrom(request: Request, pathname: string): Session | Response {
     const match = /^\/s\/([^/]+)(\/.*)?$/.exec(pathname);
@@ -305,17 +396,19 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     try { id = decodeURIComponent(match[1]); } catch { return error("invalid_session", "The browser session route is invalid.", 404); }
     const session = sessions.get(id);
     if (!session) return error("session_expired", "The browser session has expired.", 401);
-    if (cookieValue(request, "tether_session") !== session.cookie) return error("unauthorized", "A scoped browser session cookie is required.", 401);
+    if (!verifiesCookie(cookieValue(request, "tether_session"), session.verifier ?? cookieVerifier(session.cookie))) return error("unauthorized", "A scoped browser session cookie is required.", 401);
     session.lastSeen = now();
     return session;
   }
+
+  let preferenceWrites: Promise<unknown> = Promise.resolve();
 
   async function preferences(): Promise<AppPreferences> {
     try { return preferencesFrom(JSON.parse(await readFile(config.preferencesPath, "utf8"))); } catch { return preferencesFrom(null); }
   }
 
   async function withControlDocument<T>(body: Record<string, unknown>, operation: (grant: DocumentSession) => Promise<T>): Promise<T> {
-    if (typeof body.path !== "string" || !body.path.trim()) throw new Error("A Markdown path is required.");
+    if (typeof body.path !== "string" || !body.path.trim()) throw invalidRequest("A Markdown path is required.");
     const grant = await service.open(body.path);
     try { return await operation(grant); }
     finally { service.close(grant); }
@@ -326,9 +419,16 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       path: document.path,
       bodyRevision: document.bodyRevision,
       ledgerRevision: document.ledgerRevision,
-      maxSequence: document.annotations.maxSequence,
+      appliedSequence: (document as DocumentSnapshot & { mutation?: { appliedSequence?: number } }).mutation?.appliedSequence,
+      mutation: (document as DocumentSnapshot & { mutation?: unknown }).mutation,
       unresolvedCount: document.annotations.unresolvedCount,
     };
+  }
+
+  async function browserAnnotation(input: AppendEventInput): Promise<DocumentSnapshot> {
+    const result = await service.appendEvent(input);
+    await recents.refresh();
+    return result;
   }
 
   async function sessionApi(request: Request, session: Session, path: string): Promise<Response> {
@@ -338,8 +438,22 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     try {
       if (apiPath === "/bootstrap" && request.method === "GET") {
         const document = await service.read(session.grant);
-        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, document, capabilities: hostAdapter.capabilities(session.target), preferences: await preferences(), actor: options.actor ?? "assistant" });
+        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, draft: views.draft(session.id), scroll: views.position(session.id), document, capabilities: hostAdapter.capabilities(session.target), preferences: await preferences(), actor: options.actor ?? "assistant" });
       }
+      if (apiPath === "/position" && request.method === "POST") {
+        const body = await requestJson(request);
+        if (typeof body.scroll !== "number" || !Number.isFinite(body.scroll) || body.scroll < 0) throw invalidRequest("Invalid reader position.");
+        views.savePosition(session.id, body.scroll);
+        return json({ saved: true });
+      }
+      if (apiPath === "/draft" && request.method === "POST") {
+        const body = await requestJson(request);
+        if (typeof body.body !== "string" || body.body.length > 8_000_000 || typeof body.baseRevision !== "string") return error("invalid_request", "Invalid draft.", 400);
+        views.saveDraft(session.id, { body: body.body, baseRevision: body.baseRevision, scroll: typeof body.scroll === "number" && Number.isFinite(body.scroll) ? Math.max(0, body.scroll) : 0, updatedAt: now() });
+        return json({ saved: true });
+      }
+      if (apiPath === "/draft" && request.method === "DELETE") { views.clearDraft(session.id); return json({ cleared: true }); }
+      if (apiPath === "/export" && request.method === "POST") return json(await service.exportReviews([session.grant]));
       if (apiPath === "/file" && request.method === "GET") return json(await service.read(session.grant));
       if (apiPath === "/file" && request.method === "PUT") {
         const body = await requestJson(request);
@@ -368,26 +482,26 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         const body = await requestJson(request);
         let event: AnnotationEventInput;
         if (action === "reply") {
-          if (!textBody(body) || typeof body.threadId !== "string") throw new Error("A reply needs threadId and body.");
+          if (!textBody(body) || typeof body.threadId !== "string") throw invalidRequest("A reply needs threadId and body.");
           event = selectEvent({ ...body, type: "reply", body: textBody(body) }, "reply");
         } else if (action === "edit") {
-          if (!textBody(body) || typeof body.threadId !== "string" || typeof body.targetId !== "string") throw new Error("An edit needs threadId, targetId, and body.");
+          if (!textBody(body) || typeof body.threadId !== "string" || typeof body.targetId !== "string") throw invalidRequest("An edit needs threadId, targetId, and body.");
           event = selectEvent({ ...body, type: "edit", body: textBody(body) }, "edit");
         } else if (action === "delete") {
-          if (typeof body.threadId !== "string" || typeof body.targetId !== "string") throw new Error("A delete event needs threadId and targetId.");
+          if (typeof body.threadId !== "string" || typeof body.targetId !== "string") throw invalidRequest("A delete event needs threadId and targetId.");
           event = selectEvent({ ...body, type: "delete" }, "delete");
         } else if (action === "acknowledge") {
-          if (!Number.isSafeInteger(body.through) || (body.through as number) < 1 || typeof body.bodyRevision !== "string") throw new Error("An acknowledgement needs through and bodyRevision.");
-          event = selectEvent({ ...body, type: "ack", throughSeq: body.through }, "ack");
+          if (typeof body.cursor !== "string" || !body.cursor) throw invalidRequest("An acknowledgement needs the cursor returned by pending.");
+          event = selectEvent({ ...body, type: "ack" }, "ack");
         } else {
-          if (typeof body.threadId !== "string") throw new Error(`A ${action} event needs threadId.`);
+          if (typeof body.threadId !== "string") throw invalidRequest(`A ${action} event needs threadId.`);
           event = selectEvent({ ...body, type: action }, action);
         }
-        return json(await service.appendEvent({ session: session.grant, event, expectedBodyRevision: action === "acknowledge" ? body.bodyRevision as string : expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
+        return json(await browserAnnotation({ session: session.grant, event, cursor: typeof body.cursor === "string" ? body.cursor : undefined, operationId: typeof body.operationId === "string" ? body.operationId : undefined, expectedBodyRevision: action === "acknowledge" ? body.bodyRevision as string : expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
       }
       if (apiPath === "/annotations" && request.method === "POST") {
         const body = await requestJson(request);
-        return json(await service.appendEvent({ session: session.grant, event: selectEvent(body), expectedBodyRevision: expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
+        return json(await browserAnnotation({ session: session.grant, event: selectEvent(body), operationId: typeof body.operationId === "string" ? body.operationId : undefined, expectedBodyRevision: expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
       }
       if (apiPath === "/lease" && request.method === "POST") {
         const body = await requestJson(request);
@@ -396,7 +510,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         session.leases.set(leaseId, now() + leaseMs);
         emptySince = 0;
         const read = await service.read(session.grant);
-        return json({ bodyRevision: read.bodyRevision, ledgerRevision: read.ledgerRevision, revision: read.bodyRevision });
+        return json({ path: read.path, bodyRevision: read.bodyRevision, ledgerRevision: read.ledgerRevision, revision: read.bodyRevision });
       }
       if (apiPath === "/release" && request.method === "POST") {
         const body = await requestJson(request);
@@ -410,21 +524,41 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       if (apiPath === "/open" && request.method === "POST") {
         const body = await requestJson(request);
-        if (typeof body.target !== "string" || !body.target.trim()) throw new Error("A wikilink target is required.");
-        const grant = await resolveTarget(session.grant.path, body.target, service);
+        if (typeof body.target !== "string" || !body.target.trim()) throw invalidRequest("A wikilink target is required.");
+        if (body.format !== undefined && body.format !== "markdown" && body.format !== "wikilink") throw invalidRequest("Invalid link format.");
+        const path = await service.resolveWikilink(session.grant.path, body.target, body.format);
+        const sourceUrl = `${daemon.origin}/s/${session.id}/`;
+        if (![".md", ".markdown"].includes(extname(path).toLowerCase())) {
+          if (session.target?.host === "cmux") {
+            if (!hostAdapter.openLocalFile) throw invalidRequest("Native local-file opening is unavailable in this host.");
+            await hostAdapter.openLocalFile({ path, sourceUrl, target: session.target });
+            return json({ path, resolvedPath: path, opened: true });
+          }
+          if (!hostAdapter.capabilities(session.target).revealFile || !hostAdapter.revealFile) throw invalidRequest("Revealing local files is unavailable in this host.");
+          await hostAdapter.revealFile(path);
+          return json({ path, resolvedPath: path, opened: false, revealed: true });
+        }
+        const grant = await service.open(path);
         const ticket = mintTicket(grant, session.target);
-        try { await hostAdapter.openView({ url: ticket.url, kind: "document", focus: true, allowFocusedFallback: true, target: session.target }); }
+        try { await hostAdapter.openView({ url: ticket.url, kind: "document", focus: true, target: session.target,
+          ...(session.target?.host === "cmux" ? { targetPolicy: "source-pane" as const, sourceUrl } : {}),
+        }); }
         catch (cause) { discardTicket(ticket.ticket); throw cause; }
         return json({ path: grant.path, resolvedPath: grant.realPath, opened: true });
       }
       if (apiPath === "/preferences" && request.method === "PUT") {
         const body = await requestJson(request);
-        const value = preferencesFrom(body);
-        const { mkdir, writeFile, rename } = await import("node:fs/promises");
-        await mkdir(dirname(config.preferencesPath), { recursive: true, mode: 0o700 });
-        const temp = `${config.preferencesPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
-        await writeFile(temp, JSON.stringify(value), { mode: 0o600 });
-        await rename(temp, config.preferencesPath);
+        const operation = preferenceWrites.then(async () => {
+          const value = updatePreferences(await preferences(), body);
+          const { mkdir, writeFile, rename } = await import("node:fs/promises");
+          await mkdir(dirname(config.preferencesPath), { recursive: true, mode: 0o700 });
+          const temp = `${config.preferencesPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+          await writeFile(temp, JSON.stringify(value), { mode: 0o600 });
+          await rename(temp, config.preferencesPath);
+          return value;
+        });
+        preferenceWrites = operation.catch(() => {});
+        const value = await operation;
         return json(value);
       }
       return error("not_found", "API endpoint not found.", 404);
@@ -435,15 +569,15 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     }
   }
 
-  async function resolveTarget(currentPath: string, rawTarget: string, documents: DocumentService): Promise<DocumentSession> {
-    const resolved = await documents.resolveWikilink(currentPath, rawTarget);
-    return documents.open(resolved);
-  }
-
   async function requestHandler(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const pathname = url.pathname;
     if (pathname === "/health" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId });
+    if (pathname === "/favicon.png" && request.method === "GET") {
+      return new Response(Bun.file(resolve(runtimeRoot(), process.env.TETHER_INSTALL_ROOT ? "dist/favicon.png" : "src/web/favicon.png")), {
+        headers: { "content-type": "image/png", "cache-control": "public, max-age=3600", "x-content-type-options": "nosniff" },
+      });
+    }
     if (pathname === "/launch" && request.method === "GET") {
       const ticket = url.searchParams.get("ticket");
       if (!ticket) return error("ticket_missing", "A launch ticket is required.", 400);
@@ -458,6 +592,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const createdAt = now();
       const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt, lastSeen: createdAt, leases: new Map(), ...(pending.target ? { target: pending.target } : {}) };
       sessions.set(id, session);
+      views.put({ id, kind: "document", path: session.grant.realPath, verifier: cookieVerifier(session.cookie), createdAt, target: session.target });
       try { await recents.record(pending.grant.realPath, pending.target); }
       catch (cause) {
         sessions.delete(id);
@@ -482,6 +617,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const createdAt = now();
       const session: RecentsSession = { id, cookie: randomToken(), createdAt, lastSeen: createdAt, leaseUntil: createdAt + leaseMs, ...(pending.target ? { target: pending.target } : {}) };
       recentsSessions.set(id, session);
+      views.put({ id, kind: "folio", path: null, verifier: cookieVerifier(session.cookie), createdAt, target: session.target });
       const root = `/r/${encodeURIComponent(id)}/`;
       return new Response(null, { status: 302, headers: {
         location: `${root}?instance=${encodeURIComponent(daemon.instanceId)}`,
@@ -493,13 +629,36 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const match = /^\/r\/([^/]+)\/(.*)$/.exec(pathname);
       const session = match ? recentsSessions.get(decodeURIComponent(match[1])) : undefined;
       if (!session) return error("session_expired", "The Recents session has expired.", 401);
-      if (cookieValue(request, "tether_recents") !== session.cookie) return error("unauthorized", "A scoped Recents cookie is required.", 401);
+      if (!verifiesCookie(cookieValue(request, "tether_recents"), session.verifier ?? cookieVerifier(session.cookie))) return error("unauthorized", "A scoped Recents cookie is required.", 401);
       session.lastSeen = now();
       const suffix = `/${match![2]}`;
-      if (request.method === "GET" && suffix === "/") return new Response(recentsHtml, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+      if (request.method === "GET" && suffix === "/") {
+        const prefs = await preferences();
+        return new Response(folioHtml({ pickerAvailable: Boolean(pickFiles), theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+      }
       if (request.method === "GET" && suffix === "/api/files") return json(await recents.files());
-      if (request.method === "GET" && suffix === "/api/snapshot") return json(await recents.snapshot());
+      if (request.method === "GET" && suffix === "/api/updates") return json(await updates.status(), { headers: { "cache-control": "no-store" } });
+      if (request.method === "POST" && ["/api/updates/install", "/api/updates/dismiss"].includes(suffix)) {
+        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
+        try {
+          const body = await requestJson(request);
+          if (suffix.endsWith("/install")) await updates.install(body.tag);
+          else await updates.dismiss(body.tag);
+          return json({ ok: true });
+        } catch (cause) { return codedError(cause, "update_failed", 409); }
+      }
+      if (request.method === "GET" && suffix === "/api/snapshot") return json({ ...await recents.folioSnapshot({ view: "all" }), instanceId });
       if (request.method === "GET" && suffix === "/api/events") return recentsEventStream(request);
+      if (request.method === "POST" && suffix === "/api/filters") {
+        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
+        try {
+          const body = await requestJson(request);
+          if (!["save", "set-active", "delete"].includes(String(body.action)) || typeof body.text !== "string" || !body.text.trim() || body.text.length > 1000 || (body.action === "set-active" && typeof body.active !== "boolean")) {
+            throw invalidRequest("Provide a filter of 1–1000 characters and a valid filter action.");
+          }
+          return json({ ...await recents.changeFilter(body.action as "save" | "set-active" | "delete", body.text, body.active as boolean | undefined), instanceId });
+        } catch (cause) { return controlError(cause); }
+      }
       if (request.method === "POST" && suffix === "/api/lease") { session.leaseUntil = now() + leaseMs; return json({ ok: true }); }
       if (request.method === "POST" && suffix === "/api/pick") {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
@@ -514,14 +673,16 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         } catch (cause) { return codedError(cause, "pick_failed", 400); }
         finally { pickerOpen = false; }
       }
-      if (request.method === "POST" && suffix === "/api/open") {
+      if (request.method === "POST" && (suffix === "/api/open" || suffix === "/api/welcome")) {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
         try {
-          const body = await requestJson(request);
-          if (typeof body.path !== "string") throw new Error("A recent Markdown path is required.");
+          const body = suffix === "/api/welcome" ? { path: await seedWelcome(config) } : await requestJson(request);
+          if (typeof body.path !== "string") throw invalidRequest("A recent Markdown path is required.");
+          if (suffix === "/api/welcome") await recents.record(body.path, session.target);
           const allowed = await recents.paths();
-          const grant = await service.open(body.path);
-          if (!allowed.includes(grant.realPath)) { service.close(grant); return error("document_unauthorized", "The path is not in Tether Recents.", 403); }
+          const canonical = await realpath(body.path);
+          if (!allowed.includes(canonical)) return error("document_unauthorized", "The path is not in Tether Folio.", 403);
+          const grant = await service.open(canonical);
           const launch = mintTicket(grant, session.target);
           try {
             await hostAdapter.openView({
@@ -537,33 +698,21 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           return json({ opened: true, path: grant.path });
         } catch (cause) { return codedError(cause, "open_failed", 400); }
       }
-      if (request.method === "POST" && suffix === "/api/action") {
+      if (request.method === "POST" && ["/api/action", "/api/batch", "/api/settings", "/api/import", "/api/clear-unpinned", "/api/service"].includes(suffix)) {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
         try {
           const body = await requestJson(request);
-          if (typeof body.path !== "string" || typeof body.action !== "string") throw new Error("A recent Markdown path and action are required.");
-          const path = await realpath(body.path);
-          if (!(await recents.paths()).includes(path)) return error("document_unauthorized", "The path is not in Tether Recents.", 403);
-          switch (body.action) {
-            case "reveal":
-              if (!hostAdapter.capabilities(session.target).revealFile || !hostAdapter.revealFile) throw new Error("Reveal in Finder is unavailable in this host.");
-              await hostAdapter.revealFile(path);
-              break;
-            case "default":
-              await hostAdapter.openExternal(path);
-              break;
-            case "remove":
-              await recents.remove(path, session.target);
-              break;
-            case "trash":
-              await trashFile(path);
-              await recents.remove(path, session.target);
-              break;
-            default:
-              throw new Error("Unknown recent-file action.");
+          const action = suffix === "/api/action" || suffix === "/api/batch" ? String(body.action) : suffix.slice(5);
+          if (["reveal", "default", "trash"].includes(action)) {
+            const path = typeof body.path === "string" ? await realpath(body.path) : "";
+            if (!(await recents.paths()).includes(path)) throw new DocumentAccessError();
+            if (action === "reveal") { if (!hostAdapter.revealFile) throw invalidRequest("Reveal is unavailable."); await hostAdapter.revealFile(path); }
+            if (action === "default") await hostAdapter.openExternal(path);
+            if (action === "trash") { if (body.confirmed !== true) throw invalidRequest("Confirm moving the file to Trash."); await trashFile(path); await recents.remove(path, session.target); }
+            return json({ action, path });
           }
-          return json({ action: body.action, path });
-        } catch (cause) { return error("action_failed", cause instanceof Error ? cause.message : String(cause), 400); }
+          return json(await folioOperation(action === "remove" ? "archive" : action, body, session.target, true));
+        } catch (cause) { return controlError(cause); }
       }
       return error("not_found", "Recents resource not found.", 404);
     }
@@ -578,6 +727,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const ticket = mintTicket(grant, target);
           return json({ ...ticket, path: grant.path });
         }
+        if (pathname.startsWith("/control/folio/") && request.method === "POST") {
+          const body = await requestJson(request);
+          return json(await folioOperation(pathname.slice("/control/folio/".length), body, hostTarget(body.target)));
+        }
         if (pathname === "/control/recents/launch" && request.method === "POST") {
           const body = await requestJson(request);
           return json(mintRecentsTicket(hostTarget(body.target)));
@@ -585,7 +738,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         if (pathname === "/control/recents/add" && request.method === "POST") {
           try {
             const body = await requestJson(request);
-            if (typeof body.path !== "string" || !body.path.trim()) throw new Error("A recent Markdown path is required.");
+            if (typeof body.path !== "string" || !body.path.trim()) throw invalidRequest("A recent Markdown path is required.");
             const result = await recents.record(body.path, hostTarget(body.target));
             return json({ path: result.entry.path, recentCount: result.entries.length, hostSynchronized: result.hostSynchronized });
           } catch (cause) {
@@ -599,54 +752,97 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         }
         if (request.method === "POST" && (pathname.startsWith("/control/document/") || pathname.startsWith("/control/review/"))) {
           const body = await requestJson(request);
+          if (pathname === "/control/document/move") {
+            if (typeof body.path !== "string" || typeof body.target !== "string") throw invalidRequest("Move requires source and destination paths.");
+            const result = await service.move(body.path, body.target);
+            await recents.refresh();
+            return json(result);
+          }
           const result = await withControlDocument(body, async (grant) => {
-            if (pathname === "/control/document/read") return await service.read(grant);
+            const actionName = pathname.split("/").at(-1)!;
+            if (["outline", "context", "diff", "pending", "threads", "thread", "event", "quote-candidates", "operation"].includes(actionName)) {
+              const source = await service.exportExact(grant);
+              if (actionName === "outline") return agentReads.outline(grant.path, source, body);
+              if (actionName === "context") {
+                if (typeof body.threadId !== "string") throw invalidRequest("Context requires threadId.");
+                return agentReads.context(grant.path, source, body.threadId, body);
+              }
+              if (actionName === "diff") {
+                if (typeof body.fromRevision !== "string") throw invalidRequest("Diff requires fromRevision.");
+                return agentReads.diff(grant.path, source, body.fromRevision, body);
+              }
+              if (actionName === "pending") {
+                if (typeof body.actor !== "string") throw invalidRequest("Pending requires actor.");
+                return agentReads.pending(grant.path, source, { ...body, actor: body.actor, consumer: typeof body.consumer === "string" ? body.consumer : body.actor });
+              }
+              if (actionName === "threads") return agentReads.threads(grant.path, source, body);
+              if (actionName === "thread") {
+                if (typeof body.threadId !== "string") throw invalidRequest("A thread ID is required.");
+                return agentReads.thread(grant.path, source, body.threadId, body);
+              }
+              if (actionName === "event") {
+                if (typeof body.eventId !== "string") throw invalidRequest("An event ID is required.");
+                return agentReads.event(grant.path, body.eventId, body);
+              }
+              if (actionName === "operation") {
+                if (typeof body.operationId !== "string") throw invalidRequest("An operation ID is required.");
+                return privateStore.lookupMutation(grant.path, body.operationId);
+              }
+              if (typeof body.quote !== "string") throw invalidRequest("A quote is required.");
+              return quoteCandidates(source, body.quote, body);
+            }
+            if (pathname === "/control/document/read") {
+              const doc = await service.read(grant);
+              return { path: doc.path, body: doc.body, bodyRevision: doc.bodyRevision, conversationRevision: doc.ledgerRevision };
+            }
             if (pathname === "/control/document/save") {
-              if (typeof body.body !== "string" || typeof body.expectedBodyRevision !== "string") throw new Error("Document save requires body and expectedBodyRevision.");
+              if (typeof body.body !== "string" || typeof body.expectedBodyRevision !== "string") throw invalidRequest("Document save requires body and expectedBodyRevision.");
               return mutationSummary(await service.saveBody({ session: grant, body: body.body, expectedBodyRevision: body.expectedBodyRevision }));
             }
-            if (pathname === "/control/review/pending") {
-              if (typeof body.actor !== "string" || !body.actor.trim()) throw new Error("Pending review requires actor.");
-              const pending = await service.pendingRead(grant, body.actor);
-              return {
-                path: pending.path,
-                documentId: pending.documentId,
-                bodyRevision: pending.bodyRevision,
-                ledgerRevision: pending.ledgerRevision,
-                events: pending.events.map(({ event }) => event),
-                maxSequence: pending.maxSequence,
-                acknowledgement: pending.acknowledgement,
-              };
+            if (pathname === "/control/review/comment") {
+              if (typeof body.actor !== "string" || !textBody(body) || typeof body.quote !== "string") throw invalidRequest("A comment needs actor, body and quote.");
+              const requestFingerprint = { type: "comment", actor: body.actor, body: textBody(body), quote: body.quote, ...(body.candidateId ? { candidateId: body.candidateId } : {}), ...(body.expectedBodyRevision ? { expectedBodyRevision: body.expectedBodyRevision } : {}) };
+              if (typeof body.operationId === "string") {
+                const replay = await service.mutationReceipt(grant, body.operationId, requestFingerprint);
+                if (replay) return mutationSummary(replay);
+              }
+              const doc = await service.read(grant);
+              if ((body.candidateId || body.expectedBodyRevision) && body.expectedBodyRevision !== doc.bodyRevision) throw new DocumentConflictError("The quote candidate requires the current body revision.", { currentBodyRevision: doc.bodyRevision });
+              const anchor = anchorForQuote(doc.body, body.quote, doc.bodyRevision, typeof body.candidateId === "string" ? body.candidateId : undefined);
+              return mutationSummary(await service.appendComment({ session: grant, actor: body.actor, body: textBody(body), requestFingerprint, anchor, expectedBodyRevision: doc.bodyRevision, operationId: typeof body.operationId === "string" ? body.operationId : undefined }));
             }
-            if (pathname === "/control/review/thread") {
-              if (typeof body.threadId !== "string" || !body.threadId) throw new Error("A thread ID is required.");
-              return await service.thread(grant, body.threadId);
-            }
-            const action = /^\/control\/review\/(reply|resolve|reopen|acknowledge)$/.exec(pathname)?.[1];
-            if (!action) throw new Error("Control endpoint not found.");
-            if (typeof body.actor !== "string" || !body.actor.trim()) throw new Error(`Review ${action} requires actor.`);
+            const action = /^\/control\/review\/(reply|resolve|reopen|edit|delete|acknowledge)$/.exec(pathname)?.[1];
+            if (!action) throw invalidRequest("Control endpoint not found.");
+            if (typeof body.actor !== "string" || !body.actor.trim()) throw invalidRequest(`Review ${action} requires actor.`);
             let event: AnnotationEventInput;
-            if (action === "reply") {
-              if (typeof body.threadId !== "string" || !textBody(body)) throw new Error("A reply needs threadId and body.");
+            if (action === "edit" || action === "delete") {
+              if (typeof body.threadId !== "string" || typeof body.targetId !== "string" || (action === "edit" && !textBody(body))) throw invalidRequest("Edit/delete requires threadId, targetId, and edit text.");
+              event = selectEvent({ ...body, type: action, ...(action === "edit" ? { body: textBody(body) } : {}) }, action);
+            } else if (action === "reply") {
+              if (typeof body.threadId !== "string" || !textBody(body)) throw invalidRequest("A reply needs threadId and body.");
               event = selectEvent({ ...body, type: "reply", body: textBody(body) }, "reply");
             } else if (action === "acknowledge") {
-              if (!Number.isSafeInteger(body.through) || (body.through as number) < 1 || typeof body.bodyRevision !== "string") throw new Error("An acknowledgement needs through and bodyRevision.");
-              event = selectEvent({ ...body, type: "ack", throughSeq: body.through }, "ack");
+              if (typeof body.cursor !== "string" || !body.cursor) throw invalidRequest("An acknowledgement needs the cursor returned by pending.");
+              event = selectEvent({ ...body, type: "ack" }, "ack");
             } else {
-              if (typeof body.threadId !== "string" || !body.threadId) throw new Error(`A ${action} event needs threadId.`);
+              if (typeof body.threadId !== "string" || !body.threadId) throw invalidRequest(`A ${action} event needs threadId.`);
               event = selectEvent({ ...body, type: action }, action);
             }
             return mutationSummary(await service.appendEvent({
               session: grant,
               event,
-              expectedBodyRevision: action === "acknowledge" ? body.bodyRevision as string : undefined,
+              cursor: typeof body.cursor === "string" ? body.cursor : undefined,
+              consumer: typeof body.consumer === "string" ? body.consumer : undefined,
+              operationId: typeof body.operationId === "string" ? body.operationId : undefined,
+              expectedThreadSequence: typeof body.expectedThreadSequence === "number" ? body.expectedThreadSequence : undefined,
               expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined,
             }));
           });
+          if (pathname.startsWith("/control/review/") && !["pending", "thread", "threads", "event", "quote-candidates", "operation"].includes(pathname.split("/").at(-1)!)) await recents.refresh();
           return json(result);
         }
         if (pathname === "/control/status" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId, origin: daemon.origin, pid: process.pid, sessions: sessions.size });
-        if (pathname === "/control/stop" && request.method === "POST") { queueMicrotask(() => { void daemon.stop(); }); return json({ stopping: true }); }
+        if (pathname === "/control/stop" && request.method === "POST") { setTimeout(() => { void daemon.stop(); }, 50); return json({ stopping: true }); }
       } catch (cause) { return controlError(cause); }
       return error("not_found", "Control endpoint not found.", 404);
     }
@@ -663,7 +859,14 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     return error("not_found", "Not found.", 404);
   }
 
-  const bunServer = Bun.serve({ hostname: LOOPBACK, port: options.port ?? 0, fetch: requestHandler });
+  const requests = new Set<Promise<Response>>();
+  const bunServer = Bun.serve({ hostname: LOOPBACK, port: options.port ?? 0, fetch: (request: Request) => {
+    if (stopped) return error("service_stopping", "Tether is restarting.", 503);
+    const pending = requestHandler(request);
+    requests.add(pending);
+    void pending.finally(() => requests.delete(pending)).catch(() => {});
+    return pending;
+  } });
   const boundPort = bunServer.port!;
   daemon = {
     server: bunServer,
@@ -679,6 +882,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       stopped = true;
       if (timer) clearInterval(timer);
       timer = undefined;
+      for (const close of [...recentsStreamClosers]) close();
+      await Promise.allSettled([...requests]);
       for (const session of sessions.values()) service.close(session.grant);
       sessions.clear();
       for (const pending of tickets.values()) service.close(pending.grant);
@@ -686,7 +891,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       recentsTickets.clear();
       recentsSessions.clear();
       for (const close of [...recentsStreamClosers]) close();
-      await bunServer.stop();
+      await Bun.sleep(0); // Flush closed event streams before dropping keep-alive sockets.
+      await bunServer.stop(true);
+      if (!options.service) privateStore.close();
       await removeDiscovery(config, instanceId);
       settleReady();
       resolveClosed();
@@ -698,13 +905,33 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   void (async () => {
     try {
       await prepareConfig(config);
+      await service.recoverMoves();
       if (stopped) return;
+      if (options.persistentViews) {
+        for (const view of views.list()) {
+          if (view.kind === "folio") recentsSessions.set(view.id, { id: view.id, cookie: "", verifier: view.verifier, createdAt: view.createdAt, lastSeen: now(), leaseUntil: now() + leaseMs, target: view.target });
+          else if (view.path) {
+            try {
+              if (await realpath(view.path) !== view.path) throw new DocumentAccessError();
+              const parent = await stat(dirname(view.path));
+              if (view.parent && (parent.dev !== view.parent.dev || parent.ino !== view.parent.ino)) throw new DocumentAccessError();
+              const grant = await service.open(view.path);
+              if (!view.parent) views.put({ ...view, parent: { dev: parent.dev, ino: parent.ino } });
+              sessions.set(view.id, { id: view.id, grant, cookie: "", verifier: view.verifier, createdAt: view.createdAt, lastSeen: now(), leases: new Map(), target: view.target });
+            }
+            catch { /* Missing files remain available in Folio for Locate file. */ }
+          }
+        }
+      }
       await ensureControlToken(config);
       if (stopped) return;
       await writeDiscovery(config, { protocol: PROTOCOL_VERSION, instanceId, pid: process.pid, origin: daemon.origin, startedAt: new Date(startedAt).toISOString() });
       if (stopped) { await removeDiscovery(config, instanceId); return; }
+      await recents.expire();
+      let lastExpiry = now();
       timer = setInterval(() => {
         const current = now();
+        if (current - lastExpiry >= 60_000) { lastExpiry = current; void recents.expire().catch(() => {}); }
         for (const session of [...sessions.values()]) {
           for (const [lease, expiry] of session.leases) if (expiry <= current) session.leases.delete(lease);
         }
@@ -729,14 +956,25 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
 }
 
 export async function startDaemon(options: DaemonOptions = {}): Promise<TetherDaemon> {
-  let configured = options;
+  const config = options.config ?? resolveConfig();
+  await prepareConfig(config);
+  const listenerPath = join(config.runtimeDir, "listener.json");
+  let port = options.port;
+  if (port === undefined) {
+    try {
+      const saved = JSON.parse(readFileSync(listenerPath, "utf8"));
+      if (Number.isSafeInteger(saved.port) && saved.port > 0 && saved.port < 65536) port = saved.port;
+    } catch { /* First launch allocates a port and remembers it. */ }
+  }
+  let configured = { ...options, config, port, persistentViews: options.persistentViews ?? true };
   if (!configured.web) {
     const { createWebBundleResponder } = await import("../web/bundle");
     const responder = await createWebBundleResponder();
-    configured = { ...options, web: (request) => responder(request) };
+    configured = { ...configured, web: (request: Request) => responder(request) };
   }
   const daemon = createDaemon(configured);
   await daemon.ready;
+  writeFileSync(listenerPath, JSON.stringify({ port: daemon.port }), { mode: 0o600 });
   return daemon;
 }
 

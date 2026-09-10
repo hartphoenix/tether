@@ -4,14 +4,14 @@
 
 Read [README.md](README.md) and the current status and implementation checkpoint in [docs/product-plan.md](docs/product-plan.md). Run `git status --short --branch` before acting; preserve existing work and verify plan status against the code and tests rather than assuming either is current.
 
-Tether is the sole active Markdown viewer, review service, and recent-document registry. Legacy Roger implementations are archived reference material, not runnable dependencies or fallback paths.
+Tether owns its Markdown viewer, review service, and recent-document registry. Work from this repository; archived implementations are not runtime dependencies or fallback paths.
 
 ## Architecture invariants
 
 - Run one daemon per OS user and profile. Multiple documents and multiple views of one document share that daemon and its per-real-path mutation queue.
 - Keep the document model, review model, daemon API, and web client host-neutral. Wave, cmux, and later environments belong behind capability-reporting adapters.
 - An explicit path-scoped operation grants file access. Recents is a convenience index and never grants read or write authority.
-- Keep Markdown-body and annotation-ledger revisions independent. Preserve the terminal embedded ledger and use conflict-checked, atomic body saves.
+- Keep Markdown-body and private-conversation revisions independent. Store annotations in private SQLite; opening/commenting must not alter Markdown bytes. Use conflict-checked, atomic body saves.
 - Treat browser leases and release events as presence signals only. Missed heartbeats, suspended webviews, reloads, and laptop sleep must not revoke a document-scoped session.
 - Report unsupported host capabilities explicitly. Do not silently substitute a system-browser action for a requested embedded-host action.
 
@@ -22,8 +22,8 @@ Use actor `assistant`. Start with compact state and escalate only as needed:
 1. Run `mdreview pending <file> --actor assistant`.
 2. Fetch each relevant thread with `mdreview thread <file> <thread-id>`.
 3. Reply in the thread when the information is local to that passage. Keep global status and cross-document context in the conversation rather than duplicating it in both places.
-4. Read the full document only when pending state and individual threads do not provide enough context.
-5. Acknowledge only through the exact sequence and body revision that were actually reviewed.
+4. Use `document context`, `document outline`, or `document diff` before a full document read when compact thread state is insufficient.
+5. Follow returned continuations, then acknowledge only the opaque cursor whose complete contents were reviewed. Keep the original cursor while working; do not fetch a newer one merely to acknowledge it.
 
 Resolution is the user's attention state, not the assistant's work queue:
 
@@ -33,7 +33,9 @@ Resolution is the user's attention state, not the assistant's work queue:
 - Acknowledgement means the assistant has seen events; it is independent of resolution.
 - `orphaned` means the thread's document location was lost. It is independent of open/resolved state, and orphaned threads remain replyable.
 
-Use revision-safe CLI operations documented in [README.md](README.md). Do not edit the embedded JSONL ledger directly when the daemon API or CLI can perform the operation.
+Use revision-safe CLI operations documented in [README.md](README.md). Annotation mutations require an operation ID: retry with the same ID and identical input, or inspect `operation <file> --operation-id <id>`. A missing receipt does not prove nonapplication. Consumer identity belongs to pending/acknowledge; it defaults to the actor. Do not edit private SQLite state directly.
+
+When moving a document you know is active in Tether’s Folio, use `mdreview document move <source> <destination>` to preserve its conversation. No extra Folio checks are required for ordinary file moves; archived documents need no special handling.
 
 ## Recents and host synchronization
 

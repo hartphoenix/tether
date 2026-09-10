@@ -2,19 +2,24 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { JSDOM } from "jsdom";
+import { PrivateStore } from "../src/storage/private-store";
+import { RecentsRegistry } from "../src/recents/registry";
 import { bodyRevision } from "../src/core/annotation-ledger";
 import { DocumentAccessError, DocumentService } from "../src/documents/document-service";
 import { resolveConfig } from "../src/server/config";
 import { createDaemon, type TetherDaemon } from "../src/server/server";
 import { controlRecentsAdd, controlRecentsLaunch } from "../src/server/lifecycle";
 import type { RecentsSnapshot } from "../src/recents/service";
-import type { HostAdapter, OpenViewRequest } from "../src/hosts/host-adapter";
+import type { HostAdapter, OpenLocalFileRequest, OpenViewRequest } from "../src/hosts/host-adapter";
 
 const directories: string[] = [];
 const daemons: TetherDaemon[] = [];
+const stores: PrivateStore[] = [];
+function testRegistry(file: { config: ReturnType<typeof resolveConfig> }) { const store = new PrivateStore(join(file.config.configDir, "tether.sqlite")); stores.push(store); return new RecentsRegistry({ path: file.config.recentsPath, database: store.db }); }
 
 afterEach(async () => {
   for (const daemon of daemons.splice(0)) await daemon.stop();
+  for (const store of stores.splice(0)) store.close();
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
@@ -49,12 +54,72 @@ function recentsUrl(daemon: TetherDaemon, location: string, pathname = ""): stri
   return new URL(pathname, `${daemon.origin}${location}`).href;
 }
 
+test("Folio help seeds a welcome document only through an authorized same-origin action", async () => {
+  const file = await fixture();
+  const daemon = createDaemon({ config: file.config, opener: async () => {} });
+  daemons.push(daemon);
+  const session = await exchangeRecents(daemon, file.config);
+  const url = recentsUrl(daemon, session.location, "api/welcome");
+  expect((await fetch(url, { method: "POST", headers: { cookie: session.cookie, origin: "http://unrelated.invalid" } })).status).toBe(403);
+  const options = { method: "POST", headers: { cookie: session.cookie, origin: daemon.origin } };
+  const response = await fetch(url, options);
+  expect(response.status).toBe(200);
+  const result = await response.json() as { path: string };
+  await writeFile(result.path, "My practice notes\n");
+  expect((await fetch(url, options)).status).toBe(200);
+  expect(await readFile(result.path, "utf8")).toBe("My practice notes\n");
+});
+
 async function exchangeRecents(daemon: TetherDaemon, config: ReturnType<typeof resolveConfig>) {
+  await daemon.ready;
   const launch = await controlRecentsLaunch(config);
   const response = await fetch(launch.url, { redirect: "manual" });
   const location = response.headers.get("location")!;
   return { location, cookie: response.headers.get("set-cookie")!.split(";", 1)[0] };
 }
+
+test("Folio updates require a scoped cookie and same-origin installation or dismissal", async () => {
+  const file = await fixture();
+  const actions: string[] = [];
+  const daemon = createDaemon({ config: file.config, updates: {
+    status: async () => ({ available: { version: "0.2.0", tag: "v0.2.0", notes: "https://github.com/hartphoenix/tether/releases/tag/v0.2.0" }, installing: false, failed: false }),
+    install: async tag => { actions.push(`install:${tag}`); }, dismiss: async tag => { actions.push(`dismiss:${tag}`); },
+  } });
+  daemons.push(daemon); await daemon.ready;
+  const session = await exchangeRecents(daemon, file.config);
+  const url = recentsUrl(daemon, session.location, "api/updates");
+  expect((await fetch(url)).status).toBe(401);
+  expect((await fetch(url, { headers: { cookie: session.cookie } })).status).toBe(200);
+  for (const action of ["install", "dismiss"]) {
+    const options = { method: "POST", body: '{"tag":"v0.2.0"}', headers: { cookie: session.cookie, origin: "https://unrelated.invalid" } };
+    expect((await fetch(`${url}/${action}`, options)).status).toBe(403);
+    expect((await fetch(`${url}/${action}`, { ...options, headers: { ...options.headers, origin: daemon.origin } })).status).toBe(200);
+  }
+  expect(actions).toEqual(["install:v0.2.0", "dismiss:v0.2.0"]);
+});
+
+test("shutdown drains in-flight requests before closing the document store", async () => {
+  const file = await fixture();
+  let release!: () => void, entered!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const daemon = createDaemon({ config: file.config, web: async (_request, session) => {
+    entered(); await blocked;
+    return Response.json(await daemon.service.read(session.grant));
+  } });
+  daemons.push(daemon); await daemon.ready;
+  const session = await exchange(daemon, file.path);
+  const response = sessionFetch(daemon, session.location, session.cookie, "");
+  await started;
+  let closed = false;
+  const closing = daemon.stop().then(() => { closed = true; });
+  await Bun.sleep(10);
+  expect(closed).toBe(false);
+  release();
+  expect((await response).status).toBe(200);
+  await closing;
+  expect(closed).toBe(true);
+});
 
 function sseSnapshots(response: Response) {
   const reader = response.body!.getReader();
@@ -97,7 +162,7 @@ describe("browser launch authorization", () => {
       revealFile: async (path) => { revealed.push(path); },
       recentsChanged: async (entries) => { synchronized.push(entries.map((entry) => entry.path)); },
     };
-    const registry = new (await import("../src/recents/registry")).RecentsRegistry(file.config.recentsPath);
+    const registry = testRegistry(file);
     await registry.add(file.path);
     await registry.add(file.other);
     const daemon = createDaemon({
@@ -116,14 +181,19 @@ describe("browser launch authorization", () => {
     const action = (path: string, value: string) => fetch(recentsUrl(daemon, location, "api/action"), {
       method: "POST",
       headers: { cookie, origin: daemon.origin, "content-type": "application/json" },
-      body: JSON.stringify({ path, action: value }),
+      body: JSON.stringify({ path, action: value, confirmed: true }),
     });
 
     const page = await (await fetch(recentsUrl(daemon, location), { headers: { cookie } })).text();
-    expect(page).toContain("<title>Recents</title>");
+    expect(page.includes("<title>Tether Folio</title>")).toBe(true);
+    expect(page).toContain('rel="icon" type="image/png" href="/favicon.png"');
+    const icon = await fetch(`${daemon.origin}/favicon.png`);
+    expect(icon.status).toBe(200);
+    expect(icon.headers.get("content-type")).toBe("image/png");
+    expect(Buffer.from(await icon.arrayBuffer())).toEqual(Buffer.from(await Bun.file("src/web/favicon.png").arrayBuffer()));
     expect(page).toContain("Reveal in Finder");
-    expect(page).toContain("Open in Default App");
-    expect(page).toContain("Remove from Queue");
+    expect(page.includes("Open in Default App")).toBe(true);
+    expect(page.includes('data-action="archive">Archive</button>')).toBe(true);
     expect(page).toContain("Move to Trash");
     expect((await action(file.other, "reveal")).status).toBe(200);
     expect((await action(file.other, "default")).status).toBe(200);
@@ -136,179 +206,17 @@ describe("browser launch authorization", () => {
     expect(synchronized.at(-1)).toEqual([]);
   });
 
-  test("renders responsive Recents filtering, timed status, and confirmed batch selection actions", async () => {
+  test("serves Folio Active/Archive and retention controls", async () => {
     const file = await fixture();
-    const daemon = createDaemon({ config: file.config, pickFiles: async () => [], startupGraceMs: 600_000, web: () => new Response("web") });
-    daemons.push(daemon);
-    await daemon.ready;
-    const launch = await controlRecentsLaunch(file.config);
-    const exchanged = await fetch(launch.url, { redirect: "manual" });
-    const location = exchanged.headers.get("location")!;
-    const cookie = exchanged.headers.get("set-cookie")!.split(";", 1)[0];
-    const page = await (await fetch(recentsUrl(daemon, location), { headers: { cookie } })).text();
-    const today = new Date();
-    today.setSeconds(0, 0);
-    const older = new Date(2020, 0, 2, 23, 59);
-    let files = [
-      { path: "/Users/alice/Documents/Projects/alpha.md", directory: "/Users/alice/Documents/Projects", name: "alpha.md", createdAt: today.getTime() },
-      { path: "/Users/alice/Documents/beta.md", directory: "/Users/alice/Documents", name: "beta.md", createdAt: older.getTime() },
-    ];
-    const actionRequests: Array<{ path: string; action: string }> = [];
-    let pickerRequests = 0;
-    let snapshotSequence = 0;
-    const timers = new Map<number, () => void>();
-    let nextTimer = 1;
-    let heldSnapshot: (() => void) | undefined;
-    let holdSnapshots = false;
-    let failHeldSnapshot = false;
-    class FakeEventSource {
-      static instance: FakeEventSource | undefined;
-      onerror: (() => void) | null = null;
-      private readonly listeners = new Map<string, (event: { data: string }) => void>();
-      constructor(readonly url: string) { FakeEventSource.instance = this; }
-      addEventListener(name: string, listener: (event: { data: string }) => void) { this.listeners.set(name, listener); }
-      emit(snapshot: RecentsSnapshot) { this.listeners.get("snapshot")?.({ data: JSON.stringify(snapshot) }); }
-    }
-    const dom = new JSDOM(page, { runScripts: "outside-only", url: recentsUrl(daemon, location) });
-    Object.defineProperty(dom.window, "fetch", { value: async (input: string | URL | Request, init?: RequestInit) => {
-      if (String(input).endsWith("/snapshot")) {
-        if (holdSnapshots) await new Promise<void>((resolve) => { heldSnapshot = resolve; });
-        if (failHeldSnapshot) throw new Error("snapshot unavailable");
-        return Response.json({ sequence: ++snapshotSequence, files });
-      }
-      if (String(input).endsWith("/action")) actionRequests.push(JSON.parse(String(init?.body)));
-      if (String(input).endsWith("/pick")) { pickerRequests++; return Response.json({ cancelled: false, added: 2 }); }
-      return Response.json({ ok: true });
-    } });
-    Object.defineProperty(dom.window, "setInterval", { value: () => 0 });
-    Object.defineProperty(dom.window, "setTimeout", { value: (callback: () => void) => { const id = nextTimer++; timers.set(id, callback); return id; } });
-    Object.defineProperty(dom.window, "clearTimeout", { value: (id: number) => { timers.delete(id); } });
-    Object.defineProperty(dom.window, "EventSource", { value: FakeEventSource });
-    dom.window.eval(dom.window.document.querySelector("script")!.textContent!);
-    await Bun.sleep(0);
-
-    const input = dom.window.document.querySelector<HTMLInputElement>("#filter")!;
-    expect(input.placeholder).toBe("filter by filename");
-    expect(dom.window.document.querySelector("h1")).toBeNull();
-    expect([...dom.window.document.querySelectorAll(".dir")].map((node) => node.textContent)).toEqual(["~/Documents/Projects", "~/Documents"]);
-    expect([...dom.window.document.querySelectorAll(".dir bdi")].every((node) => node.getAttribute("dir") === "ltr")).toBe(true);
-    expect([...dom.window.document.querySelectorAll(".time")].map((node) => node.textContent)).toEqual([
-      `${String(today.getHours()).padStart(2, "0")}:${String(today.getMinutes()).padStart(2, "0")}`,
-      "1/2",
-    ]);
-    expect(dom.window.document.querySelector<HTMLElement>("#freshness")!.hidden).toBe(true);
-    expect(page).toContain("text-overflow:ellipsis;direction:rtl;text-align:left");
-    expect(page).toContain("#controls{grid-column:2 / -1;justify-self:end}");
-
-    input.value = "BETA";
-    input.dispatchEvent(new dom.window.Event("input"));
-    expect([...dom.window.document.querySelectorAll(".name")].map((node) => node.textContent)).toEqual(["beta.md"]);
-
-    input.value = "";
-    input.dispatchEvent(new dom.window.Event("input"));
-    const add = dom.window.document.querySelector<HTMLButtonElement>("#add")!;
-    const select = dom.window.document.querySelector<HTMLButtonElement>("#select")!;
-    const remove = dom.window.document.querySelector<HTMLButtonElement>("#batch-remove")!;
-    const trash = dom.window.document.querySelector<HTMLButtonElement>("#batch-trash")!;
-    expect(add.textContent).toBe("+");
-    expect(add.hidden).toBe(false);
-    add.click();
-    await Bun.sleep(0);
-    expect(pickerRequests).toBe(1);
-    expect(dom.window.document.querySelector("#status")?.textContent).toBe("Added 2 files.");
-
-    select.click();
-    expect(select.textContent).toBe("Cancel");
-    expect(add.hidden).toBe(true);
-    expect(remove.hidden).toBe(false);
-    expect(trash.hidden).toBe(false);
-    expect(remove.disabled).toBe(true);
-    const checkboxes = [...dom.window.document.querySelectorAll<HTMLInputElement>(".file-check")];
-    expect(checkboxes).toHaveLength(2);
-    checkboxes.forEach((checkbox) => checkbox.click());
-    expect(remove.disabled).toBe(false);
-
-    remove.click();
-    const popover = dom.window.document.querySelector<HTMLElement>("#confirm-popover")!;
-    expect(popover.classList.contains("open")).toBe(true);
-    expect(dom.window.document.querySelector("#confirm-message")?.textContent).toBe("Remove 2 selected files from the queue?");
-    expect(actionRequests).toHaveLength(0);
-    dom.window.document.querySelector<HTMLButtonElement>("#confirm-action")!.click();
-    await Bun.sleep(10);
-    expect(actionRequests).toEqual(files.map((entry) => ({ path: entry.path, action: "remove" })));
-    expect(select.textContent).toBe("Select");
-    expect(add.hidden).toBe(false);
-    expect(remove.hidden).toBe(true);
-
-    select.click();
-    [...dom.window.document.querySelectorAll<HTMLInputElement>(".file-check")].forEach((checkbox) => checkbox.click());
-    trash.click();
-    expect(dom.window.document.querySelector("#confirm-message")?.textContent).toBe("Move 2 selected files to the Trash?");
-    dom.window.document.querySelector<HTMLButtonElement>("#confirm-action")!.click();
-    await Bun.sleep(10);
-    expect(actionRequests.slice(2)).toEqual(files.map((entry) => ({ path: entry.path, action: "trash" })));
-    expect(select.textContent).toBe("Select");
-    expect(add.hidden).toBe(false);
-
-    select.click();
-    dom.window.document.querySelector<HTMLInputElement>(".file-check")!.click();
-    expect(remove.disabled).toBe(false);
-    select.click();
-    expect(select.textContent).toBe("Select");
-    expect(dom.window.document.querySelectorAll(".file-check")).toHaveLength(0);
-    expect(remove.hidden).toBe(true);
-    expect(add.hidden).toBe(false);
-    dom.window.document.querySelector<HTMLButtonElement>(".file")!.click();
-    await Bun.sleep(0);
-    expect(dom.window.document.querySelector("#status")?.textContent).toBe("Opened.");
-    expect(timers.size).toBe(1);
-    timers.values().next().value?.();
-    expect(dom.window.document.querySelector("#status")?.textContent).toBe("");
-
-    input.value = "";
-    files = [files[1]!];
-    select.click();
-    dom.window.document.querySelector<HTMLInputElement>(".file-check")!.click();
-    remove.click();
-    expect(popover.classList.contains("open")).toBe(true);
-    FakeEventSource.instance!.emit({ sequence: 100, files });
-    expect(popover.classList.contains("open")).toBe(false);
-    expect(dom.window.document.querySelectorAll(".name")).toHaveLength(1);
-
-    select.click();
-    const contextMenu = dom.window.document.querySelector<HTMLElement>("#menu")!;
-    const retainedRow = dom.window.document.querySelector<HTMLButtonElement>(".file")!;
-    retainedRow.dispatchEvent(new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 }));
-    expect(contextMenu.classList.contains("open")).toBe(true);
-
-    holdSnapshots = true;
-    failHeldSnapshot = true;
-    dom.window.dispatchEvent(new dom.window.Event("pagehide"));
-    dom.window.dispatchEvent(new dom.window.Event("pageshow"));
-    const staleRow = dom.window.document.querySelector<HTMLButtonElement>(".file")!;
-    expect(staleRow).toBe(retainedRow);
-    expect(dom.window.document.querySelector<HTMLElement>("#list")!.inert).toBe(true);
-    expect(contextMenu.inert).toBe(true);
-    expect(contextMenu.classList.contains("open")).toBe(true);
-    expect(dom.window.document.querySelector<HTMLElement>("#freshness")!.hidden).toBe(true);
-    const actionsBeforeResume = actionRequests.length;
-    staleRow.onclick?.call(staleRow, new dom.window.MouseEvent("click") as unknown as PointerEvent);
-    expect(actionRequests).toHaveLength(actionsBeforeResume);
-    FakeEventSource.instance!.emit({ sequence: 101, files });
-    expect(dom.window.document.querySelector<HTMLButtonElement>(".file")).toBe(retainedRow);
-    expect(dom.window.document.querySelector<HTMLElement>("#list")!.inert).toBe(false);
-    expect(contextMenu.inert).toBe(false);
-    expect(contextMenu.classList.contains("open")).toBe(true);
-    heldSnapshot?.();
-    await Bun.sleep(0);
-    expect(dom.window.document.querySelector<HTMLButtonElement>(".file")).toBe(retainedRow);
-    expect(dom.window.document.querySelector<HTMLElement>("#list")!.inert).toBe(false);
-    files = [
-      { path: "/tmp/new.md", directory: "/tmp", name: "new.md", createdAt: Date.now() },
-      ...files,
-    ];
-    FakeEventSource.instance!.emit({ sequence: 102, files });
-    expect(contextMenu.classList.contains("open")).toBe(false);
+    const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000 });
+    daemons.push(daemon); await daemon.ready;
+    const session = await exchangeRecents(daemon, file.config);
+    const page = await (await fetch(recentsUrl(daemon, session.location), { headers: { cookie: session.cookie } })).text();
+    const dom = new JSDOM(page);
+    expect(dom.window.document.title).toBe("Tether Folio");
+    expect(dom.window.document.querySelector('[data-view="archive"]')).not.toBeNull();
+    expect(dom.window.document.querySelector('#retention-mode')).not.toBeNull();
+    expect(dom.window.document.querySelector('#package-input')).not.toBeNull();
     dom.window.close();
   });
 
@@ -324,7 +232,7 @@ describe("browser launch authorization", () => {
       openExternal: async () => {},
       recentsChanged: async (entries) => { synchronized.push(entries.map((entry) => entry.path)); },
     };
-    const registry = new (await import("../src/recents/registry")).RecentsRegistry(file.config.recentsPath);
+    const registry = testRegistry(file);
     const daemon = createDaemon({
       config: file.config,
       hostAdapter: host,
@@ -397,9 +305,8 @@ describe("browser launch authorization", () => {
     const launch = daemon.mintTicket(grant, { host: "wave" });
 
     const response = await fetch(launch.url, { redirect: "manual" });
-    expect(response.status).toBe(500);
-    expect(await response.json()).toMatchObject({ error: { code: "launch_failed", message: "Wave update failed" } });
-    expect(daemon.sessions.size).toBe(0);
+    expect(response.status).toBe(302);
+    expect(daemon.sessions.size).toBe(1);
   });
 
   test("scopes the Recents page and opens only registered files in a new view", async () => {
@@ -408,7 +315,7 @@ describe("browser launch authorization", () => {
     const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, opener: async (url) => { opened.push(url); }, web: () => new Response("web") });
     daemons.push(daemon);
     await daemon.ready;
-    await new (await import("../src/recents/registry")).RecentsRegistry(file.config.recentsPath).add(file.other);
+    await testRegistry(file).add(file.other);
     const launch = await controlRecentsLaunch(file.config);
     const exchange = await fetch(launch.url, { redirect: "manual" });
     const location = exchange.headers.get("location")!;
@@ -433,17 +340,19 @@ describe("browser launch authorization", () => {
   test("asks cmux to resolve the focused workspace for Recents document opens", async () => {
     const file = await fixture();
     const requests: OpenViewRequest[] = [];
+    const nativeFiles: OpenLocalFileRequest[] = [];
     const host = {
       id: "cmux" as const,
       detect: async () => true,
       capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: true }),
       openView: async (request: OpenViewRequest) => { requests.push(request); },
       openExternal: async () => {},
+      openLocalFile: async (request: OpenLocalFileRequest) => { nativeFiles.push(request); },
     };
     const daemon = createDaemon({ config: file.config, hostAdapter: host, startupGraceMs: 600_000, web: () => new Response("web") });
     daemons.push(daemon);
     await daemon.ready;
-    await new (await import("../src/recents/registry")).RecentsRegistry(file.config.recentsPath).add(file.other);
+    await testRegistry(file).add(file.other);
     const target = { host: "cmux", version: "0.64.22", build: "102", commit: "ddd4a01bc", windowId: "window", workspaceId: "workspace", surfaceId: "surface" };
     const launch = await controlRecentsLaunch(file.config, target);
     const exchange = await fetch(launch.url, { redirect: "manual" });
@@ -455,6 +364,26 @@ describe("browser launch authorization", () => {
     expect(opened.status).toBe(200);
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ kind: "document", focus: true, targetPolicy: "focused-workspace", target });
+    const reader = await fetch(requests[0]!.url, { redirect: "manual" });
+    const readerLocation = reader.headers.get("location")!;
+    const readerCookie = reader.headers.get("set-cookie")!.split(";", 1)[0];
+    const link = (target: string) => sessionFetch(daemon, readerLocation, readerCookie, "api/open", {
+      method: "POST", headers: { origin: daemon.origin }, body: JSON.stringify({ target, format: "markdown" }),
+    });
+    const linkedPath = join(file.directory, "newly linked.md");
+    await writeFile(linkedPath, "Not previously in Folio");
+    expect((await link("newly%20linked.md")).status).toBe(200);
+    expect(requests[1]).toMatchObject({ kind: "document", targetPolicy: "source-pane", sourceUrl: `${daemon.origin}${readerLocation}` });
+    const linkedReader = await fetch(requests[1]!.url, { redirect: "manual" });
+    expect(linkedReader.status).toBe(302);
+    expect(await testRegistry(file).paths()).toContain(await realpath(linkedPath));
+    const transcript = join(file.directory, "transcript.txt");
+    await writeFile(transcript, "Text");
+    expect((await link("transcript.txt")).status).toBe(200);
+    expect(nativeFiles).toEqual([{ path: await realpath(transcript), sourceUrl: `${daemon.origin}${readerLocation}`, target }]);
+    expect(requests).toHaveLength(2);
+    expect((await sessionFetch(daemon, readerLocation, readerCookie, "api/file")).status).toBe(200);
+
   });
 
   test("authenticates revisioned Recents snapshots and event streams", async () => {
@@ -467,7 +396,7 @@ describe("browser launch authorization", () => {
     expect((await fetch(recentsUrl(daemon, session.location, "api/snapshot"), { headers: { cookie: "tether_recents=wrong" } })).status).toBe(401);
     expect((await fetch(recentsUrl(daemon, session.location, "api/events"), { headers: { cookie: "tether_recents=wrong" } })).status).toBe(401);
     const snapshot = await (await fetch(recentsUrl(daemon, session.location, "api/snapshot"), { headers: { cookie: session.cookie } })).json() as RecentsSnapshot;
-    expect(snapshot).toEqual({ sequence: 1, files: [] });
+    expect(snapshot).toMatchObject({ sequence: expect.any(Number), files: [], retention: { mode: "forever" } });
   });
 
   test("pushes committed Recents changes to every session and closes streams on cancel and stop", async () => {
@@ -504,7 +433,7 @@ describe("browser launch authorization", () => {
       body: JSON.stringify({ path: file.path, action: "remove" }),
     });
     expect(removed.status).toBe(200);
-    expect((await secondEvents.next()).files.map((entry) => entry.path)).toEqual([file.other]);
+    expect((await secondEvents.next()).files.filter((entry: any) => entry.view === "active").map((entry) => entry.path)).toEqual([file.other]);
 
     await Promise.race([daemon.stop(), Bun.sleep(1_000).then(() => { throw new Error("daemon stop waited on an SSE stream"); })]);
     await expect(secondEvents.reader.read()).resolves.toMatchObject({ done: true });
@@ -528,7 +457,7 @@ describe("browser launch authorization", () => {
     const events = sseSnapshots(response);
     await events.next();
 
-    await expect(controlRecentsAdd(file.config, file.path, { host: "wave" })).rejects.toMatchObject({ code: "command_failed", message: "Wave update failed" });
+    expect(await controlRecentsAdd(file.config, file.path, { host: "wave" })).toMatchObject({ hostSynchronized: false });
     expect((await events.next()).files.map((entry) => entry.path)).toEqual([file.path]);
     await events.cancel();
   });
@@ -570,7 +499,7 @@ describe("browser launch authorization", () => {
     const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, web: () => new Response("web") });
     daemons.push(daemon);
     await daemon.ready;
-    await new (await import("../src/recents/registry")).RecentsRegistry(file.config.recentsPath).add(file.other);
+    await testRegistry(file).add(file.other);
     const session = await exchange(daemon, file.path);
 
     const response = await sessionFetch(daemon, session.location, session.cookie, `api/file?path=${encodeURIComponent(file.other)}`);
@@ -702,4 +631,111 @@ test("idle shutdown resolves the daemon closed promise", async () => {
   daemons.push(daemon);
   await daemon.ready;
   await Promise.race([daemon.closed, Bun.sleep(2_000).then(() => { throw new Error("daemon did not stop"); })]);
+});
+
+test('custom theme writes serialize across views, survive reload, and reject invalid changes atomically', async () => {
+  const { tetherDesign } = await import('../src/shared/themes');
+  const file = await fixture();
+  const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000 });
+  daemons.push(daemon); await daemon.ready;
+  const a = await exchange(daemon, file.path), b = await exchange(daemon, file.other);
+  const put = (session: typeof a, body: unknown) => sessionFetch(daemon, session.location, session.cookie, 'api/preferences', { method: 'PUT', headers: { origin: daemon.origin }, body: JSON.stringify(body) });
+  const themes = ['one', 'two'].map(id => ({ ...tetherDesign(true), id: `custom-${id}`, name: id }));
+  const results = await Promise.all([put(a, { saveTheme: themes[0] }), put(b, { saveTheme: themes[1] })]);
+  expect(results.map(r => r.status)).toEqual([200, 200]);
+  expect((await put(a, { theme: 'custom-one' })).status).toBe(200);
+  const before = await readFile(file.config.preferencesPath, 'utf8');
+  expect(JSON.parse(before).customThemes).toHaveLength(2);
+  expect((await put(a, { saveTheme: { ...themes[0], metrics: { bodySize: 500 } } })).status).toBe(400);
+  expect(await readFile(file.config.preferencesPath, 'utf8')).toBe(before);
+  const bootstrap = await (await sessionFetch(daemon, b.location, b.cookie, 'api/bootstrap')).json() as { preferences: { theme: string; customThemes: unknown[] } };
+  expect(bootstrap.preferences.theme).toBe('custom-one'); expect(bootstrap.preferences.customThemes).toHaveLength(2);
+});
+
+test('reader tab icons load without webview cookies while document resources remain protected', async () => {
+  const { createWebBundleResponder } = await import('../src/web/bundle');
+  const respond = await createWebBundleResponder();
+  const file = await fixture();
+  const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, web: request => respond(request) });
+  daemons.push(daemon); await daemon.ready;
+  const session = await exchange(daemon, file.path);
+  const page = await (await sessionFetch(daemon, session.location, session.cookie, '')).text();
+  const iconHref = /<link[^>]*rel="icon"[^>]*href="([^\"]+)"/.exec(page)![1];
+  const iconUrl = new URL(iconHref, `${daemon.origin}${session.location}`);
+  expect(iconUrl.pathname).toBe('/favicon.png');
+  // Mirrors cmux's native URLSession request, which has no WKWebView session cookie.
+  const icon = await fetch(iconUrl);
+  expect(icon.status).toBe(200);
+  expect(icon.headers.get('content-type')).toBe('image/png');
+  expect(Buffer.from(await icon.arrayBuffer())).toEqual(Buffer.from(await Bun.file('src/web/favicon.png').arrayBuffer()));
+  const privateScript = /src="(\.\/[^\"]+\.js)"/.exec(page)![1];
+  expect((await fetch(new URL(privateScript, `${daemon.origin}${session.location}`))).status).toBe(401);
+  expect((await fetch(new URL('api/bootstrap', `${daemon.origin}${session.location}`))).status).toBe(401);
+});
+
+test("local links reveal non-Markdown files without creating document sessions", async () => {
+  const file = await fixture();
+  const transcript = join(file.directory, "transcript with spaces.txt");
+  await writeFile(transcript, "Plain text");
+  const revealed: string[] = [];
+  const opened: string[] = [];
+  let revealAvailable = true;
+  const host: HostAdapter = {
+    id: "browser", detect: async () => true,
+    capabilities: () => ({ embeddedBrowser: false, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: revealAvailable }),
+    openView: async ({ url }) => { opened.push(url); },
+    openExternal: async () => { throw new Error("Unexpected external open"); },
+    revealFile: async (path) => { revealed.push(path); },
+  };
+  const daemon = createDaemon({ config: file.config, hostAdapter: host, web: () => new Response("web") });
+  daemons.push(daemon);
+  await daemon.ready;
+  const session = await exchange(daemon, file.path);
+  const open = (target: string, format: "markdown" | "wikilink") => sessionFetch(daemon, session.location, session.cookie, "api/open", {
+    method: "POST", headers: { origin: daemon.origin }, body: JSON.stringify({ target, format }),
+  });
+  expect((await open("./transcript%20with%20spaces.txt", "markdown")).status).toBe(200);
+  expect((await open("transcript with spaces.txt|Transcript", "wikilink")).status).toBe(200);
+  expect(revealed).toEqual([await realpath(transcript), await realpath(transcript)]);
+  expect(opened).toHaveLength(0);
+  expect(daemon.sessions.size).toBe(1);
+  expect((await open("missing.txt", "markdown")).status).not.toBe(200);
+  revealAvailable = false;
+  const unavailable = await open("transcript with spaces.txt", "markdown");
+  expect(unavailable.status).not.toBe(200);
+  expect(await unavailable.text()).toContain("unavailable");
+  expect(revealed).toHaveLength(2);
+  expect((await open("./other.md", "markdown")).status).toBe(200);
+  expect(opened).toHaveLength(1);
+  expect((await sessionFetch(daemon, session.location, session.cookie, "api/file")).status).toBe(200);
+});
+
+test("filter bank requires scoped same-origin access and survives daemon replacement", async () => {
+  const file = await fixture();
+  let daemon = createDaemon({ config: file.config, opener: async () => {} });
+  daemons.push(daemon);
+  let session = await exchangeRecents(daemon, file.config);
+  const url = recentsUrl(daemon, session.location, "api/filters");
+  const change = (body: unknown, origin = daemon.origin, cookie = session.cookie) => fetch(url, {
+    method: "POST", headers: { cookie, origin, "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  expect((await change({ action: "save", text: "notes" }, "https://example.com")).status).toBe(403);
+  expect((await change({ action: "save", text: "notes" }, daemon.origin, "tether_recents=wrong")).status).toBe(401);
+  for (const body of [{ action: "save", text: " " }, { action: "toggle", text: "notes" }, { action: "set-active", text: "notes", active: "yes" }, { action: "save", text: "x".repeat(1001) }]) {
+    expect((await change(body)).status).toBe(400);
+  }
+  const saved = await (await change({ action: "save", text: " Notes " })).json();
+  expect(saved.filters).toEqual([{ text: "Notes", active: true }]);
+  await Promise.all([change({ action: "save", text: "red" }), change({ action: "save", text: "blue" })]);
+  const duplicate = await (await change({ action: "save", text: "NOTES" })).json();
+  expect(duplicate.filters).toHaveLength(3);
+  await change({ action: "set-active", text: "notes", active: false });
+  await change({ action: "delete", text: "blue" });
+  await daemon.stop();
+  daemons.splice(daemons.indexOf(daemon), 1);
+  daemon = createDaemon({ config: file.config, opener: async () => {} });
+  daemons.push(daemon);
+  session = await exchangeRecents(daemon, file.config);
+  const restored = await (await fetch(recentsUrl(daemon, session.location, "api/snapshot"), { headers: { cookie: session.cookie } })).json();
+  expect(restored.filters).toEqual([{ text: "Notes", active: false }, { text: "red", active: true }]);
 });

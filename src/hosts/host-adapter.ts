@@ -8,9 +8,11 @@ export type OpenViewRequest = {
   kind: "document" | "recents";
   focus: boolean;
   allowFocusedFallback?: boolean;
-  targetPolicy?: "focused-workspace";
+  targetPolicy?: "focused-workspace" | "source-pane";
+  sourceUrl?: string;
   target?: HostTarget;
 };
+export type OpenLocalFileRequest = { path: string; sourceUrl: string; target?: HostTarget };
 export type OpenViewResult = { launchConsumed: boolean };
 
 export interface HostAdapter {
@@ -19,6 +21,7 @@ export interface HostAdapter {
   capabilities(target?: HostTarget): HostCapabilities;
   launchTarget?(): HostTarget | undefined;
   openView(request: OpenViewRequest): Promise<OpenViewResult | void>;
+  openLocalFile?(request: OpenLocalFileRequest): Promise<void>;
   openExternal(pathOrUrl: string): Promise<void>;
   revealFile?(path: string): Promise<void>;
   recentsChanged?(entries: RecentEntry[], target?: HostTarget): Promise<boolean | void>;

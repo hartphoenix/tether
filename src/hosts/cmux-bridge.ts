@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { readControlToken, readDiscovery, type TetherConfig } from "../server/config";
-import type { OpenViewRequest, OpenViewResult } from "./host-adapter";
+import { runtimeEntry } from "../runtime-paths";
+import type { OpenLocalFileRequest, OpenViewRequest, OpenViewResult } from "./host-adapter";
 import {
   createCmuxHost,
   SUPPORTED_CMUX_BUILD,
@@ -12,7 +13,9 @@ import {
 } from "./cmux";
 
 const LOOPBACK = "127.0.0.1";
-const RELAUNCH = "cmux callback placement is unavailable. Relaunch Tether from a cmux terminal.";
+const relaunchPath = process.env.TETHER_INSTALL_ROOT ? resolve(process.env.TETHER_INSTALL_ROOT, "tether") : runtimeEntry("cli");
+const relaunchCommand = `'${relaunchPath.replace(/'/g, "'\\''")}' folio`;
+const RELAUNCH = `Placement unavailable. In cmux, run: \`${relaunchCommand}\``;
 
 export type CmuxBridgeRecord = {
   pid: number;
@@ -150,7 +153,7 @@ async function bridgeIssue(response: Response, fallback: string): Promise<CmuxBr
     const payload = await response.json() as { error?: { code?: unknown; message?: unknown; details?: unknown } };
     return new CmuxBridgeError(
       typeof payload.error?.code === "string" ? payload.error.code : "cmux_open_failed",
-      typeof payload.error?.message === "string" ? payload.error.message : fallback,
+      payload.error?.code === "bridge_relaunch_required" ? RELAUNCH : typeof payload.error?.message === "string" ? payload.error.message : fallback,
       response.status,
       payload.error?.details,
     );
@@ -241,6 +244,13 @@ export async function openThroughCmuxBridge(config: TetherConfig, request: OpenV
   throw new CmuxBridgeError("invalid_response", "The cmux bridge returned an invalid open result.", 502);
 }
 
+export async function openLocalFileThroughCmuxBridge(config: TetherConfig, request: OpenLocalFileRequest): Promise<void> {
+  const response = await bridgeRequest(config, "/open-local-file", request);
+  if (!response.ok) throw await bridgeIssue(response, RELAUNCH);
+  const payload = await response.json() as { opened?: unknown };
+  if (payload.opened !== true) throw new CmuxBridgeError("invalid_response", "The cmux bridge returned an invalid file-open result.", 502);
+}
+
 export async function stopCmuxBridge(config: TetherConfig): Promise<void> {
   const current = await readCmuxBridge(config);
   if (!current) return;
@@ -306,11 +316,12 @@ export async function startCmuxBridge(
       TETHER_PROFILE: config.profile,
       TETHER_RUNTIME_DIR: config.runtimeDir,
       TETHER_CONFIG_DIR: config.configDir,
+      TETHER_INSTALL_ROOT: env.TETHER_INSTALL_ROOT,
     };
     // cmux 0.64.22 signs a capability into each terminal specifically so an
     // inherited child remains authorized after detachment and reparenting.
     // Keep that broad cmux authority only in this narrow bridge's environment.
-    const child = Bun.spawn([process.execPath, `${import.meta.dir}/cmux-bridge-daemon.ts`], {
+    const child = Bun.spawn([process.execPath, runtimeEntry("cmux-bridge")], {
       env: childEnv,
       detached: true,
       stdin: "ignore",
