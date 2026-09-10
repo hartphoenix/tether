@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION, SERVICE_ID } from "../shared/contracts";
 import { createCmuxHost, SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT, SUPPORTED_CMUX_VERSION } from "./cmux";
 import { fingerprintCmuxSocket, removeCmuxBridge, writeCmuxBridge } from "./cmux-bridge";
 import { prepareConfig, readControlToken, readDiscovery, resolveConfig } from "../server/config";
@@ -8,7 +9,7 @@ const config = resolveConfig();
 await prepareConfig(config);
 const [token, currentDiscovery] = await Promise.all([readControlToken(config), readDiscovery(config)]);
 if (!token || !currentDiscovery) throw new Error("cmux bridge credentials or daemon discovery are unavailable.");
-const discovery = currentDiscovery;
+let discovery = currentDiscovery;
 if (process.env.TETHER_DAEMON_INSTANCE_ID !== discovery.instanceId || process.env.TETHER_DAEMON_ORIGIN !== discovery.origin) {
   throw new Error("cmux bridge daemon identity does not match current discovery.");
 }
@@ -137,13 +138,39 @@ function issue(cause: unknown): { code: string; message: string; status: number;
   };
 }
 
+let restartUntil = 0;
+let refreshing: Promise<boolean> | undefined;
+async function currentDaemon(): Promise<boolean> {
+  if (refreshing) return refreshing;
+  refreshing = (async () => {
+    const current = await readDiscovery(config);
+    if (current?.instanceId === discovery.instanceId && current.origin === discovery.origin) return true;
+    if (!current || Date.now() >= restartUntil) return false;
+    // A controlled restart may renew the binding once. Verify the successor
+    // through the profile's authenticated control API before trusting its URL.
+    const response = await fetch(`${current.origin}/control/status`, {
+      headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000),
+    });
+    if (!response.ok) return false;
+    const status = await response.json() as Record<string, unknown>;
+    if (status.service !== SERVICE_ID || status.protocol !== PROTOCOL_VERSION || status.instanceId !== current.instanceId ||
+        status.pid !== current.pid || status.origin !== current.origin) return false;
+    await requireSupportedCmux();
+    await publishRecord(current.instanceId);
+    discovery = current;
+    restartUntil = 0;
+    return true;
+  })();
+  try { return await refreshing; }
+  finally { refreshing = undefined; }
+}
+
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
   const url = new URL(request.url);
   if (!authorized(request)) return json({ error: { code: "unauthorized", message: "Unauthorized." } }, 401);
   if (request.method === "GET" && url.pathname === "/health") {
     try {
-      const current = await readDiscovery(config);
-      if (!current || current.instanceId !== discovery.instanceId || current.origin !== discovery.origin) {
+      if (!await currentDaemon()) {
         return json({ error: { code: "bridge_relaunch_required", message: "The Tether daemon instance changed." }, cmuxReady: false }, 503);
       }
       await requireSupportedCmux();
@@ -162,12 +189,21 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
       return json({ error: { code: error.code, message: error.message }, cmuxReady: false }, error.status);
     }
   }
+  if (request.method === "POST" && url.pathname === "/prepare-restart") {
+    const body = object(await request.json().catch(() => null));
+    if (body?.daemonInstanceId !== discovery.instanceId || !await currentDaemon()) {
+      return json({ error: { code: "bridge_relaunch_required", message: "The Tether daemon instance changed." } }, 409);
+    }
+    restartUntil = Date.now() + 30_000;
+    return json({ prepared: true });
+  }
   if (request.method === "POST" && url.pathname === "/stop") {
     queueMicrotask(() => shutdown());
     return json({ stopping: true });
   }
   if (request.method === "POST" && url.pathname === "/open-local-file") {
     try {
+      if (!await currentDaemon()) throw new BridgeServiceError("bridge_relaunch_required", "The Tether daemon instance changed.", 503);
       const body = object(await request.json());
       const target = validTarget(body?.target);
       if (!body || Object.keys(body).some((key) => !["path", "sourceUrl", "target"].includes(key)) || !target ||
@@ -185,6 +221,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
   }
   if (request.method === "POST" && url.pathname === "/open") {
     try {
+      if (!await currentDaemon()) throw new BridgeServiceError("bridge_relaunch_required", "The Tether daemon instance changed.", 503);
       const body = openRequest(await request.json());
       await requireSupportedCmux();
       const result = await serialized(body.target!.workspaceId!, () => host.openView(body));
@@ -211,21 +248,24 @@ const timer = setInterval(async () => {
   if (checkingDaemon || stopped) return;
   checkingDaemon = true;
   try {
-    const current = await readDiscovery(config);
-    if (!current || current.instanceId !== discovery.instanceId || current.origin !== discovery.origin) await shutdown();
-  } finally { checkingDaemon = false; }
+    if (!await currentDaemon() && Date.now() >= restartUntil) await shutdown();
+  } catch { if (Date.now() >= restartUntil) await shutdown(); }
+  finally { checkingDaemon = false; }
 }, 10_000);
 
-await writeCmuxBridge(config, {
-  pid: process.pid,
-  origin: `http://127.0.0.1:${server.port}`,
-  instanceId,
-  daemonInstanceId: discovery.instanceId,
-  cmuxVersion,
-  cmuxBuild,
-  cmuxCommit,
-  cmuxSocketFingerprint,
-  startedAt: new Date().toISOString(),
-});
+async function publishRecord(daemonInstanceId: string): Promise<void> {
+  await writeCmuxBridge(config, {
+    pid: process.pid,
+    origin: `http://127.0.0.1:${server.port}`,
+    instanceId,
+    daemonInstanceId,
+    cmuxVersion,
+    cmuxBuild,
+    cmuxCommit,
+    cmuxSocketFingerprint,
+    startedAt: new Date().toISOString(),
+  });
+}
+await publishRecord(discovery.instanceId);
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => void shutdown());
 await closed;

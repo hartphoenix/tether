@@ -162,13 +162,12 @@ async function bridgeIssue(response: Response, fallback: string): Promise<CmuxBr
 
 export async function cmuxBridgeHealthy(config: TetherConfig, expectedDaemonInstanceId?: string, expectedSocketFingerprint?: string): Promise<boolean> {
   try {
-    const [record, discovery] = await Promise.all([readCmuxBridge(config), readDiscovery(config)]);
-    if (!discovery) return false;
-    if (!record || (expectedDaemonInstanceId && record.daemonInstanceId !== expectedDaemonInstanceId)) return false;
-    if (expectedSocketFingerprint && record.cmuxSocketFingerprint !== expectedSocketFingerprint) return false;
-    if (record.daemonInstanceId !== discovery.instanceId) return false;
     const response = await bridgeRequest(config, "/health");
     if (!response.ok) return false;
+    const [record, discovery] = await Promise.all([readCmuxBridge(config), readDiscovery(config)]);
+    if (!discovery || !record || record.daemonInstanceId !== discovery.instanceId) return false;
+    if (expectedDaemonInstanceId && record.daemonInstanceId !== expectedDaemonInstanceId) return false;
+    if (expectedSocketFingerprint && record.cmuxSocketFingerprint !== expectedSocketFingerprint) return false;
     const value = await response.json() as Record<string, unknown>;
     return value.service === "tether-cmux-bridge" && value.instanceId === record.instanceId &&
       value.daemonInstanceId === record.daemonInstanceId && value.cmuxVersion === record.cmuxVersion &&
@@ -178,6 +177,8 @@ export async function cmuxBridgeHealthy(config: TetherConfig, expectedDaemonInst
 }
 
 export async function cmuxBridgeStatus(config: TetherConfig): Promise<CmuxBridgeStatus> {
+  // Health may complete a prepared restart handoff and publish a new binding.
+  await cmuxBridgeHealthy(config);
   const record = await readCmuxBridge(config);
   if (!record) return {
     running: false,
@@ -261,6 +262,16 @@ export async function stopCmuxBridge(config: TetherConfig): Promise<void> {
     await Bun.sleep(25);
   }
   throw new CmuxBridgeError("bridge_stop_failed", "The previous cmux bridge did not stop.");
+}
+
+/** Preserve an existing signed capability across an explicit service restart. */
+export async function prepareCmuxBridgeRestart(config: TetherConfig, daemonInstanceId: string): Promise<void> {
+  const record = await readCmuxBridge(config);
+  if (!record || record.daemonInstanceId !== daemonInstanceId) return;
+  const response = await bridgeRequest(config, "/prepare-restart", { daemonInstanceId });
+  // Bridges launched before restart handoff support need one terminal relaunch.
+  if (response.status === 404) return;
+  if (!response.ok) throw await bridgeIssue(response, RELAUNCH);
 }
 
 export async function waitForCmuxBridge(config: TetherConfig, daemonInstanceId: string, socketFingerprint: string, attempts = 100): Promise<CmuxBridgeRecord> {

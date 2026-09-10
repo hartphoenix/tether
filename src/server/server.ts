@@ -23,6 +23,7 @@ import {
 import type { HostAdapter, HostTarget } from "../hosts/host-adapter";
 import { createBrowserHost } from "../hosts/browser";
 import { HostGateway } from "../hosts/host-gateway";
+import { prepareCmuxBridgeRestart } from "../hosts/cmux-bridge";
 import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type AppendEventInput, type DocumentSession } from "../documents/document-service";
 import { chooseImportDirectory } from "./directory-picker";
 import { RecentsRegistry, type ListFolioOptions, type FolioRetention } from "../recents/registry";
@@ -383,6 +384,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     if (action === "service") {
       if (body.action !== "restart" && body.action !== "quit") throw invalidRequest("Unknown service action.");
       if (body.action === "restart" && !options.restart) throw invalidRequest("Restart is unavailable in this embedded test service.");
+      if (body.action === "restart") await prepareCmuxBridgeRestart(config, instanceId);
       setTimeout(() => { void (body.action === "restart" ? options.restart!() : daemon.stop()); }, 250);
       return { restarting: body.action === "restart", quitting: body.action === "quit" };
     }

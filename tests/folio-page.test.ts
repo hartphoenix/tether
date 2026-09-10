@@ -258,3 +258,21 @@ test("restores filter bank from daemon snapshots and retains text when saving fa
   expect(doc.querySelectorAll(".filter-pill")).toHaveLength(1);
   dom.window.close();
 });
+
+test("Folio open failures show the shared modal outside the scrolling document list", async () => {
+  const { dom } = runPage({ sequence: 1, files: [{ path: "/one.md", name: "One", view: "active" }] });
+  Object.defineProperty(dom.window.HTMLDialogElement.prototype, "showModal", { value: function(this: HTMLDialogElement) { this.open = true; } });
+  await Bun.sleep(0);
+  Object.defineProperty(dom.window, "fetch", { value: async () => Response.json({ error: {
+    message: "Placement unavailable. In cmux, run: `'/path/mdreview' folio`",
+  } }, { status: 503 }) });
+  dom.window.document.querySelector<HTMLButtonElement>(".file")!.click();
+  await Bun.sleep(0);
+  const dialog = dom.window.document.querySelector<HTMLDialogElement>("dialog[data-tether-relaunch]")!;
+  expect(dialog.open).toBe(true);
+  expect(dialog.parentElement).toBe(dom.window.document.body);
+  expect(dialog.querySelector("code")?.textContent).toBe("'/path/mdreview' folio");
+  expect(dialog.querySelector("button")?.textContent).toBe("Copy");
+  expect(dom.window.document.querySelector("#status")?.textContent).toBe("");
+  dom.window.close();
+});

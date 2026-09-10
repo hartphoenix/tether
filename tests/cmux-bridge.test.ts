@@ -15,6 +15,7 @@ import {
   writeCmuxBridge,
 } from "../src/hosts/cmux-bridge";
 import { ensureControlToken, prepareConfig, resolveConfig, writeDiscovery } from "../src/server/config";
+import { controlRecentsLaunch } from "../src/server/lifecycle";
 import { createBrowserHost } from "../src/hosts/browser";
 import { HostGateway } from "../src/hosts/host-gateway";
 import { createDaemon, type TetherDaemon } from "../src/server/server";
@@ -229,7 +230,7 @@ test("runs callback placement through a detached capability-retaining bridge", a
   const directory = await mkdtemp(join("/tmp", "tether-cmux-bridge-process-"));
   directories.push(directory);
   const config = resolveConfig({ profile: "process", runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
-  const daemon = createDaemon({ config, startupGraceMs: 600_000, web: () => new Response("web") });
+  const daemon = createDaemon({ config, startupGraceMs: 600_000, web: () => new Response("web"), restart: async () => { await daemon.stop(); } });
   daemons.push(daemon);
   await daemon.ready;
 
@@ -319,6 +320,45 @@ esac
     focus: true,
     target: { host: "cmux", version: "0.64.22", build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface },
   })).rejects.toMatchObject({ code: "invalid_request", status: 400 });
+  // Folio's restart route must preserve the bridge before stopping the daemon.
+  // Exercise the same preparation, then a gap longer than its watchdog period.
+  expect((await fetch(`${replacementRecord!.origin}/prepare-restart`, { method: "POST", body: "{}" })).status).toBe(401);
+  const controlToken = await ensureControlToken(config);
+  expect((await fetch(`${replacementRecord!.origin}/prepare-restart`, {
+    method: "POST", headers: { authorization: `Bearer ${controlToken}` },
+    body: JSON.stringify({ daemonInstanceId: "wrong-instance" }),
+  })).status).toBe(409);
+  let current = daemon;
+  for (let iteration = 0; iteration < 2; iteration++) {
+    const launch = await controlRecentsLaunch(config, target);
+    const exchange = await fetch(launch.url, { redirect: "manual" });
+    const cookie = exchange.headers.get("set-cookie")!.split(";", 1)[0]!;
+    const serviceUrl = new URL("api/service", new URL(exchange.headers.get("location")!, current.origin));
+    const response = await fetch(serviceUrl, {
+      method: "POST", headers: { cookie, origin: current.origin, "content-type": "application/json" },
+      body: JSON.stringify({ action: "restart" }),
+    });
+    expect(response.status).toBe(200);
+    const oldOrigin = current.origin;
+    await current.closed;
+    if (iteration === 0) await Bun.sleep(10_100);
+    expect(await readCmuxBridge(config)).not.toBeNull();
+    await expect(openThroughCmuxBridge(config, {
+      url: `${oldOrigin}/launch?ticket=during-restart`, kind: "document", focus: false, target,
+    })).rejects.toMatchObject({ code: "bridge_relaunch_required" });
+    current = createDaemon({ config, startupGraceMs: 600_000, web: () => new Response("web"), restart: async () => { await current.stop(); } });
+    daemons.push(current);
+    await current.ready;
+    // Opening immediately must renew the binding without waiting for a timer.
+    await openThroughCmuxBridge(config, {
+      url: `${current.origin}/launch?ticket=after-restart`, kind: "document", focus: false, target,
+    });
+    expect(await cmuxBridgeHealthy(config, current.instanceId)).toBe(true);
+    expect(await readCmuxBridge(config)).toMatchObject({ instanceId: replacementRecord!.instanceId, daemonInstanceId: current.instanceId });
+    if (oldOrigin !== current.origin) await expect(openThroughCmuxBridge(config, {
+      url: `${oldOrigin}/launch?ticket=obsolete`, kind: "document", focus: false, target,
+    })).rejects.toMatchObject({ code: "invalid_request" });
+  }
   await writeFile(versionFile, `cmux ${SUPPORTED_CMUX_VERSION} (${SUPPORTED_CMUX_BUILD + 1}) [${SUPPORTED_CMUX_COMMIT}]\n`);
   expect(await cmuxBridgeStatus(config)).toMatchObject({
     running: true,
@@ -326,9 +366,17 @@ esac
     issue: { code: "unsupported_version" },
   });
   await expect(openThroughCmuxBridge(config, {
-    url: `${daemon.origin}/launch?ticket=still-valid-shape`,
+    url: `${current.origin}/launch?ticket=still-valid-shape`,
     kind: "document",
     focus: false,
     target: { host: "cmux", version: "0.64.22", build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface },
   })).rejects.toMatchObject({ code: "unsupported_version", status: 400 });
-});
+  await writeFile(versionFile, `cmux ${SUPPORTED_CMUX_VERSION} (${SUPPORTED_CMUX_BUILD}) [${SUPPORTED_CMUX_COMMIT}]\n`);
+  await current.stop();
+  const unplanned = createDaemon({ config, startupGraceMs: 600_000 });
+  daemons.push(unplanned);
+  await unplanned.ready;
+  await expect(openThroughCmuxBridge(config, {
+    url: `${unplanned.origin}/launch?ticket=unplanned`, kind: "document", focus: false, target,
+  })).rejects.toMatchObject({ code: "bridge_relaunch_required" });
+}, 20_000);
