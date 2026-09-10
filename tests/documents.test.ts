@@ -79,11 +79,22 @@ describe("private review storage", () => {
   });
 
   test("a save authorized before queued deletion cannot run afterward or recreate storage", async () => {
-    const file = await fixture(); const service = new DocumentService(); const session = await service.open(file.path); const initial = await service.read(session);
+    class ObservedQueue extends RealPathMutationQueue {
+      onEnqueued = () => {};
+      override run<T>(path: string, operation: () => Promise<T> | T): Promise<T> {
+        const result = super.run(path, operation);
+        this.onEnqueued();
+        return result;
+      }
+    }
+    const queue = new ObservedQueue();
+    const file = await fixture(); const service = new DocumentService({ queue }); const session = await service.open(file.path); const initial = await service.read(session);
     let releaseQueue!: () => void; const queueGate = new Promise<void>((resolve) => { releaseQueue = resolve; });
     const blocker = service.queue.run(session.path, async () => { await queueGate; });
-    const deleting = service.deleteConversation(session.path); await Bun.sleep(0);
-    const saving = service.saveBody({ session, body: "Stale queued save\n", expectedBodyRevision: initial.bodyRevision }); await Bun.sleep(0);
+    const deletionQueued = new Promise<void>(resolve => { queue.onEnqueued = resolve; });
+    const deleting = service.deleteConversation(session.path); await deletionQueued;
+    const saveQueued = new Promise<void>(resolve => { queue.onEnqueued = resolve; });
+    const saving = service.saveBody({ session, body: "Stale queued save\n", expectedBodyRevision: initial.bodyRevision }); await saveQueued;
     releaseQueue(); await blocker; await deleting;
     service.store.db.query("DELETE FROM documents WHERE path = ?").run(session.path);
     await expect(saving).rejects.toBeInstanceOf(DocumentAccessError);
