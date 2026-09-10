@@ -1,3 +1,4 @@
+import { iconSvg } from "./icons";
 import { renderCommentBody } from "./comment-body";
 import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
@@ -69,6 +70,7 @@ export interface AnnotationUiOptions {
   onRailOpenChange?: (open: boolean) => void;
   onSelectThread?: (thread: AnnotationThread) => void;
   onNotice?: (message: string) => void;
+  onExport?: () => void | Promise<void>;
   /** Actor using this viewer; any other latest author hands the thread to them. */
   localActor?: string;
   /** Optional lazy lookup keeps the controller independent of app state. */
@@ -352,7 +354,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     onSelectThread = NOOP,
     onNotice = NOOP,
     getEditorView,
-    localActor = "hart",
+    localActor = "human",
   } = options;
 
   let state: DerivedAnnotationState = { threads: [] };
@@ -829,12 +831,16 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     badge.textContent = `${pending} ${pending === 1 ? "needs" : "need"} attention`;
     badge.hidden = pending === 0;
     badge.setAttribute("aria-label", `${pending} open ${pending === 1 ? "thread needs" : "threads need"} your attention`);
-    const filter = createElement("label", "wm-unresolved-filter");
-    const checkbox = createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = showResolved;
-    checkbox.addEventListener("change", () => { showResolved = checkbox.checked; renderRail(); syncDecorations(); });
-    filter.append(checkbox, document.createTextNode(" Show resolved"));
+    const filter = createElement("button", "wm-rail-button wm-unresolved-filter");
+    filter.type = "button";
+    filter.title = "Show resolved";
+    filter.setAttribute("aria-label", "Show resolved");
+    filter.setAttribute("aria-pressed", String(showResolved));
+    filter.innerHTML = iconSvg("check-square-offset");
+    filter.addEventListener("click", () => {
+      showResolved = !showResolved; renderRail(); syncDecorations();
+      rail.querySelector<HTMLButtonElement>(".wm-unresolved-filter")?.focus();
+    });
     const controls = createElement("div", "wm-annotation-rail-controls");
     const hide = createElement("button", "wm-hide-threads");
     hide.type = "button";
@@ -842,7 +848,18 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     hide.setAttribute("aria-label", "Hide threads");
     hide.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h10m-4-4 4 4-4 4m7-10v12"/></svg>';
     hide.addEventListener("click", () => controller.setRailOpen(false));
-    controls.append(filter, hide);
+    controls.append(filter);
+    if (options.onExport) {
+      const exportButton = createElement("button", "wm-rail-button");
+      exportButton.id = "export-review";
+      exportButton.type = "button";
+      exportButton.title = "Export with annotations";
+      exportButton.setAttribute("aria-label", "Export with annotations");
+      exportButton.innerHTML = iconSvg("download-simple");
+      exportButton.addEventListener("click", () => { void options.onExport!(); });
+      controls.append(exportButton);
+    }
+    controls.append(hide);
     header.append(title, controls, badge);
     content.append(header);
     if (threads.length === 0) {

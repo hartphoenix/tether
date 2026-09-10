@@ -1,5 +1,6 @@
 import { readDiscovery, acquireStartupLock, prepareConfig, removeStaleRuntime, resolveConfig, type TetherConfig } from "./config";
 import { PROTOCOL_VERSION, SERVICE_ID, type DiscoveryRecord } from "../shared/contracts";
+import { runtimeEntry } from "../runtime-paths";
 import type { HostTarget } from "../hosts/host-adapter";
 
 const LOOPBACK = "127.0.0.1";
@@ -70,7 +71,7 @@ async function waitForDiscovery(config: TetherConfig, attempts: number): Promise
 }
 
 function defaultCommand(): string[] {
-  return [process.execPath, `${import.meta.dir}/daemon.ts`, "serve"];
+  return [process.execPath, runtimeEntry("daemon"), "serve"];
 }
 
 /** Start or reuse the one daemon for this profile. The lock covers all state decisions. */
@@ -106,6 +107,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
       TETHER_PROFILE: config.profile,
       TETHER_RUNTIME_DIR: config.runtimeDir,
       TETHER_CONFIG_DIR: config.configDir,
+      TETHER_INSTALL_ROOT: inherited.TETHER_INSTALL_ROOT,
     };
     if (options.spawn) await options.spawn(command, env);
     else {
@@ -146,42 +148,91 @@ export async function stopDaemon(config = resolveConfig()): Promise<{ running: b
   return { running: true, stopping: true };
 }
 
-/** Authenticated host-neutral control request used by the source-checkout CLI. */
-export async function controlRequest<T>(config: TetherConfig, pathname: string, body: Record<string, unknown>): Promise<T> {
+/** Validate successful control payloads before callers can mistake malformed data for work. */
+export function validateControlResponse(pathname: string, payload: unknown): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const value = payload as Record<string, unknown>;
+  if ("error" in value) return false;
+  if (pathname.endsWith("/launch")) return typeof value.url === "string" && typeof value.expiresAt === "number" && (pathname !== "/control/launch" || typeof value.path === "string");
+  if (pathname === "/control/document/read") return typeof value.path === "string" && typeof value.body === "string" && typeof value.bodyRevision === "string";
+  if (pathname === "/control/review/pending") return Array.isArray(value.events) && typeof value.cursor === "string" && typeof value.maxSequence === "number";
+  if (pathname === "/control/review/thread") return (typeof value.path === "string" || typeof value.documentId === "string") && value.thread !== null && typeof value.thread === "object";
+  if (pathname === "/control/review/threads") return Array.isArray(value.threads);
+  if (pathname === "/control/folio/list") return Array.isArray(value.files);
+  if (pathname === "/control/folio/export") return value.format === "tether-review" && value.version === 1 && Array.isArray(value.documents);
+  if (/^\/control\/review\/(comment|reply|edit|delete|resolve|reopen|acknowledge)$/.test(pathname)) {
+    const mutation = value.mutation as Record<string, unknown> | undefined;
+    return Boolean(mutation && typeof mutation.operationId === "string" && typeof mutation.sequence === "number" && typeof mutation.replayed === "boolean");
+  }
+  if (pathname === "/control/document/outline") return typeof value.bodyRevision === "string" && Array.isArray(value.headings);
+  if (pathname === "/control/document/context") return typeof value.bodyRevision === "string" && typeof value.anchorStatus === "string" && typeof value.text === "string";
+  if (pathname === "/control/document/diff") return typeof value.bodyRevision === "string" && typeof value.status === "string";
+  if (pathname === "/control/document/save") return typeof value.bodyRevision === "string";
+  if (pathname === "/control/document/move") return typeof value.path === "string" && typeof value.previousPath === "string" && typeof value.documentId === "string" && value.outcome === "applied";
+  if (pathname === "/control/review/quote-candidates") return typeof value.bodyRevision === "string" && typeof value.omitted === "boolean" && Array.isArray(value.candidates) && value.candidates.every(item => item && typeof item === "object" && typeof item.candidateId === "string" && typeof item.before === "string" && typeof item.after === "string");
+  if (pathname === "/control/review/operation") return typeof value.operationId === "string" && (value.outcome === "applied" || value.outcome === "outcome_unknown") && (value.outcome !== "applied" || value.receipt !== null && typeof value.receipt === "object");
+  if (pathname === "/control/review/event") return value.event !== null && typeof value.event === "object" || typeof value.seq === "number" && value.fragment !== null && typeof value.fragment === "object";
+  if (pathname === "/control/folio/import") return value.cancelled === true || Array.isArray(value.completed) && Array.isArray(value.failed) && Array.isArray(value.paths) && ["applied", "partially_applied", "not_applied"].includes(value.outcome as string);
+  if (pathname === "/control/folio/sync") return ["succeeded", "failed", "unsupported", "skipped"].includes(value.hostSyncStatus as string);
+  return Object.keys(value).length > 0;
+}
+
+const readRoutes = new Set(["/control/document/read", "/control/document/outline", "/control/document/context", "/control/document/diff", "/control/review/thread", "/control/review/threads", "/control/review/event", "/control/review/pending", "/control/review/quote-candidates", "/control/review/operation", "/control/folio/list", "/control/folio/export"]);
+
+/** Authenticated, bounded control client; transport failure never implies rollback. */
+export async function controlRequest<T>(config: TetherConfig, pathname: string, body: Record<string, unknown>, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
   const discovery = await ensureDaemon({ config });
   const { readControlToken } = await import("./config");
   const token = await readControlToken(config);
-  if (!token) throw new ControlRequestError("control_unavailable", "Daemon control credential is unavailable.", 503);
-  const response = await fetch(`${discovery.origin}${pathname}`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10_000),
-  });
+  if (!token) throw new ControlRequestError("control_unavailable", "Daemon control credential is unavailable.", 503, { outcome: "not_applied" });
+  const serialized = JSON.stringify(body);
+  if (Buffer.byteLength(serialized) > 40 * 1024 * 1024) throw new ControlRequestError("input_too_large", "Control request exceeds 40 MiB.", 413, { outcome: "not_applied" });
+  const outcome = readRoutes.has(pathname) ? "not_applied" : "outcome_unknown";
+  const recovery = { outcome, ...(typeof body.operationId === "string" ? { operationId: body.operationId, recovery: "Look up the operation receipt or retry with the same operation ID and input." } : outcome === "outcome_unknown" ? { recovery: "Inspect current state before retrying." } : {}) };
+  let response: Response;
+  try {
+    const timeout = AbortSignal.timeout(options.timeoutMs ?? 10_000);
+    response = await fetch(`${discovery.origin}${pathname}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: serialized,
+      signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
+    });
+  } catch {
+    throw new ControlRequestError("transport_unavailable", "Daemon request interrupted or timed out.", 503, recovery);
+  }
   let payload: unknown;
-  try { payload = await response.json(); }
-  catch { throw new ControlRequestError("invalid_response", "The daemon returned an invalid response.", response.status); }
+  try {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Missing response body");
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > 40 * 1024 * 1024) throw new Error("Response too large");
+        chunks.push(value);
+      }
+    } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+    payload = JSON.parse(Buffer.concat(chunks, bytes).toString("utf8"));
+  } catch { throw new ControlRequestError("invalid_response", "The daemon returned an invalid or incomplete response.", response.status, recovery); }
   if (!response.ok) {
     const issue = payload && typeof payload === "object" ? (payload as { error?: { code?: unknown; message?: unknown; details?: unknown } }).error : undefined;
     throw new ControlRequestError(
       typeof issue?.code === "string" ? issue.code : "control_failed",
       typeof issue?.message === "string" ? issue.message : "The daemon control request failed.",
       response.status,
-      issue?.details,
+      { ...recovery, ...(response.status === 400 && issue?.code === "invalid_request" ? { outcome: "not_applied" } : {}), ...(issue?.details && typeof issue.details === "object" ? issue.details : issue?.details === undefined ? {} : { detail: issue.details }) },
     );
   }
+  if (!validateControlResponse(pathname, payload)) throw new ControlRequestError("invalid_response", "The daemon returned a malformed success response.", response.status, recovery);
   return payload as T;
 }
 
 export async function controlLaunch(config: TetherConfig, path: string, target?: HostTarget): Promise<{ url: string; expiresAt: number; path: string }> {
-  const discovery = await ensureDaemon({ config });
-  const { readControlToken } = await import("./config");
-  const token = await readControlToken(config);
-  if (!token) throw new Error("Daemon control credential is unavailable.");
-  const response = await fetch(`${discovery.origin}/control/launch`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ path, ...(target ? { target } : {}) }) });
-  const payload = await response.json() as { url?: string; expiresAt?: number; path?: string; error?: { message?: string } };
-  if (!response.ok || !payload.url || !payload.expiresAt || !payload.path) throw new Error(payload.error?.message ?? "Unable to create a launch ticket.");
-  return { url: payload.url, expiresAt: payload.expiresAt, path: payload.path };
+  return controlRequest(config, "/control/launch", { path, ...(target ? { target } : {}) });
 }
 
 export async function controlRecentsLaunch(config: TetherConfig, target?: HostTarget): Promise<{ url: string; expiresAt: number }> {

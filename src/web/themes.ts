@@ -1,5 +1,6 @@
-import { builtInThemes, colorKeys, fontSlots, metrics, preferencesFrom, updatePreferences, tetherDesign, type BuiltInTheme, type CustomTheme, type Metric, type ThemeDesign, type ThemeId, type ThemeMutation, type ThemePreferences } from '../shared/themes';
+import { builtInThemes, colorKeys, fontSlots, metrics, preferencesFrom, updatePreferences, tetherDesign, builtInDesign, type BuiltInTheme, type CustomTheme, type Metric, type ThemeDesign, type ThemeId, type ThemeMutation, type ThemePreferences } from '../shared/themes';
 import { createThemeMaker } from './theme-maker';
+import { iconSvg } from './icons';
 import { createFontLoader } from './theme-fonts';
 export type CrepeTheme = ThemeId;
 
@@ -59,7 +60,7 @@ export function createThemePicker(
   let busy = false;
   let destroyed = false;
   const fonts = createFontLoader();
-  const designFor = (id: ThemeId) => id === 'tether' || id === 'tether-dark' ? tetherDesign(id.endsWith('-dark')) : state.customThemes.find(t => t.id === id);
+  const designFor = (id: ThemeId) => builtInDesign(id) ?? state.customThemes.find(t => t.id === id);
   const close = () => { menu.hidden = true; button.setAttribute('aria-expanded', 'false'); };
   const preview = (design: ThemeDesign) => {
     applyDesign(editorRoot, design.base, design);
@@ -83,12 +84,21 @@ export function createThemePicker(
     try {
       const next = options.persist ? await options.persist(mutation) : updatePreferences(state, mutation);
       if (destroyed) return;
-      state = next; renderMenu(); apply(state.theme);
+      if (mutation.saveTheme && next.customThemes.find(t => t.id === mutation.saveTheme!.id)?.colors.annotation !== mutation.saveTheme.colors.annotation) {
+        throw new Error('The service did not save the annotation color. Relaunch Tether and try again.');
+      }
+      state = preferencesFrom(next); renderMenu(); apply(state.theme);
       options.onChange?.(state.theme);
     } finally { busy = false; button.disabled = false; if (options.makerButton) options.makerButton.disabled = false; }
   };
   const maker = options.makerButton ? createThemeMaker(options.makerButton, {
-    template: () => ({ design: structuredClone(designFor(selected) ?? templateDesign(editorRoot, selected as BuiltInTheme)), saved: state.customThemes.find(t => t.id === selected) }),
+    selected: () => selected,
+    template: (id) => {
+      const design = designFor(id);
+      if (design) return structuredClone(design);
+      applyDesign(editorRoot, id as BuiltInTheme);
+      return templateDesign(editorRoot, id as BuiltInTheme);
+    },
     library: () => state.customThemes,
     preview, restore: () => apply(selected), loadFont: fonts.load,
     save: async (theme) => persist({ theme: theme.id, saveTheme: theme }),
@@ -103,7 +113,14 @@ export function createThemePicker(
         const previous = selected; apply(value); close();
         void persist({ theme: value }).catch(error => { apply(previous); options.onError?.(`Theme preference failed: ${(error as Error).message}`); });
       });
-      return item;
+      const custom = state.customThemes.find(t => t.id === value);
+      if (!custom || !maker) return item;
+      const row = document.createElement('div'); row.className = 'wm-theme-row'; row.setAttribute('role', 'none');
+      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'wm-theme-edit';
+      edit.dataset.editTheme = value; edit.setAttribute('role', 'menuitem');
+      edit.title = `Edit ${label}`; edit.setAttribute('aria-label', edit.title); edit.innerHTML = iconSvg('pencil-simple-line');
+      edit.addEventListener('click', () => { if (busy || maker.isOpen()) return; close(); maker.open(custom); });
+      row.append(item, edit); return row;
     }));
   }
   menu.setAttribute('role', 'menu');

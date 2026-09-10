@@ -710,3 +710,79 @@ test("reports Dock-disabled and non-loopback placement as structured errors", as
   await expect(host.openView({ url: "http://127.0.0.1:8420/recents", kind: "recents", focus: true, target })).rejects.toMatchObject({ code: "dock_unavailable" });
   await expect(host.openView({ url: "https://example.com", kind: "document", focus: true, target })).rejects.toBeInstanceOf(CmuxHostError);
 });
+
+const sourceReaderUrl = "http://127.0.0.1:8420/s/source-reader/";
+const movedReaderTree = () => ({ windows: [{ id: ids.otherWindow, workspaces: [{ id: ids.otherWorkspace, panes: [
+  { id: ids.otherPane, surfaces: [{ id: ids.otherSurface, type: "browser", url: sourceReaderUrl + "#heading" }] },
+  { id: ids.reviewPane, surfaces: [{ id: ids.reviewSurface, type: "browser", title: TETHER_REVIEW_TAB_TITLE }] },
+] }] }] });
+
+test("reader links follow the live source pane across workspaces instead of reusing another review pane", async () => {
+  const commands: string[][] = [];
+  const host = await detected(async (command, commandEnv) => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(identity);
+    if (command.includes("tree")) {
+      expect(command).toContain("--all");
+      expect(commandEnv.CMUX_WORKSPACE_ID).toBeUndefined();
+      return ok(movedReaderTree());
+    }
+    if (command.includes("rpc")) return ok(openSplit({ window_id: ids.otherWindow, workspace_id: ids.otherWorkspace }));
+    if (command.includes("move-surface")) return ok(placement(ids.otherPane, { window_id: ids.otherWindow, workspace_id: ids.otherWorkspace }));
+    return ok({});
+  });
+  await host.openView({ url: "http://127.0.0.1:8420/launch?ticket=linked", kind: "document", focus: true,
+    target: host.launchTarget(), targetPolicy: "source-pane", sourceUrl: sourceReaderUrl });
+  const create = commands.find((command) => command.includes("browser.open_split"))!;
+  expect(JSON.parse(create.at(-1)!)).toMatchObject({ window_id: ids.otherWindow, workspace_id: ids.otherWorkspace, surface_id: ids.otherSurface });
+  const move = commands.find((command) => command.includes("move-surface"))!;
+  expect(move).toContain(ids.otherPane);
+  expect(commands.some((command) => command.includes("split-off"))).toBe(false);
+});
+
+test("a missing source reader never falls back to an unrelated focused workspace", async () => {
+  const commands: string[][] = [];
+  const host = await detected(async (command) => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(identity);
+    return ok(tree());
+  });
+  await expect(host.openView({ url: "http://127.0.0.1:8420/launch?ticket=linked", kind: "document", focus: true,
+    allowFocusedFallback: true, target: host.launchTarget(), targetPolicy: "source-pane", sourceUrl: sourceReaderUrl })).rejects.toMatchObject({ code: "placement_anchor_missing" });
+  expect(commands.some((command) => command.includes("rpc"))).toBe(false);
+});
+
+test("local non-Markdown links use cmux native open without overriding viewer or focus settings", async () => {
+  const commands: string[][] = [];
+  const host = await detected(async (command) => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(identity);
+    if (command.includes("tree")) return ok(movedReaderTree());
+    return ok({});
+  });
+  await host.openLocalFile({ path: "/tmp/transcript with spaces.txt", sourceUrl: sourceReaderUrl, target: host.launchTarget() });
+  expect(commands.at(-1)).toEqual(["cmux", "open", "/tmp/transcript with spaces.txt", "--workspace", ids.otherWorkspace,
+    "--window", ids.otherWindow, "--surface", ids.otherSurface]);
+});
+
+test("Folio prefers the active Tether pane when multiple review panes exist", async () => {
+  const commands: string[][] = [];
+  const host = await detected(async (command) => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(identity);
+    if (command.includes("tree")) return ok(tree([
+      { id: ids.reviewPane, surfaces: [{ id: ids.reviewSurface, type: "browser", title: TETHER_REVIEW_TAB_TITLE }] },
+      { id: ids.otherPane, active: true, surfaces: [{ id: ids.otherSurface, type: "browser", title: TETHER_REVIEW_TAB_TITLE }] },
+    ]));
+    if (command.includes("rpc")) return ok(openSplit());
+    if (command.includes("move-surface")) return ok(placement(ids.otherPane));
+    return ok({});
+  });
+  await host.openView({ url: "http://127.0.0.1:8420/launch?ticket=folio", kind: "document", focus: true,
+    targetPolicy: "focused-workspace", target: host.launchTarget() });
+  expect(commands.find((command) => command.includes("move-surface"))).toContain(ids.otherPane);
+});

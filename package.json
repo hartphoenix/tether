@@ -5,12 +5,14 @@
   "type": "module",
   "license": "MIT",
   "bin": {
+    "tether": "./tether",
     "mdreview": "./mdreview"
   },
   "scripts": {
     "test": "bun test",
     "check": "bun test && bunx tsc --noEmit && bun run build:web",
-    "build:web": "bun build ./src/web/index.html --outdir ./dist --minify"
+    "build:web": "bun build ./src/web/index.html --outdir ./dist --minify",
+    "build:release": "bun scripts/build-release.ts"
   },
   "dependencies": {
     "@milkdown/crepe": "^7.22.1",

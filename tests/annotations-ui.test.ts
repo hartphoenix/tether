@@ -151,6 +151,7 @@ test("the rail orders threads, isolates orphans, and exposes resolve/reply contr
   let pending = -1;
   const ui = createAnnotationUi({
     root,
+    localActor: "hart",
     onPendingCountChange: (count) => { pending = count; },
     onResolve: (value) => { resolved = value.id; },
     onReply: ({ body }) => { replyBody = body; },
@@ -180,10 +181,11 @@ test("the rail orders threads, isolates orphans, and exposes resolve/reply contr
   root.querySelector<HTMLButtonElement>('[data-thread-id="c-orphan"] .wm-thread-summary')!.click();
   expect(document.querySelector(".wm-thread-popover .wm-annotation-reply-form")).not.toBeNull();
   expect(root.querySelector('[data-thread-id="c-resolved"]')).toBeNull();
-  const filter = root.querySelector<HTMLInputElement>(".wm-unresolved-filter input")!;
-  expect(filter.parentElement?.textContent).toContain("Show resolved");
-  filter.checked = true;
-  filter.dispatchEvent(new Event("change", { bubbles: true }));
+  const filter = root.querySelector<HTMLButtonElement>(".wm-unresolved-filter")!;
+  expect(filter.getAttribute("aria-label")).toBe("Show resolved");
+  expect(filter.getAttribute("aria-pressed")).toBe("false");
+  filter.click();
+  expect(root.querySelector(".wm-unresolved-filter")!.getAttribute("aria-pressed")).toBe("true");
   expect(root.querySelector('[data-thread-id="c-resolved"]')).not.toBeNull();
   expect(root.querySelector('[data-thread-id="c-resolved"] .wm-thread-status')?.textContent).toBe("Resolved");
   const summary = root.querySelector<HTMLButtonElement>('[data-thread-id="c-late"] .wm-thread-summary')!;

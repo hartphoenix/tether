@@ -1,16 +1,21 @@
+import { iconSvg } from "./icons";
 import { Crepe } from "@milkdown/crepe";
 import { EditorStatus, editorViewCtx } from "@milkdown/kit/core";
 import type { EditorView } from "@milkdown/kit/prose/view";
-import { $prose } from "@milkdown/kit/utils";
+import { $prose, replaceAll, callCommand } from "@milkdown/kit/utils";
+import { createCodeBlockCommand } from "@milkdown/kit/preset/commonmark";
 import { createAnnotationUi, captureAnchor, type AnnotationThread, type AnnotationUiController } from "./annotations-ui";
 import { apiErrorMessage } from "./api-error";
 import { createChromeControls } from "./chrome-controls";
 import { blockHandle } from "./block-handle";
 import { cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
-import { prepareMarkdown, restoreMarkdown, wikilinkRoute } from "../core/markdown-codec";
+import { localDocumentLink } from "./local-document-link";
+import { prepareMarkdown, restoreMarkdown } from "../core/markdown-codec";
 import { createSelectionUi, reviewNoteIconSvg, type SelectionUiController } from "./selection-ui";
 import { createThemePicker } from "./themes";
 import { documentTabTitle, filenameStem } from "./document-title";
+import { DraftPersistence, recoverDraft } from "./draft-recovery";
+import { installCmuxFindCompatibility } from "./hosts/cmux-find";
 import type { SessionBootstrap } from "../shared/contracts";
 import "./annotations-ui.css";
 import "./chrome.css";
@@ -39,8 +44,13 @@ type AnnotationResponse = {
 };
 type IncomingReview = { bodyRevision: string; ledgerRevision: string; frontmatter: string };
 
+for (const slot of document.querySelectorAll<HTMLElement>("[data-icon]")) {
+  slot.outerHTML = iconSvg(slot.dataset.icon as Parameters<typeof iconSvg>[0]);
+}
+
 const clientId = crypto.randomUUID();
-const localActor = "hart";
+installCmuxFindCompatibility(window);
+const localActor = "human";
 const targetActor = "assistant";
 
 const notice = document.querySelector<HTMLElement>("#notice")!;
@@ -107,7 +117,7 @@ function compactTopBar(): void {
     const trigger = document.createElement("button");
     trigger.type = "button";
     trigger.className = "wm-overflow-trigger";
-    trigger.textContent = "…";
+    trigger.innerHTML = iconSvg("text-aa");
     trigger.title = "More formatting tools";
     trigger.setAttribute("aria-label", trigger.title);
     trigger.setAttribute("aria-expanded", "false");
@@ -132,7 +142,7 @@ function compactTopBar(): void {
       if (!(event.target instanceof Node) || !overflow!.contains(event.target)) close();
     };
     const escape = (event: KeyboardEvent): void => { if (event.key === "Escape") close(); };
-    trigger.addEventListener("pointerdown", toggle);
+    trigger.addEventListener("click", toggle);
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape);
     overflowCleanup = () => {
@@ -142,8 +152,28 @@ function compactTopBar(): void {
     };
   }
   const menu = overflow.querySelector<HTMLElement>(".wm-tool-overflow-menu")!;
+  if (!menu.querySelector("[data-insert-code]")) {
+    const code = document.createElement("button");
+    code.type = "button";
+    code.dataset.insertCode = "true";
+    code.className = "wm-comment-button";
+    code.innerHTML = iconSvg("code-block");
+    code.title = "Insert code block";
+    code.setAttribute("aria-label", code.title);
+    code.addEventListener("pointerdown", event => event.preventDefault());
+    code.addEventListener("click", () => {
+      crepe?.editor.action(callCommand(createCodeBlockCommand.key));
+      menu.hidden = true;
+      overflow?.querySelector("button")?.setAttribute("aria-expanded", "false");
+      getEditorView()?.focus();
+    });
+    menu.append(code);
+  }
   const tools = [...inner.children].filter((element) => element.classList.contains("top-bar-item") || element.classList.contains("top-bar-divider"));
   menu.append(...tools);
+  const inlineCode = menu.querySelectorAll(".top-bar-item")[topBarLabels.indexOf("Inline code")];
+  const codeBlock = menu.querySelector("[data-insert-code]")!;
+  if (inlineCode && inlineCode.nextElementSibling !== codeBlock) inlineCode.after(codeBlock);
 }
 
 function integrateToolbarControls(): void {
@@ -259,10 +289,28 @@ async function refreshAnnotations(generation = documentGeneration, path = curren
   applyAnnotationState(result.annotations);
 }
 
+const draftPersistence = new DraftPersistence(async (mutation) => {
+  await api("api/draft", mutation.method === "DELETE"
+    ? { method: "DELETE" }
+    : { method: "POST", body: JSON.stringify(mutation.draft) });
+});
 function scheduleSave(): void {
-  if (readOnly || conflicted || incomingReview || switching || currentMarkdown() === savedEditorMarkdown) return;
+  if (readOnly || switching) return;
+  void persistDraft();
+  if (currentMarkdown() === savedEditorMarkdown || conflicted || incomingReview) return;
   if (saveTimer != null) clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => void save(), 600);
+}
+async function persistDraft(): Promise<void> {
+  if (!crepe || !currentPath || switching) return;
+  const markdown = currentMarkdown();
+  await draftPersistence.update({
+    editorMarkdown: markdown,
+    savedEditorMarkdown,
+    body: restoreMarkdown(markdown, currentFrontmatter),
+    baseRevision: currentBodyRevision,
+    scroll: window.scrollY,
+  });
 }
 async function save(): Promise<boolean> {
   if (!crepe || !currentPath) return true;
@@ -282,6 +330,8 @@ async function save(): Promise<boolean> {
     currentLedgerRevision = result.ledgerRevision;
     annotationState = result.annotations;
     savedEditorMarkdown = markdown;
+    // Do not clear a newer in-flight edit's recovery draft.
+    if (currentMarkdown() === markdown) await draftPersistence.clear();
   } catch (error) {
     succeeded = false;
     if ((error as Error & { status?: number }).status === 409) showConflict();
@@ -296,7 +346,6 @@ async function postAnnotation(pathname: string, body: Record<string, unknown>, g
   if (generation !== documentGeneration || path !== currentPath) throw new Error("The document changed before the annotation was sent.");
   const result = await api<DocumentResponse>(pathname, { method: "POST", body: JSON.stringify({ actor: localActor, ...body }) });
   if (generation !== documentGeneration || path !== currentPath) return;
-  currentBodyRevision = result.bodyRevision;
   currentLedgerRevision = result.ledgerRevision;
   await refreshAnnotations(generation, path);
 }
@@ -374,6 +423,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     });
     nextAnnotationUi = createAnnotationUi({
       root: annotationsRoot,
+      onExport: exportReview,
       editorRoot,
       getEditorView,
       onNotice: (message) => chrome.setNotice(message),
@@ -389,17 +439,17 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
         commentButton.setAttribute("aria-pressed", String(open));
       },
       onCreateComment: async ({ body, anchor }) => {
-        const annotationPath = documentResponse.path;
+        const annotationPath = currentPath;
         if (!(await save())) throw new Error("Save the document before commenting.");
         if (generation !== documentGeneration || annotationPath !== currentPath) throw new Error("The document changed before the comment was sent.");
         const revision = currentBodyRevision;
         await postAnnotation("/api/annotations", { type: "comment", body, anchor: { ...anchor, bodyRevision: revision }, expectedBodyRevision: revision }, generation, annotationPath);
       },
-      onReply: async ({ thread, body }) => postAnnotation("/api/annotations/reply", { threadId: thread.id, body }, generation, documentResponse.path),
-      onResolve: async (thread) => postAnnotation("/api/annotations/resolve", { threadId: thread.id }, generation, documentResponse.path),
-      onReopen: async (thread) => postAnnotation("/api/annotations/reopen", { threadId: thread.id }, generation, documentResponse.path),
-      onEdit: async ({ thread, targetId, body }) => postAnnotation("/api/annotations/edit", { threadId: thread.id, targetId, body }, generation, documentResponse.path),
-      onDelete: async ({ thread, targetId }) => postAnnotation("/api/annotations/delete", { threadId: thread.id, targetId }, generation, documentResponse.path),
+      onReply: async ({ thread, body }) => postAnnotation("/api/annotations/reply", { threadId: thread.id, body }, generation, currentPath),
+      onResolve: async (thread) => postAnnotation("/api/annotations/resolve", { threadId: thread.id }, generation, currentPath),
+      onReopen: async (thread) => postAnnotation("/api/annotations/reopen", { threadId: thread.id }, generation, currentPath),
+      onEdit: async ({ thread, targetId, body }) => postAnnotation("/api/annotations/edit", { threadId: thread.id, targetId, body }, generation, currentPath),
+      onDelete: async ({ thread, targetId }) => postAnnotation("/api/annotations/delete", { threadId: thread.id, targetId }, generation, currentPath),
     });
     nextAnnotationUi.setZoom(chrome.getZoom() / 100);
     const annotationPlugin = $prose(() => nextAnnotationUi.plugin);
@@ -479,10 +529,16 @@ async function saveReviewed(): Promise<void> {
 }
 async function lease(generation = documentGeneration, path = currentPath): Promise<void> {
   try {
-    const result = await api<{ bodyRevision: string | null; ledgerRevision: string | null }>("api/lease", {
+    const result = await api<{ path?: string; bodyRevision: string | null; ledgerRevision: string | null }>("api/lease", {
       method: "POST", body: JSON.stringify({ clientId }),
     });
     if (generation !== documentGeneration || path !== currentPath) return;
+    if (result.path && result.path !== currentPath) {
+      currentPath = result.path;
+      path = result.path;
+      const view = getEditorView();
+      document.title = view ? documentTabTitle(currentPath, view.state.doc) : filenameStem(currentPath);
+    }
     if (disconnected) { disconnected = false; chrome.setNotice(""); }
     if (!currentPath || saveInFlight) return;
     if (readOnly && result.bodyRevision) { await openDocument(true); return; }
@@ -509,14 +565,45 @@ async function start(): Promise<void> {
     onError: (message) => chrome.setNotice(message),
   });
   await openDocument(false, bootstrap.document as DocumentResponse);
+  const draft = bootstrap.draft;
+  const recovery = recoverDraft(bootstrap.document, draft);
+  if (recovery && crepe) {
+    const prepared = prepareMarkdown(recovery.body);
+    currentFrontmatter = prepared.frontmatter;
+    currentBodyRevision = recovery.baseRevision;
+    if (recovery.conflicted) showConflict("Recovered draft: the file changed. Review your draft before saving or reload the file.");
+    crepe.editor.action(replaceAll(prepared.editorMarkdown));
+    if (!recovery.conflicted) chrome.setNotice("Recovered unsaved draft.");
+  }
+  window.scrollTo(0, bootstrap.scroll ?? draft?.scroll ?? 0);
 }
+
+let positionTimer: number | undefined;
+addEventListener("scroll", () => {
+  if (positionTimer) clearTimeout(positionTimer);
+  positionTimer = window.setTimeout(() => {
+    void api("api/position", { method: "POST", body: JSON.stringify({ scroll: window.scrollY }) }).catch(() => {});
+  }, 150);
+}, { passive: true });
 
 commentButton.addEventListener("click", () => {
   if (!annotationUi) return;
   const open = !annotationUi.isRailOpen();
   annotationUi.setRailOpen(open);
 });
-reloadButton.addEventListener("click", async () => openDocument(true));
+reloadButton.addEventListener("click", async () => {
+  await draftPersistence.clear();
+  await openDocument(true);
+});
+async function exportReview(): Promise<void> {
+  if (!(await save())) return;
+  try {
+    const review = await api("api/export", { method: "POST" });
+    const url = URL.createObjectURL(new Blob([JSON.stringify(review, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a"); link.href = url; link.download = `${filenameStem(currentPath)}.tether`;
+    link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) { chrome.setNotice(`Export failed: ${(error as Error).message}`, 0); }
+}
 saveReviewButton.addEventListener("click", () => void saveReviewed());
 cancelReviewButton.addEventListener("click", () => {
   if (crepe) cancelIncomingDiff(crepe.editor);
@@ -526,14 +613,13 @@ cancelReviewButton.addEventListener("click", () => {
 editorRoot.addEventListener("click", (event) => {
   const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
   const href = link?.getAttribute("href") ?? "";
-  const routeIndex = href.indexOf(wikilinkRoute);
-  if (!link || routeIndex < 0) return;
+  const target = localDocumentLink(href);
+  if (!link || !target) return;
   event.preventDefault();
   event.stopPropagation();
-  const target = decodeURIComponent(href.slice(routeIndex + wikilinkRoute.length));
   void api("api/open", {
     method: "POST",
-    body: JSON.stringify({ target }),
+    body: JSON.stringify(target),
   }).catch((error) => chrome.setNotice(`Could not open link: ${(error as Error).message}`, 0));
 }, true);
 document.addEventListener("keydown", (event) => {

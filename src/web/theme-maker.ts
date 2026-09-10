@@ -1,4 +1,4 @@
-import { builtInThemes, bundledFonts, contrastRatio, fontSlots, metrics, validateCustomTheme, type CustomTheme, type FontSlot, type Metric, type ThemeColors, type ThemeDesign, type ThemeFont } from '../shared/themes';
+import { builtInThemes, bundledFonts, contrastRatio, fontSlots, metrics, validateCustomTheme, type CustomTheme, type FontSlot, type Metric, type ThemeColors, type ThemeDesign, type ThemeFont, type ThemeId } from '../shared/themes';
 import { googleFontCandidates } from './theme-fonts';
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string): HTMLElementTagNameMap[K] {
@@ -23,7 +23,8 @@ function hslToRgb([h, s, l]: number[]): string {
 }
 
 export function createThemeMaker(trigger: HTMLButtonElement, options: {
-  template(): { design: ThemeDesign; saved?: CustomTheme };
+  selected(): ThemeId;
+  template(id: ThemeId): ThemeDesign;
   library(): CustomTheme[];
   preview(design: ThemeDesign): void; restore(): void;
   save(theme: CustomTheme): Promise<void>; remove(id: string): Promise<void>;
@@ -34,7 +35,37 @@ export function createThemeMaker(trigger: HTMLButtonElement, options: {
   document.body.append(panel);
   trigger.setAttribute('aria-expanded', 'false');
   let draft: ThemeDesign;
+  let basedOn: ThemeId, baseline = '';
+  let saveButton: HTMLButtonElement;
+  let confirmation: HTMLElement | undefined;
+  const snapshot = () => JSON.stringify([draft, name.value.trim()]);
+  const dirty = () => snapshot() !== baseline;
+  const dismissConfirmation = () => { confirmation?.remove(); confirmation = undefined; };
+  const confirm = (anchor: HTMLElement, title: string, actionLabel: string, action: () => void) => {
+    dismissConfirmation();
+    const popover = element('div'); popover.className = 'wm-maker-confirm';
+    popover.setAttribute('role', 'dialog'); popover.setAttribute('aria-label', title);
+    const keep = button('Keep editing', () => { dismissConfirmation(); anchor.focus(); });
+    const proceed = button(actionLabel, () => { dismissConfirmation(); action(); });
+    popover.append(element('p', title), keep, proceed);
+    anchor.parentElement!.append(popover); confirmation = popover; keep.focus();
+  };
+  const requestClose = (anchor: HTMLElement = trigger) => {
+    if (busy) return;
+    if (dirty()) confirm(anchor === trigger ? saveButton : anchor, 'Discard changes?', 'Discard', () => close());
+    else close();
+  };
+  const updateSave = () => {
+    const value = name.value.trim().toLocaleLowerCase();
+    const duplicate = builtInThemes.some(t => t.label.toLocaleLowerCase() === value)
+      || options.library().some(t => t.id !== saved?.id && t.name.toLocaleLowerCase() === value);
+    name.setCustomValidity(duplicate ? 'Name already in use' : '');
+    name.setAttribute('aria-invalid', String(duplicate));
+    error.textContent = duplicate ? 'Name already in use' : '';
+    saveButton.disabled = !value || duplicate || Boolean(saved && !dirty());
+  };
   let saved: CustomTheme | undefined;
+  let newThemeId: CustomTheme['id'];
   let busy = false, importing = false, generation = 0;
   let error: HTMLElement, contrast: HTMLElement, name: HTMLInputElement;
   let extraFonts: ThemeFont[] = [];
@@ -42,7 +73,7 @@ export function createThemeMaker(trigger: HTMLButtonElement, options: {
   const sliders = new Map<Metric, HTMLInputElement>();
   const close = (restore = true) => {
     if (busy) return;
-    generation++; importing = false; panel.hidden = true; document.body.classList.remove('wm-making-theme'); trigger.setAttribute('aria-expanded', 'false');
+    dismissConfirmation(); generation++; importing = false; panel.hidden = true; document.body.classList.remove('wm-making-theme'); trigger.setAttribute('aria-expanded', 'false');
     if (restore) options.restore(); trigger.focus();
   };
   const showError = (cause: unknown) => { error.textContent = (cause as Error).message; };
@@ -55,7 +86,7 @@ export function createThemeMaker(trigger: HTMLButtonElement, options: {
     ] as const;
     contrast.textContent = ratios.map(([name, ratio]) => `${name} ${ratio.toFixed(1)}:1${ratio < 4.5 ? ' · low' : ''}`).join(' / ');
   };
-  const preview = () => { options.preview(draft); updateContrast(); };
+  const preview = () => { options.preview(draft); updateContrast(); updateSave(); };
   const withBusy = async (action: () => Promise<void>) => {
     if (busy || importing) return;
     busy = true; error.textContent = '';
@@ -64,9 +95,10 @@ export function createThemeMaker(trigger: HTMLButtonElement, options: {
     catch (cause) { showError(cause); }
     finally { busy = false; panel.querySelectorAll('fieldset').forEach(n => { n.disabled = false; }); }
   };
-  function save(copy: boolean) {
+  function save() {
+    updateSave(); if (saveButton.disabled) return;
     void withBusy(async () => {
-      const theme = validateCustomTheme({ ...draft, id: !copy && saved ? saved.id : `custom-${crypto.randomUUID()}`, name: name.value });
+      const theme = validateCustomTheme({ ...draft, id: saved ? saved.id : newThemeId, name: name.value });
       await options.save(theme);
     });
   }
@@ -129,17 +161,43 @@ export function createThemeMaker(trigger: HTMLButtonElement, options: {
     hex.addEventListener('change', () => { if (/^#[\da-f]{6}$/i.test(hex.value)) { hex.setCustomValidity(''); sync(hex.value); } else { hex.setCustomValidity('Use six hex digits, such as #29323d.'); hex.reportValidity(); } });
     parent.append(details);
   };
-  function open() {
+  function open(edit?: CustomTheme) {
     if (busy) return;
-    if (!panel.hidden) { close(); return; }
-    ({ design: draft, saved } = options.template()); generation++; importing = false; extraFonts = []; fontSelects.clear(); sliders.clear();
+    if (!panel.hidden) { requestClose(); return; }
+    saved = edit;
+    newThemeId = `custom-${crypto.randomUUID()}`;
+    basedOn = edit?.id ?? options.selected();
+    draft = options.template(basedOn);
+    render();
+  }
+  function render() {
+    dismissConfirmation(); generation++; importing = false; extraFonts = []; fontSelects.clear(); sliders.clear();
     panel.replaceChildren();
-    const header = element('header'); header.append(element('h2', 'Theme maker'), button('Cancel', () => close()));
-    const intro = element('p', `Based on ${saved?.name ?? builtInThemes.find(t => t.value === draft.base)?.label}. Changes preview on this document; save to keep them.`);
+    const header = element('header'); header.append(element('h2', saved ? 'Edit theme' : 'Theme maker'));
     error = element('p'); error.className = 'wm-maker-error'; error.setAttribute('role', 'status'); error.setAttribute('aria-live', 'polite');
     contrast = element('p'); contrast.className = 'wm-maker-contrast';
     const fields = element('fieldset');
     name = element('input'); name.type = 'text'; name.maxLength = 64; name.value = saved?.name ?? `My ${builtInThemes.find(t => t.value === draft.base)?.label}`;
+    if (!saved) {
+      const select = element('select');
+      for (const theme of [...builtInThemes, ...options.library().map(t => ({ value: t.id, label: t.name }))]) {
+        const option = element('option', theme.label); option.value = theme.value; select.append(option);
+      }
+      select.value = basedOn;
+      select.addEventListener('change', () => {
+        const next = select.value as ThemeId; select.value = basedOn;
+        const load = () => { basedOn = next; draft = options.template(next); render(); options.preview(draft); };
+        if (dirty()) confirm(select, 'Discard changes?', 'Discard', load); else load();
+      });
+      fields.append(label('Based on', select));
+      const templateName = options.library().find(t => t.id === basedOn)?.name ?? builtInThemes.find(t => t.value === basedOn)?.label;
+      let proposed = `My ${templateName}`.slice(0, 60), suffix = 2;
+      const occupied = () => options.library().some(t => t.name.toLocaleLowerCase() === proposed.toLocaleLowerCase());
+      const stem = proposed;
+      while (occupied()) proposed = `${stem} ${suffix++}`;
+      name.value = proposed;
+    }
+    name.addEventListener('input', updateSave);
     fields.append(label('Theme name', name));
     const groups: Record<FontSlot, Metric[]> = {
       heading: ['headingSize', 'headingWeight', 'headingSpacing'],
@@ -157,7 +215,7 @@ export function createThemeMaker(trigger: HTMLButtonElement, options: {
     refreshFonts();
     for (const slot of fontSlots) adjustWeight(slot, false);
     const colors = element('details'); colors.append(element('summary', 'Colors'), contrast, element('p', 'Aim for at least 4.5:1 for ordinary text. Contrast is one measure of readability.'));
-    for (const [key, title] of [['background', 'Page'], ['on-background', 'Text'], ['primary', 'Links & accent'], ['inline-code', 'Inline code'], ['inline-area', 'Inline code background'], ['surface', 'Code & toolbar background'], ['on-surface-variant', 'Secondary text'], ['selected', 'Selection']] as const) addColor(colors, key, title);
+    for (const [key, title] of [['background', 'Page'], ['on-background', 'Text'], ['primary', 'Links & accent'], ['inline-code', 'Inline code'], ['inline-area', 'Inline code background'], ['surface', 'Code & toolbar background'], ['hover', 'Active code line & toolbar hover'], ['on-surface-variant', 'Secondary text'], ['selected', 'Selection'], ['annotation', 'Annotation highlight']] as const) addColor(colors, key, title);
     fields.append(colors);
     const imports = element('details'); imports.append(element('summary', 'Import Google Font'), element('p', 'Bundled fonts work offline. Linking another font contacts Google when it loads and needs a connection on first use.'));
     const input = element('input'); input.type = 'text'; input.placeholder = 'Literata, specimen link, or CSS2 URL';
@@ -185,17 +243,26 @@ export function createThemeMaker(trigger: HTMLButtonElement, options: {
       })().catch(cause => { if (version === generation) importedStatus.textContent = (cause as Error).message; }).finally(() => { if (version === generation) importing = false; importButton.disabled = false; });
     });
     imports.append(label('Font', input), label('Use for', target), importButton, importedStatus); fields.append(imports);
-    const actions = element('fieldset'); actions.className = 'wm-maker-actions'; actions.append(button(saved ? 'Save changes' : 'Save theme', () => save(false)));
+    const actions = element('fieldset'); actions.className = 'wm-maker-actions';
+    saveButton = button(saved ? 'Save changes' : 'Save theme', save);
+    const cancel = button('Cancel', () => requestClose(cancel));
+    actions.append(saveButton, cancel);
     if (saved) {
-      actions.append(button('Save a copy', () => save(true)));
-      let confirming = false;
-      const remove = button('Delete theme', () => { if (!confirming) { confirming = true; remove.textContent = 'Confirm delete'; return; } void withBusy(() => options.remove(saved!.id)); });
-      actions.append(remove);
+      const remove = button('Delete theme', () => confirm(remove, `Delete “${saved!.name}”?`, 'Delete', () => { void withBusy(() => options.remove(saved!.id)); }));
+      remove.className = 'wm-maker-delete'; actions.append(remove);
     }
-    panel.append(header, intro, error, fields, actions);
+    panel.append(header, error, fields, actions);
+    baseline = snapshot(); updateSave();
     panel.hidden = false; document.body.classList.add('wm-making-theme'); trigger.setAttribute('aria-expanded', 'true'); updateContrast(); name.focus();
+    if (saved) options.preview(draft);
   }
-  const escape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !panel.hidden) { event.preventDefault(); close(); } };
-  trigger.addEventListener('click', open); document.addEventListener('keydown', escape);
-  return { isOpen: () => !panel.hidden, destroy() { generation++; trigger.removeEventListener('click', open); document.removeEventListener('keydown', escape); panel.remove(); document.body.classList.remove('wm-making-theme'); } };
+  const escape = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || panel.hidden) return;
+    event.preventDefault();
+    if (confirmation) { dismissConfirmation(); saveButton.focus(); } else requestClose();
+  };
+  const toggle = () => open();
+  trigger.addEventListener('click', toggle); document.addEventListener('keydown', escape);
+  return { open, isOpen: () => !panel.hidden, destroy() { generation++; trigger.removeEventListener('click', toggle); document.removeEventListener('keydown', escape); panel.remove(); document.body.classList.remove('wm-making-theme'); } };
+
 }

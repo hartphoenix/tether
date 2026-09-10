@@ -1,13 +1,18 @@
+import { themePresets } from './theme-presets';
+
 export const builtInThemes = [
   { value: 'tether', label: 'Tether Light' },
   { value: 'tether-dark', label: 'Tether Dark' },
+  { value: 'light-treason', label: 'Light Treason' },
+  { value: 'dark-academia', label: 'Dark Academia' },
   { value: 'frame', label: 'Frame Light' }, { value: 'frame-dark', label: 'Frame Dark' },
   { value: 'crepe', label: 'Crepe Light' }, { value: 'crepe-dark', label: 'Crepe Dark' },
   { value: 'nord', label: 'Nord Light' }, { value: 'nord-dark', label: 'Nord Dark' },
 ] as const;
 export type BuiltInTheme = typeof builtInThemes[number]['value'];
 export type ThemeId = BuiltInTheme | `custom-${string}`;
-export const colorKeys = ['background', 'on-background', 'surface', 'surface-low', 'on-surface', 'on-surface-variant', 'outline', 'primary', 'secondary', 'on-secondary', 'inverse', 'on-inverse', 'inline-code', 'error', 'hover', 'selected', 'inline-area'] as const;
+export const colorKeys = ['background', 'on-background', 'surface', 'surface-low', 'on-surface', 'on-surface-variant', 'outline', 'primary', 'secondary', 'on-secondary', 'inverse', 'on-inverse', 'inline-code', 'error', 'hover', 'selected', 'inline-area', 'annotation'] as const;
+export const annotationColor = (dark: boolean): string => dark ? '#ffbe3e' : '#f1be5c';
 export type ThemeColors = Record<typeof colorKeys[number], string>;
 export const fontSlots = ['heading', 'body', 'code'] as const;
 export type FontSlot = typeof fontSlots[number];
@@ -73,6 +78,10 @@ export function validateCustomTheme(value: unknown): CustomTheme {
   const colors = object(raw.colors), fonts = object(raw.fonts), values = object(raw.metrics);
   const result = { id: raw.id, name: raw.name.trim(), base: raw.base, colors: {}, fonts: {}, metrics: {} } as CustomTheme;
   for (const key of colorKeys) {
+    if (key === 'annotation' && colors[key] === undefined) {
+      result.colors[key] = annotationColor(raw.base.endsWith('-dark'));
+      continue;
+    }
     if (typeof colors[key] !== 'string' || !/^#[0-9a-f]{6}$/i.test(colors[key] as string)) throw new Error(`Invalid color: ${key}`);
     result.colors[key] = colors[key] as string;
   }
@@ -116,16 +125,12 @@ export function updatePreferences(current: ThemePreferences, value: unknown): Th
   if (!isBuiltInTheme(theme) && !customThemes.some(t => t.id === theme)) throw new Error('Theme not found.');
   return { theme: theme as ThemeId, customThemes };
 }
+export function builtInDesign(id: ThemeId): ThemeDesign | undefined {
+  if (!Object.hasOwn(themePresets, id)) return undefined;
+  return structuredClone(themePresets[id as keyof typeof themePresets]);
+}
 export function tetherDesign(dark: boolean): ThemeDesign {
-  const palette = dark
-    ? ['#1c222a','#dce1e7','#242c36','#202730','#dce1e7','#aab5c2','#8290a0','#a7bdcf','#364758','#e0e8f0','#dce1e7','#242c36','#b5bdcd','#e3a9a9','#2c3541','#3b5064','#293440']
-    : ['#f6f5f1','#29323d','#eeefed','#e8ebe9','#29323d','#566371','#75818d','#46667d','#d8e2e9','#293e50','#29323d','#f6f5f1','#59657d','#9c4141','#e4e8e8','#cfdae3','#e6e9ed'];
-  return {
-    base: dark ? 'tether-dark' : 'tether',
-    colors: Object.fromEntries(colorKeys.map((key, i) => [key, palette[i]])) as ThemeColors,
-    fonts: { heading: bundledFonts[0], body: bundledFonts[3], code: bundledFonts[5] },
-    metrics: { headingSize: 38, headingWeight: 550, headingSpacing: -0.012, bodySize: 19, bodyWeight: 400, bodySpacing: 0, lineHeight: 1.65, paragraphGap: 0.65, lineWidth: 68, codeSize: 14, codeWeight: 400, codeLineHeight: 1.6 },
-  };
+  return builtInDesign(dark ? 'tether-dark' : 'tether')!;
 }
 export function contrastRatio(a: string, b: string): number {
   const luminance = (color: string) => {

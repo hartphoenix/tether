@@ -1,13 +1,9 @@
-/* Shared conversation layout for the drawer and anchored popover. */
+/* Shared conversation layout for the drawer and anchored popover.
+   Typography stays independent of document themes; annotation zoom scales it. */
 :root {
   --wm-review-ui-font: system-ui, sans-serif;
   --wm-review-body-font: system-ui, sans-serif;
   --wm-review-code-font: ui-monospace, monospace;
-}
-:root[data-wm-designed] {
-  --wm-review-ui-font: var(--wm-font-heading);
-  --wm-review-body-font: var(--wm-font-body);
-  --wm-review-code-font: var(--wm-font-code);
 }
 .wm-annotation-rail,
 .wm-thread-popover,
@@ -33,7 +29,6 @@
 .wm-annotation-rail-header { gap: 8px; padding: 0 4px 8px; }
 .wm-annotation-rail-header h2 { font-size: 15px; font-weight: 600; letter-spacing: 0; }
 .wm-annotation-rail-controls { gap: 10px; }
-.wm-unresolved-filter { display: inline-flex; gap: 5px; align-items: center; }
 .wm-thread-card { border-radius: 10px; box-shadow: none; }
 :root[data-wm-designed] .wm-thread-card.is-active { border-color: var(--wm-color-primary); box-shadow: none; }
 .wm-thread-summary { padding: 12px; gap: 5px 8px; }

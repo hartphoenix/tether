@@ -156,3 +156,21 @@
   --wm-annotation-muted: var(--wm-color-on-surface-variant);
 }
 :root[data-wm-designed] .wm-thread-card.is-active { border-color: var(--wm-color-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--wm-color-primary), transparent 80%); }
+
+.wm-theme-row { display: flex; align-items: stretch; }
+.wm-theme-row > button[data-theme] { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wm-theme-menu .wm-theme-edit { flex: 0 0 32px; display: grid; place-items: center; padding: 0; }
+.wm-theme-edit .tether-icon { width: 14px; height: 14px; }
+.wm-theme-maker label { position: relative; }
+.wm-theme-maker :disabled { cursor: default; }
+.wm-theme-maker .wm-maker-actions { align-items: center; flex-wrap: nowrap; justify-content: space-between; }
+.wm-theme-maker .wm-maker-delete { border-color: transparent; background: transparent; color: var(--wm-color-error, #b54b4b); text-align: left; }
+.wm-theme-maker .wm-maker-confirm {
+  position: absolute; z-index: 1; bottom: calc(100% + 8px); inset-inline: 0;
+  padding: 12px; border: 1px solid color-mix(in srgb, currentColor, transparent 70%);
+  border-radius: 8px; background: var(--wm-page-background); color: var(--wm-page-color);
+  box-shadow: 0 4px 20px rgb(0 0 0 / 18%);
+}
+.wm-theme-maker label .wm-maker-confirm { bottom: auto; top: 100%; }
+.wm-theme-maker .wm-maker-confirm p { margin: 0 0 10px; opacity: 1; }
+.wm-theme-maker .wm-maker-confirm button + button { margin-left: 8px; }

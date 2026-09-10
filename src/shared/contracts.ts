@@ -49,6 +49,8 @@ export type SessionBootstrap = {
   capabilities: HostCapabilities;
   preferences: AppPreferences;
   actor: string;
+  draft?: { body: string; baseRevision: string; scroll: number; updatedAt: number } | null;
+  scroll?: number;
 };
 
 export type ProtocolSuccess<T = unknown> = {

@@ -45,7 +45,10 @@
   width: 32px;
   height: 32px;
   margin: 6px;
-  padding: 0 4px 6px;
+  padding: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   border-radius: 4px;
   color: var(--crepe-color-outline);
@@ -81,9 +84,10 @@
   cursor: pointer;
 }
 
-.wm-comment-button svg { width: 24px; height: 24px; }
+.tether-icon { width: 20px; height: 20px; flex-shrink: 0; fill: currentColor; stroke: none; }
 .wm-comment-button:hover { background: var(--crepe-color-hover); }
 .wm-comment-button.is-active { color: var(--crepe-color-primary); background: var(--crepe-color-selected); }
+.wm-overflow-trigger:focus-visible,
 .wm-comment-button:focus-visible { outline: 2px solid var(--crepe-color-primary); outline-offset: 1px; }
 
 .wm-pending-count {
