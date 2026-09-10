@@ -79,6 +79,66 @@ body {
   padding: 36px 44px 120px;
 }
 
+/* Overlay scrollbars must sit below the final code line, including a new empty
+   line. Keep clearance inside CodeMirror's measured content at every zoom. */
+.milkdown .milkdown-code-block .cm-content {
+  padding-bottom: max(20px, calc(20px / var(--wm-editor-zoom, 1)));
+}
+
+/* Milkdown swaps offscreen CodeMirror views for <pre> placeholders. Match
+   their line metrics, non-wrapping layout, 30px tools row, and content padding
+   so the swap cannot move the rest of the document. Theme rules override the
+   typography of both representations together. */
+.milkdown .milkdown-code-block :is(.cm-content, .milkdown-code-block-placeholder) {
+  font-family: var(--crepe-font-code, monospace);
+  font-size: calc(var(--crepe-base-font-size, 16px) * 0.875);
+  line-height: 1.5;
+}
+
+.milkdown .milkdown-code-block .milkdown-code-block-placeholder {
+  padding: 34px 2px max(20px, calc(20px / var(--wm-editor-zoom, 1))) 6px;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  overflow: hidden;
+}
+
+.milkdown .milkdown-code-block .milkdown-code-block-placeholder code {
+  display: block;
+  font: inherit;
+}
+
+/* A pre normally drops its final empty line; CodeMirror renders it. */
+.milkdown .milkdown-code-block .milkdown-code-block-placeholder code::after {
+  content: "\200b";
+}
+
+/* Crepe's default resize target is only 4px tall and straddles the image's
+   bottom edge. Keep a larger target inside the image and retain it on selection. */
+.milkdown .milkdown-image-block > .image-wrapper > .image-resize-handle {
+  bottom: 0;
+  height: 18px;
+  background: transparent;
+  cursor: ns-resize;
+  touch-action: none;
+  z-index: 1;
+}
+
+.milkdown .milkdown-image-block > .image-wrapper > .image-resize-handle::after {
+  content: "";
+  position: absolute;
+  inset: 6px 0;
+  border: 1px solid var(--crepe-color-inverse);
+  border-radius: 4px;
+  background: var(--crepe-color-on-inverse);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 40%);
+  pointer-events: none;
+}
+
+.milkdown .milkdown-image-block:is(:hover, .selected, :focus-within) > .image-wrapper > .image-resize-handle {
+  opacity: 1;
+}
+
 .milkdown .milkdown-top-bar {
   zoom: calc(1 / var(--wm-editor-zoom, 1));
   position: sticky;

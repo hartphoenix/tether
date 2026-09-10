@@ -1,0 +1,111 @@
+/* Shared conversation layout for the drawer and anchored popover.
+   Typography stays independent of document themes; annotation zoom scales it. */
+:root {
+  --wm-review-ui-font: system-ui, sans-serif;
+  --wm-review-body-font: system-ui, sans-serif;
+  --wm-review-code-font: ui-monospace, monospace;
+}
+.wm-annotation-rail,
+.wm-thread-popover,
+.wm-comment-popover {
+  --wm-annotation-muted: #71685f;
+  --wm-annotation-border: #d3c8bc;
+  --wm-annotation-surface: #fffdf9;
+  font: 13px/1.5 var(--wm-review-ui-font);
+}
+:root[data-wm-theme$="-dark"] :is(.wm-annotation-rail, .wm-thread-popover, .wm-comment-popover) {
+  --wm-annotation-muted: #c4b9ae;
+  --wm-annotation-border: #514940;
+  --wm-annotation-surface: #28231e;
+}
+:root[data-wm-designed] :is(.wm-annotation-rail, .wm-thread-popover, .wm-comment-popover) {
+  --wm-annotation-muted: var(--wm-color-on-surface-variant);
+  --wm-annotation-border: color-mix(in srgb, var(--wm-color-outline), transparent 65%);
+  --wm-annotation-surface: var(--wm-color-surface);
+  border-color: var(--wm-annotation-border);
+}
+.wm-annotation-rail { padding: 16px 12px 28px; }
+.wm-annotation-rail-content { gap: 12px; }
+.wm-annotation-rail-header { gap: 8px; padding: 0 4px 8px; }
+.wm-annotation-rail-header h2 { font-size: 15px; font-weight: 600; letter-spacing: 0; }
+.wm-annotation-rail-controls { gap: 10px; }
+.wm-thread-card { border-radius: 10px; box-shadow: none; }
+:root[data-wm-designed] .wm-thread-card.is-active { border-color: var(--wm-color-primary); box-shadow: none; }
+.wm-thread-summary { padding: 12px; gap: 5px 8px; }
+.wm-thread-labels { gap: 8px; color: var(--wm-annotation-muted); font-size: 11px; }
+.wm-thread-count { white-space: nowrap; }
+.wm-thread-status { font-size: inherit; }
+.wm-thread-card:not(:has(.wm-thread-summary[aria-expanded="true"])) .wm-thread-excerpt {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px;
+}
+.wm-thread-expanded-title { display: none; font-size: 12px; font-weight: 600; }
+.wm-thread-summary[aria-expanded="true"] .wm-thread-expanded-title { display: block; }
+.wm-thread-summary[aria-expanded="true"] :is(.wm-thread-identity, .wm-thread-excerpt) { display: none; }
+/* Open is the normal state; reserve a visible status label for resolved threads. */
+.wm-thread-card:not(.is-resolved) .wm-thread-status { display: none; }
+.wm-thread-details { padding: 0 14px 14px; }
+.wm-thread-popover { padding: 36px 16px 16px; border-radius: 12px; }
+.wm-thread-popover .wm-thread-details { padding: 0; }
+.wm-thread-popover .wm-footnote-close { top: 7px; right: 9px; }
+.wm-thread-quote, .wm-thread-context {
+  margin: 0 0 16px; border-left: 2px solid var(--wm-annotation-border);
+  padding: 7px 10px; font: 12px/1.5 var(--wm-review-body-font);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+:root[data-wm-designed] .wm-thread-quote { background: var(--wm-color-hover); border-color: var(--wm-color-primary); }
+.wm-thread-context summary { cursor: pointer; color: var(--wm-annotation-muted); }
+.wm-thread-context[open] summary { margin-bottom: 8px; }
+.wm-thread-context .wm-thread-quote { padding: 0; margin: 0; border: 0; background: transparent; }
+.wm-message-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin-bottom: 6px; font-family: var(--wm-review-ui-font); }
+.wm-message-author { font-size: 12px; font-weight: 650; overflow-wrap: anywhere; }
+.wm-message-header .wm-thread-time { display: inline; margin: 0; font-size: 10px; color: var(--wm-annotation-muted); }
+.wm-editable-annotation { padding: 0; min-width: 0; }
+/* Extend the surface into the existing message gutters so both authors keep
+   the same text alignment and reading width. */
+.wm-editable-annotation.is-assistant { isolation: isolate; }
+.wm-editable-annotation.is-assistant::before {
+  content: "";
+  position: absolute;
+  inset: -6px -8px;
+  z-index: -1;
+  pointer-events: none;
+  border-left: 2px solid var(--wm-color-primary, var(--wm-annotation-muted));
+  border-radius: 0 5px 5px 0;
+  background: color-mix(in srgb, var(--wm-color-primary, var(--wm-annotation-muted)) 8%, var(--wm-annotation-surface));
+}
+.wm-message-header .wm-inline-edit { position: static; margin-left: auto; padding: 2px 0 2px 6px; font: 10px/1.5 var(--wm-review-ui-font); }
+.wm-thread-body { margin: 0; font: 14px/1.6 var(--wm-review-body-font); white-space: pre-wrap; tab-size: 4; overflow-wrap: anywhere; }
+.wm-thread-replies { gap: 0; }
+.wm-thread-reply { padding: 14px 0 0; margin-top: 14px; border-top: 1px solid var(--wm-annotation-border); }
+:root[data-wm-designed] .wm-thread-reply { border-color: var(--wm-annotation-border); }
+.wm-annotation-reply-form { margin-top: 18px; }
+.wm-annotation-textarea { min-height: 64px; padding: 9px 10px; border-radius: 7px; font: 14px/1.6 var(--wm-review-body-font); tab-size: 4; }
+.wm-annotation-textarea::placeholder { color: var(--wm-annotation-muted); opacity: .85; }
+.wm-annotation-actions { gap: 8px; margin-top: 8px; }
+.wm-annotation-reply-form .wm-button-secondary { margin-right: auto; border-color: transparent; background: transparent; }
+:root[data-wm-designed] .wm-annotation-reply-form .wm-button-secondary { border-color: transparent; background: transparent; }
+.wm-annotation-actions .wm-button { min-height: 30px; padding: 4px 10px; font: 12px/1.5 var(--wm-review-ui-font); border-radius: 6px; }
+:root[data-wm-designed] .wm-annotation-actions .wm-button-primary { color: var(--wm-color-on-secondary); background: var(--wm-color-secondary); border-color: transparent; }
+.wm-thread-popover :focus-visible, .wm-annotation-rail :focus-visible { outline: 2px solid var(--wm-color-primary, #947b62); outline-offset: 2px; }
+.wm-thread-body { white-space: normal; }
+.wm-thread-body :is(p, blockquote, li, th, td) { white-space: pre-wrap; }
+.wm-thread-body p, .wm-thread-reply .wm-thread-body p { margin: 0 0 .65em; }
+.wm-thread-body > :last-child, .wm-thread-reply .wm-thread-body > :last-child { margin-bottom: 0; }
+.wm-thread-body :is(h1,h2,h3,h4,h5,h6) { font: 600 1em/1.4 var(--wm-review-ui-font); margin: .9em 0 .4em; }
+.wm-thread-body > :first-child { margin-top: 0; }
+.wm-thread-body :is(ul,ol) { padding-left: 1.3em; margin: .5em 0; }
+.wm-thread-body li { margin: .15em 0; }
+.wm-thread-body li > p { margin: 0; }
+.wm-thread-body blockquote { margin: .6em 0; padding-left: .8em; border-left: 2px solid var(--wm-annotation-border); }
+.wm-thread-body :is(code,pre) { font: .85em/1.55 var(--wm-review-code-font); tab-size: 4; }
+.wm-thread-body code { color: var(--wm-color-inline-code, inherit); background: var(--wm-color-inline-area, transparent); border-radius: 3px; padding: .08em .2em; }
+.wm-thread-body pre { overflow-x: auto; white-space: pre; padding: 9px; background: var(--wm-color-surface-low, transparent); border-radius: 6px; margin: .6em 0; }
+.wm-thread-body pre code { font: inherit; padding: 0; color: inherit; background: transparent; }
+.wm-thread-body a { color: var(--wm-color-primary, inherit); text-underline-offset: .15em; }
+.wm-comment-table { overflow-x: auto; margin-block: .6em; }
+.wm-comment-table table { border-collapse: collapse; width: 100%; font-size: .9em; }
+.wm-comment-table :is(th,td) { padding: 5px 7px; border: 1px solid var(--wm-annotation-border); text-align: start; }
+.wm-comment-task { list-style: none; position: relative; }
+.wm-comment-task > input { position: absolute; left: -1.4em; top: .25em; }
+.wm-thread-body hr { margin: .8em 0; border: 0; border-top: 1px solid var(--wm-annotation-border); }

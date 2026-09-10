@@ -1,0 +1,26 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { PrivateStore } from "../src/storage/private-store";
+import { resolveConfig } from "../src/server/config";
+import { backupState, restoreState } from "../src/cli/backup";
+const directories: string[] = [];
+afterEach(async () => { for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true }); });
+test("private backup restores state without overwriting a destination and detects damage", async () => {
+  const directory = await mkdtemp("/tmp/tether-backup-"); directories.push(directory);
+  const config = resolveConfig({ configDir: join(directory, "config"), runtimeDir: join(directory, "runtime") });
+  const store = new PrivateStore(join(config.configDir, "tether.sqlite"));
+  store.ensureDocument(join(directory, "review.md"), 123);
+  store.close();
+  await writeFile(config.preferencesPath, '{"theme":"tether-light"}\n');
+  const backup = join(directory, "backup"), restored = join(directory, "restored");
+  await backupState(config, backup);
+  await restoreState(backup, restored);
+  const copy = new PrivateStore(join(restored, "tether.sqlite"));
+  expect(copy.db.query("SELECT path FROM documents").all()).toEqual([{ path: join(directory, "review.md") }]);
+  copy.close();
+  expect(await readFile(join(restored, "preferences.json"), "utf8")).toContain("tether-light");
+  await expect(restoreState(backup, restored)).rejects.toThrow();
+  await writeFile(join(backup, "preferences.json"), "changed");
+  await expect(restoreState(backup, join(directory, "damaged"))).rejects.toThrow("checksum mismatch");
+});

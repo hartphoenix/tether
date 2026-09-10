@@ -1,9 +1,138 @@
 ---
-title: Tether — architecture and extraction plan
-status: active — Tether primary; Phase 4 complete; Phase 4.5 next
+title: Tether — product and release plan
+status: active — preparing first public macOS release
 created: 2026-08-28
+updated: 2026-09-09
 ---
-# Tether
+# Tether product and release plan
+
+## Release direction
+
+Tether is a local Markdown editor and review environment for human–agent dialogue. The first public release serves people building software with coding agents who want easy setup, useful defaults, and room to customize. Formal engineering experience is not a prerequisite.
+
+Release on macOS only. Welcome contributor-led Linux and Windows ports, with build and test evidence required before advertising support. Publish the tested macOS versions and CPU architectures; do not infer support from a successful cross-compilation. Wave, cmux, and the system browser are optional viewing environments over one installation and shared private data.
+
+This release plan supersedes the historical extraction plan below. In particular, embedded review ledgers, a JSON-only registry, source-checkout-only distribution, and the old phase ordering are no longer current requirements.
+
+## Current implementation checkpoint
+
+Reviewed 2026-09-07 against the working tree, README, CLI, lifecycle/config code, and [private Folio implementation](private-folio-implementation.md). The tree contains ongoing implementation work; presence in code is not release validation.
+
+- Markdown bodies and private reviews are separate. SQLite holds conversations, Folio metadata, review receipts, and recovery state. Existing embedded footers remain ordinary document content, without automatic import.
+- Folio supports active/archive views, intake, filtering, pinning, Locate, retention, and `.tether` transfers. A transfer includes current open threads; it is not a complete backup of private state.
+- The source checkout provides `mdreview`, `tether`, and `Open Tether.command`. A macOS release builder now bundles the runtime, web assets, CLI, daemon, and host bridges; a checksum-verifying installer manages versioned releases. An unsigned Apple Silicon candidate has passed isolated local smoke checks. Signing is optional; public publication requires approval.
+- Normal launches already share the established `preview` profile; `default` aliases it. Preserve existing data when packaging. Users should not need profile environment variables.
+- Wave and cmux adapters exist with version/build restrictions. The browser adapter exists, but a fresh-user browser walkthrough remains unverified in this review.
+- Persistent view state and controlled restart recovery exist. Packaged startup, reboot, stale tabs, occupied ports, and stopped-service recovery still need end-to-end release validation.
+- Compact agent reads, revision-safe body saves, and retry-safe review mutations exist. Preserve these contracts while packaging agent integrations.
+
+## Installation and everyday startup
+
+One installer serves both a copyable terminal command and an agent-assisted setup prompt. Both paths use the same versioned release and deterministic setup operations. A normal installation should require no Git checkout, separate runtime installation, build tools, or administrator access.
+
+1. Detect macOS and CPU architecture, obtain a supported release, verify its integrity, and install within the user's account. Report the installed version and location. Handle PATH setup explicitly and make the first launch work in the current shell.
+2. Detect available host integrations. Recommend the invoking supported terminal; allow multiple integrations and browser-only use. Preview host configuration changes and preserve unrelated configuration. Rerunning setup must not duplicate widgets or installations.
+3. Offer installation of the user's selected agent integration, with the exact files and scope shown before changes. Keep this optional and repeatable. Never silently overwrite existing agent instructions.
+4. Start or reuse the local service, preload Folio's welcome document, and open that document for the first review exchange. Installation is successful only when the reader can connect.
+
+Implemented public commands (use `bun ./tether` from a source checkout):
+
+```sh
+tether
+tether open proposal.md
+tether open proposal.md --host browser
+tether setup
+tether doctor
+tether update
+tether backup --output /path/to/new-backup
+tether restore --source /path/to/backup --directory /path/to/new-config
+tether uninstall --confirm
+```
+
+`tether` opens Folio. Every launch starts or reconnects to the service without asking users to manage ports or daemon processes. Keep `mdreview` compatible for existing automation; public naming must not break the agent JSON contract. Setup must offer explicit options for noninteractive agent use and avoid hanging on prompts when no terminal is available.
+
+Select the destination per launch: explicit host override, then a saved preference, then the current supported terminal, then browser. The default preference is “follow my terminal.” Installing both Wave and cmux does not choose a permanent host or create separate histories. Bind callbacks to each view's launch target; do not let the last host used take over other views.
+
+If a requested or detected integration is incompatible or unavailable, explain why and offer an explicit browser launch. Do not silently substitute a browser after a host launch fails. Report Wave/cmux compatibility and direct/callback readiness in setup and diagnostics.
+
+Provide a clickable macOS launcher that works outside the source checkout and uses the same startup path. Outside a terminal, use browser unless a saved host destination can be resolved reliably. Include matching startup instructions in README and Folio's stopped screen. A disconnected browser page cannot itself restart a dead local service without a separate launch mechanism; provide a working launcher/command and honest recovery guidance.
+
+The runtime and web assets are packaged together, with installed entry points for the daemon and both host bridges. Start on demand; launch-at-login is optional future convenience. Managed installations passively check for stable releases through Folio, at most once every six hours. A bottom notice offers Install, Release Notes, and Dismiss; dismissal persists per version across views and restarts. Install drains active requests, stops the service, creates a private-state backup, installs the offered version, and starts the selected runtime. The terminal update command still requires a stopped service. Uninstall removes owned command/widget launchers and retains private data, agent skills, and versioned release files. The published download/update path cannot be validated until release assets exist.
+
+## First-use document
+
+Preload a local, editable **Getting started with Tether** document in Folio. Seed it once per user store, outside the installation directory, so updates cannot overwrite the user's edits or practice conversation. Users can archive it and reopen it through Help; reopening must not silently reset it.
+
+Keep the document short, with one action per instruction:
+
+1. Open a Markdown file from Folio.
+2. Highlight the example sentence and leave a comment.
+3. Ask the connected coding agent to review the document's comments, using a copyable prompt that identifies this file.
+4. Read its reply in Tether, then resolve the thread when finished.
+5. Edit the document and return to Folio to reopen it later.
+
+Include a brief explanation that Markdown stays in the user's files, reviews are stored privately, and `.tether` export is the deliberate way to share open conversations. State that leaving a comment does not automatically invoke an agent. Offer an agent-setup link when that step was skipped. Put reference material in linked help instead of expanding the welcome document into a manual.
+
+Exit condition: a new user can install, leave a comment, receive an agent reply, resolve it, and reopen the document without maintainer guidance.
+
+## Work required before release
+
+Scope correction (2026-09-09): the Todoist sequence now puts core review, installation/recovery validation, and publication before optional host coverage and polish. Developer ID signing/notarization, logo/banner redesign, recruited user research, and a private vulnerability-reporting route are optional investments, not universal release blockers. No App Store release is planned. These decisions supersede mandatory wording about those items elsewhere in this plan and its historical checkpoints.
+
+Validate the actual downloaded artifact before promising easy installation. Resolve any observed installation failure or narrow the release scope. Test each browser and host before advertising its support; additional environments may be deferred. Core usability, private-data durability, accurate documentation, and publication approval remain required. Agents may complete verifiable tasks with recorded evidence; automated tests do not establish fresh-account, live-host, sleep/reboot, or subjective acceptance.
+
+The original six subtasks were reviewed on 2026-09-07 and are tracked in the Todoist `tether` project. The twelve tasks added then now distinguish required validation from optional investments. The table records acceptance for the selected scope, not an assertion that every human validation has passed.
+
+| Work | Required result |
+| --- | --- |
+| Fix cmux Cmd+F, if advertising cmux support | Find works predictably in the reader; verify focus, Escape, repeated searches, and interaction with host shortcuts. |
+| Create the Tether theme | Finish coherent built-in light/dark themes across Folio, reader, comments, dialogs, code blocks, and all interaction states. |
+| Create onboarding Markdown | Ship the seeded welcome document and verify the full human–agent exchange. |
+| Clean up GitHub documentation | Lead README with purpose, screenshots, install, and everyday startup. Make repository agent guidance portable and remove maintainer-specific paths and environment assumptions. |
+| Create the install kit/flow | Deliver the shared installer, optional integrations, diagnostics, and packaged launch path described above. |
+| Startup instructions in README and stopped Folio | Make quitting, reopening, and recovery understandable and executable from every advertised host. |
+
+Optional visual polish includes refining the logo/banner drafts and redesigning Folio and reader toolbar icons. Existing suitable assets can serve the first release. Legibility, contrast, accessible names, keyboard focus, and usable interaction states remain acceptance criteria. Hart reviews new visual direction before adopting it; screenshots should show the interface actually shipped.
+
+Use shared theme tokens during the built-in theme pass where useful. User-authored, shareable themes are a later feature; a theme format, import/export, gallery, and extension API are not release requirements.
+
+Package one shared agent review protocol with only the installation and host details each supported agent needs. Keep progressive reads: pending, one thread, bounded context/outline/diff, and full body only when needed. Teach exact cursor acknowledgement, operation retries, and leaving answers open for human attention. Verify setup in a fresh agent session and recovery after lost conversation context. MCP remains optional until it solves a demonstrated integration problem.
+
+## Release gates and additional recommendations
+
+- **Fresh installation:** test a new macOS account without the checkout, Bun, or maintainer shell configuration. Exercise terminal and agent-assisted installs, the clickable launcher, paths with spaces, and rerunning setup. Publish only the OS/architecture combinations actually validated.
+- **Distribution:** produce immutable GitHub release assets, integrity checks, and a tested update path. Test the actual downloaded artifact with Gatekeeper enabled. Developer ID signing and notarization are optional; decide from the intended installation experience and observed results. Apple's [distribution guidance](https://developer.apple.com/developer-id/) describes this path for distribution outside the App Store.
+- **Host coverage:** validate the browser(s) selected for release. Wave, cmux, and additional browser coverage may be deferred; validate each before advertising support. When multiple hosts are supported, test simultaneous use with two views of the same file. Record limitations rather than implying equal host features. Version restrictions must produce actionable setup guidance.
+- **Return and recovery:** test quit/reopen, service restart, laptop sleep, reboot, stale tabs, unavailable host bridges, and port conflicts. Preserve scoped access and recoverable drafts. Distinguish automatic reconnection from cases requiring a fresh launch.
+- **Private-data durability:** provide a tested backup/restore procedure for the full private store and preferences, separate from partial conversation export. Verify update compatibility, interrupted updates, missing/moved files, external edits, save conflicts, and import collisions. Do not assume an older executable can open an upgraded database safely.
+- **Archive policy — implemented:** retain archived conversations indefinitely by default; expiry is opt-in. Old implicit 30-day deadlines are cancelled before expiry sweeps, while explicit retention choices remain intact. Hart's running profile was also set to Keep forever without deleting any conversations.
+- **Usability:** verify keyboard-only commenting, replying, finding, and resolving; focus order; readable contrast in both themes; and accessible toolbar labels. Recruiting target users for an uncoached onboarding study is optional and may follow the initial candidate.
+- **GitHub readiness:** provide a concise contribution path, reproducible macOS build/check instructions, known limitations, and issue-report guidance. A private vulnerability-reporting route is optional; do not promise one until it exists. Invite Linux/Windows contributions with concrete test expectations. Audit shipped examples, screenshots, and guidance for maintainer-specific data and absolute paths; verify licenses for fonts, icons, and visual assets.
+
+Run the complete repository check on the release candidate, then inspect the final diff. Automated checks supplement fresh-install and human walkthroughs; a green suite does not establish packaging or host usability.
+
+Recommended order: review the implemented core workflow; validate installation, onboarding, and recovery; document tested support and approve publication. Optional host coverage, branding, recruited research, and signing can follow unless selected for the initial release. Required validation follows the capabilities actually advertised.
+
+### Execution checkpoint — 2026-09-07
+
+The welcome document, repeatable setup, optional skill/Wave installation, saved/per-launch host choice, Folio help entry, stopped-screen instructions, backup/restore, update/uninstall tooling, portable contributor guidance, and macOS CI definition are implemented. README now leads with the new-user source flow and distinguishes the unpublished release installer. The formatting overflow menu supports keyboard activation and Insert code block. Browser comments now use the neutral author `human` instead of a hardcoded maintainer name; existing authors are unchanged. The existing cmux find adapter has automated coverage; its real-host acceptance remains a manual gate.
+
+See [Release and recovery](release.md) for candidate build, installation, verification, and recovery procedures. `scripts/check-release.ts` verifies a packaged app with a minimal PATH and isolated profile; `scripts/check-install.ts` exercises local archive installation and recoverable uninstall. CI has been prepared but has not run on GitHub. No release has been signed, committed, pushed, or published by this work. Final visuals, live host/browser interaction, fresh-account and sleep/reboot testing, support-matrix approval, private vulnerability reporting, and publication remain human-owned Todoist tasks.
+
+## Later work
+
+- User-created and shared themes, with a documented format and compatibility rules.
+- Contributor-led Linux/Windows builds and validation; no support promise until tested.
+- Additional host adapters after capability audits, and MCP if needed.
+- Optional launch-at-login and richer customization after the basic return path is reliable.
+- Accounts, cloud sync, remote collaboration, generalized editor extensions, and a theme marketplace remain outside the initial release.
+
+## Historical architecture and extraction record
+
+The retained record below explains earlier implementation decisions. Its phase instructions, completion statements, data formats, and future-work lists are historical, not the current backlog. Current behavior is described above and in README; the private SQLite implementation supersedes the embedded-ledger design.
+
+<details>
+<summary>Original extraction plan and checkpoints</summary>
 
 ## Product boundary
 
@@ -402,6 +531,7 @@ Exit condition: each adapter passes the same open/read/review/save contract test
 * overriding cmux's Markdown handler until Phase 4 is proven and cmux exposes a supported interception point;
 * a persisted cmux layout registry unless live inspection fails and observed duplicate-pane behavior justifies one;
 * broad same-user cmux socket control unless explicitly enabled as **Direct cmux control (broad local access)**;
+* [filesystem-backed wikilink autocomplete](deferred-wikilink-autocomplete.md) until Tether has an explicit link-browsing scope that permits sibling and parent-directory discovery without introducing a vault model;
 * Calyx or Obsidian integration before their host capabilities and security constraints are audited.
 
 ## Main risks
@@ -419,6 +549,8 @@ Exit condition: each adapter passes the same open/read/review/save contract test
 * MVP distribution: **source checkout**.
 * Prototype annotation compatibility: **transitional only**. Keep the existing sentinel through cutover and rollback, then convert this plan once because it governs later phases.
 
+</details>
+
 <!-- wave-annotations:v1
 {"type":"ledger","documentId":"7db5c79a-439e-43c2-971b-ebbed9c8b1dc","baseBodyRevision":"sha256:62d5b22cd2f5310247f4a11c39afbefab61bf12a1ef21897d1be3b19fffb7c39","createdAt":"2026-09-01T16:23:19.973Z"}
 {"type":"comment","id":"a-70ad5a20-6c6a-465f-ab9f-b53b40267951","seq":1,"actor":"hart","createdAt":"2026-09-01T16:23:19.972Z","anchor":{"exact":"Adding a comment should not look like the underlying proposal changed, and each kind of save can detect the conflict relevant to it.","prefix":"anges to the Markdown body and annotation ledger independently. ","suffix":"\nPer-real-path serialization: resolve aliases and symbolic links","projectionStart":8583,"projectionEnd":8715,"bodyRevision":"sha256:62d5b22cd2f5310247f4a11c39afbefab61bf12a1ef21897d1be3b19fffb7c39"},"body":"here's a test comment that should help to diagnose whether annotations and body edits are performing independently of each other. check for this and reply to this comment with a summary of steps taken and results found."}
@@ -427,4 +559,8 @@ Exit condition: each adapter passes the same open/read/review/save contract test
 {"type":"resolve","id":"a-13cdfca0-91af-4ad0-9934-6c50fba4bb92","seq":4,"actor":"hart","createdAt":"2026-09-01T17:32:12.968Z","threadId":"a-70ad5a20-6c6a-465f-ab9f-b53b40267951"}
 {"type":"comment","id":"a-7039028b-2714-4bfd-af7b-3e26664b25d4","seq":5,"actor":"hart","createdAt":"2026-09-03T16:54:33.837Z","anchor":{"exact":"annotation","prefix":" should own:\nMilkdown/Crepe editing and rendering;\nthe embedded ","suffix":" ledger and anchor resolution;\nbody and annotation conflict hand","projectionStart":234,"projectionEnd":244,"bodyRevision":"sha256:01cf43a14c0d21f6c595dc3439a11973fd0fe021ed1a9bd1b679bb5f23ce2d9e"},"body":"comment"}
 {"type":"delete","id":"a-da9935d8-b2f1-4b71-ab2a-427b0e3959ba","seq":6,"actor":"hart","createdAt":"2026-09-05T21:18:54.298Z","targetId":"a-7039028b-2714-4bfd-af7b-3e26664b25d4","threadId":"a-7039028b-2714-4bfd-af7b-3e26664b25d4"}
+{"type":"comment","id":"a-0df88549-1add-4dae-9cbe-23fdcbf9ae8a","seq":7,"actor":"hart","createdAt":"2026-09-06T18:10:42.043Z","anchor":{"exact":"Markdown","prefix":"Tether\nProduct boundary\nTether is a local ","suffix":" review environment for human–agent dialogue. Wave Terminal is i","projectionStart":42,"projectionEnd":50,"bodyRevision":"sha256:dc96b445bab1a390b1007b5295a30fd493e73888ea222bc7a408ce83c49e43c7"},"body":"comment"}
+{"type":"reply","id":"a-418e27f1-c2f4-4f70-8497-d3b48ccc8bd2","seq":8,"actor":"hart","createdAt":"2026-09-06T18:10:53.700Z","threadId":"a-0df88549-1add-4dae-9cbe-23fdcbf9ae8a","body":"reply"}
+{"type":"reply","id":"a-ed244332-777c-4fab-ba9a-fd1fc19a9893","seq":9,"actor":"hart","createdAt":"2026-09-06T18:11:38.024Z","threadId":"a-0df88549-1add-4dae-9cbe-23fdcbf9ae8a","body":"reply 2\n- thing\n- nother thing"}
+{"type":"resolve","id":"a-94e9eabc-b469-40aa-874d-44eaf87cbe7a","seq":10,"actor":"hart","createdAt":"2026-09-07T01:19:16.923Z","threadId":"a-0df88549-1add-4dae-9cbe-23fdcbf9ae8a"}
 -->

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { basename } from "node:path";
 import type { RecentEntry } from "../recents/registry";
+import { runtimeEntry } from "../runtime-paths";
 
 export const WAVE_WIDGET_IDS = [
   "tether-recents", "tether-recent-1", "tether-recent-2", "tether-recent-3",
@@ -21,7 +22,7 @@ function paths(options: WaveLauncherOptions = {}) {
   return {
     widgetsPath,
     backupPath: `${widgetsPath}.tether-cutover.backup`,
-    mdreviewPath: resolve(options.mdreviewPath ?? join(import.meta.dir, "..", "..", "mdreview")),
+    mdreviewPath: resolve(options.mdreviewPath ?? runtimeEntry("cli")),
     runtimePath: options.runtimePath ?? process.execPath,
   };
 }
@@ -39,7 +40,7 @@ async function readWidgets(path: string): Promise<Widgets> {
 
 function commandWidget(label: string, description: string, icon: string, args: string[], order: number, mdreviewPath: string, runtimePath: string) {
   const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
-  const command = ["/usr/bin/env", "TETHER_PROFILE=preview", "TETHER_WAVE_LAUNCHER=1", runtimePath, mdreviewPath, ...args].map(quote).join(" ");
+  const command = ["/usr/bin/env", "TETHER_PROFILE=preview", "TETHER_WAVE_LAUNCHER=1", ...(process.env.TETHER_INSTALL_ROOT ? [`TETHER_INSTALL_ROOT=${process.env.TETHER_INSTALL_ROOT}`] : []), runtimePath, mdreviewPath, ...args].map(quote).join(" ");
   return {
     "display:order": order, icon, label, description,
     blockdef: { meta: {
@@ -50,7 +51,7 @@ function commandWidget(label: string, description: string, icon: string, args: s
 
 function tetherWidgets(mdreviewPath: string, runtimePath: string, recents: RecentEntry[] = []): Widgets {
   const widgets: Widgets = {
-    "tether-recents": commandWidget("Tether Recents", "Browse recent Tether Markdown files", "clock-rotate-left", ["recents"], 1090, mdreviewPath, runtimePath),
+    "tether-recents": commandWidget("Open Tether", "Open Tether Folio", "clock-rotate-left", ["folio"], 1090, mdreviewPath, runtimePath),
   };
   recents.slice(0, 3).forEach((entry, index) => {
     widgets[`tether-recent-${index + 1}`] = commandWidget(basename(entry.path), entry.path, "file-lines", ["recent", String(index + 1)], 1091 + index, mdreviewPath, runtimePath);

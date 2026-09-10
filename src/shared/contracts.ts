@@ -19,9 +19,7 @@ export type HostCapabilities = {
   revealFile: boolean;
 };
 
-export type AppPreferences = {
-  theme: "frame-dark" | "crepe-dark" | "nord-dark" | "frame" | "crepe" | "nord";
-};
+export type AppPreferences = import("./themes").ThemePreferences;
 
 export type SerializableAnnotationState = {
   header?: { baseBodyRevision?: string; documentId?: string };
@@ -51,6 +49,8 @@ export type SessionBootstrap = {
   capabilities: HostCapabilities;
   preferences: AppPreferences;
   actor: string;
+  draft?: { body: string; baseRevision: string; scroll: number; updatedAt: number } | null;
+  scroll?: number;
 };
 
 export type ProtocolSuccess<T = unknown> = {

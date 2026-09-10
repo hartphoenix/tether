@@ -1,4 +1,5 @@
-import { chmod, mkdir, open, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { acquireFileLock } from "../documents/path-lock";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { DiscoveryRecord } from "../shared/contracts";
@@ -38,7 +39,10 @@ function defaultConfigRoot(): string {
 }
 
 export function resolveConfig(input: Partial<Pick<TetherConfig, "profile" | "runtimeDir" | "configDir">> = {}): TetherConfig {
-  const profile = validateProfile(input.profile ?? process.env.TETHER_PROFILE ?? "default");
+  // Normal launches share the existing user's data. Keep explicit isolated
+  // profiles for development; `default` is an alias, not another user store.
+  const requestedProfile = validateProfile(input.profile ?? process.env.TETHER_PROFILE ?? "preview");
+  const profile = requestedProfile === "default" ? "preview" : requestedProfile;
   // Explicit overrides name the directory itself. Defaults are namespaced by
   // profile below the platform's per-user roots.
   const runtimeOverride = input.runtimeDir ?? process.env.TETHER_RUNTIME_DIR;
@@ -136,49 +140,17 @@ export async function ensureControlToken(config: TetherConfig): Promise<string> 
 
 type LockHandle = { release: () => Promise<void> };
 
-function pidAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-async function lockOwnerPid(path: string): Promise<number | null> {
-  try {
-    const raw = await readFile(path, "utf8");
-    const parsed = JSON.parse(raw) as { pid?: number };
-    return Number.isSafeInteger(parsed.pid) ? parsed.pid! : null;
-  } catch { return null; }
-}
-
-/** Acquire the cross-process startup lock, recovering only demonstrably stale locks. */
+/** Keep one stable inode. The kernel releases ownership on process exit, so
+ * empty files and legacy PID records need no stale-owner recovery. */
 export async function acquireStartupLock(config: TetherConfig): Promise<LockHandle> {
   await prepareConfig(config);
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      const handle = await open(config.lockPath, "wx", 0o600);
-      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
-      await handle.close();
-      return {
-        release: async () => {
-          const owner = await lockOwnerPid(config.lockPath);
-          if (owner === process.pid) await unlink(config.lockPath).catch(() => {});
-        },
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const owner = await lockOwnerPid(config.lockPath);
-      if (owner !== null && pidAlive(owner)) throw new Error("Another Tether daemon is starting.");
-      await unlink(config.lockPath).catch(() => {});
-    }
-  }
-  throw new Error("Unable to acquire the Tether startup lock.");
+  return acquireFileLock(config.lockPath);
 }
 
 export async function removeStaleRuntime(config: TetherConfig): Promise<void> {
-  await unlink(config.discoveryPath).catch(() => {});
-  const owner = await lockOwnerPid(config.lockPath);
-  if (owner === null || !pidAlive(owner)) await rm(config.lockPath, { force: true }).catch(() => {});
+  const lock = await acquireStartupLock(config);
+  try { await unlink(config.discoveryPath).catch(() => {}); }
+  finally { await lock.release(); }
 }
 
 export { PROTOCOL_VERSION, SERVICE_ID };

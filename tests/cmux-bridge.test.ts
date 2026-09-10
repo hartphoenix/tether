@@ -7,6 +7,7 @@ import {
   cmuxBridgeStatus,
   fingerprintCmuxSocket,
   openThroughCmuxBridge,
+  openLocalFileThroughCmuxBridge,
   readCmuxBridge,
   removeCmuxBridge,
   startCmuxBridge,
@@ -294,7 +295,19 @@ esac
     allowFocusedFallback: false,
     target: { host: "cmux", version: "0.64.22", build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface },
   });
+  // Replace the fake host's live tree with a reader; the bridge must forward
+  // source-pane placement and native local-file requests without losing context.
+  const readerUrl = `${daemon.origin}/s/source-reader/`;
+  const executableBody = await readFile(executable, "utf8");
+  await writeFile(executable, executableBody.replace('"type":"terminal","title":"shell"', `"type":"browser","url":"${readerUrl}"`));
+  const target = { host: "cmux", version: "0.64.22", build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface };
+  await openThroughCmuxBridge(config, { url: `${daemon.origin}/launch?ticket=linked`, kind: "document", focus: true,
+    targetPolicy: "source-pane", sourceUrl: readerUrl, target });
+  await openLocalFileThroughCmuxBridge(config, { path: "/tmp/transcript with spaces.txt", sourceUrl: readerUrl, target });
+  await expect(openLocalFileThroughCmuxBridge(config, { path: "/tmp/transcript.txt", sourceUrl: "https://example.com/s/reader/", target })).rejects.toMatchObject({ code: "invalid_target" });
   const commands = await readFile(log, "utf8");
+  expect(commands).toContain("tree --all");
+  expect(commands).toContain("open /tmp/transcript with spaces.txt");
   expect(commands).toContain("ping");
   expect(commands).toContain("rpc browser.open_split");
   expect(commands).toContain('"show_omnibar":false');

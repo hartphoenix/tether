@@ -1,9 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { prepareConfig, readDiscovery, resolveConfig, validateProfile } from "../src/server/config";
+import { acquireStartupLock, prepareConfig, readDiscovery, removeStaleRuntime, resolveConfig, validateProfile } from "../src/server/config";
 import { controlLaunch, discoverDaemon } from "../src/server/lifecycle";
-import { RecentsRegistry } from "../src/recents/registry";
 
 const directories: string[] = [];
 const daemonPids = new Set<number>();
@@ -33,9 +32,9 @@ async function command(args: string[], env: NodeJS.ProcessEnv, input?: string) {
     child.stdin.write(input);
     child.stdin.end();
   }
-  const exitCode = await child.exited;
-  const stdout = await new Response(child.stdout).text();
-  const stderr = await new Response(child.stderr).text();
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+  ]);
   return { exitCode, stdout, stderr };
 }
 
@@ -62,6 +61,47 @@ test("validates private profile configuration and non-secret discovery", async (
   expect(JSON.stringify(discovery)).not.toContain("token");
 });
 
+test("startup locks exclude peers on empty and legacy files without replacing the inode", async () => {
+  const directory = await mkdtemp("/tmp/tether-startup-lock-");
+  directories.push(directory);
+  const config = resolveConfig({ runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
+  await prepareConfig(config);
+  for (const contents of ["", JSON.stringify({ pid: 999_999_999 })]) {
+    await writeFile(config.lockPath, contents, { mode: 0o600 });
+    const inode = (await stat(config.lockPath)).ino;
+    const first = await acquireStartupLock(config);
+    try {
+      await expect(acquireStartupLock(config)).rejects.toMatchObject({ code: "writer_busy" });
+      await expect(removeStaleRuntime(config)).rejects.toMatchObject({ code: "writer_busy" });
+    } finally { await first.release(); }
+    const next = await acquireStartupLock(config);
+    await next.release();
+    await removeStaleRuntime(config);
+    expect((await stat(config.lockPath)).ino).toBe(inode);
+  }
+});
+
+test("startup lock ownership releases when a launcher crashes", async () => {
+  const directory = await mkdtemp("/tmp/tether-startup-crash-");
+  directories.push(directory);
+  const config = resolveConfig({ runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
+  const module = new URL("../src/server/config.ts", import.meta.url).pathname;
+  const script = `import { acquireStartupLock } from ${JSON.stringify(module)};
+    const lock = await acquireStartupLock(${JSON.stringify(config)});
+    console.log('locked'); setInterval(() => {}, 1000);`;
+  const child = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe" });
+  try {
+    const reader = child.stdout.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("locked");
+    reader.releaseLock();
+    await expect(acquireStartupLock(config)).rejects.toMatchObject({ code: "writer_busy" });
+    child.kill(9);
+    await child.exited;
+    const lock = await acquireStartupLock(config);
+    await lock.release();
+  } finally { child.kill(); await child.exited; }
+});
+
 test("simultaneous source-checkout launchers recover stale state, reuse one daemon, and stop it cleanly", async () => {
   const directory = await mkdtemp(join("/tmp", "tether-process-"));
   directories.push(directory);
@@ -78,12 +118,29 @@ test("simultaneous source-checkout launchers recover stale state, reuse one daem
     TETHER_SUPPRESS_BROWSER: "1",
   });
 
+  // Observe each cold launcher's own discovery result, before later CLI calls
+  // could hide a split startup by both reading the final discovery file.
+  const module = new URL("../src/server/lifecycle.ts", import.meta.url).pathname;
+  const script = `import { ensureDaemon } from ${JSON.stringify(module)};
+    const daemon = await ensureDaemon();
+    console.log(JSON.stringify({ instanceId: daemon.instanceId, pid: daemon.pid }));`;
+  const launches = await Promise.all([
+    command(["-e", script], env), command(["-e", script], env),
+  ]);
+  const instances = launches.map(result => {
+    expect(result.exitCode, result.stderr).toBe(0);
+    const instance = JSON.parse(result.stdout) as { instanceId: string; pid: number };
+    daemonPids.add(instance.pid);
+    return instance;
+  });
+  expect(instances[0]).toEqual(instances[1]);
+
   const [first, second] = await Promise.all([
     command(["mdreview", "open", path], env),
     command(["mdreview", "open", path], env),
   ]);
   for (const result of [first, second]) {
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, result.stderr || JSON.stringify(JSON.parse(result.stdout).error)).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout.trim().split("\n")).toHaveLength(1);
     expect(JSON.parse(result.stdout)).toMatchObject({ protocol: 1, ok: true, command: "open", data: { opened: false } });
@@ -120,7 +177,12 @@ test("simultaneous source-checkout launchers recover stale state, reuse one daem
     command(["mdreview", "recents", "add", recentTwo], env),
   ]);
   expect(recentAdds.every((result) => result.exitCode === 0)).toBe(true);
-  const recentPaths = await new RecentsRegistry(config.recentsPath).paths();
+  const recentList = await command(["mdreview", "folio", "list"], env);
+  expect(recentList.exitCode).toBe(0);
+  expect(recentList.stderr).toBe("");
+  const recentPayload = JSON.parse(recentList.stdout) as { ok: boolean; data?: { files?: Array<{ path: string }> } };
+  expect(recentPayload.ok).toBe(true);
+  const recentPaths = recentPayload.data?.files?.map((file) => file.path) ?? [];
   expect(recentPaths).toContain(await realpath(recentOne));
   expect(recentPaths).toContain(await realpath(recentTwo));
 
