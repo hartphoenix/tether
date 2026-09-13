@@ -84,7 +84,9 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
   let lock: Awaited<ReturnType<typeof acquireStartupLock>> | null = null;
   try {
     lock = await acquireStartupLock(config);
-  } catch {
+  } catch (error) {
+    // Permission and filesystem failures are not evidence of another launcher.
+    if ((error as NodeJS.ErrnoException)?.code !== "writer_busy") throw error;
     // A peer owns startup. Wait for it to publish and validate discovery; do
     // not launch a second process merely because its port is not ready yet.
     const converged = await waitForDiscovery(config, options.waitAttempts ?? WAIT_ATTEMPTS);
