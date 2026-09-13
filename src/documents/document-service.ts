@@ -341,13 +341,15 @@ export class DocumentService {
   }
 
   async locate(path: string, target: string): Promise<DocumentSession> {
-    let source = resolve(path); try { source = await realpath(source); } catch {}
+    let source = resolve(path); if (!this.store.documentForPath(source)) { try { source = await realpath(source); } catch {} }
     const destination = await realpath(resolve(target));
     this.store.locate(source, destination); return this.open(destination);
   }
-  async deleteConversation(path: string): Promise<boolean> {
-    let canonical = resolve(path); try { canonical = await realpath(canonical); } catch {}
+  async deleteConversation(path: string, onlyWithoutConversation = false): Promise<boolean> {
+    let canonical = resolve(path); if (!this.store.documentForPath(canonical)) { try { canonical = await realpath(canonical); } catch {} }
     return this.queue.run(canonical, async () => {
+      const document = this.store.documentForPath(canonical);
+      if (onlyWithoutConversation && document && this.store.db.query("SELECT 1 FROM annotation_events WHERE document_id=? AND type IN ('comment','reply') LIMIT 1").get(document.id)) throw Object.assign(new Error("This entry has conversation history. Archive it to keep the conversation."), { code: "conversation_present", status: 409 });
       this.revokePath(canonical);
       return this.store.deleteConversation(canonical);
     });

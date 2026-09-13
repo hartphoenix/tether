@@ -183,16 +183,17 @@ export class RecentsService {
     return this.mutateAndSync(() => this.registry.archive(paths), target);
   }
 
-  restore(paths: string[], target?: HostTarget): Promise<SyncRecentsResult> {
-    return this.mutateAndSync(async () => { await this.registry.restore(paths); return {}; }, target);
+  restore(paths: string[], target?: HostTarget): Promise<FolioMutationResult & SyncRecentsResult> {
+    return this.mutateAndSync(() => this.registry.restore(paths), target);
   }
 
-  setPinned(paths: string[], pinned: boolean): Promise<void> {
+  setPinned(paths: string[], pinned: boolean): Promise<FolioMutationResult> {
     return this.queued(async () => {
-      await this.registry.setPinned(paths, pinned);
+      const result = await this.registry.setPinned(paths, pinned);
       const snapshot = await this.snapshotNow();
       this.publish(snapshot);
       await this.publishFolio(snapshot.sequence);
+      return result;
     });
   }
 
@@ -210,8 +211,8 @@ export class RecentsService {
     });
   }
 
-  delete(paths: string[], target?: HostTarget): Promise<FolioMutationResult & SyncRecentsResult> {
-    return this.mutateAndSync(() => this.registry.delete(paths), target);
+  delete(paths: string[], target?: HostTarget, onlyWithoutConversation = false): Promise<FolioMutationResult & SyncRecentsResult> {
+    return this.mutateAndSync(() => this.registry.delete(paths, onlyWithoutConversation), target);
   }
 
   deleteConversation(paths: string[]): Promise<void> {

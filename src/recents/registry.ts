@@ -1,4 +1,5 @@
 import { chmod, lstat, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { fileIssue, requireFolioFile, type FileIssue } from "./file-availability";
 import { readSafe } from "../documents/safe-files";
 import { basename, dirname, extname, resolve } from "node:path";
 import type { Database } from "bun:sqlite";
@@ -24,6 +25,8 @@ export type FolioEntry = RecentEntry & {
   view: FolioView;
   pinned: boolean;
   missing: boolean;
+  fileIssue?: FileIssue | null;
+  hasConversation?: boolean;
   needsAttention: boolean;
   attentionCount: number;
   addedAt: number;
@@ -41,7 +44,7 @@ export type RecentsRegistryOptions = {
   /** Shared private-store connection. Omit only for legacy JSON compatibility. */
   database?: Database;
   /** Removes conversation and recovery rows before an expired Folio record is removed. */
-  deletePrivateData?: (path: string) => void | Promise<void>;
+  deletePrivateData?: (path: string, onlyWithoutConversation?: boolean) => void | Promise<void>;
 };
 
 export type ListRecentsOptions = {
@@ -59,7 +62,10 @@ export type ListFolioOptions = {
   repository?: string;
 };
 
-export type FolioMutationResult = { deleted: string[] };
+export type FolioMutationResult = {
+  deleted: string[];
+  outcomes?: Array<{ path: string; outcome: "changed" | "unchanged" }>;
+};
 
 type RegistryQueueEntry = { tail: Promise<void>; release: () => void };
 const registryQueues = new Map<string, RegistryQueueEntry>();
@@ -129,7 +135,7 @@ export class RecentsRegistry {
   readonly path: string;
   private readonly now: () => number;
   private readonly database?: Database;
-  private readonly deletePrivateData: (path: string) => void | Promise<void>;
+  private readonly deletePrivateData: (path: string, onlyWithoutConversation?: boolean) => void | Promise<void>;
   private importedLegacy = false;
   private importPromise?: Promise<void>;
   private readonly titles = new Map<string, { stamp: string; title: string | null }>();
@@ -379,6 +385,8 @@ export class RecentsRegistry {
     for (const row of rows) {
       const view: FolioView = row.active ? "active" : "archive";
       if (options.view && options.view !== "all" && options.view !== view) continue;
+      const issue = await fileIssue(row.path);
+      const hasConversation = Boolean(this.database.query("SELECT 1 FROM annotation_events WHERE document_id=? AND type IN ('comment','reply') LIMIT 1").get(row.id));
       let missing = true;
       let modifiedAt = row.body_mtime_ms;
       let fileCreatedAt = row.created_at_ms;
@@ -386,7 +394,7 @@ export class RecentsRegistry {
       try {
         const info = await stat(row.path);
         missing = !info.isFile();
-        if (!missing) {
+        if (!missing && !issue) {
           modifiedAt = info.mtimeMs;
           fileCreatedAt = info.birthtimeMs > 0 ? info.birthtimeMs : null;
           stamp = `${info.mtimeMs}:${info.ctimeMs}:${info.size}:${info.ino}`;
@@ -394,7 +402,7 @@ export class RecentsRegistry {
       } catch {}
       if (options.missing !== undefined && options.missing !== missing) continue;
       let name = basename(row.path).replace(/\.(md|markdown)$/i, "");
-      if (!missing) {
+      if (!missing && !issue) {
         try {
           let cached = this.titles.get(row.path);
           if (cached?.stamp !== stamp) {
@@ -415,7 +423,7 @@ export class RecentsRegistry {
       if (options.needsAttention !== undefined && options.needsAttention !== needsAttention) continue;
       result.push({
         id: row.id, path: row.path, createdAt: row.opened_at, name, directory, repository,
-        view, pinned: Boolean(row.pinned), missing, needsAttention, attentionCount, addedAt: row.added_at,
+        view, pinned: Boolean(row.pinned), missing, fileIssue: issue, hasConversation, needsAttention, attentionCount, addedAt: row.added_at,
         openedAt: row.opened_at, modifiedAt, activityAt: row.conversation_at,
         fileCreatedAt, archivedAt: row.archived_at, expiresAt: row.expires_at,
       });
@@ -436,6 +444,29 @@ export class RecentsRegistry {
     } catch { return 0; }
   }
 
+  /** Resolve record identity before consulting the filesystem. */
+  private async records(paths: string[]): Promise<DocumentRow[]> {
+    await this.importLegacy();
+    const rows: DocumentRow[] = [];
+    for (const path of paths) {
+      const query = this.database!.query("SELECT * FROM documents WHERE path=?");
+      const row = (query.get(resolve(path)) ?? query.get(await normalizedPath(path))) as DocumentRow | null;
+      if (!row) throw Object.assign(new Error(`The Folio entry no longer exists: ${path}`), { code: "folio_entry_missing", status: 404 });
+      if (!rows.some(item => item.id === row.id)) rows.push(row);
+    }
+    return rows;
+  }
+
+  private changeRecords(records: DocumentRow[], unchanged: (row: DocumentRow) => boolean, update: (row: DocumentRow) => { changes: number }): FolioMutationResult {
+    return this.database!.transaction(() => ({ deleted: [], outcomes: records.map(record => {
+      const row = this.database!.query("SELECT * FROM documents WHERE id=?").get(record.id) as DocumentRow | null;
+      if (!row) throw Object.assign(new Error(`The Folio entry no longer exists: ${record.path}`), { code: "folio_entry_missing", status: 404 });
+      if (unchanged(row)) return { path: row.path, outcome: "unchanged" as const };
+      if (update(row).changes !== 1) throw new Error("The Folio entry was not updated.");
+      return { path: row.path, outcome: "changed" as const };
+    }) }))();
+  }
+
   async archive(paths: string[]): Promise<FolioMutationResult> {
     return this.mutate(async () => {
       if (!this.database) { for (const path of paths) await this.removeStored(path); return { deleted: [] }; }
@@ -444,31 +475,30 @@ export class RecentsRegistry {
       if (retention.mode === "immediate") return this.deleteRecords(paths);
       const archivedAt = this.now();
       const expiresAt = retention.mode === "forever" ? null : archivedAt + retention.days * 86_400_000;
-      const normalized = await Promise.all(paths.map(normalizedPath));
-      const update = this.database.query("UPDATE documents SET active=0,archived_at=?,expires_at=? WHERE path=? AND active=1");
-      this.database.transaction(() => { for (const path of normalized) update.run(archivedAt, expiresAt, path); })();
-      return { deleted: [] };
+      const records = await this.records(paths);
+      const update = this.database.query("UPDATE documents SET active=0,archived_at=?,expires_at=? WHERE id=? AND active=1");
+      return this.changeRecords(records, row => !row.active, row => update.run(archivedAt, expiresAt, row.id));
     });
   }
 
-  async restore(paths: string[]): Promise<void> {
-    await this.mutate(async () => {
-      if (!this.database) return;
+  async restore(paths: string[]): Promise<FolioMutationResult> {
+    return this.mutate(async () => {
+      if (!this.database) return { deleted: [] };
       await this.importLegacy();
       const openedAt = this.now();
-      const normalized = await Promise.all(paths.map(normalizedPath));
-      const update = this.database.query("UPDATE documents SET active=1,opened_at=?,archived_at=NULL,expires_at=NULL WHERE path=?");
-      this.database.transaction(() => { for (const path of normalized) update.run(openedAt, path); })();
+      const records = await this.records(paths);
+      const update = this.database.query("UPDATE documents SET active=1,opened_at=?,archived_at=NULL,expires_at=NULL WHERE id=?");
+      return this.changeRecords(records, row => Boolean(row.active), row => update.run(openedAt, row.id));
     });
   }
 
-  async setPinned(paths: string[], pinned: boolean): Promise<void> {
-    await this.mutate(async () => {
-      if (!this.database) return;
+  async setPinned(paths: string[], pinned: boolean): Promise<FolioMutationResult> {
+    return this.mutate(async () => {
+      if (!this.database) return { deleted: [] };
       await this.importLegacy();
-      const normalized = await Promise.all(paths.map(normalizedPath));
-      const update = this.database.query("UPDATE documents SET pinned=? WHERE path=?");
-      this.database.transaction(() => { for (const path of normalized) update.run(pinned ? 1 : 0, path); })();
+      const records = await this.records(paths);
+      const update = this.database.query("UPDATE documents SET pinned=? WHERE id=?");
+      return this.changeRecords(records, row => Boolean(row.pinned) === pinned, row => update.run(pinned ? 1 : 0, row.id));
     });
   }
 
@@ -488,9 +518,10 @@ export class RecentsRegistry {
       try { canonical = await realpath(requested); if (!(await stat(canonical)).isFile()) throw new Error("not-file"); }
       catch { throw new Error("The replacement Markdown file does not exist."); }
       const existing = this.database.query("SELECT id FROM documents WHERE path=?").get(canonical) as { id: string } | null;
-      const source = this.database.query("SELECT id FROM documents WHERE path=?").get(await normalizedPath(oldPath)) as { id: string } | null;
+      const [source] = await this.records([oldPath]);
       if (!source) throw new Error("The Folio entry does not exist.");
       if (existing && existing.id !== source.id) throw new Error("The replacement path already has a Folio conversation.");
+      await requireFolioFile(canonical);
       const info = await stat(canonical);
       this.database.query("UPDATE documents SET path=?,title=?,body_mtime_ms=?,created_at_ms=? WHERE id=?").run(canonical, basename(canonical), info.mtimeMs, info.birthtimeMs > 0 ? info.birthtimeMs : null, source.id);
       const entry = (await this.listFolio({ view: "all" })).find((item) => item.id === source.id);
@@ -499,36 +530,35 @@ export class RecentsRegistry {
     });
   }
 
-  async delete(paths: string[]): Promise<FolioMutationResult> {
-    return this.mutate(() => this.deleteRecords(paths));
+  async delete(paths: string[], onlyWithoutConversation = false): Promise<FolioMutationResult> {
+    return this.mutate(() => this.deleteRecords(paths, onlyWithoutConversation));
   }
 
   async deleteConversation(paths: string[]): Promise<void> {
     await this.mutate(async () => {
       if (!this.database) return;
       await this.importLegacy();
-      for (const requestedPath of paths) {
-        const path = await normalizedPath(requestedPath);
-        const found = this.database.query("SELECT path FROM documents WHERE path=?").get(path) as { path: string } | null;
-        if (!found) continue;
+      for (const found of await this.records(paths)) {
         await this.deletePrivateData(found.path);
         this.database.query("UPDATE documents SET conversation_at=NULL WHERE path=?").run(found.path);
       }
     });
   }
 
-  private async deleteRecords(paths: string[]): Promise<FolioMutationResult> {
+  private async deleteRecords(paths: string[], onlyWithoutConversation = false): Promise<FolioMutationResult> {
     if (!this.database) {
       for (const path of paths) await this.removeStored(path);
       return { deleted: paths.map((path) => resolve(path)) };
     }
     const deleted: string[] = [];
-    for (const requestedPath of paths) {
-      const path = await normalizedPath(requestedPath);
-      const found = this.database.query("SELECT path FROM documents WHERE path=?").get(path) as { path: string } | null;
-      if (!found) continue;
-      await this.deletePrivateData(found.path);
-      this.database.query("DELETE FROM documents WHERE path=?").run(found.path);
+    for (const found of await this.records(paths)) {
+      const checkHistory = () => {
+        if (onlyWithoutConversation && this.database!.query("SELECT 1 FROM annotation_events WHERE document_id=? AND type IN ('comment','reply') LIMIT 1").get(found.id)) throw Object.assign(new Error("This entry has conversation history. Archive it to keep the conversation."), { code: "conversation_present", status: 409 });
+      };
+      checkHistory();
+      await this.deletePrivateData(found.path, onlyWithoutConversation);
+      checkHistory();
+      if (this.database.query("DELETE FROM documents WHERE id=?").run(found.id).changes !== 1) throw Object.assign(new Error("The Folio entry no longer exists."), { code: "folio_entry_missing", status: 404 });
       deleted.push(found.path);
     }
     return { deleted };

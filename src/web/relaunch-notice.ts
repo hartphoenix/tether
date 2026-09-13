@@ -25,7 +25,7 @@ export function renderRelaunchNotice(element: HTMLElement, message: string): boo
   feedback.setAttribute("role", "status");
   feedback.style.cssText = "margin:8px 0";
   const actions = doc.createElement("div");
-  actions.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:16px";
+  actions.style.cssText = "display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;margin-top:16px";
   const copy = doc.createElement("button");
   copy.textContent = "Copy";
   copy.onclick = async () => {
@@ -51,7 +51,7 @@ export function renderRelaunchNotice(element: HTMLElement, message: string): boo
   dialog.addEventListener("cancel", event => { event.preventDefault(); dismiss(); });
   for (const button of [copy, close]) {
     button.type = "button";
-    button.style.cssText = "font:inherit;color:inherit;background:var(--panel,ButtonFace);border:1px solid var(--line,GrayText);border-radius:6px;padding:8px 12px;cursor:pointer";
+    button.style.cssText = "flex:0 0 auto;white-space:nowrap;font:inherit;color:inherit;background:var(--panel,ButtonFace);border:1px solid var(--line,GrayText);border-radius:6px;padding:8px 12px;cursor:pointer";
   }
   actions.append(copy, close);
   dialog.append(title, instructions, code, feedback, actions);

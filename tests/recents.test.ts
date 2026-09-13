@@ -540,3 +540,49 @@ test("failed legacy import remains recoverable after repairing corrupt, invalid,
   expect(await registry.paths()).toEqual([await realpath(path)]);
   store.close();
 });
+
+test("record actions survive redirected paths, missing files, and repeated archive", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-record-identity-"));
+  directories.push(directory);
+  const path = join(await realpath(directory), "original.md"), target = join(directory, "target.md");
+  await writeFile(path, "Old\n"); await writeFile(target, "New\n");
+  const store = new PrivateStore(join(directory, "tether.sqlite"));
+  try {
+    const registry = new RecentsRegistry({ path: join(directory, "recents.json"), database: store.db });
+    await registry.add(path);
+    const original = (await registry.listFolio())[0]!;
+    await unlink(path); await symlink(target, path);
+    expect((await registry.listFolio())[0]).toMatchObject({ id: original.id, missing: false, hasConversation: false, fileIssue: { code: "folio_path_changed" } });
+    await registry.add(target);
+    await registry.setPinned([path], true);
+    await registry.archive([path]); await registry.archive([path]);
+    expect((await registry.listFolio({ view: "active" }))[0]?.path).toBe(await realpath(target));
+    await registry.delete([target]);
+    expect((await registry.listFolio({ view: "archive" }))[0]).toMatchObject({ id: original.id, pinned: true });
+    await registry.restore([path]);
+    const located = await registry.locate(path, target);
+    expect(located).toMatchObject({ id: original.id, fileIssue: null, path: await realpath(target) });
+    await unlink(target);
+    expect((await registry.listFolio())[0]?.fileIssue?.code).toBe("folio_file_missing");
+    await registry.archive([located.path]);
+    await registry.delete([located.path]);
+    await expect(registry.archive([located.path])).rejects.toMatchObject({ code: "folio_entry_missing" });
+    await expect(registry.setPinned([located.path], true)).rejects.toMatchObject({ code: "folio_entry_missing" });
+  } finally { store.close(); }
+});
+
+test("conversation history includes resolved and deleted comments", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-history-")); directories.push(directory);
+  const path = join(directory, "review.md"); await writeFile(path, "Review\n");
+  const store = new PrivateStore(join(directory, "tether.sqlite"));
+  try {
+    const registry = new RecentsRegistry({ path: join(directory, "recents.json"), database: store.db });
+    await registry.add(path); const entry = (await registry.listFolio())[0]!;
+    const insert = store.db.query("INSERT INTO annotation_events(document_id,seq,id,type,actor,created_at,thread_id,target_id,payload_json) VALUES (?,?,?,?,?,?,?,?,?)");
+    insert.run(entry.id, 1, "comment", "comment", "human", "2026-01-01", null, null, "{}");
+    insert.run(entry.id, 2, "resolved", "resolve", "human", "2026-01-01", "comment", null, "{}");
+    expect((await registry.listFolio())[0]).toMatchObject({ hasConversation: true, attentionCount: 0 });
+    insert.run(entry.id, 3, "deleted", "delete", "human", "2026-01-01", "comment", "comment", "{}");
+    expect((await registry.listFolio())[0]).toMatchObject({ hasConversation: true, attentionCount: 0 });
+  } finally { store.close(); }
+});

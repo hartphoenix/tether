@@ -5,6 +5,8 @@ import { folioHtml } from "../src/web/folio-page";
 function runPage(snapshot: Record<string, unknown>, savedView?: string) {
   const html = folioHtml({ pickerAvailable: true });
   const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://127.0.0.1/r/test/" });
+  Object.defineProperty(dom.window.HTMLDialogElement.prototype, "showModal", { configurable: true, value: function(this: HTMLDialogElement) { this.open = true; } });
+  Object.defineProperty(dom.window.HTMLDialogElement.prototype, "close", { value: function(this: HTMLDialogElement) { this.open = false; this.dispatchEvent(new dom.window.Event("close")); } });
   if (savedView !== undefined) dom.window.localStorage.setItem("tether.folio.view.v1", savedView);
   let currentSnapshot = { ...snapshot };
   const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
@@ -63,13 +65,14 @@ test("renders Folio Active and Archive views with organization controls", async 
 
   dom.window.document.querySelector<HTMLButtonElement>('[data-view="archive"]')!.click();
   expect([...dom.window.document.querySelectorAll(".name")].map((node) => node.textContent)).toEqual(["two.md"]);
-  expect(dom.window.document.querySelector(".file.missing .file-path")?.textContent).toBe("missing -- click to locate");
+  expect(dom.window.document.querySelector(".file.missing .file-path")?.textContent).toBe("File missing");
   expect(dom.window.document.querySelector("#missing")).toBeNull();
   expect(dom.window.document.querySelector('[data-action="start-fresh"]')).toBeNull();
   expect(dom.window.document.querySelector("#attention")?.textContent).toBe("Open threads");
   dom.window.document.querySelector<HTMLButtonElement>(".file.missing")!.click();
   await Bun.sleep(0);
-  expect(requests).toContainEqual({ endpoint: "action", body: { path: files[1]!.path, action: "locate" } });
+  expect(dom.window.document.querySelector("#recovery-dialog.open")).not.toBeNull();
+  expect(requests).toEqual([]);
 
   dom.window.document.querySelector<HTMLSelectElement>("#group")!.value = "directory";
   dom.window.document.querySelector("#group")!.dispatchEvent(new dom.window.Event("change"));
@@ -254,7 +257,7 @@ test("restores filter bank from daemon snapshots and retains text when saving fa
   doc.querySelector<HTMLButtonElement>("#filter-save")!.click();
   await Bun.sleep(0);
   expect(input.value).toBe("blue");
-  expect(doc.querySelector("#status")?.textContent).toContain("Disk full");
+  expect(doc.querySelector("#error-message")?.textContent).toContain("Disk full");
   expect(doc.querySelectorAll(".filter-pill")).toHaveLength(1);
   dom.window.close();
 });
@@ -274,5 +277,67 @@ test("Folio open failures show the shared modal outside the scrolling document l
   expect(dialog.querySelector("code")?.textContent).toBe("'/path/mdreview' folio");
   expect(dialog.querySelector("button")?.textContent).toBe("Copy");
   expect(dom.window.document.querySelector("#status")?.textContent).toBe("");
+  dom.window.close();
+});
+
+test("file recovery offers disposable removal or conversation relocation", async () => {
+  for (const hasConversation of [false, true]) {
+    const file = { path: "/old.md", name: "Transcript", view: "active", hasConversation, fileIssue: { code: "folio_path_changed", message: "The saved path points elsewhere." } };
+    const { dom, requests } = runPage({ sequence: 1, files: [file] });
+    await Bun.sleep(0);
+    const doc = dom.window.document;
+    doc.querySelector<HTMLButtonElement>(".file")!.click();
+    const buttons = [...doc.querySelectorAll<HTMLButtonElement>("#recovery-actions button")];
+    expect(buttons.map(button => button.textContent)).toEqual(hasConversation ? ["Locate file", "Archive", "Close"] : ["Archive", "Remove from Folio", "Close"]);
+    expect(doc.querySelector("#recovery-message")?.textContent).toBe(file.fileIssue.message);
+    buttons.find(button => button.textContent === "Archive")!.click();
+    await Bun.sleep(0);
+    expect(requests).toContainEqual({ endpoint: "action", body: { path: file.path, action: "archive", confirmed: false } });
+    dom.window.close();
+  }
+});
+
+test("file errors discovered at action time offer recovery, and Locate cancellation is honest", async () => {
+  const file = { path: "/old.md", name: "Transcript", view: "active", hasConversation: true };
+  const { dom } = runPage({ sequence: 1, files: [file] }); await Bun.sleep(0);
+  const doc = dom.window.document;
+  Object.defineProperty(dom.window, "fetch", { configurable: true, value: async () => Response.json({ error: { code: "folio_file_missing", message: "The file is missing." } }, { status: 409 }) });
+  doc.querySelector<HTMLButtonElement>(".file")!.click(); await Bun.sleep(0);
+  expect(doc.querySelector("#recovery-message")?.textContent).toBe("The file is missing.");
+  Object.defineProperty(dom.window, "fetch", { value: async (input: string) => Response.json(input.endsWith("snapshot") ? { sequence: 2, files: [file] } : { cancelled: true }) });
+  doc.querySelector<HTMLButtonElement>("#recovery-actions button")!.click(); await Bun.sleep(0);
+  expect(doc.querySelector("#status")?.textContent).toBe("Locate cancelled.");
+  dom.window.close();
+});
+
+test("disposable entries need no preservation confirmation with immediate retention", async () => {
+  const file = { path: "/missing.md", name: "Missing", view: "active", missing: true, hasConversation: false };
+  const { dom, requests } = runPage({ sequence: 1, files: [file], retention: { mode: "immediate" } }); await Bun.sleep(0);
+  dom.window.document.querySelector<HTMLButtonElement>(".file")!.click();
+  dom.window.document.querySelector<HTMLButtonElement>("#recovery-actions button")!.click(); await Bun.sleep(0);
+  expect(dom.window.document.querySelector("#confirm-dialog.open")).toBeNull();
+  expect(requests).toContainEqual({ endpoint: "action", body: { path: file.path, action: "archive", confirmed: true } });
+  dom.window.close();
+});
+
+test("ordinary Folio errors stay in a viewport popup until Close or Escape", async () => {
+  const { dom } = runPage({ sequence: 1, files: [] }); await Bun.sleep(0);
+  const doc = dom.window.document, source = doc.querySelector<HTMLButtonElement>("#add")!;
+  Object.defineProperty(dom.window, "fetch", { value: async () => Response.json({ error: { message: "Access denied <details>" } }, { status: 403 }) });
+  for (const dismiss of ["close", "escape"]) {
+    source.focus(); source.click(); await Bun.sleep(0);
+    const popup = doc.querySelector<HTMLDialogElement>("#error-popup")!;
+    expect(popup.open).toBe(true);
+    expect(popup.parentElement).toBe(doc.body);
+    expect(dom.window.getComputedStyle(popup).position).toBe("fixed");
+    expect(doc.querySelector("#error-message")?.textContent).toBe("Access denied <details>");
+    expect(popup.querySelector("details")).toBeNull();
+    expect(doc.querySelector("#status")?.textContent).toBe("");
+    expect(doc.activeElement).toBe(doc.querySelector("#error-dismiss"));
+    if (dismiss === "close") doc.querySelector<HTMLButtonElement>("#error-dismiss")!.click();
+    else popup.dispatchEvent(new dom.window.Event("cancel", { cancelable: true }));
+    expect(popup.open).toBe(false);
+    expect(doc.activeElement).toBe(source);
+  }
   dom.window.close();
 });
