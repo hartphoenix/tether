@@ -1,5 +1,9 @@
 # Tether agent guidance
 
+## Protect human attention
+
+Complete the requested outcome with the least total demand on my attention. Infer a concrete finish line from my request and stop after verifying it. Handle routine decisions and verification yourself. Surface additional work only when evidence shows it blocks this outcome or presents a material risk. Omit optional improvements, speculative concerns, and follow-up suggestions; don’t create todos for them. Report the result, verification, and any decision only I can make, in at most five sentences.
+
 ## Cold start
 
 Read [README.md](README.md) and the current status and implementation checkpoint in [docs/product-plan.md](docs/product-plan.md). Run `git status --short --branch` before acting; preserve existing work and verify plan status against the code and tests rather than assuming either is current.
