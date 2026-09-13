@@ -53,7 +53,8 @@
 #editor[data-wm-designed] .ProseMirror h4 { font-size: calc(var(--wm-headingSize) * 0.56); }
 #editor[data-wm-designed] .ProseMirror h5 { font-size: calc(var(--wm-headingSize) * 0.51); }
 #editor[data-wm-designed] .ProseMirror h6 { font-size: calc(var(--wm-headingSize) * 0.48); }
-#editor[data-wm-designed] .ProseMirror > :first-child { margin-top: 0; }
+/* Cursor updates replace the widget class; neither form is document content. */
+#editor[data-wm-designed] .ProseMirror > :nth-child(1 of :not(.ProseMirror-widget, .prosemirror-virtual-cursor)) { margin-top: 0; }
 #editor[data-wm-designed] .ProseMirror strong { font-weight: bolder; }
 #editor[data-wm-designed] .ProseMirror a { text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
 #editor[data-wm-designed] .ProseMirror blockquote { padding-inline-start: 1.2em; margin-block: 1em; }
@@ -149,7 +150,6 @@
   #editor[data-wm-designed] .ProseMirror { padding: 28px 20px 100px; }
 }
 
-#editor[data-wm-designed] .ProseMirror > .ProseMirror-widget:first-child + :is(h1, h2, h3, h4, h5, h6, p) { margin-top: 0; }
 :root[data-wm-designed] .wm-annotation-rail {
   --wm-annotation-border: var(--wm-color-outline);
   --wm-annotation-surface: var(--wm-color-surface);
