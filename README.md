@@ -84,6 +84,16 @@ The installer preserves unrelated Wave widgets and creates a one-time `widgets.j
 
 `TETHER_RUNTIME_DIR` and `TETHER_CONFIG_DIR` can set exact private directories for an isolated run. CLI stdout is one protocol-v1 JSON object. Exit code `0` is success, `1` is an operational failure, and `2` is invalid usage.
 
+Registration returns the added paths, without listing the entire registry or reporting routine terminal-integration bookkeeping:
+
+```json
+{"protocol":1,"ok":true,"command":"recents.add","data":{"added":[{"path":"/absolute/path/to/document.md"}]}}
+```
+
+If registration succeeds but updating applicable terminal shortcuts fails, `data.warnings` explains that separate failure and includes its diagnostic details. Unsupported or unnecessary shortcut updates stay quiet. Use `folio list` for the registry and `folio sync` for explicit synchronization diagnostics. Partial imports retain their per-item successes, failures, and overall outcome even when the command envelope is successful.
+
+Errors retain a stable `error.code` and a readable message; `error.details.diagnostic` preserves available underlying filesystem/transport codes, syscall, path, and child exit status, with HTTP status in `error.details.httpStatus`. Known credential forms are redacted and bounded diagnostics mark truncation. When a multi-step command fails, `details.completed` records known completed steps; `details.outcome` distinguishes `not_applied`, `partially_applied`, `applied`, and `outcome_unknown` where established. A published export with failed directory synchronization reports `applied` and `durability: "unconfirmed"`; do not assume an error means no file was written. An unreachable recorded daemon reports a reachability error, rather than claiming it is stopped or starting another process.
+
 ## cmux integration
 
 Tether currently gates cmux support to the exact verified build `0.64.22 (102) [ddd4a01bc]`. From a cmux terminal, opening a document creates or reuses one Tether review pane beside the invoking surface; later documents become tabs in that pane:

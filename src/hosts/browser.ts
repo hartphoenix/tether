@@ -1,3 +1,4 @@
+import { diagnosticText, diagnosticOutput } from "../shared/diagnostics";
 import type { HostCapabilities } from "../shared/contracts";
 import type { HostAdapter, OpenViewRequest, OpenViewResult } from "./host-adapter";
 
@@ -17,10 +18,9 @@ export function platformOpenCommand(url: string): string[] {
 
 export async function runOpenCommand(command: string[], env = browserEnvironment()): Promise<void> {
   const child = Bun.spawn(command, { env, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
-  const status = await child.exited;
+  const [status, output] = await Promise.all([child.exited, diagnosticOutput(child.stderr)]);
   if (status !== 0) {
-    const output = child.stderr ? (await new Response(child.stderr).text()).trim() : "";
-    throw new Error(output || `${command[0]} exited with status ${status}`);
+    throw Object.assign(new Error(diagnosticText(output || `${command[0]} exited with status ${status}`)), { code: "host_command_failed", exitCode: status });
   }
 }
 

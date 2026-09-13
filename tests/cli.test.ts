@@ -226,7 +226,7 @@ test("rejects unknown or duplicate launch flags and non-exact cmux status comman
   }
 });
 
-test("adds a recent file through the application transaction and reports host synchronization", async () => {
+test("adds a recent file quietly while still synchronizing the host", async () => {
   const directory = await mkdtemp(join("/tmp", "tether-cli-recents-add-"));
   directories.push(directory);
   const path = join(directory, "review.md");
@@ -249,12 +249,12 @@ test("adds a recent file through the application transaction and reports host sy
   const result = await runCli(["recents", "add", path], { config, host });
   expect(result).toMatchObject({
     exitCode: 0,
-    response: { ok: true, command: "recents.add", data: { added: [{ path: await realpath(path) }], hostSynchronized: true } },
+    response: { ok: true, command: "recents.add", data: { added: [{ path: await realpath(path) }] } },
   });
   expect(synchronized.at(-1)).toEqual([await realpath(path)]);
 });
 
-test("returns a failed recents add when host synchronization fails", async () => {
+test("returns registration success with an actionable warning when host synchronization fails", async () => {
   const directory = await mkdtemp(join("/tmp", "tether-cli-recents-add-"));
   directories.push(directory);
   const path = join(directory, "review.md");
@@ -280,8 +280,7 @@ test("returns a failed recents add when host synchronization fails", async () =>
       command: "recents.add",
       data: {
         added: [{ path: await realpath(path) }],
-        hostSynchronized: false,
-        hostIssue: { code: "host_sync_failed", message: "Wave update failed" },
+        warnings: [{ code: "host_sync_failed", details: { code: "host_sync_failed", message: "Wave update failed" } }],
       },
     },
   });

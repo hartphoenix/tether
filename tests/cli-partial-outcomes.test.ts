@@ -6,8 +6,7 @@ import { resolveConfig } from "../src/server/config";
 import { createDaemon, type TetherDaemon } from "../src/server/server";
 import type { HostAdapter } from "../src/hosts/host-adapter";
 
-// Test actual committed state separately from the currently missing reporting
-// contract, so a fixture failure cannot masquerade as an expected failure.
+// Establish actual committed state before checking the reporting contract.
 describe.each(["open", "setup"] as const)("%s failure after completed work", (command) => {
   let root: string;
   let daemon: TetherDaemon;
@@ -33,7 +32,7 @@ describe.each(["open", "setup"] as const)("%s failure after completed work", (co
       openExternal: async () => {},
     };
     result = await runCli(command === "open" ? ["open", path] : ["setup", "--host", "browser"], { config, host });
-    // These assertions must pass normally, before testing the known gap.
+    // Establish that the intended failure boundary was reached.
     expect(result).toMatchObject({ exitCode: 1, response: { ok: false, error: { code: "placement_failed" } } });
     const listing = await runCli(["folio", "list"], { config });
     expect(listing.response.ok).toBe(true);
@@ -57,9 +56,7 @@ describe.each(["open", "setup"] as const)("%s failure after completed work", (co
     expect(JSON.stringify(result.response)).not.toContain(new URL(ticketUrl).searchParams.get("ticket")!);
   });
 
-  // Remove .failing when partial-outcome reporting is implemented. Bun fails
-  // this test if the desired contract begins passing, preventing silent drift.
-  test.failing("reports the original command and committed effect despite placement failure", () => {
+  test("reports the original command and committed effect despite placement failure", () => {
     expect(result.response).toMatchObject({ command, ok: false, error: { details: { outcome: "partially_applied" } } });
     expect(JSON.stringify(result.response)).toContain(path);
   });

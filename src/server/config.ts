@@ -1,3 +1,4 @@
+import { operationError } from "../shared/diagnostics";
 import { chmod, mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { acquireFileLock } from "../documents/path-lock";
 import { homedir } from "node:os";
@@ -77,12 +78,13 @@ export async function readDiscovery(config: TetherConfig): Promise<DiscoveryReco
     const pid = value.pid;
     if (value.protocol !== PROTOCOL_VERSION || typeof value.instanceId !== "string" || !value.instanceId ||
       typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 || typeof value.origin !== "string" ||
-      typeof value.startedAt !== "string") return null;
+      typeof value.startedAt !== "string") throw new Error("Invalid daemon discovery record.");
     const origin = new URL(value.origin);
-    if (origin.protocol !== "http:" || origin.hostname !== "127.0.0.1" || !origin.port) return null;
+    if (origin.protocol !== "http:" || origin.hostname !== "127.0.0.1" || !origin.port) throw new Error("Invalid daemon discovery address.");
     return { protocol: PROTOCOL_VERSION, instanceId: value.instanceId, pid, origin: value.origin, startedAt: value.startedAt };
-  } catch {
-    return null;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw operationError(cause, { stage: "discovery", path: config.discoveryPath, outcome: "not_applied" });
   }
 }
 
@@ -106,11 +108,13 @@ export async function removeDiscovery(config: TetherConfig, instanceId?: string)
 export async function readControlToken(config: TetherConfig): Promise<string | null> {
   try {
     const info = await stat(config.controlPath);
-    if ((info.mode & 0o077) !== 0) return null;
+    if ((info.mode & 0o077) !== 0) throw Object.assign(new Error("Unsafe daemon control credential permissions."), { code: "control_permissions_unsafe" });
     const token = (await readFile(config.controlPath, "utf8")).trim();
-    return /^[A-Za-z0-9_-]{40,}$/.test(token) ? token : null;
-  } catch {
-    return null;
+    if (!/^[A-Za-z0-9_-]{40,}$/.test(token)) throw Object.assign(new Error("Invalid daemon control credential."), { code: "control_invalid" });
+    return token;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw operationError(cause, { stage: "control_credential", outcome: "not_applied" });
   }
 }
 

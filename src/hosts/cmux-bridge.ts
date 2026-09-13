@@ -1,3 +1,4 @@
+import { errorDetails } from "../shared/diagnostics";
 import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -143,8 +144,8 @@ async function bridgeRequest(config: TetherConfig, pathname: string, body?: unkn
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(2_000),
     });
-  } catch {
-    throw new CmuxBridgeError("bridge_relaunch_required", RELAUNCH);
+  } catch (cause) {
+    throw new CmuxBridgeError("bridge_relaunch_required", RELAUNCH, 503, errorDetails(cause));
   }
 }
 

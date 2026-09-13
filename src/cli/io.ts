@@ -1,3 +1,4 @@
+import { operationError } from "../shared/diagnostics";
 import { open, link, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -22,20 +23,25 @@ export async function readBoundedInput(path: string, limit: number): Promise<str
 /** Publish complete private packages; no-clobber remains atomic at publication. */
 export async function writeExport(destination: string, text: string, overwrite = false): Promise<void> {
   const temporary = join(dirname(destination), `.${basename(destination)}.${crypto.randomUUID()}.tmp`);
-  const file = await open(temporary, "wx", 0o600);
+  let file: Awaited<ReturnType<typeof open>> | undefined;
+  let published = false;
+  let publishing = false;
   try {
+    file = await open(temporary, "wx", 0o600);
     await file.writeFile(text, "utf8");
     await file.sync();
     await file.close();
+    publishing = true;
     if (overwrite) await rename(temporary, destination);
     else await link(temporary, destination);
+    published = true;
     const directory = await open(dirname(destination), "r");
     try { await directory.sync(); } finally { await directory.close(); }
   } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "EEXIST") throw Object.assign(new Error("Export destination exists. Choose another path or use --overwrite."), { code: "destination_exists" });
-    throw cause;
+    if (publishing && (cause as NodeJS.ErrnoException).code === "EEXIST") throw Object.assign(operationError(cause, { outcome: "not_applied", output: destination }), { code: "destination_exists", message: "Export destination exists. Choose another path or use --overwrite." });
+    throw operationError(cause, { outcome: published ? "applied" : "not_applied", ...(published ? { output: destination, durability: "unconfirmed", completed: [{ step: "export_published", path: destination }] } : {}) });
   } finally {
-    await file.close().catch(() => {});
+    await file?.close().catch(() => {});
     await unlink(temporary).catch(() => {});
   }
 }

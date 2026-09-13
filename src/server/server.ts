@@ -1,3 +1,4 @@
+import { diagnosticText, diagnosticValue, errorDetails } from "../shared/diagnostics";
 import { preferencesFrom, updatePreferences } from "../shared/themes";
 import { runtimeRoot } from "../runtime-paths";
 import { seedWelcome } from "../onboarding";
@@ -94,29 +95,30 @@ function codedError(cause: unknown, fallbackCode: string, fallbackStatus: number
   const value = cause && typeof cause === "object" ? cause as { code?: unknown; status?: unknown; details?: unknown } : undefined;
   const code = typeof value?.code === "string" ? value.code : fallbackCode;
   const status = typeof value?.status === "number" ? value.status : fallbackStatus;
-  return error(code, cause instanceof Error ? cause.message : String(cause), status, value?.details);
+  return error(code, cause instanceof Error ? cause.message : String(cause), status, errorDetails(cause));
 }
 
 function error(code: string, message: string, status: number, details?: unknown): Response {
-  return json({ error: { code, message, ...(details === undefined ? {} : { details }) } }, { status });
+  return json({ error: { code, message: diagnosticText(message), ...(details === undefined ? {} : { details: diagnosticValue(details) }) } }, { status });
 }
 
 function controlError(cause: unknown): Response {
   const message = cause instanceof Error ? cause.message : String(cause);
+  const evidence = errorDetails(cause);
   if (cause instanceof PrivateStoreConflictError) return error("conflict", message, 409, { outcome: "not_applied" });
   if (cause instanceof PrivateStoreDocumentNotFoundError) return error("document_not_found", message, 404);
   if (cause instanceof AnnotationLedgerError) return error(cause.code === "missing-thread" ? "thread_not_found" : "invalid_annotation", message, 400, { outcome: "not_applied" });
   const systemCode = (cause as NodeJS.ErrnoException | null)?.code;
-  if (systemCode === "ENOENT") return error("path_not_found", "The requested file or directory does not exist.", 404);
-  if (systemCode === "EACCES" || systemCode === "EPERM") return error("file_access_denied", "The operating system denied file access.", 403);
-  if (systemCode === "EEXIST") return error("destination_exists", "The destination already exists.", 409);
-  if (systemCode?.startsWith("SQLITE_") || systemCode === "ENOSPC" || systemCode === "EIO") return error("storage_unavailable", "Storage is unavailable. Inspect current state before retrying.", 503, { outcome: "outcome_unknown" });
+  if (systemCode === "ENOENT") return error("path_not_found", "The requested file or directory does not exist.", 404, evidence);
+  if (systemCode === "EACCES" || systemCode === "EPERM") return error("file_access_denied", "The operating system denied file access.", 403, evidence);
+  if (systemCode === "EEXIST") return error("destination_exists", "The destination already exists.", 409, evidence);
+  if (systemCode?.startsWith("SQLITE_") || systemCode === "ENOSPC" || systemCode === "EIO") return error("storage_unavailable", "Storage is unavailable. Inspect current state before retrying.", 503, { outcome: "outcome_unknown", ...evidence });
   if (cause && typeof cause === "object" && typeof (cause as { code?: unknown }).code === "string") return codedError(cause, "invalid_request", 400);
   if (cause instanceof DocumentConflictError) return error("conflict", message, 409, cause.details);
   if (cause instanceof DocumentReadOnlyError) return error("ledger_invalid", message, 422, cause.ledgerError);
   if (cause instanceof DocumentNotFoundError) return error("document_not_found", message, 404);
   if (cause instanceof DocumentAccessError) return error("document_unauthorized", message, 403);
-  return error("internal_error", "The operation failed unexpectedly. Check storage availability before retrying.", 500, { outcome: "outcome_unknown" });
+  return error("internal_error", "The operation failed unexpectedly. Check storage availability before retrying.", 500, { outcome: "outcome_unknown", ...evidence });
 }
 
 export function sameOrigin(request: Request, origin: string): boolean {
@@ -962,10 +964,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         }
       }
       await ensureControlToken(config);
+      await recents.expire();
       if (stopped) return;
       await writeDiscovery(config, { protocol: PROTOCOL_VERSION, instanceId, pid: process.pid, origin: daemon.origin, startedAt: new Date(startedAt).toISOString() });
       if (stopped) { await removeDiscovery(config, instanceId); return; }
-      await recents.expire();
       let lastExpiry = now();
       timer = setInterval(() => {
         const current = now();
@@ -1011,9 +1013,16 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<TetherDa
     configured = { ...configured, web: (request: Request) => responder(request) };
   }
   const daemon = createDaemon(configured);
-  await daemon.ready;
-  writeFileSync(listenerPath, JSON.stringify({ port: daemon.port }), { mode: 0o600 });
-  return daemon;
+  try {
+    // Complete synchronous listener bookkeeping before async initialization
+    // can publish discovery and let a launcher observe a successful startup.
+    writeFileSync(listenerPath, JSON.stringify({ port: daemon.port }), { mode: 0o600 });
+    await daemon.ready;
+    return daemon;
+  } catch (cause) {
+    await daemon.stop().catch(() => {});
+    throw cause;
+  }
 }
 
 export async function createLaunchTicket(daemon: TetherDaemon, path: string): Promise<Ticket> {

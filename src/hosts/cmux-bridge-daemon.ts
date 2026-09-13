@@ -1,3 +1,4 @@
+import { diagnosticText, errorDetails } from "../shared/diagnostics";
 import { PROTOCOL_VERSION, SERVICE_ID } from "../shared/contracts";
 import { createCmuxHost, SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT, SUPPORTED_CMUX_VERSION } from "./cmux";
 import { fingerprintCmuxSocket, removeCmuxBridge, writeCmuxBridge } from "./cmux-bridge";
@@ -186,7 +187,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
       });
     } catch (cause) {
       const error = issue(cause);
-      return json({ error: { code: error.code, message: error.message }, cmuxReady: false }, error.status);
+      return json({ error: { code: error.code, message: diagnosticText(error.message), details: errorDetails(cause) }, cmuxReady: false }, error.status);
     }
   }
   if (request.method === "POST" && url.pathname === "/prepare-restart") {
@@ -216,7 +217,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
       return json({ opened: true });
     } catch (cause) {
       const error = issue(cause);
-      return json({ error: { code: error.code, message: error.message } }, error.status);
+      return json({ error: { code: error.code, message: diagnosticText(error.message), details: errorDetails(cause) } }, error.status);
     }
   }
   if (request.method === "POST" && url.pathname === "/open") {

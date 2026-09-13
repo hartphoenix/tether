@@ -1,3 +1,4 @@
+import { operationError } from "../shared/diagnostics";
 import { chmod, lstat, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { fileIssue, requireFolioFile, type FileIssue } from "./file-availability";
 import { readSafe } from "../documents/safe-files";
@@ -282,13 +283,13 @@ export class RecentsRegistry {
       const createdAt = this.now();
       for (const requestedPath of requestedPaths) {
         const requested = resolve(requestedPath);
-        if (!isMarkdown(requested)) throw new Error("Only .md and .markdown files can be added to Recents.");
+        if (!isMarkdown(requested)) throw Object.assign(new Error("Only .md and .markdown files can be added to Recents."), { code: "invalid_document_type", details: { outcome: "not_applied", path: requested } });
         let canonical: string;
         try {
-          if (!(await stat(requested)).isFile()) throw new Error("not-file");
+          if (!(await stat(requested)).isFile()) throw Object.assign(new Error("The requested Markdown path is not a file."), { code: "not_a_file", path: requested });
           canonical = await realpath(requested);
-        } catch {
-          throw new Error("The recent Markdown file does not exist.");
+        } catch (cause) {
+          throw operationError(cause, { outcome: "not_applied", path: requested });
         }
         if (addedPaths.has(canonical)) continue;
         addedPaths.add(canonical);
@@ -515,7 +516,7 @@ export class RecentsRegistry {
       const requested = resolve(targetPath);
       if (!isMarkdown(requested)) throw new Error("Only .md and .markdown files can be located.");
       let canonical: string;
-      try { canonical = await realpath(requested); if (!(await stat(canonical)).isFile()) throw new Error("not-file"); }
+      try { canonical = await realpath(requested); if (!(await stat(canonical)).isFile()) throw Object.assign(new Error("The requested Markdown path is not a file."), { code: "not_a_file", path: requested }); }
       catch { throw new Error("The replacement Markdown file does not exist."); }
       const existing = this.database.query("SELECT id FROM documents WHERE path=?").get(canonical) as { id: string } | null;
       const [source] = await this.records([oldPath]);

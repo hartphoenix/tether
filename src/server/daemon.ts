@@ -1,3 +1,5 @@
+import { writeFile } from "node:fs/promises";
+import { diagnostic } from "../shared/diagnostics";
 import { startDaemon } from "./server";
 import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -25,28 +27,37 @@ export async function completeManagedUpdate(config: TetherConfig, root: string, 
 }
 
 if (import.meta.main) {
-  let restart = true;
-  while (restart) {
-    restart = false;
-    let update: string | undefined;
-    const daemon = await startDaemon({ restart: async () => {
-      restart = true;
-      await daemon.stop();
-    }, update: async tag => {
-      update = tag;
-      // Let the HTTP acceptance reach Folio before closing the listener.
-      setTimeout(() => { void daemon.stop(); }, 500);
-    } });
-    await daemon.closed;
-    if (update) {
-      // Start the selected runtime, preserving the listener and scoped views.
-      await completeManagedUpdate(daemon.config, runtimeRoot(), update);
-      break;
+  let startupReport = process.env.TETHER_STARTUP_REPORT;
+  delete process.env.TETHER_STARTUP_REPORT;
+  try {
+    let restart = true;
+    while (restart) {
+      restart = false;
+      let update: string | undefined;
+      const daemon = await startDaemon({ restart: async () => {
+        restart = true;
+        await daemon.stop();
+      }, update: async tag => {
+        update = tag;
+        // Let the HTTP acceptance reach Folio before closing the listener.
+        setTimeout(() => { void daemon.stop(); }, 500);
+      } });
+      startupReport = undefined;
+      await daemon.closed;
+      if (update) {
+        // Start the selected runtime, preserving the listener and scoped views.
+        await completeManagedUpdate(daemon.config, runtimeRoot(), update);
+        break;
+      }
+      if (restart) {
+        // A new process reloads backend modules as well as the browser bundle.
+        await ensureDaemon({ config: daemon.config });
+        break;
+      }
     }
-    if (restart) {
-      // A new process reloads backend modules as well as the browser bundle.
-      await ensureDaemon({ config: daemon.config });
-      break;
-    }
+  } catch (cause) {
+    if (startupReport) await writeFile(startupReport, JSON.stringify(diagnostic(cause)), { flag: "wx", mode: 0o600 }).catch(() => {});
+    process.stderr.write(`${JSON.stringify(diagnostic(cause))}\n`);
+    process.exit(1);
   }
 }
