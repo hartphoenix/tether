@@ -158,12 +158,24 @@ body {
   border-radius: 4px;
 }
 
+/* Link hover controls sit above paragraph controls, below selection actions. */
+.milkdown .milkdown-link-preview,
+.milkdown .milkdown-link-edit {
+  z-index: 13;
+}
+
 .milkdown .milkdown-toolbar {
   /* Selection actions take precedence over hover controls and other overlays. */
   z-index: 1001;
   width: max-content;
   max-width: calc(100vw / var(--wm-editor-zoom, 1) - 16px);
   flex-wrap: wrap;
+}
+
+/* Crepe hides selection actions during link hover; keep active selections visible.
+   Opening the link-edit form still takes over from the selection toolbar. */
+.milkdown:has(.milkdown-link-preview[data-show="true"]):not(:has(.milkdown-link-edit[data-show="true"])) .milkdown-toolbar[data-show="true"] {
+  display: flex;
 }
 
 .milkdown .milkdown-top-bar .top-bar-inner {
