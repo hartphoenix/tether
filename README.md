@@ -17,7 +17,15 @@ bun install
 bun ./tether setup
 ```
 
-Setup opens **Getting started with Tether** for a practice exchange. To choose the browser explicitly, run `bun ./tether setup --host browser`. Optional Wave widgets use `bun ./tether setup --wave`. To install the review skill, pass `--agent-directory` with your agent's skills directory; existing differing instructions are never overwritten. Run `bun ./tether setup --help` for options.
+Setup opens **Getting started with Tether** for a practice exchange. To choose the browser explicitly, run `bun ./tether setup --host browser`. Optional Wave widgets use `bun ./tether setup --wave`. Run `bun ./tether setup --help` for options.
+
+For agent use, install the Tether skill into your agent's skills directory:
+
+```sh
+bun ./tether setup --agent-directory /absolute/path/to/skills --no-open
+```
+
+The skill covers editing, comment review, Recents registration, and plain-language reporting of CLI results. Plain setup does not install it. After a Tether update, rerun this step to check the installed copy; if setup reports differing instructions, review the bundled `integrations/agents/tether-review/SKILL.md` against the installed file and approve any replacement while preserving local guidance. Setup never overwrites a differing skill.
 
 Come back with `bun ./tether`, or double-click **Open Tether.command**. Open a particular file with:
 

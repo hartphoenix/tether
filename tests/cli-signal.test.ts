@@ -41,7 +41,9 @@ test("import projection preserves per-item and registration failures without reg
 test("missing and invalid registration inputs report not-applied with the original cause", async () => {
   const { root, config } = await fixture();
   const path = join(root, "absent.md");
-  expect((await runCli(["recents", "add", path], { config })).response).toMatchObject({ error: { code: "path_not_found", details: { outcome: "not_applied", diagnostic: { code: "ENOENT", path } } } });
+  const missing = await runCli(["recents", "add", path], { config });
+  expect(JSON.stringify(missing.response)).not.toContain("Inspect current state before retrying");
+  expect(missing.response).toMatchObject({ error: { code: "path_not_found", details: { outcome: "not_applied", diagnostic: { code: "ENOENT", path } } } });
   expect((await runCli(["folio", "add", join(root, "wrong.txt")], { config })).response).toMatchObject({ error: { code: "invalid_document_type", details: { outcome: "not_applied" } } });
   expect((await runCli(["folio", "list"], { config })).response).toMatchObject({ data: { files: [] } });
 });
@@ -140,4 +142,15 @@ test("launch cleanup failure is secondary to the original placement error", asyn
     } });
     expect(result.response).toMatchObject({ command: "open", error: { code: "placement_failed", message: "placement failed", details: { outcome: "partially_applied", cleanup: { stage: "discovery" } } } });
   } finally { await writeFile(config.discoveryPath, discovery); }
+});
+
+
+test("group help lists subcommands without launching a service", async () => {
+  for (const group of ["document", "daemon", "wave", "cmux", "folio", "recents"]) {
+    const result = await runCli([group, "--help"]);
+    expect(result).toMatchObject({ exitCode: 0, response: { command: "help", data: { command: group, commands: expect.any(Array), reporting: expect.stringContaining("plain language") } } });
+  }
+  expect((await runCli(["document", "--help"])).response).toMatchObject({ data: { commands: expect.arrayContaining([expect.objectContaining({ name: "document.save" })]) } });
+  expect((await runCli(["unknown", "--help"])).exitCode).toBe(2);
+  expect((await runCli(["document", "--help", "extra"])).exitCode).toBe(2);
 });

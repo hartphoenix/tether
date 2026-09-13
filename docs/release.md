@@ -33,6 +33,8 @@ Default locations are `~/.local/share/tether` for versioned releases and `~/.loc
 
 `tether setup --host browser` selects browser use. `--host auto` follows the invoking terminal. `--wave` explicitly installs Tether widgets. `--agent-directory /absolute/path/to/skills` installs the shared review skill into that chosen directory without replacing different existing instructions. These options are noninteractive and can be used by an agent. A plain setup seeds the welcome document and opens it; it does not automatically modify agent or host configuration.
 
+For agent use, run `tether setup --agent-directory /absolute/path/to/skills --no-open` to install the editing, review, and Recents skill, including its guidance for plain-language reporting. Repeat this step after updating Tether to check the installed copy. If setup reports a differing skill, review the bundled `integrations/agents/tether-review/SKILL.md` against the installed file before approving replacement, preserving any local guidance; release updates do not refresh that copy automatically.
+
 ## Update and uninstall
 
 Managed installations check for a newer stable GitHub release when Folio opens and at most once every six hours while it remains open. Checks send no document data and stay quiet offline. Only releases with the matching Mac architecture's archive and checksum are offered. Source checkouts do not check for managed updates.

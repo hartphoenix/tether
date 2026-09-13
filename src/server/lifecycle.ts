@@ -234,7 +234,8 @@ export async function controlRequest<T>(config: TetherConfig, pathname: string, 
   const serialized = JSON.stringify(body);
   if (Buffer.byteLength(serialized) > 40 * 1024 * 1024) throw new ControlRequestError("input_too_large", "Control request exceeds 40 MiB.", 413, { outcome: "not_applied" });
   const outcome = readRoutes.has(pathname) ? "not_applied" : "outcome_unknown";
-  const recovery = { outcome, ...(typeof body.operationId === "string" ? { operationId: body.operationId, recovery: "Look up the operation receipt or retry with the same operation ID and input." } : outcome === "outcome_unknown" ? { recovery: "Inspect current state before retrying." } : {}) };
+  const recoveryFor = (outcome: unknown) => ({ outcome, ...(typeof body.operationId === "string" ? { operationId: body.operationId, recovery: "Look up the operation receipt or retry with the same operation ID and input." } : outcome === "outcome_unknown" ? { recovery: "Inspect current state before retrying." } : {}) });
+  const recovery = recoveryFor(outcome);
   let response: Response;
   try {
     const timeout = AbortSignal.timeout(options.timeoutMs ?? 10_000);
@@ -266,11 +267,12 @@ export async function controlRequest<T>(config: TetherConfig, pathname: string, 
   } catch (cause) { throw new ControlRequestError("invalid_response", "The daemon returned an invalid or incomplete response.", response.status, errorDetails(cause, recovery)); }
   if (!response.ok) {
     const issue = payload && typeof payload === "object" ? (payload as { error?: { code?: unknown; message?: unknown; details?: unknown } }).error : undefined;
+    const details = { ...(response.status === 400 && issue?.code === "invalid_request" ? { outcome: "not_applied" } : {}), ...(issue?.details && typeof issue.details === "object" ? issue.details : issue?.details === undefined ? {} : { detail: issue.details }) };
     throw new ControlRequestError(
       typeof issue?.code === "string" ? issue.code : "control_failed",
       typeof issue?.message === "string" ? issue.message : "The daemon control request failed.",
       response.status,
-      { ...recovery, ...(response.status === 400 && issue?.code === "invalid_request" ? { outcome: "not_applied" } : {}), ...(issue?.details && typeof issue.details === "object" ? issue.details : issue?.details === undefined ? {} : { detail: issue.details }) },
+      { ...recoveryFor("outcome" in details ? details.outcome : outcome), ...details },
     );
   }
   if (!validateControlResponse(pathname, payload)) throw new ControlRequestError("invalid_response", "The daemon returned a malformed success response.", response.status, recovery);

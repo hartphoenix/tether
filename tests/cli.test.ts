@@ -321,6 +321,7 @@ test("provides command-specific help without daemon work", async () => {
       command: "help",
       data: {
         command: "acknowledge",
+        reporting: expect.stringContaining("plain language"),
         usage: "mdreview acknowledge <file> --actor <actor> --cursor <cursor> --operation-id <id> [--consumer <consumer>]",
       },
     },
@@ -422,7 +423,8 @@ test("runs the private review workflow with cursors and retry-safe mutations", a
   expect((await runCli(["pending", path, "--actor", "assistant"], { config })).response).toMatchObject({ ok: true, data: { events: [] } });
 
   const conflict = await runCli(["document", "save", path, "--expected-body-revision", initial.bodyRevision, "--body-file", "-"], { config, readBody: async () => "Stale overwrite\n" });
-  expect(conflict).toMatchObject({ exitCode: 1, response: { ok: false, command: "document.save", error: { code: "conflict" } } });
+  expect(conflict).toMatchObject({ exitCode: 1, response: { ok: false, command: "document.save", error: { code: "conflict", details: { outcome: "not_applied" } } } });
+  expect(JSON.stringify(conflict.response)).not.toContain("Inspect current state before retrying");
   const missing = await runCli(["document", "read", join(directory, "missing.md")], { config });
   expect(missing).toMatchObject({ exitCode: 1, response: { error: { code: "document_not_found" } } });
   const invalidThread = await runCli(["thread", path, "missing-thread"], { config });

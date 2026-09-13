@@ -84,8 +84,8 @@ async function atomicReplace(path: string, source: string, expectedSource: strin
     let canonical: string;
     let current: string;
     try { [canonical, current] = await Promise.all([realpath(path), readText(path)]); }
-    catch { throw new DocumentConflictError("The document changed before this save was applied."); }
-    if (canonical !== path || current !== expectedSource) throw new DocumentConflictError("The document changed before this save was applied.");
+    catch { throw new DocumentConflictError("The document changed before this save was applied.", { outcome: "not_applied" }); }
+    if (canonical !== path || current !== expectedSource) throw new DocumentConflictError("The document changed before this save was applied.", { outcome: "not_applied" });
     await rename(temporary, path);
     await syncDirectory(dirname(path));
     await chmod(path, info.mode & 0o777).catch(() => {});
@@ -197,7 +197,7 @@ export class DocumentService {
     return this.queue.run(path, () => withPathLock(path, async () => {
       this.assertAuthorized(inputSession(input), path);
       const current = await this.readText(path);
-      if (bodyRevision(current) !== input.expectedBodyRevision) throw new DocumentConflictError("The document body changed before this save was applied.", { currentBodyRevision: bodyRevision(current) });
+      if (bodyRevision(current) !== input.expectedBodyRevision) throw new DocumentConflictError("The document body changed before this save was applied.", { outcome: "not_applied", currentBodyRevision: bodyRevision(current) });
       await atomicReplace(path, nextBody, current, this.readText, this.beforeBodyReplace);
       return this.snapshot(path, nextBody);
     }));
