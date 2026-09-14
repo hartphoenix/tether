@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { JSDOM } from "jsdom";
 import { PrivateStore } from "../src/storage/private-store";
@@ -738,4 +738,55 @@ test("filter bank requires scoped same-origin access and survives daemon replace
   session = await exchangeRecents(daemon, file.config);
   const restored = await (await fetch(recentsUrl(daemon, session.location, "api/snapshot"), { headers: { cookie: session.cookie } })).json();
   expect(restored.filters).toEqual([{ text: "Notes", active: false }, { text: "red", active: true }]);
+});
+
+test("Folio reports redirected parent paths and archives the original records", async () => {
+  const file = await fixture();
+  const parent = join(file.directory, "original"), moved = join(file.directory, "moved");
+  await mkdir(parent);
+  const path = join(await realpath(parent), "transcript.md"); await writeFile(path, "Transcript\n");
+  const daemon = createDaemon({ config: file.config, opener: async () => {} }); daemons.push(daemon); await daemon.ready;
+  await controlRecentsAdd(file.config, path);
+  const session = await exchangeRecents(daemon, file.config);
+  const post = (endpoint: string, body: object) => fetch(recentsUrl(daemon, session.location, `api/${endpoint}`), { method: "POST", headers: { cookie: session.cookie, origin: daemon.origin, "content-type": "application/json" }, body: JSON.stringify(body) });
+  await rename(parent, moved); await symlink(moved, parent);
+  for (const action of ["open", "reveal", "default", "trash", "export"]) {
+    const response = await post(action === "open" ? "open" : "action", { path, action, confirmed: true });
+    expect(response.status).toBe(409);
+    expect((await response.json() as any).error.code).toBe("folio_path_changed");
+  }
+  const archive = await post("action", { path, action: "archive" });
+  expect(archive.status).toBe(200);
+  expect((await archive.json() as any).outcomes).toEqual([{ path, outcome: "changed" }]);
+  expect((await (await post("action", { path, action: "archive" })).json() as any).outcomes).toEqual([{ path, outcome: "unchanged" }]);
+  const removal = await post("action", { path, action: "remove-entry" });
+  expect(removal.status).toBe(200);
+  expect((await removal.json() as any).deleted).toEqual([path]);
+  expect(await readFile(join(moved, "transcript.md"), "utf8")).toBe("Transcript\n");
+  expect((await post("action", { path, action: "archive" })).status).not.toBe(200);
+});
+
+test("Folio protects conversation history, locates stale records and reports mixed batch outcomes", async () => {
+  const file = await fixture();
+  const daemon = createDaemon({ config: file.config, opener: async () => {} }); daemons.push(daemon); await daemon.ready;
+  await controlRecentsAdd(file.config, file.path); await controlRecentsAdd(file.config, file.other);
+  const store = daemon.service.store;
+  const entry = store.documentForPath(file.path)!;
+  store.db.query("INSERT INTO annotation_events(document_id,seq,id,type,actor,created_at,payload_json) VALUES (?,?,?,?,?,?,?)").run(entry.id, 1, "comment", "comment", "human", "2026-01-01", "{}");
+  const session = await exchangeRecents(daemon, file.config);
+  const post = (endpoint: string, body: object) => fetch(recentsUrl(daemon, session.location, `api/${endpoint}`), { method: "POST", headers: { cookie: session.cookie, origin: daemon.origin, "content-type": "application/json" }, body: JSON.stringify(body) });
+  const target = join(file.directory, "relocated.md"); await rename(file.path, target); await symlink(target, file.path);
+  expect((await post("action", { path: file.path, action: "remove-entry" })).status).toBe(409);
+  expect((await post("action", { path: file.path, action: "locate", target: file.other })).status).not.toBe(200);
+  const located = await post("action", { path: file.path, action: "locate", target });
+  expect(located.status).toBe(200);
+  expect((await located.json() as any).id).toBe(entry.id);
+  expect(store.documentForPath(await realpath(target))?.id).toBe(entry.id);
+  expect(store.db.query("SELECT count(*) AS count FROM annotation_events WHERE document_id=?").get(entry.id)).toEqual({ count: 1 });
+  await unlink(file.other);
+  const batch = await post("batch", { paths: [file.other, join(file.directory, "unknown.md")], action: "archive" });
+  const result = await batch.json() as any;
+  expect(result.completed).toEqual([file.other]); expect(result.failed).toHaveLength(1);
+  const missing = await post("open", { path: file.other });
+  expect((await missing.json() as any).error.code).toBe("folio_file_missing");
 });

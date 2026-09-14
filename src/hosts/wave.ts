@@ -1,3 +1,4 @@
+import { diagnosticText } from "../shared/diagnostics";
 import type { HostCapabilities } from "../shared/contracts";
 import type { HostAdapter, HostTarget, OpenViewRequest, OpenViewResult } from "./host-adapter";
 import type { RecentEntry } from "../recents/registry";
@@ -113,7 +114,7 @@ export class WaveHostAdapter implements HostAdapter {
     const blockId = target?.blockId ?? this.env.WAVETERM_BLOCKID ?? jwtBlockId(this.env.WAVETERM_JWT);
     if (!blockId) return target;
     const result = await this.run([this.wshPath, "blocks", "list", "--json"], commandEnvironment(this.env, target));
-    if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout || "Wave could not resolve the launcher block.");
+    if (result.exitCode !== 0) throw Object.assign(new Error(diagnosticText(result.stderr || result.stdout || "Wave could not resolve the launcher block.")), { code: "host_command_failed", exitCode: result.exitCode });
     let blocks: WaveBlock[];
     try { blocks = JSON.parse(result.stdout) as WaveBlock[]; }
     catch { throw new Error("Wave returned an invalid block list while resolving the launcher tab."); }
@@ -135,7 +136,7 @@ export class WaveHostAdapter implements HostAdapter {
       ? [this.wshPath, "createblock", "web", `url=${url}`, "web:hidenav=true"]
       : [this.wshPath, "web", "open", url];
     const result = await this.run(command, commandEnvironment(this.env, destination));
-    if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout || `wsh exited with status ${result.exitCode}`);
+    if (result.exitCode !== 0) throw Object.assign(new Error(diagnosticText(result.stderr || result.stdout || `wsh exited with status ${result.exitCode}`)), { code: "host_command_failed", exitCode: result.exitCode });
     const launcherBlock = target?.blockId ?? this.env.WAVETERM_BLOCKID ?? jwtBlockId(this.env.WAVETERM_JWT);
     if (this.env.TETHER_WAVE_LAUNCHER === "1" && launcherBlock) {
       const closed = await this.run([this.wshPath, "deleteblock", "-b", launcherBlock], commandEnvironment(this.env, destination));
@@ -148,12 +149,12 @@ export class WaveHostAdapter implements HostAdapter {
 
   async openExternal(pathOrUrl: string): Promise<void> {
     const result = await this.run(["open", pathOrUrl], commandEnvironment(this.env));
-    if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout || `open exited with status ${result.exitCode}`);
+    if (result.exitCode !== 0) throw Object.assign(new Error(diagnosticText(result.stderr || result.stdout || `open exited with status ${result.exitCode}`)), { code: "host_command_failed", exitCode: result.exitCode });
   }
 
   async revealFile(path: string): Promise<void> {
     const result = await this.run(["open", "-R", path], commandEnvironment(this.env));
-    if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout || `open exited with status ${result.exitCode}`);
+    if (result.exitCode !== 0) throw Object.assign(new Error(diagnosticText(result.stderr || result.stdout || `open exited with status ${result.exitCode}`)), { code: "host_command_failed", exitCode: result.exitCode });
   }
 
   async recentsChanged(entries: RecentEntry[]): Promise<boolean> {

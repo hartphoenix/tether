@@ -1,3 +1,4 @@
+import { diagnosticText, diagnosticValue, errorDetails } from "../shared/diagnostics";
 import { preferencesFrom, updatePreferences } from "../shared/themes";
 import { runtimeRoot } from "../runtime-paths";
 import { seedWelcome } from "../onboarding";
@@ -23,8 +24,10 @@ import {
 import type { HostAdapter, HostTarget } from "../hosts/host-adapter";
 import { createBrowserHost } from "../hosts/browser";
 import { HostGateway } from "../hosts/host-gateway";
+import { prepareCmuxBridgeRestart } from "../hosts/cmux-bridge";
 import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type AppendEventInput, type DocumentSession } from "../documents/document-service";
 import { chooseImportDirectory } from "./directory-picker";
+import { requireFolioFile } from "../recents/file-availability";
 import { RecentsRegistry, type ListFolioOptions, type FolioRetention } from "../recents/registry";
 import { RecentsService, type FolioSnapshot } from "../recents/service";
 import { moveToTrash, pickMarkdownFiles } from "../recents/actions";
@@ -92,29 +95,30 @@ function codedError(cause: unknown, fallbackCode: string, fallbackStatus: number
   const value = cause && typeof cause === "object" ? cause as { code?: unknown; status?: unknown; details?: unknown } : undefined;
   const code = typeof value?.code === "string" ? value.code : fallbackCode;
   const status = typeof value?.status === "number" ? value.status : fallbackStatus;
-  return error(code, cause instanceof Error ? cause.message : String(cause), status, value?.details);
+  return error(code, cause instanceof Error ? cause.message : String(cause), status, errorDetails(cause));
 }
 
 function error(code: string, message: string, status: number, details?: unknown): Response {
-  return json({ error: { code, message, ...(details === undefined ? {} : { details }) } }, { status });
+  return json({ error: { code, message: diagnosticText(message), ...(details === undefined ? {} : { details: diagnosticValue(details) }) } }, { status });
 }
 
 function controlError(cause: unknown): Response {
   const message = cause instanceof Error ? cause.message : String(cause);
+  const evidence = errorDetails(cause);
   if (cause instanceof PrivateStoreConflictError) return error("conflict", message, 409, { outcome: "not_applied" });
   if (cause instanceof PrivateStoreDocumentNotFoundError) return error("document_not_found", message, 404);
   if (cause instanceof AnnotationLedgerError) return error(cause.code === "missing-thread" ? "thread_not_found" : "invalid_annotation", message, 400, { outcome: "not_applied" });
   const systemCode = (cause as NodeJS.ErrnoException | null)?.code;
-  if (systemCode === "ENOENT") return error("path_not_found", "The requested file or directory does not exist.", 404);
-  if (systemCode === "EACCES" || systemCode === "EPERM") return error("file_access_denied", "The operating system denied file access.", 403);
-  if (systemCode === "EEXIST") return error("destination_exists", "The destination already exists.", 409);
-  if (systemCode?.startsWith("SQLITE_") || systemCode === "ENOSPC" || systemCode === "EIO") return error("storage_unavailable", "Storage is unavailable. Inspect current state before retrying.", 503, { outcome: "outcome_unknown" });
+  if (systemCode === "ENOENT") return error("path_not_found", "The requested file or directory does not exist.", 404, evidence);
+  if (systemCode === "EACCES" || systemCode === "EPERM") return error("file_access_denied", "The operating system denied file access.", 403, evidence);
+  if (systemCode === "EEXIST") return error("destination_exists", "The destination already exists.", 409, evidence);
+  if (systemCode?.startsWith("SQLITE_") || systemCode === "ENOSPC" || systemCode === "EIO") return error("storage_unavailable", "Storage is unavailable. Inspect current state before retrying.", 503, { outcome: "outcome_unknown", ...evidence });
   if (cause && typeof cause === "object" && typeof (cause as { code?: unknown }).code === "string") return codedError(cause, "invalid_request", 400);
   if (cause instanceof DocumentConflictError) return error("conflict", message, 409, cause.details);
   if (cause instanceof DocumentReadOnlyError) return error("ledger_invalid", message, 422, cause.ledgerError);
   if (cause instanceof DocumentNotFoundError) return error("document_not_found", message, 404);
   if (cause instanceof DocumentAccessError) return error("document_unauthorized", message, 403);
-  return error("internal_error", "The operation failed unexpectedly. Check storage availability before retrying.", 500, { outcome: "outcome_unknown" });
+  return error("internal_error", "The operation failed unexpectedly. Check storage availability before retrying.", 500, { outcome: "outcome_unknown", ...evidence });
 }
 
 export function sameOrigin(request: Request, origin: string): boolean {
@@ -216,9 +220,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const trashFile = options.trashFile ?? moveToTrash;
   const pickFiles = options.pickFiles ?? (process.platform === "darwin" ? pickMarkdownFiles : undefined);
   const hostAdapter = options.hostAdapter ?? new HostGateway(config, createBrowserHost({ open: options.opener }));
-  const recents = new RecentsService(options.recents ?? new RecentsRegistry({ path: config.recentsPath, now, database: privateStore.db, deletePrivateData: async (path: string) => {
+  const recents = new RecentsService(options.recents ?? new RecentsRegistry({ path: config.recentsPath, now, database: privateStore.db, deletePrivateData: async (path: string, onlyWithoutConversation?: boolean) => {
     agentReads.forget(path);
-    await service.deleteConversation(path);
+    await service.deleteConversation(path, onlyWithoutConversation);
     for (const [id, session] of sessions) if (session.grant.realPath === path) { service.close(session.grant); sessions.delete(id); }
     for (const [ticket, pending] of tickets) if (pending.grant.realPath === path) { service.close(pending.grant); tickets.delete(ticket); }
     views.forgetPath(path);
@@ -324,6 +328,18 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     } });
   }
 
+  async function folioFile(requested: string): Promise<string> {
+    const files = (await recents.folioSnapshot({ view: "all" })).files;
+    let entry = files.find(file => file.path === resolve(requested));
+    if (!entry) {
+      let canonical: string | undefined;
+      try { canonical = await realpath(resolve(requested)); } catch {}
+      entry = files.find(file => file.path === canonical);
+    }
+    if (!entry) throw Object.assign(new Error("The path is not registered in Folio."), { code: "folio_entry_missing", status: 403 });
+    return requireFolioFile(entry.path);
+  }
+
   async function folioOperation(action: string, body: Record<string, unknown>, target?: HostTarget, browser = false): Promise<unknown> {
     const paths = Array.isArray(body.paths) && body.paths.every(p => typeof p === "string") ? body.paths as string[] : typeof body.path === "string" ? [body.path] : [];
     if (paths.length > 200) throw invalidRequest("Select no more than 200 documents at once.");
@@ -339,21 +355,37 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       return action === "archive" ? recents.archive(paths, target) : recents.clearUnpinned(target);
     }
     if (action === "restore") return recents.restore(paths, target);
-    if (action === "pin" || action === "unpin") { await recents.setPinned(paths, action === "pin" && body.pinned !== false); return { updated: true }; }
+    if (action === "pin" || action === "unpin") { return { updated: true, ...await recents.setPinned(paths, action === "pin" && body.pinned !== false) }; }
     if (action === "settings") {
       if (body.retention === undefined) return { retention: await recents.getRetention() };
       if (body.confirmed !== true) throw Object.assign(new Error("Confirm the archive retention change."), { code: "confirmation_required" });
       return recents.setRetention(body.retention as FolioRetention, target);
     }
+    if (action === "remove-entry") {
+      const files = (await recents.folioSnapshot({ view: "all" })).files;
+      for (const path of paths) {
+        const entry = files.find(file => file.path === resolve(path));
+        if (!entry) throw Object.assign(new Error("The Folio entry no longer exists."), { code: "folio_entry_missing", status: 404 });
+        if (entry.hasConversation) throw Object.assign(new Error("This entry has conversation history. Archive it to keep the conversation."), { code: "conversation_present", status: 409 });
+      }
+      return recents.delete(paths, target, true);
+    }
     if (action === "delete-conversation" || action === "start-fresh" || action === "delete") {
       if (body.confirmed !== true) throw Object.assign(new Error("Confirm deleting the selected conversations."), { code: "confirmation_required" });
       if (action === "delete") return recents.delete(paths, target);
-      for (const path of paths) { agentReads.forget(resolve(path)); privateStore.deleteConversation(resolve(path)); }
+      const records = await Promise.all(paths.map(async path => {
+        let stored = resolve(path);
+        if (!privateStore.documentForPath(stored)) { try { stored = await realpath(stored); } catch {} }
+        if (!privateStore.documentForPath(stored)) throw Object.assign(new Error("The Folio entry no longer exists."), { code: "folio_entry_missing", status: 404 });
+        return stored;
+      }));
+      for (const path of records) { agentReads.forget(path); privateStore.deleteConversation(path); }
       await recents.refresh();
       return { cleared: paths };
     }
     if (action === "locate") {
       let destination = typeof body.target === "string" ? body.target : undefined;
+      if (!destination && browser && !pickFiles) throw Object.assign(new Error("Locate file is unavailable in this host."), { code: "locate_unavailable" });
       if (!destination && browser && pickFiles) destination = (await pickFiles())[0];
       if (!paths[0]) throw invalidRequest("A source path is required.");
       if (!destination) return { cancelled: true };
@@ -364,7 +396,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     }
     if (action === "export") {
       const grants: DocumentSession[] = [];
-      try { for (const path of paths) grants.push(await service.open(path)); return await service.exportReviews(grants); }
+      try { for (const path of paths) grants.push(await service.open(await folioFile(path))); return await service.exportReviews(grants); }
       finally { for (const grant of grants) service.close(grant); }
     }
     if (action === "import") {
@@ -383,6 +415,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     if (action === "service") {
       if (body.action !== "restart" && body.action !== "quit") throw invalidRequest("Unknown service action.");
       if (body.action === "restart" && !options.restart) throw invalidRequest("Restart is unavailable in this embedded test service.");
+      if (body.action === "restart") await prepareCmuxBridgeRestart(config, instanceId);
       setTimeout(() => { void (body.action === "restart" ? options.restart!() : daemon.stop()); }, 250);
       return { restarting: body.action === "restart", quitting: body.action === "quit" };
     }
@@ -634,7 +667,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const suffix = `/${match![2]}`;
       if (request.method === "GET" && suffix === "/") {
         const prefs = await preferences();
-        return new Response(folioHtml({ pickerAvailable: Boolean(pickFiles), theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+        return new Response(folioHtml({ pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
       if (request.method === "GET" && suffix === "/api/files") return json(await recents.files());
       if (request.method === "GET" && suffix === "/api/updates") return json(await updates.status(), { headers: { "cache-control": "no-store" } });
@@ -679,9 +712,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const body = suffix === "/api/welcome" ? { path: await seedWelcome(config) } : await requestJson(request);
           if (typeof body.path !== "string") throw invalidRequest("A recent Markdown path is required.");
           if (suffix === "/api/welcome") await recents.record(body.path, session.target);
-          const allowed = await recents.paths();
-          const canonical = await realpath(body.path);
-          if (!allowed.includes(canonical)) return error("document_unauthorized", "The path is not in Tether Folio.", 403);
+          const canonical = await folioFile(body.path);
           const grant = await service.open(canonical);
           const launch = mintTicket(grant, session.target);
           try {
@@ -704,12 +735,21 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const body = await requestJson(request);
           const action = suffix === "/api/action" || suffix === "/api/batch" ? String(body.action) : suffix.slice(5);
           if (["reveal", "default", "trash"].includes(action)) {
-            const path = typeof body.path === "string" ? await realpath(body.path) : "";
-            if (!(await recents.paths()).includes(path)) throw new DocumentAccessError();
+            const path = typeof body.path === "string" ? await folioFile(body.path) : "";
+            if (!path) throw invalidRequest("A Folio path is required.");
             if (action === "reveal") { if (!hostAdapter.revealFile) throw invalidRequest("Reveal is unavailable."); await hostAdapter.revealFile(path); }
             if (action === "default") await hostAdapter.openExternal(path);
             if (action === "trash") { if (body.confirmed !== true) throw invalidRequest("Confirm moving the file to Trash."); await trashFile(path); await recents.remove(path, session.target); }
             return json({ action, path });
+          }
+          if (suffix === "/api/batch" && ["archive", "restore", "pin", "unpin"].includes(action)) {
+            if (!Array.isArray(body.paths) || body.paths.length > 200 || !body.paths.every(path => typeof path === "string")) throw invalidRequest("Select no more than 200 document paths.");
+            const completed: string[] = [], failed: Array<{ path: string; message: string }> = [];
+            for (const path of body.paths) {
+              try { await folioOperation(action, { ...body, paths: [path] }, session.target, true); completed.push(path); }
+              catch (cause) { failed.push({ path, message: cause instanceof Error ? cause.message : String(cause) }); }
+            }
+            return json({ completed, failed });
           }
           return json(await folioOperation(action === "remove" ? "archive" : action, body, session.target, true));
         } catch (cause) { return controlError(cause); }
@@ -924,10 +964,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         }
       }
       await ensureControlToken(config);
+      await recents.expire();
       if (stopped) return;
       await writeDiscovery(config, { protocol: PROTOCOL_VERSION, instanceId, pid: process.pid, origin: daemon.origin, startedAt: new Date(startedAt).toISOString() });
       if (stopped) { await removeDiscovery(config, instanceId); return; }
-      await recents.expire();
       let lastExpiry = now();
       timer = setInterval(() => {
         const current = now();
@@ -973,9 +1013,16 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<TetherDa
     configured = { ...configured, web: (request: Request) => responder(request) };
   }
   const daemon = createDaemon(configured);
-  await daemon.ready;
-  writeFileSync(listenerPath, JSON.stringify({ port: daemon.port }), { mode: 0o600 });
-  return daemon;
+  try {
+    // Complete synchronous listener bookkeeping before async initialization
+    // can publish discovery and let a launcher observe a successful startup.
+    writeFileSync(listenerPath, JSON.stringify({ port: daemon.port }), { mode: 0o600 });
+    await daemon.ready;
+    return daemon;
+  } catch (cause) {
+    await daemon.stop().catch(() => {});
+    throw cause;
+  }
 }
 
 export async function createLaunchTicket(daemon: TetherDaemon, path: string): Promise<Ticket> {

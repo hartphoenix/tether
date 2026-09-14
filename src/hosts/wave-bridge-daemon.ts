@@ -1,3 +1,4 @@
+import { diagnosticText, errorDetails } from "../shared/diagnostics";
 import { createWaveHost } from "./wave";
 import { removeWaveBridge, writeWaveBridge } from "./wave-bridge";
 import { prepareConfig, readControlToken, resolveConfig } from "../server/config";
@@ -44,7 +45,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
       });
       return json({ opened: true });
     } catch (cause) {
-      return json({ error: { code: "open_failed", message: cause instanceof Error ? cause.message : String(cause) } }, 502);
+      return json({ error: { code: "open_failed", message: diagnosticText(cause instanceof Error ? cause.message : String(cause)), details: errorDetails(cause) } }, 502);
     }
   }
   if (request.method === "POST" && url.pathname === "/recents") {
@@ -56,7 +57,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
       await syncWaveRecentLaunchers(body.entries as RecentEntry[]);
       return json({ updated: true });
     } catch (cause) {
-      return json({ error: { code: "recents_failed", message: cause instanceof Error ? cause.message : String(cause) } }, 400);
+      return json({ error: { code: "recents_failed", message: diagnosticText(cause instanceof Error ? cause.message : String(cause)), details: errorDetails(cause) } }, 400);
     }
   }
   return json({ error: { code: "not_found", message: "Not found." } }, 404);

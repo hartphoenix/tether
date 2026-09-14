@@ -17,7 +17,15 @@ bun install
 bun ./tether setup
 ```
 
-Setup opens **Getting started with Tether** for a practice exchange. To choose the browser explicitly, run `bun ./tether setup --host browser`. Optional Wave widgets use `bun ./tether setup --wave`. To install the review skill, pass `--agent-directory` with your agent's skills directory; existing differing instructions are never overwritten. Run `bun ./tether setup --help` for options.
+Setup opens **Getting started with Tether** for a practice exchange. To choose the browser explicitly, run `bun ./tether setup --host browser`. Optional Wave widgets use `bun ./tether setup --wave`. Run `bun ./tether setup --help` for options.
+
+For agent use, install the Tether skill into your agent's skills directory:
+
+```sh
+bun ./tether setup --agent-directory /absolute/path/to/skills --no-open
+```
+
+The skill covers editing, comment review, Recents registration, and plain-language reporting of CLI results. Plain setup does not install it. After a Tether update, rerun this step to check the installed copy; if setup reports differing instructions, review the bundled `integrations/agents/tether-review/SKILL.md` against the installed file and approve any replacement while preserving local guidance. Setup never overwrites a differing skill.
 
 Come back with `bun ./tether`, or double-click **Open Tether.command**. Open a particular file with:
 
@@ -83,6 +91,16 @@ TETHER_PROFILE=preview ./mdreview recents add /absolute/path/to/document.md
 The installer preserves unrelated Wave widgets and creates a one-time `widgets.json.tether-cutover.backup`. Wave's native file navigator remains outside Tether because Wave 0.14.5 has no public file-extension routing hook.
 
 `TETHER_RUNTIME_DIR` and `TETHER_CONFIG_DIR` can set exact private directories for an isolated run. CLI stdout is one protocol-v1 JSON object. Exit code `0` is success, `1` is an operational failure, and `2` is invalid usage.
+
+Registration returns the added paths, without listing the entire registry or reporting routine terminal-integration bookkeeping:
+
+```json
+{"protocol":1,"ok":true,"command":"recents.add","data":{"added":[{"path":"/absolute/path/to/document.md"}]}}
+```
+
+If registration succeeds but updating applicable terminal shortcuts fails, `data.warnings` explains that separate failure and includes its diagnostic details. Unsupported or unnecessary shortcut updates stay quiet. Use `folio list` for the registry and `folio sync` for explicit synchronization diagnostics. Partial imports retain their per-item successes, failures, and overall outcome even when the command envelope is successful.
+
+Errors retain a stable `error.code` and a readable message; `error.details.diagnostic` preserves available underlying filesystem/transport codes, syscall, path, and child exit status, with HTTP status in `error.details.httpStatus`. Known credential forms are redacted and bounded diagnostics mark truncation. When a multi-step command fails, `details.completed` records known completed steps; `details.outcome` distinguishes `not_applied`, `partially_applied`, `applied`, and `outcome_unknown` where established. A published export with failed directory synchronization reports `applied` and `durability: "unconfirmed"`; do not assume an error means no file was written. An unreachable recorded daemon reports a reachability error, rather than claiming it is stopped or starting another process.
 
 ## cmux integration
 

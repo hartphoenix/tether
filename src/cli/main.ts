@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { diagnosticText, diagnosticOutput, errorDetails, operationError } from "../shared/diagnostics";
+import { commandResult } from "./results";
 import { realpath, readFile, readlink, unlink, rename } from "node:fs/promises";
 import { readBoundedInput, writeExport } from "./io";
 import { usageText, commandSpecs, CliUsageError, parseCommand, requiredFlag, optionalFlag, readOptions, focusPreference, positiveInteger, usage } from "./commands";
@@ -57,17 +59,26 @@ function cmuxBridgeOptions(host: HostAdapter): { cmuxVersion?: string; cmuxBuild
 }
 
 function success<T>(command: string, data: T): ProtocolResponse<T> {
-  return { protocol: 1, ok: true, command, data };
+  return { protocol: 1, ok: true, command, data: commandResult(command, data) as T };
 }
 
 function failure(command: string, cause: unknown, code = "command_failed"): ProtocolResponse<never> {
-  const details = cause && typeof cause === "object" ? (cause as { details?: unknown }).details : undefined;
+  const details = errorDetails(cause);
+  const message = diagnosticText(cause instanceof Error ? cause.message : String(cause));
+  const evidence = details.diagnostic as Record<string, unknown> | undefined;
+  if (evidence && evidence.message === message && Object.keys(evidence).every(key => key === "message" || key === "code") && (evidence.code === undefined || evidence.code === code)) delete details.diagnostic;
   return {
     protocol: 1,
     ok: false,
     command,
-    error: { code, message: cause instanceof Error ? cause.message : String(cause), ...(details === undefined ? {} : { details }) },
+    error: { code, message, ...(Object.keys(details).length ? { details } : {}) },
   };
+}
+
+async function launchFailure(config: TetherConfig, url: string, cause: unknown): Promise<unknown> {
+  try { await cancelLaunch(config, url); }
+  catch (cleanup) { return operationError(cause, { cleanup: errorDetails(cleanup) }); }
+  return cause;
 }
 
 async function bodyFile(path: string, dependencies: CliDependencies, limit = 256 * 1024): Promise<string> {
@@ -89,17 +100,24 @@ function commandName(argv: string[]): string {
   return argv[0] ?? "unknown";
 }
 
+const reportingGuidance = "For user-facing summaries, report what completed, what did not, and any decision needed in plain language. Omit diagnostic codes, host implementation names, and internal paths unless the user asks for technical diagnosis. Keep these details for your own recovery decisions. A warning does not undo a completed operation.";
+
 export async function runCli(argv = process.argv.slice(2), dependencies: CliDependencies = {}): Promise<{ response: ProtocolResponse; exitCode: number }> {
   let command = commandName(argv);
+  const completed: Array<{ step: string; path?: string }> = [];
   try {
     if (argv.length === 1 && argv[0] === "--help") {
-      return { response: success("help", { usage: usageText, commands: Object.values(commandSpecs).map(({ name, usage }) => ({ name, usage })) }), exitCode: 0 };
+      return { response: success("help", { usage: usageText, reporting: reportingGuidance, commands: Object.values(commandSpecs).map(({ name, usage }) => ({ name, usage })) }), exitCode: 0 };
+    }
+    if (argv.length === 2 && argv[1] === "--help") {
+      const commands = Object.values(commandSpecs).filter(spec => spec.name.startsWith(`${argv[0]}.`)).map(({ name, usage }) => ({ name, usage }));
+      if (commands.length) return { response: success("help", { command: argv[0], usage: commandSpecs[argv[0]!]?.usage ?? `mdreview ${argv[0]} <command> [arguments] [flags]`, commands, reporting: reportingGuidance }), exitCode: 0 };
     }
     const parsed = parseCommand(argv);
     command = parsed.spec.name;
-    if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage }), exitCode: 0 };
+    if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage, reporting: reportingGuidance }), exitCode: 0 };
     const config = dependencies.config ?? resolveConfig();
-    const selectedHost = parsed.flags.has("--host") ? hostPreference(optionalFlag(parsed, "--host")!) : await readHostPreference(config);
+    const selectedHost = parsed.flags.has("--host") ? hostPreference(optionalFlag(parsed, "--host")!) : ["open", "recent", "recents", "folio", "setup"].includes(command) ? await readHostPreference(config) : "auto";
     if (command === "backup") return { response: success(command, await backupState(config, requiredFlag(parsed, "--output"))), exitCode: 0 };
     if (command === "restore") return { response: success(command, await restoreState(requiredFlag(parsed, "--source"), requiredFlag(parsed, "--directory"))), exitCode: 0 };
     if (command === "uninstall") {
@@ -114,8 +132,8 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         if (target === null || await realpath(resolve(dirname(command.path), target)) !== await realpath(command.target)) throw new Error(`Command has changed; preserved: ${command.path}`);
       }
       const wave = await waveLauncherStatus();
-      if (wave.installed.length) await uninstallWaveLaunchers();
-      for (const command of commands) await unlink(command.path);
+      if (wave.installed.length) { await uninstallWaveLaunchers(); completed.push({ step: "wave_launchers_removed" }); }
+      for (const command of commands) { await unlink(command.path); completed.push({ step: "command_removed", path: command.path }); }
       const retained = resolve(root, `uninstalled-${Date.now()}`);
       await rename(resolve(root, "current"), retained);
       return { response: success(command, { removedCommands: commands.map(command => command.path), retainedInstallation: retained, privateData: config.configDir,
@@ -126,30 +144,35 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       if ((await statusDaemon(config)).running) throw new Error("Save your work and quit Tether before updating: tether daemon stop");
       const output = resolve(config.configDir, "..", `backup-before-update-${Date.now()}`);
       const backup = await backupState(config, output);
+      completed.push({ step: "backup_created", path: backup.directory });
       const version = optionalFlag(parsed, "--version");
       const root = dirname(dirname(runtimeRoot()));
       const installation = JSON.parse(await readFile(resolve(root, "install.json"), "utf8"));
-      const child = Bun.spawn(["/bin/bash", resolve(runtimeRoot(), "install.sh"), "--no-open", ...(version ? ["--version", version] : [])], { stdout: "pipe", stderr: "inherit", env: { ...process.env, TETHER_INSTALL_DIR: root, TETHER_BIN_DIR: installation.binDirectory } });
-      const log = await new Response(child.stdout).text();
-      if (await child.exited !== 0) throw new Error(`Update failed; backup retained at ${backup.directory}. ${log}`);
+      const child = Bun.spawn(["/bin/bash", resolve(runtimeRoot(), "install.sh"), "--no-open", ...(version ? ["--version", version] : [])], { stdout: "pipe", stderr: "pipe", env: { ...process.env, TETHER_INSTALL_DIR: root, TETHER_BIN_DIR: installation.binDirectory } });
+      const [exitCode, log, stderr] = await Promise.all([child.exited, diagnosticOutput(child.stdout), diagnosticOutput(child.stderr)]);
+      if (exitCode !== 0) throw Object.assign(new Error(`Update failed; backup retained at ${backup.directory}. ${diagnosticText(log)}`), { code: "update_failed", exitCode, details: { outcome: "outcome_unknown", stage: "installer", stdout: log, stderr } });
       return { response: success(command, { backup, message: log, next: "Run tether to start the updated release." }), exitCode: 0 };
     }
     if (command === "doctor") {
       return { response: success(command, { platform: process.platform, architecture: process.arch, runtime: Bun.version,
-        configDirectory: config.configDir, hostPreference: selectedHost, daemon: await statusDaemon(config),
+        configDirectory: config.configDir, hostPreference: await readHostPreference(config).catch(cause => ({ error: errorDetails(cause) })), daemon: await statusDaemon(config),
         wave: await waveLauncherStatus(), cmux: (await runCli(["cmux", "status"], dependencies)).response,
       }), exitCode: 0 };
     }
     if (command === "setup") {
-      if (parsed.flags.has("--host")) await saveHostPreference(config, selectedHost);
+      if (parsed.flags.has("--host")) { await saveHostPreference(config, selectedHost); completed.push({ step: "host_preference_saved", path: resolve(config.configDir, "launch.json") }); }
       const skillDirectory = optionalFlag(parsed, "--agent-directory");
       const agent = skillDirectory ? await installAgentSkill(skillDirectory) : undefined;
+      if (agent) completed.push({ step: "agent_skill_installed", path: agent.path });
       const wave = parsed.flags.has("--wave") ? await installWaveLaunchers() : undefined;
+      if (wave) completed.push({ step: "wave_launchers_installed" });
       const path = await seedWelcome(config);
+      completed.push({ step: "welcome_document_ready", path });
       await controlRequest(config, "/control/folio/add", { paths: [path] });
+      completed.push({ step: "registered", path });
       if (!parsed.flags.has("--no-open")) {
         const opened = await runCli(["open", path, "--host", selectedHost], dependencies);
-        if (!opened.response.ok) return opened;
+        if (!opened.response.ok) throw Object.assign(new Error(opened.response.error.message), { code: opened.response.error.code, details: opened.response.error.details });
       }
       return { response: success(command, { path, hostPreference: selectedHost, agent, wave, opened: !parsed.flags.has("--no-open") && process.env.TETHER_SUPPRESS_BROWSER !== "1",
         next: "Use tether to open Folio. Optional integrations: tether setup --wave or --agent-directory <skills-directory>.",
@@ -171,17 +194,21 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const host = await launchHost(dependencies, selectedHost);
       const target = host.launchTarget?.();
       const launch = await controlLaunch(config, canonicalPath, target);
-      if (host.id === "wave" && !dependencies.host) await startWaveBridge(config, process.env, { wait: false });
+      completed.push({ step: "registered", path: canonicalPath });
+      if (host.id === "wave" && !dependencies.host) {
+        try { await startWaveBridge(config, process.env, { wait: false }); }
+        catch (cause) { throw await launchFailure(config, launch.url, cause); }
+      }
       if (host.id === "cmux" && !dependencies.host) {
         try { await startCmuxBridge(config, process.env, cmuxBridgeOptions(host)); }
-        catch (cause) { await cancelLaunch(config, launch.url); throw cause; }
+        catch (cause) { throw await launchFailure(config, launch.url, cause); }
       }
       if (process.env.TETHER_SUPPRESS_BROWSER !== "1") {
         try {
           const result = await host.openView({ url: launch.url, kind: "document", focus, allowFocusedFallback: focus, target });
           if (result?.launchConsumed === false) await cancelLaunch(config, launch.url);
         }
-        catch (cause) { await cancelLaunch(config, launch.url); throw cause; }
+        catch (cause) { throw await launchFailure(config, launch.url, cause); }
       }
       return { response: success(argv[0], { path: launch.path, expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" }), exitCode: 0 };
     }
@@ -201,8 +228,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
           if (result?.launchConsumed === false) await cancelLaunch(config, launch.url);
         }
       } catch (cause) {
-        await cancelLaunch(config, launch.url);
-        throw cause;
+        throw await launchFailure(config, launch.url, cause);
       }
       return { response: success(command, { expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" }), exitCode: 0 };
     }
@@ -365,7 +391,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         const packagePath = requiredFlag(parsed, "--package");
         let packageData: unknown;
         try { packageData = JSON.parse(await readBoundedInput(packagePath, 32 * 1024 * 1024)); }
-        catch (cause) { throw new ControlRequestError("invalid_package", `Unable to read package: ${cause instanceof Error ? cause.message : String(cause)}`, 400); }
+        catch (cause) { if (!(cause instanceof SyntaxError)) throw cause; throw new ControlRequestError("invalid_package", `Unable to read package: ${cause instanceof Error ? cause.message : String(cause)}`, 400); }
         return { response: success(command, await controlRequest(config, "/control/folio/import", { package: packageData, directory: resolve(requiredFlag(parsed, "--directory")) })), exitCode: 0 };
       }
     }
@@ -376,7 +402,9 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       ? (cause as { code: string }).code
       : undefined;
     const code = usageError ? "usage" : coded ?? (cause instanceof ControlRequestError ? cause.code : "command_failed");
-    return { response: failure(command, cause, code), exitCode: usageError ? 2 : 1 };
+    const uncertain = cause && typeof cause === "object" && (cause as { details?: { outcome?: string } }).details?.outcome === "outcome_unknown";
+    const reported = completed.length ? operationError(cause, { outcome: uncertain ? "outcome_unknown" : "partially_applied", completed }) : cause;
+    return { response: failure(command, reported, code), exitCode: usageError ? 2 : 1 };
   }
 }
 

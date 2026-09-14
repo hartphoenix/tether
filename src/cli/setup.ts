@@ -12,7 +12,7 @@ export function hostPreference(value: string): HostPreference {
 }
 export async function readHostPreference(config: TetherConfig): Promise<HostPreference> {
   try { return hostPreference(JSON.parse(await readFile(join(config.configDir, "launch.json"), "utf8")).host); }
-  catch { return "auto"; }
+  catch (cause) { if ((cause as NodeJS.ErrnoException).code === "ENOENT") return "auto"; throw cause; }
 }
 export async function saveHostPreference(config: TetherConfig, host: HostPreference): Promise<void> {
   await mkdir(config.configDir, { recursive: true, mode: 0o700 });

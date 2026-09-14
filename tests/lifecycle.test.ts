@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { acquireStartupLock, prepareConfig, readDiscovery, removeStaleRuntime, resolveConfig, validateProfile } from "../src/server/config";
-import { controlLaunch, discoverDaemon } from "../src/server/lifecycle";
+import { controlLaunch, discoverDaemon, ensureDaemon } from "../src/server/lifecycle";
+import { runCli } from "../src/cli/main";
 
 const directories: string[] = [];
 const daemonPids = new Set<number>();
@@ -79,6 +80,32 @@ test("startup locks exclude peers on empty and legacy files without replacing th
     await removeStaleRuntime(config);
     expect((await stat(config.lockPath)).ino).toBe(inode);
   }
+});
+
+test("startup filesystem failures retain their code in CLI responses", async () => {
+  const directory = await mkdtemp("/tmp/tether-startup-error-");
+  directories.push(directory);
+  const config = resolveConfig({ runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
+  await prepareConfig(config);
+  const target = join(directory, "lock-target");
+  await writeFile(target, "", { mode: 0o600 });
+  await symlink(target, config.lockPath);
+  const result = await runCli(["recents", "add", join(directory, "document.md")], { config });
+  expect(result.exitCode).toBe(1);
+  expect(result.response).toMatchObject({ ok: false, error: { code: "ELOOP" } });
+});
+
+test("startup contention still waits for a peer without spawning another daemon", async () => {
+  const directory = await mkdtemp("/tmp/tether-startup-peer-");
+  directories.push(directory);
+  const config = resolveConfig({ runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
+  const lock = await acquireStartupLock(config);
+  let spawned = false;
+  try {
+    await expect(ensureDaemon({ config, waitAttempts: 1, spawn: () => { spawned = true; } }))
+      .rejects.toThrow("Another Tether daemon appears to be starting");
+    expect(spawned).toBe(false);
+  } finally { await lock.release(); }
 });
 
 test("startup lock ownership releases when a launcher crashes", async () => {
