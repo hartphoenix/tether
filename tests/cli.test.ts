@@ -226,7 +226,7 @@ test("rejects unknown or duplicate launch flags and non-exact cmux status comman
   }
 });
 
-test("adds a recent file through the application transaction and reports host synchronization", async () => {
+test("adds a recent file quietly while still synchronizing the host", async () => {
   const directory = await mkdtemp(join("/tmp", "tether-cli-recents-add-"));
   directories.push(directory);
   const path = join(directory, "review.md");
@@ -249,12 +249,12 @@ test("adds a recent file through the application transaction and reports host sy
   const result = await runCli(["recents", "add", path], { config, host });
   expect(result).toMatchObject({
     exitCode: 0,
-    response: { ok: true, command: "recents.add", data: { added: [{ path: await realpath(path) }], hostSynchronized: true } },
+    response: { ok: true, command: "recents.add", data: { added: [{ path: await realpath(path) }] } },
   });
   expect(synchronized.at(-1)).toEqual([await realpath(path)]);
 });
 
-test("returns a failed recents add when host synchronization fails", async () => {
+test("returns registration success with an actionable warning when host synchronization fails", async () => {
   const directory = await mkdtemp(join("/tmp", "tether-cli-recents-add-"));
   directories.push(directory);
   const path = join(directory, "review.md");
@@ -280,8 +280,7 @@ test("returns a failed recents add when host synchronization fails", async () =>
       command: "recents.add",
       data: {
         added: [{ path: await realpath(path) }],
-        hostSynchronized: false,
-        hostIssue: { code: "host_sync_failed", message: "Wave update failed" },
+        warnings: [{ code: "host_sync_failed", details: { code: "host_sync_failed", message: "Wave update failed" } }],
       },
     },
   });
@@ -322,6 +321,7 @@ test("provides command-specific help without daemon work", async () => {
       command: "help",
       data: {
         command: "acknowledge",
+        reporting: expect.stringContaining("plain language"),
         usage: "mdreview acknowledge <file> --actor <actor> --cursor <cursor> --operation-id <id> [--consumer <consumer>]",
       },
     },
@@ -423,7 +423,8 @@ test("runs the private review workflow with cursors and retry-safe mutations", a
   expect((await runCli(["pending", path, "--actor", "assistant"], { config })).response).toMatchObject({ ok: true, data: { events: [] } });
 
   const conflict = await runCli(["document", "save", path, "--expected-body-revision", initial.bodyRevision, "--body-file", "-"], { config, readBody: async () => "Stale overwrite\n" });
-  expect(conflict).toMatchObject({ exitCode: 1, response: { ok: false, command: "document.save", error: { code: "conflict" } } });
+  expect(conflict).toMatchObject({ exitCode: 1, response: { ok: false, command: "document.save", error: { code: "conflict", details: { outcome: "not_applied" } } } });
+  expect(JSON.stringify(conflict.response)).not.toContain("Inspect current state before retrying");
   const missing = await runCli(["document", "read", join(directory, "missing.md")], { config });
   expect(missing).toMatchObject({ exitCode: 1, response: { error: { code: "document_not_found" } } });
   const invalidThread = await runCli(["thread", path, "missing-thread"], { config });

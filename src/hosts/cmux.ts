@@ -1,3 +1,4 @@
+import { diagnosticText } from "../shared/diagnostics";
 import { createBrowserHost, type BrowserHostAdapter } from "./browser";
 import type { HostAdapter, HostTarget, OpenLocalFileRequest, OpenViewRequest } from "./host-adapter";
 import { PROTOCOL_VERSION, SERVICE_ID, type HostCapabilities } from "../shared/contracts";
@@ -658,7 +659,7 @@ export class CmuxHostAdapter implements HostAdapter {
 
   private throwCommandFailure(result: CmuxCommandResult): never {
     const code = failureCode(result);
-    throw new CmuxHostError(code, failureMessage(code, result), result.stderr || result.stdout);
+    throw Object.assign(new CmuxHostError(code, diagnosticText(failureMessage(code, result)), diagnosticText(result.stderr || result.stdout)), { exitCode: result.exitCode });
   }
 }
 

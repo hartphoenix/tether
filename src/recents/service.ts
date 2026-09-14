@@ -1,3 +1,4 @@
+import { errorDetails, diagnosticText } from "../shared/diagnostics";
 import type { HostAdapter, HostTarget } from "../hosts/host-adapter";
 import type { FolioEntry, FolioMutationResult, FolioRetention, ListFolioOptions, RecentEntry, RecentsRegistry, SavedFilter } from "./registry";
 
@@ -20,7 +21,7 @@ export type SyncRecentsResult = {
   hostSynchronized: boolean;
   hostSyncStatus: "unsupported" | "skipped" | "succeeded" | "failed";
   hostSequence?: number;
-  hostIssue?: { code: string; message: string };
+  hostIssue?: { code: string; message: string; details?: unknown };
 };
 
 export type RecordRecentResult = SyncRecentsResult & { entry: RecentEntry };
@@ -95,7 +96,7 @@ export class RecentsService {
     } catch (cause) {
       const code = cause && typeof cause === "object" && typeof (cause as { code?: unknown }).code === "string"
         ? (cause as { code: string }).code : "host_sync_failed";
-      return { entries, hostSynchronized: false, hostSyncStatus: "failed", hostSequence: snapshot.sequence, hostIssue: { code, message: cause instanceof Error ? cause.message : String(cause) } };
+      return { entries, hostSynchronized: false, hostSyncStatus: "failed", hostSequence: snapshot.sequence, hostIssue: { code, message: diagnosticText(cause instanceof Error ? cause.message : String(cause)), details: errorDetails(cause) } };
     }
   }
 
@@ -183,16 +184,17 @@ export class RecentsService {
     return this.mutateAndSync(() => this.registry.archive(paths), target);
   }
 
-  restore(paths: string[], target?: HostTarget): Promise<SyncRecentsResult> {
-    return this.mutateAndSync(async () => { await this.registry.restore(paths); return {}; }, target);
+  restore(paths: string[], target?: HostTarget): Promise<FolioMutationResult & SyncRecentsResult> {
+    return this.mutateAndSync(() => this.registry.restore(paths), target);
   }
 
-  setPinned(paths: string[], pinned: boolean): Promise<void> {
+  setPinned(paths: string[], pinned: boolean): Promise<FolioMutationResult> {
     return this.queued(async () => {
-      await this.registry.setPinned(paths, pinned);
+      const result = await this.registry.setPinned(paths, pinned);
       const snapshot = await this.snapshotNow();
       this.publish(snapshot);
       await this.publishFolio(snapshot.sequence);
+      return result;
     });
   }
 
@@ -210,8 +212,8 @@ export class RecentsService {
     });
   }
 
-  delete(paths: string[], target?: HostTarget): Promise<FolioMutationResult & SyncRecentsResult> {
-    return this.mutateAndSync(() => this.registry.delete(paths), target);
+  delete(paths: string[], target?: HostTarget, onlyWithoutConversation = false): Promise<FolioMutationResult & SyncRecentsResult> {
+    return this.mutateAndSync(() => this.registry.delete(paths, onlyWithoutConversation), target);
   }
 
   deleteConversation(paths: string[]): Promise<void> {

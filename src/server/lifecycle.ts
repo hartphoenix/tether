@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { diagnostic, errorDetails, operationError } from "../shared/diagnostics";
 import { readDiscovery, acquireStartupLock, prepareConfig, removeStaleRuntime, resolveConfig, type TetherConfig } from "./config";
 import { PROTOCOL_VERSION, SERVICE_ID, type DiscoveryRecord } from "../shared/contracts";
 import { runtimeEntry } from "../runtime-paths";
@@ -16,6 +19,7 @@ export type DaemonStatus = {
   origin?: string;
   startedAt?: string;
   sessions?: number;
+  controlIssue?: Record<string, unknown>;
 };
 
 export class ControlRequestError extends Error {
@@ -46,27 +50,47 @@ function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
-async function health(discovery: DiscoveryRecord): Promise<boolean> {
+async function health(discovery: DiscoveryRecord): Promise<void> {
   try {
     const response = await fetch(`${discovery.origin}/health`, { signal: AbortSignal.timeout(300) });
-    if (!response.ok) return false;
+    if (!response.ok) throw Object.assign(new Error("Daemon health check failed."), { status: response.status });
     const value = await response.json() as Record<string, unknown>;
-    return value.service === SERVICE_ID && value.protocol === PROTOCOL_VERSION && value.instanceId === discovery.instanceId;
-  } catch { return false; }
+    if (value.service !== SERVICE_ID || value.protocol !== PROTOCOL_VERSION || value.instanceId !== discovery.instanceId) {
+      throw Object.assign(new Error("The listener does not match the recorded Tether daemon."), { code: "daemon_identity_mismatch" });
+    }
+  } catch (cause) {
+    throw new ControlRequestError("daemon_unreachable", "The recorded Tether service could not be reached or verified. Check local connection permissions and daemon status.", 503,
+      errorDetails(cause, { stage: "health", outcome: "not_applied", pid: discovery.pid }));
+  }
 }
 
 export async function discoverDaemon(config = resolveConfig()): Promise<DiscoveryRecord | null> {
   const value = await readDiscovery(config);
-  if (!value || !alive(value.pid) || !(await health(value))) return null;
+  if (!value || !alive(value.pid)) return null;
+  await health(value);
   return value;
 }
 
-async function waitForDiscovery(config: TetherConfig, attempts: number): Promise<DiscoveryRecord | null> {
+async function waitForDiscovery(config: TetherConfig, attempts: number, startup?: { report: string; child: Bun.Subprocess }): Promise<DiscoveryRecord | null> {
+  let lastIssue: unknown;
   for (let index = 0; index < attempts; index += 1) {
-    const value = await discoverDaemon(config);
-    if (value) return value;
+    try {
+      const value = await discoverDaemon(config);
+      if (value) return value;
+    } catch (cause) { lastIssue = cause; }
+    if (startup) {
+      if (startup.child.exitCode !== null) {
+        let report: unknown;
+        try { const raw = await readFile(startup.report, "utf8"); if (raw.length <= 16384) report = JSON.parse(raw); } catch { /* Child may fail before its reporting hook. */ }
+        throw new ControlRequestError("daemon_start_failed", "Tether exited before becoming ready.", 503, {
+          outcome: "not_applied", stage: "startup", exitCode: startup.child.exitCode,
+          ...(report ? { diagnostic: report } : lastIssue ? { diagnostic: diagnostic(lastIssue) } : {}),
+        });
+      }
+    }
     await Bun.sleep(WAIT_MS);
   }
+  if (lastIssue) throw lastIssue;
   return null;
 }
 
@@ -84,7 +108,9 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
   let lock: Awaited<ReturnType<typeof acquireStartupLock>> | null = null;
   try {
     lock = await acquireStartupLock(config);
-  } catch {
+  } catch (error) {
+    // Permission and filesystem failures are not evidence of another launcher.
+    if ((error as NodeJS.ErrnoException)?.code !== "writer_busy") throw error;
     // A peer owns startup. Wait for it to publish and validate discovery; do
     // not launch a second process merely because its port is not ready yet.
     const converged = await waitForDiscovery(config, options.waitAttempts ?? WAIT_ATTEMPTS);
@@ -92,6 +118,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
     throw new Error("Another Tether daemon appears to be starting but did not become healthy.");
   }
 
+  let primaryFailure: unknown;
   try {
     const winner = await discoverDaemon(config);
     if (winner) return winner;
@@ -109,16 +136,32 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
       TETHER_CONFIG_DIR: config.configDir,
       TETHER_INSTALL_ROOT: inherited.TETHER_INSTALL_ROOT,
     };
-    if (options.spawn) await options.spawn(command, env);
-    else {
-      const child = Bun.spawn(command, { env, detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
-      child.unref();
-    }
-    const started = await waitForDiscovery(config, options.waitAttempts ?? WAIT_ATTEMPTS * 2);
-    if (!started) throw new Error("Tether daemon did not become healthy.");
-    return started;
-  } finally {
-    await lock.release();
+    const reportDirectory = await mkdtemp(join(config.runtimeDir, "startup-report-"));
+    const report = join(reportDirectory, "failure.json");
+    let child: Bun.Subprocess | undefined;
+    try {
+      if (options.spawn) await options.spawn(command, env);
+      else {
+        child = Bun.spawn(command, { env: { ...env, TETHER_STARTUP_REPORT: report }, detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+        child.unref();
+      }
+      const started = await waitForDiscovery(config, options.waitAttempts ?? WAIT_ATTEMPTS * 2, child ? { report, child } : undefined);
+      if (!started) throw new ControlRequestError("daemon_start_timeout", "Tether did not become ready before the startup deadline.", 503, { outcome: "outcome_unknown", stage: "startup" });
+      return started;
+    } catch (cause) {
+      // The launcher owns this child until discovery succeeds. Do not release
+      // startup exclusion while a timed-out child could still publish later.
+      if (child && child.exitCode === null) {
+        child.kill("SIGKILL");
+        await child.exited;
+      }
+      try { await rm(reportDirectory, { recursive: true, force: true }); }
+      catch (cleanup) { throw operationError(cause, { cleanup: diagnostic(cleanup) }); }
+      throw cause;
+    } finally { await rm(reportDirectory, { recursive: true, force: true }).catch(() => {}); }
+  } catch (cause) { primaryFailure = cause; throw cause; } finally {
+    try { await lock.release(); }
+    catch (cleanup) { if (primaryFailure) throw operationError(primaryFailure, { cleanup: diagnostic(cleanup) }); throw cleanup; }
   }
 }
 
@@ -126,11 +169,14 @@ export async function statusDaemon(config = resolveConfig()): Promise<DaemonStat
   const discovery = await discoverDaemon(config);
   if (!discovery) return { running: false };
   try {
-    const response = await fetch(`${discovery.origin}/control/status`, { headers: { authorization: `Bearer ${await (await import("./config")).readControlToken(config) ?? ""}` }, signal: AbortSignal.timeout(500) });
+    const token = await (await import("./config")).readControlToken(config);
+    if (!token) throw new ControlRequestError("control_unavailable", "Daemon control credential is unavailable.", 503);
+    const response = await fetch(`${discovery.origin}/control/status`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(500) });
+    if (!response.ok) throw new ControlRequestError("control_failed", "Daemon status could not be read.", response.status);
     const payload = await response.json() as Record<string, unknown>;
     return { running: true, protocol: discovery.protocol, service: SERVICE_ID, instanceId: discovery.instanceId, pid: discovery.pid, origin: discovery.origin, startedAt: discovery.startedAt, sessions: typeof payload.sessions === "number" ? payload.sessions : undefined };
-  } catch {
-    return { running: true, protocol: discovery.protocol, service: SERVICE_ID, instanceId: discovery.instanceId, pid: discovery.pid, origin: discovery.origin, startedAt: discovery.startedAt };
+  } catch (cause) {
+    return { running: true, protocol: discovery.protocol, service: SERVICE_ID, instanceId: discovery.instanceId, pid: discovery.pid, origin: discovery.origin, startedAt: discovery.startedAt, controlIssue: errorDetails(cause) };
   }
 }
 
@@ -188,7 +234,8 @@ export async function controlRequest<T>(config: TetherConfig, pathname: string, 
   const serialized = JSON.stringify(body);
   if (Buffer.byteLength(serialized) > 40 * 1024 * 1024) throw new ControlRequestError("input_too_large", "Control request exceeds 40 MiB.", 413, { outcome: "not_applied" });
   const outcome = readRoutes.has(pathname) ? "not_applied" : "outcome_unknown";
-  const recovery = { outcome, ...(typeof body.operationId === "string" ? { operationId: body.operationId, recovery: "Look up the operation receipt or retry with the same operation ID and input." } : outcome === "outcome_unknown" ? { recovery: "Inspect current state before retrying." } : {}) };
+  const recoveryFor = (outcome: unknown) => ({ outcome, ...(typeof body.operationId === "string" ? { operationId: body.operationId, recovery: "Look up the operation receipt or retry with the same operation ID and input." } : outcome === "outcome_unknown" ? { recovery: "Inspect current state before retrying." } : {}) });
+  const recovery = recoveryFor(outcome);
   let response: Response;
   try {
     const timeout = AbortSignal.timeout(options.timeoutMs ?? 10_000);
@@ -198,8 +245,8 @@ export async function controlRequest<T>(config: TetherConfig, pathname: string, 
       body: serialized,
       signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
     });
-  } catch {
-    throw new ControlRequestError("transport_unavailable", "Daemon request interrupted or timed out.", 503, recovery);
+  } catch (cause) {
+    throw new ControlRequestError("transport_unavailable", "Daemon request interrupted or timed out.", 503, errorDetails(cause, recovery));
   }
   let payload: unknown;
   try {
@@ -217,14 +264,15 @@ export async function controlRequest<T>(config: TetherConfig, pathname: string, 
       }
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
     payload = JSON.parse(Buffer.concat(chunks, bytes).toString("utf8"));
-  } catch { throw new ControlRequestError("invalid_response", "The daemon returned an invalid or incomplete response.", response.status, recovery); }
+  } catch (cause) { throw new ControlRequestError("invalid_response", "The daemon returned an invalid or incomplete response.", response.status, errorDetails(cause, recovery)); }
   if (!response.ok) {
     const issue = payload && typeof payload === "object" ? (payload as { error?: { code?: unknown; message?: unknown; details?: unknown } }).error : undefined;
+    const details = { ...(response.status === 400 && issue?.code === "invalid_request" ? { outcome: "not_applied" } : {}), ...(issue?.details && typeof issue.details === "object" ? issue.details : issue?.details === undefined ? {} : { detail: issue.details }) };
     throw new ControlRequestError(
       typeof issue?.code === "string" ? issue.code : "control_failed",
       typeof issue?.message === "string" ? issue.message : "The daemon control request failed.",
       response.status,
-      { ...recovery, ...(response.status === 400 && issue?.code === "invalid_request" ? { outcome: "not_applied" } : {}), ...(issue?.details && typeof issue.details === "object" ? issue.details : issue?.details === undefined ? {} : { detail: issue.details }) },
+      { ...recoveryFor("outcome" in details ? details.outcome : outcome), ...details },
     );
   }
   if (!validateControlResponse(pathname, payload)) throw new ControlRequestError("invalid_response", "The daemon returned a malformed success response.", response.status, recovery);
@@ -254,5 +302,6 @@ export async function cancelLaunch(config: TetherConfig, url: string): Promise<v
   const { readControlToken } = await import("./config");
   const token = await readControlToken(config);
   if (!ticket || !token) return;
-  await fetch(`${discovery.origin}/control/cancel`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ ticket }), signal: AbortSignal.timeout(1000) }).catch(() => {});
+  const response = await fetch(`${discovery.origin}/control/cancel`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ ticket }), signal: AbortSignal.timeout(1000) });
+  if (!response.ok) throw Object.assign(new Error("Launch cancellation could not be confirmed."), { code: "launch_cleanup_failed", status: response.status });
 }

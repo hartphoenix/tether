@@ -1,5 +1,5 @@
 /** Serialized into the standalone Folio page; keep this function self-contained. */
-export function mountUpdateNotice(element: HTMLElement, api: string): void {
+export function mountUpdateNotice(element: HTMLElement, api: string, reportError?: (message: string) => void): void {
   let pending = false;
   let installing = false;
   let started = 0;
@@ -36,7 +36,7 @@ export function mountUpdateNotice(element: HTMLElement, api: string): void {
         started = Date.now();
         message("Installing Tether update…");
         try { await post("install", update.tag); }
-        catch { installing = false; message("Could not start update. Try again shortly."); }
+        catch { installing = false; (reportError ?? message)("Could not start update. Try again shortly."); }
         void check();
       };
       const notes = document.createElement("a");
@@ -49,7 +49,7 @@ export function mountUpdateNotice(element: HTMLElement, api: string): void {
       dismiss.onclick = async () => {
         dismiss.disabled = true;
         try { await post("dismiss", update.tag); element.hidden = true; }
-        catch { dismiss.disabled = false; }
+        catch { dismiss.disabled = false; (reportError ?? message)("Could not dismiss the update notice. Try again shortly."); }
       };
       element.append(install, " | ", notes, " | ", dismiss);
     } catch {

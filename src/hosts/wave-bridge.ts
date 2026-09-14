@@ -1,3 +1,4 @@
+import { operationError } from "../shared/diagnostics";
 import { chmod, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { readControlToken, type TetherConfig } from "../server/config";
 import { runtimeEntry } from "../runtime-paths";
@@ -50,22 +51,23 @@ async function bridgeRequest(config: TetherConfig, pathname: string, body?: unkn
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(2_000),
     });
-  } catch { throw new Error("Wave bridge unavailable. Relaunch Tether from Wave."); }
+  } catch (cause) { throw operationError(cause, { stage: "wave_bridge" }); }
+}
+
+async function requireBridgeSuccess(response: Response, fallback: string): Promise<void> {
+  if (response.ok) return;
+  let issue: { code?: string; message?: string; details?: unknown } | undefined;
+  try { issue = (await response.json() as { error?: typeof issue }).error; } catch { /* Preserve status if body is unreadable. */ }
+  throw Object.assign(new Error(issue?.message ?? fallback), { code: issue?.code ?? "wave_bridge_failed", status: response.status, details: issue?.details });
 }
 
 export async function openThroughWaveBridge(config: TetherConfig, request: OpenViewRequest): Promise<void> {
-  const response = await bridgeRequest(config, "/open", request);
-  if (!response.ok) {
-    let message = "Wave bridge could not open the view. Relaunch Tether from Wave.";
-    try { message = ((await response.json()) as { error?: { message?: string } }).error?.message ?? message; } catch { /* use default */ }
-    throw new Error(message);
-  }
+  await requireBridgeSuccess(await bridgeRequest(config, "/open", request), "Wave bridge could not open the view. Relaunch Tether from Wave.");
 }
 
 export async function updateWaveRecentsThroughBridge(config: TetherConfig, entries: RecentEntry[]): Promise<void> {
   await waitForWaveBridge(config, 40);
-  const response = await bridgeRequest(config, "/recents", { entries });
-  if (!response.ok) throw new Error("Wave bridge could not update recent launchers.");
+  await requireBridgeSuccess(await bridgeRequest(config, "/recents", { entries }), "Wave bridge could not update recent launchers.");
 }
 
 export async function waveBridgeHealthy(config: TetherConfig): Promise<boolean> {
