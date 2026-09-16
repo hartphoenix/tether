@@ -106,7 +106,7 @@ Milkdown's entry dependencies are pinned to 7.22.1. Bun applies the four version
 
 To upgrade Milkdown, inspect the upstream implementations and remove each patch only when upstream supplies its behavior: live semantic link anchors and forced source-loss dismissal; shell-rooted free controls with guarded remeasurement; scene-local image/table dimensions and pointer conversion; bounded table and language menus. Re-run the geometry suite and complete check after replacing patches. Do not retain a patch merely because it still applies. When recording changes with Bun, exclude generated `.bun-tag-*` cache files from patches.
 
-A separate directory installed the final dependency tree with `bun install --frozen-lockfile --ignore-scripts`. Dependency patch application was verified from the lockfile, not solely from modified `node_modules`.
+A separate directory installed the final dependency tree with `bun install --frozen-lockfile --ignore-scripts`. PR CI subsequently exposed an EOF-context defect in the tooltip export patch that a reused package cache had hidden. The patch was regenerated against the original package with exports before the source-map footer; a new empty-cache install verified the helper exports through both the tooltip package and Milkdown kit.
 
 ### Verified
 
