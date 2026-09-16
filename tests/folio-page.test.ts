@@ -334,3 +334,24 @@ test("ordinary Folio errors stay in a viewport popup until Close or Escape", asy
   }
   dom.window.close();
 });
+
+
+test("live theme colors preserve Folio controls and document elements", async () => {
+  const { folioTheme } = await import("../src/web/folio-page");
+  const { dom, events } = runPage({ sequence: 1, files: [{ path: "/notes.md", name: "Notes", view: "active" }] });
+  await Bun.sleep(0);
+  const doc = dom.window.document;
+  doc.querySelector<HTMLButtonElement>("#select")!.click();
+  doc.querySelector<HTMLInputElement>(".file-check")!.click();
+  doc.querySelector<HTMLButtonElement>("#more")!.click();
+  const row = doc.querySelector(".file");
+  const theme = folioTheme({ theme: "tether" });
+  events().listeners.get("theme")!({ data: JSON.stringify(theme) });
+  expect(doc.documentElement.style.getPropertyValue("--bg")).toBe(theme.palette.background);
+  expect(doc.documentElement.style.getPropertyValue("--accent")).toBe(theme.palette.primary);
+  expect(doc.documentElement.style.colorScheme).toBe("light");
+  expect(doc.querySelector(".file")).toBe(row);
+  expect(doc.querySelector<HTMLInputElement>(".file-check")!.checked).toBe(true);
+  expect(doc.querySelector("#app-menu")!.classList.contains("open")).toBe(true);
+  dom.window.close();
+});
