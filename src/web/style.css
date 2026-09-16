@@ -66,14 +66,12 @@ body {
 }
 
 .milkdown {
-  min-height: calc(100vh / var(--wm-editor-zoom, 1));
-  /* Keep document measurements and floating controls in one zoom space.
-     Older WebKit divides DOM rects by CSS zoom. */
-  zoom: var(--wm-editor-zoom, 1);
+  min-height: 100vh;
+
 }
 
 .milkdown .ProseMirror {
-  min-height: calc((100vh - 44px) / var(--wm-editor-zoom, 1));
+  min-height: calc((100vh - 44px) / var(--wm-editor-scale, 1));
   max-width: 880px;
   margin: 0 auto;
   padding: 36px 44px 120px;
@@ -82,7 +80,7 @@ body {
 /* Overlay scrollbars must sit below the final code line, including a new empty
    line. Keep clearance inside CodeMirror's measured content at every zoom. */
 .milkdown .milkdown-code-block .cm-content {
-  padding-bottom: max(20px, calc(20px / var(--wm-editor-zoom, 1)));
+  padding-bottom: max(20px, calc(20px / var(--wm-editor-scale, 1)));
 }
 
 /* Milkdown swaps offscreen CodeMirror views for <pre> placeholders. Match
@@ -96,7 +94,7 @@ body {
 }
 
 .milkdown .milkdown-code-block .milkdown-code-block-placeholder {
-  padding: 34px 2px max(20px, calc(20px / var(--wm-editor-zoom, 1))) 6px;
+  padding: 34px 2px max(20px, calc(20px / var(--wm-editor-scale, 1))) 6px;
   white-space: pre;
   word-break: normal;
   overflow-wrap: normal;
@@ -140,7 +138,6 @@ body {
 }
 
 .milkdown .milkdown-top-bar {
-  zoom: calc(1 / var(--wm-editor-zoom, 1));
   position: sticky;
   z-index: 18;
   top: 0;
@@ -166,9 +163,9 @@ body {
 
 .milkdown .milkdown-toolbar {
   /* Selection actions take precedence over hover controls and other overlays. */
-  z-index: 1001;
+  z-index: 24;
   width: max-content;
-  max-width: calc(100vw / var(--wm-editor-zoom, 1) - 16px);
+  max-width: calc(100vw - 16px);
   flex-wrap: wrap;
 }
 

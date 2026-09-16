@@ -1,0 +1,157 @@
+diff --git a/lib/index.js b/lib/index.js
+index 3de96ebf157df0abce33c358adc025ea90e99dda..fbc53ed53fb7a8f6c9946979fc5adcb2db6ab3ea 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1,3 +1,4 @@
++import { observeFloating, fitFloating } from '@milkdown/plugin-tooltip'
+ import { Plugin, PluginKey, TextSelection } from "@milkdown/prose/state";
+ import { $ctx, $prose } from "@milkdown/utils";
+ import { computePosition, flip, offset } from "@floating-ui/dom";
+@@ -29,6 +30,8 @@ function slashFactory(id) {
+ //#endregion
+ //#region src/slash-provider.ts
+ var SlashProvider = class {
++	#cleanupPosition;
++	#positionVersion = 0;
+ 	#initialized;
+ 	#middleware;
+ 	#floatingUIOptions;
+@@ -50,7 +53,7 @@ var SlashProvider = class {
+ 			const to = Math.max(...ranges.map((range) => range.$to.pos));
+ 			const isSame = prevState && prevState.doc.eq(doc) && prevState.selection.eq(selection);
+ 			if (!this.#initialized) {
+-				(this.#root ?? view.dom.parentElement ?? document.body).appendChild(this.element);
++				(this.#root ?? view.dom.closest(".milkdown") ?? view.dom.parentElement ?? document.body).appendChild(this.element);
+ 				this.#initialized = true;
+ 			}
+ 			if (composing || isSame) return;
+@@ -58,6 +61,10 @@ var SlashProvider = class {
+ 				this.hide();
+ 				return;
+ 			}
++    this.#cleanupPosition?.();
++    this.element.dataset.show = "true";
++    this.#cleanupPosition = observeFloating({ getBoundingClientRect: () => posToDOMRect(view, from, to) }, this.element, () => {
++      const version = ++this.#positionVersion;
+ 			computePosition({ getBoundingClientRect: () => posToDOMRect(view, from, to) }, this.element, {
+ 				placement: "bottom-start",
+ 				middleware: [
+@@ -67,11 +74,14 @@ var SlashProvider = class {
+ 				],
+ 				...this.#floatingUIOptions
+ 			}).then(({ x, y }) => {
++      if (version !== this.#positionVersion || !this.element.isConnected || this.element.dataset.show !== "true") return;
+ 				Object.assign(this.element.style, {
+ 					left: `${x}px`,
+ 					top: `${y}px`
+ 				});
++				fitFloating(this.element);
+ 			}).catch(console.error);
++    });
+ 			this.show();
+ 		};
+ 		this.#_shouldShow = (view) => {
+@@ -97,6 +107,8 @@ var SlashProvider = class {
+ 			return $from.parent.textBetween(Math.max(0, $from.parentOffset - 500), $from.parentOffset, void 0, "￼");
+ 		};
+ 		this.destroy = () => {
++    this.#cleanupPosition?.();
++    this.#positionVersion++;
+ 			this.#updater.cancel();
+ 		};
+ 		this.show = () => {
+@@ -104,6 +116,8 @@ var SlashProvider = class {
+ 			this.onShow();
+ 		};
+ 		this.hide = () => {
++    this.#cleanupPosition?.();
++    this.#positionVersion++;
+ 			this.element.dataset.show = "false";
+ 			this.onHide();
+ 		};
+diff --git a/package.json b/package.json
+index 50023b7291c35bf07d72e725b6717e270ec07ebf..4ed79ab020d8bb449ef5e292d220a1d2fbce858a 100644
+--- a/package.json
++++ b/package.json
+@@ -30,7 +30,8 @@
+     "lodash-es": "^4.17.21",
+     "@milkdown/prose": "7.22.1",
+     "@milkdown/utils": "7.22.1",
+-    "@milkdown/ctx": "7.22.1"
++    "@milkdown/ctx": "7.22.1",
++    "@milkdown/plugin-tooltip": "7.22.1"
+   },
+   "scripts": {
+     "build": "vite build"
+diff --git a/src/slash-provider.ts b/src/slash-provider.ts
+index a4ab34872b1774f8ed8e3302dfe72e72a896e93e..58b07fbbe777cd5ea612e2b1dff1272bbcdcc8d6 100644
+--- a/src/slash-provider.ts
++++ b/src/slash-provider.ts
+@@ -1,3 +1,4 @@
++import { observeFloating, fitFloating } from '@milkdown/plugin-tooltip'
+ import type {
+   ComputePositionConfig,
+   Middleware,
+@@ -35,6 +36,9 @@ export interface SlashProviderOptions {
+ 
+ /// A provider for creating slash.
+ export class SlashProvider {
++  #cleanupPosition?: () => void
++  #positionVersion = 0
++
+   /// The root element of the slash.
+   element: HTMLElement
+ 
+@@ -97,7 +101,7 @@ export class SlashProvider {
+       prevState && prevState.doc.eq(doc) && prevState.selection.eq(selection)
+ 
+     if (!this.#initialized) {
+-      const root = this.#root ?? view.dom.parentElement ?? document.body
++      const root = this.#root ?? view.dom.closest<HTMLElement>('.milkdown') ?? view.dom.parentElement ?? document.body
+       root.appendChild(this.element)
+       this.#initialized = true
+     }
+@@ -112,18 +116,25 @@ export class SlashProvider {
+     const virtualEl: VirtualElement = {
+       getBoundingClientRect: () => posToDOMRect(view, from, to),
+     }
++    this.#cleanupPosition?.();
++    this.element.dataset.show = "true";
++    this.#cleanupPosition = observeFloating(virtualEl, this.element, () => {
++      const version = ++this.#positionVersion;
+     computePosition(virtualEl, this.element, {
+       placement: 'bottom-start',
+       middleware: [flip(), offset(this.#offset), ...this.#middleware],
+       ...this.#floatingUIOptions,
+     })
+       .then(({ x, y }) => {
++      if (version !== this.#positionVersion || !this.element.isConnected || this.element.dataset.show !== "true") return;
+         Object.assign(this.element.style, {
+           left: `${x}px`,
+           top: `${y}px`,
+         })
++        fitFloating(this.element)
+       })
+       .catch(console.error)
++    });
+ 
+     this.show()
+   }
+@@ -184,6 +195,8 @@ export class SlashProvider {
+ 
+   /// Destroy the slash.
+   destroy = () => {
++    this.#cleanupPosition?.();
++    this.#positionVersion++;
+     this.#updater.cancel()
+   }
+ 
+@@ -195,6 +208,8 @@ export class SlashProvider {
+ 
+   /// Hide the slash.
+   hide = () => {
++    this.#cleanupPosition?.();
++    this.#positionVersion++;
+     this.element.dataset.show = 'false'
+     this.onHide()
+   }

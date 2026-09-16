@@ -24,7 +24,6 @@ export function installCmuxFindCompatibility(win: Window & typeof globalThis): (
   const currentName = "tether-cmux-find-current";
   let matches: Match[] = [];
   let anchors: Array<{ parent: Node; text: string; start: number; end: number; current: boolean }> = [];
-  let unscaledZoomRects: boolean | undefined;
   const style = doc.createElement("style");
   style.textContent = `::highlight(${allName}) { background: #facc15; color: #000; }
     ::highlight(${currentName}) { background: #f97316; color: #fff; }`;
@@ -103,23 +102,8 @@ export function installCmuxFindCompatibility(win: Window & typeof globalThis): (
           const range = rangeFor(anchor);
           if (!range) return;
           const rect = range.getBoundingClientRect();
-          if (unscaledZoomRects === undefined) {
-            const probe = doc.createElement("div");
-            probe.style.cssText = "position:absolute;left:-10000px;top:0;width:100px;height:1px;zoom:2;visibility:hidden";
-            doc.body.append(probe);
-            unscaledZoomRects = Math.abs(probe.getBoundingClientRect().width - 100) < 1;
-            probe.remove();
-          }
-          let zoom = 1;
-          if (unscaledZoomRects) {
-            for (let el = range.startContainer.parentElement; el; el = el.parentElement) {
-              zoom *= Number.parseFloat(win.getComputedStyle(el).zoom) || 1;
-            }
-          }
-          // Use the final text geometry, not a wrapper the editor will remove.
-          // Older WebKit reports document coordinates before CSS zoom, then
-          // subtracts the (scaled) window scroll offset. Correct both terms.
-          const center = (rect.top + win.scrollY + rect.height / 2) * zoom;
+          // Transform-scaled document ranges use ordinary viewport CSS pixels.
+          const center = rect.top + win.scrollY + rect.height / 2;
           win.scrollTo({ top: center - win.innerHeight / 2, behavior: "instant" });
         },
       }));
