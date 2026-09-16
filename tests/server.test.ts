@@ -121,19 +121,19 @@ test("shutdown drains in-flight requests before closing the document store", asy
   expect(closed).toBe(true);
 });
 
-function sseSnapshots(response: Response) {
+function sseSnapshots<T = RecentsSnapshot>(response: Response, eventName = "snapshot") {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buffered = "";
   return {
-    async next(): Promise<RecentsSnapshot> {
+    async next(): Promise<T> {
       while (true) {
         const boundary = buffered.indexOf("\n\n");
         if (boundary >= 0) {
           const block = buffered.slice(0, boundary);
           buffered = buffered.slice(boundary + 2);
           const data = block.split("\n").filter((line) => line.startsWith("data: ")).map((line) => line.slice(6)).join("\n");
-          if (data) return JSON.parse(data) as RecentsSnapshot;
+          if (data && block.split("\n").includes(`event: ${eventName}`)) return JSON.parse(data) as T;
           continue;
         }
         const chunk = await reader.read();
@@ -789,4 +789,35 @@ test("Folio protects conversation history, locates stale records and reports mix
   expect(result.completed).toEqual([file.other]); expect(result.failed).toHaveLength(1);
   const missing = await post("open", { path: file.other });
   expect((await missing.json() as any).error.code).toBe("folio_file_missing");
+});
+
+
+test("Folio theme events follow committed saves and reconnect with the current palette", async () => {
+  const { tetherDesign } = await import("../src/shared/themes");
+  const { folioTheme } = await import("../src/web/folio-page");
+  const file = await fixture();
+  const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000 });
+  daemons.push(daemon); await daemon.ready;
+  const reader = await exchange(daemon, file.path);
+  const folio = await exchangeRecents(daemon, file.config);
+  const connect = async () => sseSnapshots<ReturnType<typeof folioTheme>>(
+    await fetch(recentsUrl(daemon, folio.location, "api/events"), { headers: { cookie: folio.cookie } }), "theme");
+  const put = (body: unknown) => sessionFetch(daemon, reader.location, reader.cookie, "api/preferences", {
+    method: "PUT", headers: { origin: daemon.origin }, body: JSON.stringify(body),
+  });
+  const events = await connect();
+  expect(await events.next()).toEqual(folioTheme());
+  expect((await put({ theme: "nord" })).status).toBe(200);
+  expect(await events.next()).toEqual(folioTheme({ theme: "nord" }));
+  const theme = { ...tetherDesign(true), id: "custom-live", name: "Live" };
+  expect((await put({ theme: theme.id, saveTheme: theme })).status).toBe(200);
+  expect(await events.next()).toEqual(folioTheme({ design: theme }));
+  const edited = { ...theme, colors: { ...theme.colors, background: "#123456" } };
+  expect((await put({ saveTheme: edited })).status).toBe(200);
+  expect(await events.next()).toEqual(folioTheme({ design: edited }));
+  expect((await put({ saveTheme: { ...theme, metrics: { bodySize: 500 } } })).status).toBe(400);
+  await events.cancel();
+  const reconnected = await connect();
+  expect(await reconnected.next()).toEqual(folioTheme({ design: edited }));
+  await reconnected.cancel();
 });

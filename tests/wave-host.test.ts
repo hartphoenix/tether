@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
-import { SUPPORTED_WAVE_VERSION, WaveHostAdapter, type WaveCommandResult } from "../src/hosts/wave";
+import { MINIMUM_WAVE_VERSION, WaveHostAdapter, type WaveCommandResult } from "../src/hosts/wave";
 
 test("detects Wave 0.14.5 and creates a hidden-navigation web block", async () => {
   const calls: Array<{ command: string[]; env: NodeJS.ProcessEnv }> = [];
   const run = async (command: string[], env: NodeJS.ProcessEnv): Promise<WaveCommandResult> => {
     calls.push({ command, env });
-    return { exitCode: 0, stdout: command[1] === "version" ? `wsh v${SUPPORTED_WAVE_VERSION}` : "", stderr: "" };
+    return { exitCode: 0, stdout: command[1] === "version" ? `wsh v${MINIMUM_WAVE_VERSION}` : "", stderr: "" };
   };
   const adapter = new WaveHostAdapter({
     wshPath: "wsh",
@@ -28,7 +28,7 @@ test("detects Wave 0.14.5 and creates a hidden-navigation web block", async () =
     fileNavigatorHook: false,
     revealFile: true,
   });
-  expect(adapter.launchTarget()).toEqual({ host: "wave", version: SUPPORTED_WAVE_VERSION, workspaceId: "workspace-one", tabId: "tab-one" });
+  expect(adapter.launchTarget()).toEqual({ host: "wave", version: MINIMUM_WAVE_VERSION, workspaceId: "workspace-one", tabId: "tab-one" });
   expect(await adapter.openView({ url: "http://127.0.0.1:8420/launch?ticket=one", kind: "document", focus: true, target: { workspaceId: "workspace-two", tabId: "tab-two" } })).toEqual({ launchConsumed: true });
   expect(calls.at(-1)?.command).toEqual([
     "wsh", "createblock", "web", "url=http://127.0.0.1:8420/launch?ticket=one", "web:hidenav=true",
@@ -37,20 +37,20 @@ test("detects Wave 0.14.5 and creates a hidden-navigation web block", async () =
   expect(calls.at(-1)?.env.UNRELATED_SECRET).toBeUndefined();
 });
 
-test("uses the documented web-open fallback outside the verified Wave version", async () => {
+test.each(["0.14.6", "0.15.0", "0.100.0", "1.0.0"])("preserves hidden navigation on newer Wave %s", async version => {
   const commands: string[][] = [];
   const adapter = new WaveHostAdapter({
     wshPath: "wsh",
     env: { WAVETERM: "1", WAVETERM_JWT: "jwt" },
     run: async (command) => {
       commands.push(command);
-      return { exitCode: 0, stdout: command[1] === "version" ? "wsh v0.15.0" : "", stderr: "" };
+      return { exitCode: 0, stdout: command[1] === "version" ? `wsh v${version}` : "", stderr: "" };
     },
   });
   expect(await adapter.detect()).toBe(true);
-  expect(adapter.capabilities().hiddenNavigation).toBe(false);
+  expect(adapter.capabilities().hiddenNavigation).toBe(true);
   await adapter.openView({ url: "http://127.0.0.1:8420/", kind: "document", focus: true });
-  expect(commands.at(-1)).toEqual(["wsh", "web", "open", "http://127.0.0.1:8420/"]);
+  expect(commands.at(-1)).toEqual(["wsh", "createblock", "web", "url=http://127.0.0.1:8420/", "web:hidenav=true"]);
 });
 
 test("resolves a cmd widget's containing tab from its JWT-bound block", async () => {
@@ -111,4 +111,16 @@ test("synchronizes recent entries through the Wave launcher adapter", async () =
   });
   await adapter.recentsChanged([{ path: "/docs/review.md", createdAt: 1 }]);
   expect(synchronized).toEqual([["/docs/review.md"]]);
+});
+
+test.each(["0.14.4", "0.9.99", "unknown"])("rejects unsupported Wave %s without opening a view", async version => {
+  const commands: string[][] = [];
+  const adapter = new WaveHostAdapter({
+    wshPath: "wsh", env: { WAVETERM: "1", WAVETERM_JWT: "memory-only" },
+    run: async command => { commands.push(command); return { exitCode: 0, stdout: `wsh v${version}`, stderr: "" }; },
+  });
+  await adapter.detect();
+  expect(adapter.capabilities().embeddedBrowser).toBe(false);
+  await expect(adapter.openView({ url: "http://127.0.0.1:8420/", kind: "document", focus: true })).rejects.toMatchObject({ code: "unsupported_version" });
+  expect(commands).toEqual([["wsh", "version"]]);
 });

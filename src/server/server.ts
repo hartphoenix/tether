@@ -12,7 +12,7 @@ import { AgentReads } from "../documents/agent-reads";
 import { INPUT_LIMITS, invalidRequest, validateControlInput } from "../shared/control-input";
 import { AnnotationLedgerError } from "../core/index";
 import { PrivateStoreConflictError, PrivateStoreDocumentNotFoundError } from "../storage/private-store";
-import { folioHtml } from "../web/folio-page";
+import { folioHtml, folioTheme } from "../web/folio-page";
 import { readFile, realpath, stat } from "node:fs/promises";
 import {
   PROTOCOL_VERSION,
@@ -233,6 +233,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const sessions = new Map<string, Session>();
   const recentsSessions = new Map<string, RecentsSession>();
   const recentsStreamClosers = new Set<() => void>();
+  const themeSubscribers = new Set<(value: AppPreferences) => void>();
   const startedAt = now();
   let emptySince = 0;
   let stopped = false;
@@ -290,6 +291,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (closed) return;
       closed = true;
       unsubscribe();
+      themeSubscribers.delete(sendTheme);
       if (heartbeat) clearInterval(heartbeat);
       heartbeat = undefined;
       request.signal.removeEventListener("abort", cleanup);
@@ -301,6 +303,13 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       try { controller.enqueue(encoder.encode(value)); }
       catch { cleanup(); }
     };
+    let lastTheme = "";
+    const sendTheme = (value: AppPreferences) => {
+      const theme = JSON.stringify(folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }));
+      if (theme === lastTheme) return;
+      lastTheme = theme;
+      send(`event: theme\ndata: ${theme}\n\n`);
+    };
     const sendSnapshot = (snapshot: FolioSnapshot) => {
       send(`id: ${snapshot.sequence}\nevent: snapshot\ndata: ${JSON.stringify({ ...snapshot, instanceId })}\n\n`);
     };
@@ -308,6 +317,12 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       start(value) {
         controller = value;
         unsubscribe = recents.subscribeFolio(sendSnapshot);
+        themeSubscribers.add(sendTheme);
+        // Serialize the initial theme with saves so a reconnect cannot send
+        // stale colors after a newer committed theme.
+        preferenceWrites = preferenceWrites.then(async () => {
+          if (!closed) sendTheme(await preferences());
+        }).catch(() => {});
         recentsStreamClosers.add(cleanup);
         request.signal.addEventListener("abort", cleanup, { once: true });
         heartbeat = setInterval(() => send(": keepalive\n\n"), 20_000);
@@ -588,6 +603,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const temp = `${config.preferencesPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
           await writeFile(temp, JSON.stringify(value), { mode: 0o600 });
           await rename(temp, config.preferencesPath);
+          for (const subscriber of themeSubscribers) subscriber(value);
           return value;
         });
         preferenceWrites = operation.catch(() => {});

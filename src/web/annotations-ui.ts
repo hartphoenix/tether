@@ -72,6 +72,7 @@ export interface AnnotationUiOptions {
   onSelectThread?: (thread: AnnotationThread) => void;
   onNotice?: (message: string) => void;
   onExport?: () => void | Promise<void>;
+  onCopyFilePath?: () => void | Promise<void>;
   /** Actor using this viewer; any other latest author hands the thread to them. */
   localActor?: string;
   /** Optional lazy lookup keeps the controller independent of app state. */
@@ -815,6 +816,15 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       exportButton.innerHTML = iconSvg("download-simple");
       exportButton.addEventListener("click", () => { void options.onExport!(); });
       controls.append(exportButton);
+    }
+    if (options.onCopyFilePath) {
+      const copyPath = createElement("button", "wm-rail-button");
+      copyPath.type = "button";
+      copyPath.title = "Copy file path";
+      copyPath.setAttribute("aria-label", "Copy file path");
+      copyPath.innerHTML = iconSvg("file-code");
+      copyPath.addEventListener("click", () => { void options.onCopyFilePath!(); });
+      controls.append(copyPath);
     }
     controls.append(hide);
     header.append(title, controls, badge);

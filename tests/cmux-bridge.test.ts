@@ -19,7 +19,7 @@ import { controlRecentsLaunch } from "../src/server/lifecycle";
 import { createBrowserHost } from "../src/hosts/browser";
 import { HostGateway } from "../src/hosts/host-gateway";
 import { createDaemon, type TetherDaemon } from "../src/server/server";
-import { SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT, SUPPORTED_CMUX_VERSION } from "../src/hosts/cmux";
+import { SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT, MINIMUM_CMUX_VERSION } from "../src/hosts/cmux";
 
 const directories: string[] = [];
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
@@ -50,7 +50,7 @@ test("stores only non-secret cmux bridge discovery with private permissions", as
     origin: "http://127.0.0.1:48123",
     instanceId: "bridge-one",
     daemonInstanceId: "daemon-one",
-    cmuxVersion: SUPPORTED_CMUX_VERSION,
+    cmuxVersion: MINIMUM_CMUX_VERSION,
     cmuxBuild: SUPPORTED_CMUX_BUILD,
     cmuxCommit: SUPPORTED_CMUX_COMMIT,
     cmuxSocketFingerprint: testSocketFingerprint,
@@ -78,7 +78,7 @@ test("authenticates bridge calls and preserves the complete open operation", asy
       service: "tether-cmux-bridge",
       instanceId: "bridge-one",
       daemonInstanceId: "daemon-one",
-      cmuxVersion: SUPPORTED_CMUX_VERSION,
+      cmuxVersion: MINIMUM_CMUX_VERSION,
       cmuxBuild: SUPPORTED_CMUX_BUILD,
       cmuxCommit: SUPPORTED_CMUX_COMMIT,
       cmuxSocketFingerprint: testSocketFingerprint,
@@ -93,7 +93,7 @@ test("authenticates bridge calls and preserves the complete open operation", asy
     origin: `http://127.0.0.1:${server.port}`,
     instanceId: "bridge-one",
     daemonInstanceId: "daemon-one",
-    cmuxVersion: SUPPORTED_CMUX_VERSION,
+    cmuxVersion: MINIMUM_CMUX_VERSION,
     cmuxBuild: SUPPORTED_CMUX_BUILD,
     cmuxCommit: SUPPORTED_CMUX_COMMIT,
     cmuxSocketFingerprint: testSocketFingerprint,
@@ -145,7 +145,7 @@ test("returns structured bridge errors without using another host", async () => 
     origin: `http://127.0.0.1:${server.port}`,
     instanceId: "bridge-error",
     daemonInstanceId: "daemon-error",
-    cmuxVersion: SUPPORTED_CMUX_VERSION,
+    cmuxVersion: MINIMUM_CMUX_VERSION,
     cmuxBuild: SUPPORTED_CMUX_BUILD,
     cmuxCommit: SUPPORTED_CMUX_COMMIT,
     cmuxSocketFingerprint: testSocketFingerprint,
@@ -171,7 +171,7 @@ test("routes cmux targets through the bridge without browser fallback", async ()
     origin: `http://127.0.0.1:${server.port}`,
     instanceId: "bridge-gateway",
     daemonInstanceId: "daemon-gateway",
-    cmuxVersion: SUPPORTED_CMUX_VERSION,
+    cmuxVersion: MINIMUM_CMUX_VERSION,
     cmuxBuild: SUPPORTED_CMUX_BUILD,
     cmuxCommit: SUPPORTED_CMUX_COMMIT,
     cmuxSocketFingerprint: testSocketFingerprint,
@@ -189,7 +189,8 @@ test("routes cmux targets through the bridge without browser fallback", async ()
     surfaceId: "33333333-3333-4333-8333-333333333333",
   };
   expect(gateway.capabilities(target)).toMatchObject({ embeddedBrowser: true, widgetInstallation: false, fileNavigatorHook: false });
-  expect(gateway.capabilities({ ...target, build: String(SUPPORTED_CMUX_BUILD + 1) })).toMatchObject({ embeddedBrowser: false });
+  expect(gateway.capabilities({ ...target, version: "0.64.24", build: "104", commit: "f5da007dd" })).toMatchObject({ embeddedBrowser: true });
+  expect(gateway.capabilities({ ...target, version: "0.64.21" })).toMatchObject({ embeddedBrowser: false });
   await expect(gateway.openView({ url: "http://127.0.0.1:8420/launch?ticket=x", kind: "document", focus: true, target })).rejects.toMatchObject({ code: "bridge_relaunch_required" });
   expect(browserOpens).toEqual([]);
 });
@@ -206,14 +207,14 @@ test("requires the inherited signed cmux capability to bootstrap callbacks", asy
   });
 });
 
-test("rejects an unsupported exact cmux build before spawning a bridge", async () => {
+test("rejects an older cmux version before spawning a bridge", async () => {
   const { config } = await fixture("unsupported-build");
   await writeDiscovery(config, { protocol: 1, instanceId: "daemon-build", pid: process.pid, origin: "http://127.0.0.1:8422", startedAt: new Date().toISOString() });
   const directory = join(config.runtimeDir, "bin");
   await mkdir(directory);
   const executable = join(directory, "cmux");
   await writeFile(executable, `#!/bin/sh
-if [ "$1" = "--version" ]; then echo 'cmux ${SUPPORTED_CMUX_VERSION} (${SUPPORTED_CMUX_BUILD + 1}) [${SUPPORTED_CMUX_COMMIT}]'; else echo '{}'; fi
+if [ "$1" = "--version" ]; then echo 'cmux 0.64.21 (${SUPPORTED_CMUX_BUILD + 1}) [${SUPPORTED_CMUX_COMMIT}]'; else echo '{}'; fi
 `);
   await chmod(executable, 0o700);
   await expect(startCmuxBridge(config, {
@@ -226,7 +227,10 @@ if [ "$1" = "--version" ]; then echo 'cmux ${SUPPORTED_CMUX_VERSION} (${SUPPORTE
   expect(await readCmuxBridge(config)).toBeNull();
 });
 
-test("runs callback placement through a detached capability-retaining bridge", async () => {
+test.each([
+  [MINIMUM_CMUX_VERSION, SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT],
+  ["0.64.24", 104, "f5da007dd"],
+] as const)("runs detached callback placement on cmux %s", async (version, build, commit) => {
   const directory = await mkdtemp(join("/tmp", "tether-cmux-bridge-process-"));
   directories.push(directory);
   const config = resolveConfig({ profile: "process", runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
@@ -246,7 +250,7 @@ test("runs callback placement through a detached capability-retaining bridge", a
   const versionFile = join(directory, "cmux-version.txt");
   const executable = join(bin, "cmux");
   await mkdir(bin);
-  await writeFile(versionFile, `cmux ${SUPPORTED_CMUX_VERSION} (${SUPPORTED_CMUX_BUILD}) [${SUPPORTED_CMUX_COMMIT}]\n`);
+  await writeFile(versionFile, `cmux ${version} (${build}) [${commit}]\n`);
   await writeFile(executable, `#!/bin/sh
 printf '%s\\n' "$*" >> '${log}'
 case "$*" in
@@ -270,13 +274,14 @@ esac
     CMUX_WORKSPACE_ID: ids.workspace,
     CMUX_SURFACE_ID: ids.surface,
   };
-  const buildOptions = { cmuxVersion: SUPPORTED_CMUX_VERSION, cmuxBuild: SUPPORTED_CMUX_BUILD, cmuxCommit: SUPPORTED_CMUX_COMMIT };
+  const buildOptions = { cmuxVersion: version, cmuxBuild: build, cmuxCommit: commit };
   const started = await Promise.all([
     startCmuxBridge(config, bridgeEnv, buildOptions),
     startCmuxBridge(config, bridgeEnv, buildOptions),
   ]);
   expect(started[0]?.instanceId).toBe(started[1]?.instanceId);
   const firstRecord = await readCmuxBridge(config);
+  expect(firstRecord).toMatchObject({ cmuxVersion: version, cmuxBuild: build, cmuxCommit: commit });
   expect(firstRecord?.cmuxSocketFingerprint).toBe(fingerprintCmuxSocket(bridgeEnv.CMUX_SOCKET_PATH));
 
   const replacementSocket = join(directory, "another-cmux.sock");
@@ -294,14 +299,20 @@ esac
     kind: "document",
     focus: false,
     allowFocusedFallback: false,
-    target: { host: "cmux", version: "0.64.22", build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface },
+    target: { host: "cmux", version, build: String(build), commit: commit, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface },
+  });
+  // A reader captured before a compatible cmux upgrade remains usable.
+  await openThroughCmuxBridge(config, {
+    url: `${daemon.origin}/launch?ticket=pre-upgrade-reader`, kind: "document", focus: false,
+    target: { host: "cmux", version: MINIMUM_CMUX_VERSION, build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT,
+      windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface },
   });
   // Replace the fake host's live tree with a reader; the bridge must forward
   // source-pane placement and native local-file requests without losing context.
   const readerUrl = `${daemon.origin}/s/source-reader/`;
   const executableBody = await readFile(executable, "utf8");
   await writeFile(executable, executableBody.replace('"type":"terminal","title":"shell"', `"type":"browser","url":"${readerUrl}"`));
-  const target = { host: "cmux", version: "0.64.22", build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface };
+  const target = { host: "cmux", version, build: String(build), commit: commit, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface };
   await openThroughCmuxBridge(config, { url: `${daemon.origin}/launch?ticket=linked`, kind: "document", focus: true,
     targetPolicy: "source-pane", sourceUrl: readerUrl, target });
   await openLocalFileThroughCmuxBridge(config, { path: "/tmp/transcript with spaces.txt", sourceUrl: readerUrl, target });
@@ -318,7 +329,7 @@ esac
     url: "https://example.com/launch?ticket=opaque",
     kind: "document",
     focus: true,
-    target: { host: "cmux", version: "0.64.22", build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface },
+    target: { host: "cmux", version, build: String(build), commit: commit, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface },
   })).rejects.toMatchObject({ code: "invalid_request", status: 400 });
   // Folio's restart route must preserve the bridge before stopping the daemon.
   // Exercise the same preparation, then a gap longer than its watchdog period.
@@ -359,19 +370,19 @@ esac
       url: `${oldOrigin}/launch?ticket=obsolete`, kind: "document", focus: false, target,
     })).rejects.toMatchObject({ code: "invalid_request" });
   }
-  await writeFile(versionFile, `cmux ${SUPPORTED_CMUX_VERSION} (${SUPPORTED_CMUX_BUILD + 1}) [${SUPPORTED_CMUX_COMMIT}]\n`);
+  await writeFile(versionFile, `cmux ${version} (${build + 1}) [${commit}]\n`);
   expect(await cmuxBridgeStatus(config)).toMatchObject({
     running: true,
     callbackPlacementReady: false,
-    issue: { code: "unsupported_version" },
+    issue: { code: "bridge_relaunch_required" },
   });
   await expect(openThroughCmuxBridge(config, {
     url: `${current.origin}/launch?ticket=still-valid-shape`,
     kind: "document",
     focus: false,
-    target: { host: "cmux", version: "0.64.22", build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface },
-  })).rejects.toMatchObject({ code: "unsupported_version", status: 400 });
-  await writeFile(versionFile, `cmux ${SUPPORTED_CMUX_VERSION} (${SUPPORTED_CMUX_BUILD}) [${SUPPORTED_CMUX_COMMIT}]\n`);
+    target: { host: "cmux", version, build: String(build), commit: commit, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface },
+  })).rejects.toMatchObject({ code: "bridge_relaunch_required", status: 503 });
+  await writeFile(versionFile, `cmux ${version} (${build}) [${commit}]\n`);
   await current.stop();
   const unplanned = createDaemon({ config, startupGraceMs: 600_000 });
   daemons.push(unplanned);

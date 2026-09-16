@@ -53,6 +53,8 @@ test("renders Folio Active and Archive views with organization controls", async 
   expect(html).toContain("<title>Tether Folio</title>");
   expect(html).toContain("Export with annotations");
   expect(html).toContain("Restart service");
+  expect(dom.window.document.querySelector("#app-menu")?.textContent).not.toContain("Getting started");
+  expect(dom.window.document.querySelector("#clear-unpinned")).toBeNull();
   expect([...dom.window.document.querySelectorAll(".name")].map((node) => node.textContent)).toEqual(["one.md"]);
   expect(dom.window.document.querySelector(".attention")?.textContent).toBe("1");
 
@@ -87,15 +89,6 @@ test("accepts a lower snapshot sequence after the daemon instance changes", asyn
   events().emit({ instanceId: "new", sequence: 1, files: [archived], retention: { mode: "days", days: 30 } });
   dom.window.document.querySelector<HTMLButtonElement>('[data-view="archive"]')!.click();
   expect(dom.window.document.querySelector(".name")?.textContent).toBe("two.md");
-});
-
-test("Getting started requests a scoped welcome launch", async () => {
-  const { dom, requests } = runPage({ instanceId: "one", sequence: 1, files: [], retention: { mode: "forever" } });
-  await Bun.sleep(0);
-  dom.window.document.querySelector<HTMLButtonElement>("#welcome")!.click();
-  await Bun.sleep(0);
-  expect(requests).toContainEqual({ endpoint: "welcome", body: {} });
-  dom.window.close();
 });
 
 test("confirms immediate-retention clearing before sending the mutation", async () => {
@@ -339,5 +332,26 @@ test("ordinary Folio errors stay in a viewport popup until Close or Escape", asy
     expect(popup.open).toBe(false);
     expect(doc.activeElement).toBe(source);
   }
+  dom.window.close();
+});
+
+
+test("live theme colors preserve Folio controls and document elements", async () => {
+  const { folioTheme } = await import("../src/web/folio-page");
+  const { dom, events } = runPage({ sequence: 1, files: [{ path: "/notes.md", name: "Notes", view: "active" }] });
+  await Bun.sleep(0);
+  const doc = dom.window.document;
+  doc.querySelector<HTMLButtonElement>("#select")!.click();
+  doc.querySelector<HTMLInputElement>(".file-check")!.click();
+  doc.querySelector<HTMLButtonElement>("#more")!.click();
+  const row = doc.querySelector(".file");
+  const theme = folioTheme({ theme: "tether" });
+  events().listeners.get("theme")!({ data: JSON.stringify(theme) });
+  expect(doc.documentElement.style.getPropertyValue("--bg")).toBe(theme.palette.background);
+  expect(doc.documentElement.style.getPropertyValue("--accent")).toBe(theme.palette.primary);
+  expect(doc.documentElement.style.colorScheme).toBe("light");
+  expect(doc.querySelector(".file")).toBe(row);
+  expect(doc.querySelector<HTMLInputElement>(".file-check")!.checked).toBe(true);
+  expect(doc.querySelector("#app-menu")!.classList.contains("open")).toBe(true);
   dom.window.close();
 });
