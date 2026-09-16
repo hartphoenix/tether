@@ -1,3 +1,4 @@
+import { placeOverlay, type ViewportRect } from './overlay';
 import { NodeSelection, Plugin, TextSelection, type EditorState, type Selection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose } from "@milkdown/kit/utils";
@@ -209,6 +210,8 @@ class SelectionUi implements SelectionUiController {
     if (this.overlay && target instanceof Node && !this.overlay.contains(target)) this.close();
   };
   private overlay: HTMLElement | null = null;
+  private overlayCleanup: (() => void) | null = null;
+  private staleSelection = false;
   private codeCommentToolbar: HTMLElement | null = null;
   private codeCommentProvider: TooltipProvider | null = null;
   private editorView: EditorView | null = null;
@@ -241,6 +244,8 @@ class SelectionUi implements SelectionUiController {
   }
 
   close(): void {
+    this.overlayCleanup?.();
+    this.overlayCleanup = null;
     this.overlay?.remove();
     this.overlay = null;
     this.hideCodeCommentToolbar();
@@ -335,7 +340,7 @@ class SelectionUi implements SelectionUiController {
       this.codeComment(view);
     });
     toolbar.append(comment);
-    (view.dom.parentElement ?? view.dom).append(toolbar);
+    (view.dom.closest(".milkdown") ?? view.dom.parentElement ?? view.dom).append(toolbar);
     this.codeCommentToolbar = toolbar;
     const provider = new TooltipProvider({ content: toolbar, offset: 10 });
     this.codeCommentProvider = provider;
@@ -488,6 +493,7 @@ class SelectionUi implements SelectionUiController {
   }
 
   private openTagDetail(view: EditorView, descriptor: TagDescriptor, normalized: NormalizedDescriptor): void {
+    if (this.staleSelection) { this.notice("The document changed. Reopen this action before applying it."); return; }
     this.close();
     this.editorView = view;
     this.selectionSnapshot = view.state.selection;
@@ -676,6 +682,7 @@ class SelectionUi implements SelectionUiController {
   }
 
   private accept(view: EditorView, operation: () => unknown): void {
+    if (this.staleSelection) { this.notice('The document changed. Reopen this action before applying it.'); return; }
     const snapshot = this.selectionSnapshot;
     this.close();
     if (snapshot && !view.state.selection.eq(snapshot)) {
@@ -711,27 +718,32 @@ class SelectionUi implements SelectionUiController {
     }
   }
 
+  invalidateAnchor(): void { this.staleSelection = true; }
+
   private mount(node: HTMLElement, anchor: AnchorPoint): void {
     if (this.destroyed || typeof document === "undefined" || !document.body) return;
+    this.overlayCleanup?.();
     this.overlay?.remove();
     this.overlay = node;
+    this.staleSelection = false;
+    const view = this.editorView;
+    const selection = view?.state.selection;
+    const pointer = node.classList.contains('wm-context-menu');
     document.body.append(node);
-    this.position(node, anchor);
+    this.overlayCleanup = placeOverlay(node, {
+      root: view?.dom.closest<HTMLElement>('#editor') ?? undefined,
+      policy: pointer ? 'dismiss' : 'pin',
+      close: () => this.close(),
+      above: anchor.above,
+      reference: (): ViewportRect | null => {
+        if (pointer) return { left: anchor.x, right: anchor.x, top: anchor.y, bottom: anchor.y };
+        if (this.staleSelection || !view || !selection) return null;
+        const start = view.coordsAtPos(selection.from), end = view.coordsAtPos(selection.to);
+        return { left: Math.min(start.left, end.left), right: Math.max(start.right, end.right), top: Math.min(start.top, end.top), bottom: Math.max(start.bottom, end.bottom) };
+      },
+    });
   }
 
-  private position(node: HTMLElement, anchor: AnchorPoint): void {
-    const margin = 8;
-    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 320;
-    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 240;
-    const width = node.offsetWidth || Math.min(320, viewportWidth - margin * 2);
-    const height = node.offsetHeight || 44;
-    const left = clampPosition(anchor.x, margin, viewportWidth - width - margin);
-    let top = anchor.above ? anchor.y - height - margin : anchor.y + margin;
-    if (top + height > viewportHeight - margin) top = anchor.y - height - margin;
-    top = clampPosition(top, margin, viewportHeight - height - margin);
-    node.style.left = `${left}px`;
-    node.style.top = `${top}px`;
-  }
 }
 
 export function createSelectionUi(options: SelectionUiOptions): SelectionUiController {
@@ -748,7 +760,7 @@ export function createSelectionUi(options: SelectionUiOptions): SelectionUiContr
       controller.attachView(view);
       return {
         update(nextView, previousState?: EditorState) {
-          if (previousState && !nextView.state.doc.eq(previousState.doc)) controller.close();
+          if (previousState && !nextView.state.doc.eq(previousState.doc)) controller.invalidateAnchor();
           controller.attachView(nextView);
         },
         destroy() {

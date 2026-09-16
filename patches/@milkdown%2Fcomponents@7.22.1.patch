@@ -1,0 +1,989 @@
+diff --git a/lib/code-block/index.js b/lib/code-block/index.js
+--- a/lib/code-block/index.js
++++ b/lib/code-block/index.js
+@@ -1,3 +1,4 @@
++import { observeFloating, fitFloating } from '@milkdown/plugin-tooltip'
+ import { $ctx, $view } from '@milkdown/utils';
+ import { codeBlockSchema } from '@milkdown/preset-commonmark';
+ import { Compartment, EditorState } from '@codemirror/state';
+@@ -8,7 +9,7 @@
+ import { h, Fragment, defineComponent, ref, watch, computed, onMounted, onUnmounted, watchEffect, createApp } from 'vue';
+ import clsx from 'clsx';
+ import DOMPurify from 'dompurify';
+-import { computePosition } from '@floating-ui/dom';
++import { computePosition, flip, shift } from '@floating-ui/dom';
+ import { customAlphabet } from 'nanoid';
+ 
+ var __defProp = Object.defineProperty;
+@@ -233,19 +234,28 @@
+     const searchId = inputId("milkdown-code-language-search");
+     const pickerRef = ref();
+     const filter = ref("");
++    let cleanupPosition;
++    let positionVersion = 0;
+     watch([showPicker, triggerRef, pickerRef], () => {
++      cleanupPosition?.();
++      positionVersion++;
+       filter.value = "";
+       const picker = triggerRef.value;
+       const languageList = pickerRef.value;
+-      if (!picker || !languageList) return;
++      if (!showPicker.value || !picker || !languageList) return;
++      cleanupPosition = observeFloating(picker, languageList, () => {
++        const version = ++positionVersion;
+       computePosition(picker, languageList, {
+-        placement: "bottom-start"
++        placement: "bottom-start", middleware: [flip(), shift()]
+       }).then(({ x, y }) => {
++          if (version !== positionVersion || !showPicker.value || !languageList.isConnected) return;
+         Object.assign(languageList.style, {
+           left: `${x}px`,
+           top: `${y}px`
+         });
++        fitFloating(languageList, picker);
+       }).catch(console.error);
++      });
+     });
+     const onTogglePicker = (e) => {
+       e.preventDefault();
+@@ -297,6 +307,8 @@
+       window.addEventListener("click", clickHandler);
+     });
+     onUnmounted(() => {
++      cleanupPosition?.();
++      positionVersion++;
+       window.removeEventListener("click", clickHandler);
+     });
+     return () => {
+diff --git a/lib/image-block/index.js b/lib/image-block/index.js
+--- a/lib/image-block/index.js
++++ b/lib/image-block/index.js
+@@ -1,8 +1,9 @@
++import { geometryScale, localSize } from '@milkdown/plugin-tooltip'
+ import { $ctx, $remark, $nodeSchema, $view } from '@milkdown/utils';
+ import { visit } from 'unist-util-visit';
+ import { expectDomTypeError } from '@milkdown/exception';
+ import DOMPurify from 'dompurify';
+-import { h, Fragment, defineComponent, ref, createApp, watchEffect } from 'vue';
++import { h, Fragment, defineComponent, ref, createApp, watchEffect, onMounted, onUnmounted } from 'vue';
+ import clsx from 'clsx';
+ import { customAlphabet } from 'nanoid';
+ 
+@@ -378,7 +379,7 @@
+       if (!image) return;
+       const host = image.closest(".milkdown-image-block");
+       if (!host) return;
+-      let maxWidth = host.getBoundingClientRect().width;
++      let maxWidth = localSize(host).width;
+       if (!maxWidth) return;
+       if (config.maxWidth && config.maxWidth < maxWidth)
+         maxWidth = config.maxWidth;
+@@ -393,6 +394,30 @@
+       image.style.height = `${h2}px`;
+       if (config.maxWidth) image.style.maxWidth = `${config.maxWidth}px`;
+     };
++    let widthFrame = 0
++    let widthObserver
++    onMounted(() => {
++      const image = imageRef.value
++      const host = image?.closest('.milkdown-image-block')
++      if (!host) return
++      let width = host.clientWidth
++      widthObserver = new ResizeObserver(() => {
++        if (host.clientWidth !== width) {
++          width = host.clientWidth
++          cancelAnimationFrame(widthFrame)
++          widthFrame = requestAnimationFrame(() => { widthFrame = 0; if (image?.complete) onImageLoad() })
++        }
++      })
++      widthObserver.observe(host)
++    })
++    onUnmounted(() => {
++      widthObserver?.disconnect()
++      cancelAnimationFrame(widthFrame)
++      window.removeEventListener('pointermove', onResizeHandlePointerMove)
++      window.removeEventListener('pointerup', onResizeHandlePointerUp)
++      window.removeEventListener('pointercancel', onResizeHandlePointerUp)
++    })
++
+     const onToggleCaption = (e) => {
+       e.preventDefault();
+       e.stopPropagation();
+@@ -421,7 +446,7 @@
+       const image = imageRef.value;
+       if (!image) return;
+       const top = image.getBoundingClientRect().top;
+-      let height = e.clientY - top;
++      let height = (e.clientY - top) / geometryScale(image).y;
+       if (height < 100) height = 100;
+       if (config.maxHeight && height > config.maxHeight)
+         height = config.maxHeight;
+@@ -432,6 +457,7 @@
+     const onResizeHandlePointerUp = () => {
+       window.removeEventListener("pointermove", onResizeHandlePointerMove);
+       window.removeEventListener("pointerup", onResizeHandlePointerUp);
++      window.removeEventListener("pointercancel", onResizeHandlePointerUp);
+       const image = imageRef.value;
+       if (!image) return;
+       const originHeight = Number(image.dataset.origin);
+@@ -448,6 +474,7 @@
+       e.stopPropagation();
+       window.addEventListener("pointermove", onResizeHandlePointerMove);
+       window.addEventListener("pointerup", onResizeHandlePointerUp);
++      window.addEventListener("pointercancel", onResizeHandlePointerUp);
+     };
+     return () => {
+       return /* @__PURE__ */ h(Fragment, null, /* @__PURE__ */ h("div", { class: "image-wrapper" }, /* @__PURE__ */ h("div", { class: "operation" }, /* @__PURE__ */ h("div", { class: "operation-item", onPointerdown: onToggleCaption }, /* @__PURE__ */ h(Icon, { icon: config.captionIcon }))), /* @__PURE__ */ h(
+diff --git a/lib/link-tooltip/index.js b/lib/link-tooltip/index.js
+--- a/lib/link-tooltip/index.js
++++ b/lib/link-tooltip/index.js
+@@ -463,7 +463,8 @@
+   return markPos;
+ }
+ function shouldShowPreviewWhenHover(ctx, view, event) {
+-  const $pos = view.posAtCoords({ left: event.clientX, top: event.clientY });
++  const link = event.target instanceof Element ? event.target.closest('a') : null;
++  const $pos = link && view.dom.contains(link) ? { pos: view.posAtDOM(link, 0) } : null;
+   if (!$pos) return;
+   const { pos } = $pos;
+   const node = view.state.doc.nodeAt(pos);
+@@ -587,6 +588,7 @@
+       __privateSet(this, _hovering, false);
+     });
+     __privateAdd(this, _hide, () => {
++      __privateSet(this, _hovering, false);
+       __privateGet(this, _provider).hide();
+       __privateGet(this, _provider).element.removeEventListener("mouseenter", __privateGet(this, _onMouseEnter));
+       __privateGet(this, _provider).element.removeEventListener("mouseleave", __privateGet(this, _onMouseLeave));
+@@ -601,15 +603,16 @@
+         this.ctx.get(linkTooltipAPI.key).removeLink(from, to);
+         __privateGet(this, _hide).call(this);
+       };
+-      __privateGet(this, _provider).show({ getBoundingClientRect: () => rect }, __privateGet(this, _editorView));
++      __privateGet(this, _provider).show({ getBoundingClientRect: () => typeof rect === 'function' ? rect() : posToDOMRect(__privateGet(this, _editorView), from, to) }, __privateGet(this, _editorView));
+       __privateGet(this, _provider).element.addEventListener("mouseenter", __privateGet(this, _onMouseEnter));
+       __privateGet(this, _provider).element.addEventListener("mouseleave", __privateGet(this, _onMouseLeave));
+     };
+-    this.hide = () => {
+-      if (__privateGet(this, _hovering)) return;
++    this.hide = (force = false) => {
++      if (!force && __privateGet(this, _hovering)) return;
+       __privateGet(this, _hide).call(this);
+     };
+-    this.update = () => {
++    this.update = (view, previous) => {
++      if (previous && !previous.doc.eq(view.state.doc)) __privateGet(this, _hide).call(this);
+     };
+     this.destroy = () => {
+       __privateGet(this, _app).unmount();
+@@ -677,7 +680,7 @@
+         result.mark,
+         from,
+         to,
+-        posToDOMRect(view, from, to)
++        liveLinkRect(view, from, to, event, () => linkPreviewTooltipView?.hide(true))
+       );
+       return;
+     }
+@@ -718,3 +721,17 @@
+ 
+ export { configureLinkTooltip, linkEditTooltip, linkPreviewTooltip, linkTooltipAPI, linkTooltipConfig, linkTooltipPlugin, linkTooltipState, toggleLinkCommand };
+ //# sourceMappingURL=index.js.map
++
++function liveLinkRect(view, from, to, event, lost) {
++  const link = event.target instanceof Element ? event.target.closest('a') : null
++  const fragments = link ? Array.from(link.getClientRects()) : []
++  const index = Math.max(0, fragments.findIndex(r => event.clientY >= r.top && event.clientY <= r.bottom && event.clientX >= r.left && event.clientX <= r.right))
++  return () => {
++    if (link && !link.isConnected) { lost(); return new DOMRect() }
++    const rects = link ? Array.from(link.getClientRects()) : []
++    const rect = rects[Math.min(index, rects.length - 1)] ?? posToDOMRect(view, from, to)
++    const toolbar = view.dom.closest('.milkdown')?.querySelector('.milkdown-top-bar')?.getBoundingClientRect()
++    if (rect.bottom < Math.max(0, toolbar?.bottom ?? 0) || rect.top > window.innerHeight) lost()
++    return rect
++  }
++}
+diff --git a/lib/link-tooltip/preview/preview-view.d.ts b/lib/link-tooltip/preview/preview-view.d.ts
+--- a/lib/link-tooltip/preview/preview-view.d.ts
++++ b/lib/link-tooltip/preview/preview-view.d.ts
+@@ -6,7 +6,7 @@
+     #private;
+     readonly ctx: Ctx;
+     constructor(ctx: Ctx, view: EditorView);
+-    show: (mark: Mark, from: number, to: number, rect: DOMRect) => void;
++    show: (mark: Mark, from: number, to: number, rect: DOMRect | (() => DOMRect)) => void;
+     hide: () => void;
+     update: () => void;
+     destroy: () => void;
+diff --git a/lib/table-block/index.js b/lib/table-block/index.js
+--- a/lib/table-block/index.js
++++ b/lib/table-block/index.js
+@@ -1,3 +1,4 @@
++import { localSize, localPoint, observeFloating, fitFloating } from '@milkdown/plugin-tooltip'
+ import { $ctx, $view } from '@milkdown/utils';
+ import { selectColCommand, moveColCommand, selectRowCommand, moveRowCommand, setAlignCommand, deleteSelectedCellsCommand, addColAfterCommand, addColBeforeCommand, addRowAfterCommand, addRowBeforeCommand, tableSchema } from '@milkdown/preset-gfm';
+ import { findParent } from '@milkdown/prose';
+@@ -159,13 +160,13 @@
+   while (previewRoot.firstChild) previewRoot.removeChild(previewRoot.firstChild);
+ }
+ function renderPreview(axis, preview, previewRoot, tableContent, index) {
+-  const { width: tableWidth, height: tableHeight } = tableContent.querySelector("tbody").getBoundingClientRect();
++  const { width: tableWidth, height: tableHeight } = localSize(tableContent.querySelector("tbody"));
+   if (axis === "y") {
+     const rows = tableContent.querySelectorAll("tr");
+     const row = rows[index];
+     if (!row) return;
+     previewRoot.appendChild(row.cloneNode(true));
+-    const height = row.getBoundingClientRect().height;
++    const height = localSize(row).height;
+     Object.assign(preview.style, {
+       width: `${tableWidth}px`,
+       height: `${height}px`
+@@ -179,7 +180,7 @@
+     Array.from(rows).forEach((row) => {
+       const col = row.children[index];
+       if (!col) return;
+-      if (width === void 0) width = col.getBoundingClientRect().width;
++      if (width === void 0) width = localSize(col).width;
+       const tr = col.parentElement.cloneNode(false);
+       const clone = col.cloneNode(true);
+       tr.appendChild(clone);
+@@ -362,13 +363,13 @@
+   const { headerCol: col } = dom;
+   colHandle.dataset.show = "true";
+   if (before) before(colHandle);
+-  computePosition(col, colHandle, { placement: "top" }).then(({ x, y }) => {
++  trackTablePosition(col, colHandle, { placement: "top" }, ({ x, y }) => {
+     Object.assign(colHandle.style, {
+       left: `${x}px`,
+       top: `${y}px`
+     });
+     if (after) after(colHandle);
+-  }).catch(console.error);
++  });
+ }
+ function computeRowHandlePositionByIndex({
+   refs,
+@@ -385,13 +386,13 @@
+   const { row } = dom;
+   rowHandle.dataset.show = "true";
+   if (before) before(rowHandle);
+-  computePosition(row, rowHandle, { placement: "left" }).then(({ x, y }) => {
++  trackTablePosition(row, rowHandle, { placement: "left" }, ({ x, y }) => {
+     Object.assign(rowHandle.style, {
+       left: `${x}px`,
+       top: `${y}px`
+     });
+     if (after) after(rowHandle);
+-  }).catch(console.error);
++  });
+ }
+ 
+ function findDragOverElement(elements, pointer, axis) {
+@@ -434,14 +435,17 @@
+     if (!firstRow) return;
+     const info = dragInfo.value;
+     if (!info) return;
+-    if (!contentRoot.offsetParent) return;
+-    const wrapperOffsetTop = contentRoot.offsetParent.offsetTop;
+-    const wrapperOffsetLeft = contentRoot.offsetParent.offsetLeft;
++    const parent = preview.offsetParent;
++    if (!parent) return;
++    const rect = contentRoot.getBoundingClientRect();
++    const origin = localPoint(parent, rect.left, rect.top);
++    const pointer = localPoint(parent, e.clientX, e.clientY);
++    const wrapperOffsetTop = origin.y, wrapperOffsetLeft = origin.x;
+     if (info.type === "col") {
+-      const width = dom.col.getBoundingClientRect().width;
+-      const { left, width: fullWidth } = contentRoot.getBoundingClientRect();
+-      const leftGap = wrapperOffsetLeft - left;
+-      const previewLeft = e.clientX + leftGap - width / 2;
++      const width = localSize(dom.col).width;
++      const left = origin.x, fullWidth = localSize(contentRoot).width;
++      const leftGap = 0;
++      const previewLeft = pointer.x - width / 2;
+       const [startX] = info.startCoords;
+       const direction = startX < e.clientX ? "right" : "left";
+       preview.style.top = `${wrapperOffsetTop}px`;
+@@ -450,26 +454,26 @@
+       const dragOverColumn = getDragOverColumn(contentRoot, e.clientX);
+       if (dragOverColumn) {
+         const [col, index] = dragOverColumn;
+-        const yHandleWidth = yHandle.getBoundingClientRect().width;
+-        const contentBoundary = content.getBoundingClientRect();
++        const yHandleWidth = localSize(yHandle).width;
++        const contentBoundary = localSize(content);
+         info.endIndex = index;
+-        computePosition(col, yHandle, {
++        trackTablePosition(col, yHandle, {
+           placement: direction === "left" ? "left" : "right",
+           middleware: [offset(direction === "left" ? -1 * yHandleWidth : 0)]
+-        }).then(({ x }) => {
++        }, ({ x }) => {
+           yHandle.dataset.show = "true";
+           Object.assign(yHandle.style, {
+-            height: `${contentBoundary.height}px`,
++            height: `${localSize(content).height}px`,
+             left: `${x}px`,
+             top: `${wrapperOffsetTop}px`
+           });
+-        }).catch(console.error);
++        });
+       }
+     } else if (info.type === "row") {
+-      const height = dom.row.getBoundingClientRect().height;
+-      const { top, height: fullHeight } = contentRoot.getBoundingClientRect();
+-      const topGap = wrapperOffsetTop - top;
+-      const previewTop = e.clientY + topGap - height / 2;
++      const height = localSize(dom.row).height;
++      const top = origin.y, fullHeight = localSize(contentRoot).height;
++      const topGap = 0;
++      const previewTop = pointer.y - height / 2;
+       const [_, startY] = info.startCoords;
+       const direction = startY < e.clientY ? "down" : "up";
+       const previewTopOffset = previewTop < top + topGap - 20 ? top + topGap - 20 : previewTop > top + fullHeight + topGap - height + 20 ? top + fullHeight + topGap - height + 20 : previewTop;
+@@ -478,19 +482,19 @@
+       const dragOverRow = getDragOverRow(contentRoot, e.clientY);
+       if (dragOverRow) {
+         const [row, index] = dragOverRow;
+-        const xHandleHeight = xHandle.getBoundingClientRect().height;
+-        const contentBoundary = content.getBoundingClientRect();
++        const xHandleHeight = localSize(xHandle).height;
++        const contentBoundary = localSize(content);
+         info.endIndex = index;
+-        computePosition(row, xHandle, {
++        trackTablePosition(row, xHandle, {
+           placement: direction === "up" ? "top" : "bottom",
+           middleware: [offset(direction === "up" ? -1 * xHandleHeight : 0)]
+-        }).then(({ y }) => {
++        }, ({ y }) => {
+           xHandle.dataset.show = "true";
+           Object.assign(xHandle.style, {
+-            width: `${contentBoundary.width}px`,
++            width: `${localSize(content).width}px`,
+             top: `${y}px`
+           });
+-        }).catch(console.error);
++        });
+       }
+     }
+   }, 20);
+@@ -724,40 +728,40 @@
+     if (rowButtonGroup) rowButtonGroup.dataset.show = "false";
+     if (colButtonGroup) colButtonGroup.dataset.show = "false";
+     if (closeToBoundary) {
+-      const contentBoundary = content.getBoundingClientRect();
++      const contentBoundary = localSize(content);
+       rowHandle.dataset.show = "false";
+       colHandle.dataset.show = "false";
+       xHandle.dataset.displayType = "tool";
+       yHandle.dataset.displayType = "tool";
+-      const yHandleWidth = yHandle.getBoundingClientRect().width;
+-      const xHandleHeight = xHandle.getBoundingClientRect().height;
++      const yHandleWidth = localSize(yHandle).width;
++      const xHandleHeight = localSize(xHandle).height;
+       if (closeToBoundaryLeft || closeToBoundaryRight) {
+         lineHoverIndex.value[1] = closeToBoundaryLeft ? colIndex : colIndex + 1;
+-        computePosition(dom.col, yHandle, {
++        trackTablePosition(dom.col, yHandle, {
+           placement: closeToBoundaryLeft ? "left" : "right",
+           middleware: [offset(closeToBoundaryLeft ? -1 * yHandleWidth : 0)]
+-        }).then(({ x }) => {
++        }, ({ x }) => {
+           yHandle.dataset.show = "true";
+           Object.assign(yHandle.style, {
+-            height: `${contentBoundary.height}px`,
++            height: `${localSize(content).height}px`,
+             left: `${x}px`
+           });
+-        }).catch(console.error);
++        });
+       } else {
+         yHandle.dataset.show = "false";
+       }
+       if (index[0] !== 0 && (closeToBoundaryTop || closeToBoundaryBottom)) {
+         lineHoverIndex.value[0] = closeToBoundaryTop ? rowIndex : rowIndex + 1;
+-        computePosition(dom.row, xHandle, {
++        trackTablePosition(dom.row, xHandle, {
+           placement: closeToBoundaryTop ? "top" : "bottom",
+           middleware: [offset(closeToBoundaryTop ? -1 * xHandleHeight : 0)]
+-        }).then(({ y }) => {
++        }, ({ y }) => {
+           xHandle.dataset.show = "true";
+           Object.assign(xHandle.style, {
+-            width: `${contentBoundary.width}px`,
++            width: `${localSize(content).width}px`,
+             top: `${y}px`
+           });
+-        }).catch(console.error);
++        });
+       } else {
+         xHandle.dataset.show = "false";
+       }
+@@ -1102,3 +1106,39 @@
+ 
+ export { TableNodeView, tableBlock, tableBlockConfig, tableBlockView };
+ //# sourceMappingURL=index.js.map
++
++const positions = new WeakMap;
++function trackTablePosition(reference, node, options, apply) {
++  positions.get(node)?.();
++  let disposed = false, generation = 0;
++  let stop = () => {};
++  const dispose = () => {
++    disposed = true;
++    generation++;
++    stop();
++  };
++  positions.set(node, dispose);
++  node.dataset.show = "true";
++  stop = observeFloating(reference, node, () => {
++    const version = ++generation;
++    if (!reference.isConnected) { node.dataset.show = 'false'; dispose(); return }
++    if (disposed || !reference.isConnected || !node.isConnected || node.dataset.show === "false")
++      return;
++    computePosition(reference, node, options).then((position) => {
++      if (disposed || version !== generation || !reference.isConnected || !node.isConnected || node.dataset.show === "false")
++        return;
++      apply(position);
++      const menu = node.querySelector(".button-group");
++      if (menu) {
++        fitFloating(node);
++        node.style.overflow = "visible";
++        if (menu.dataset.show === "true") {
++          menu.style.transform = "none";
++          menu.style.left = "0px";
++          menu.style.top = `${-menu.offsetHeight - 8}px`;
++          fitFloating(menu);
++        }
++      }
++    }).catch(console.error);
++  });
++}
+diff --git a/src/code-block/view/components/language-picker.tsx b/src/code-block/view/components/language-picker.tsx
+--- a/src/code-block/view/components/language-picker.tsx
++++ b/src/code-block/view/components/language-picker.tsx
+@@ -1,4 +1,5 @@
+-import { computePosition } from '@floating-ui/dom'
++import { observeFloating, fitFloating } from '@milkdown/plugin-tooltip'
++import { computePosition, flip, shift } from '@floating-ui/dom'
+ import clsx from 'clsx'
+ import {
+   computed,
+@@ -55,22 +56,31 @@
+     const pickerRef = ref<HTMLDivElement>()
+     const filter = ref('')
+ 
++    let cleanupPosition: (() => void) | undefined
++    let positionVersion = 0;
+     watch([showPicker, triggerRef, pickerRef], () => {
++      cleanupPosition?.();
++      positionVersion++;
+       filter.value = ''
+       const picker = triggerRef.value
+       const languageList = pickerRef.value
+-      if (!picker || !languageList) return
+-
++      if (!showPicker.value || !picker || !languageList) return
++
++      cleanupPosition = observeFloating(picker, languageList, () => {
++        const version = ++positionVersion;
+       computePosition(picker, languageList, {
+-        placement: 'bottom-start',
++        placement: 'bottom-start', middleware: [flip(), shift()],
+       })
+         .then(({ x, y }) => {
++          if (version !== positionVersion || !showPicker.value || !languageList.isConnected) return;
+           Object.assign(languageList.style, {
+             left: `${x}px`,
+             top: `${y}px`,
+           })
++          fitFloating(languageList, picker)
+         })
+         .catch(console.error)
++      });
+     })
+ 
+     const onTogglePicker = (e: Event) => {
+@@ -142,6 +152,8 @@
+     })
+ 
+     onUnmounted(() => {
++      cleanupPosition?.();
++      positionVersion++;
+       window.removeEventListener('click', clickHandler)
+     })
+ 
+diff --git a/src/image-block/view/components/image-viewer.tsx b/src/image-block/view/components/image-viewer.tsx
+--- a/src/image-block/view/components/image-viewer.tsx
++++ b/src/image-block/view/components/image-viewer.tsx
+@@ -1,4 +1,5 @@
+-import { defineComponent, ref, h, Fragment } from 'vue'
++import { geometryScale, localSize } from '@milkdown/plugin-tooltip'
++import { defineComponent, ref, h, Fragment, onMounted, onUnmounted } from 'vue'
+ 
+ import type { MilkdownImageBlockProps } from './image-block'
+ 
+@@ -53,7 +54,7 @@
+       const host = image.closest('.milkdown-image-block')
+       if (!host) return
+ 
+-      let maxWidth = host.getBoundingClientRect().width
++      let maxWidth = localSize(host).width
+       if (!maxWidth) return
+ 
+       if (config.maxWidth && config.maxWidth < maxWidth)
+@@ -74,6 +75,30 @@
+ 
+       if (config.maxWidth) image.style.maxWidth = `${config.maxWidth}px`
+     }
++
++    let widthFrame = 0
++    let widthObserver: ResizeObserver | undefined
++    onMounted(() => {
++      const image = imageRef.value
++      const host = image?.closest('.milkdown-image-block') as HTMLElement | null
++      if (!host) return
++      let width = host.clientWidth
++      widthObserver = new ResizeObserver(() => {
++        if (host.clientWidth !== width) {
++          width = host.clientWidth
++          cancelAnimationFrame(widthFrame)
++          widthFrame = requestAnimationFrame(() => { widthFrame = 0; if (image?.complete) onImageLoad() })
++        }
++      })
++      widthObserver.observe(host)
++    })
++    onUnmounted(() => {
++      widthObserver?.disconnect()
++      cancelAnimationFrame(widthFrame)
++      window.removeEventListener('pointermove', onResizeHandlePointerMove)
++      window.removeEventListener('pointerup', onResizeHandlePointerUp)
++      window.removeEventListener('pointercancel', onResizeHandlePointerUp)
++    })
+ 
+     const onToggleCaption = (e: PointerEvent) => {
+       e.preventDefault()
+@@ -108,7 +133,7 @@
+       const image = imageRef.value
+       if (!image) return
+       const top = image.getBoundingClientRect().top
+-      let height = e.clientY - top
++      let height = (e.clientY - top) / geometryScale(image).y
+       if (height < 100) height = 100
+       if (config.maxHeight && height > config.maxHeight)
+         height = config.maxHeight
+@@ -120,6 +145,7 @@
+     const onResizeHandlePointerUp = () => {
+       window.removeEventListener('pointermove', onResizeHandlePointerMove)
+       window.removeEventListener('pointerup', onResizeHandlePointerUp)
++      window.removeEventListener('pointercancel', onResizeHandlePointerUp)
+ 
+       const image = imageRef.value
+       if (!image) return
+@@ -140,6 +166,7 @@
+       e.stopPropagation()
+       window.addEventListener('pointermove', onResizeHandlePointerMove)
+       window.addEventListener('pointerup', onResizeHandlePointerUp)
++      window.addEventListener('pointercancel', onResizeHandlePointerUp)
+     }
+ 
+     return () => {
+diff --git a/src/link-tooltip/preview/preview-configure.ts b/src/link-tooltip/preview/preview-configure.ts
+--- a/src/link-tooltip/preview/preview-configure.ts
++++ b/src/link-tooltip/preview/preview-configure.ts
+@@ -6,7 +6,7 @@
+ 
+ import { linkTooltipState } from '../slices'
+ import { linkPreviewTooltip } from '../tooltips'
+-import { findMarkPosition, shouldShowPreviewWhenHover } from '../utils'
++import { findMarkPosition, shouldShowPreviewWhenHover, liveLinkRect } from '../utils'
+ import { LinkPreviewTooltip } from './preview-view'
+ 
+ export function configureLinkPreviewTooltip(ctx: Ctx) {
+@@ -36,7 +36,7 @@
+         result.mark,
+         from,
+         to,
+-        posToDOMRect(view, from, to)
++        liveLinkRect(view, from, to, event, () => linkPreviewTooltipView?.hide(true))
+       )
+       return
+     }
+diff --git a/src/link-tooltip/preview/preview-view.ts b/src/link-tooltip/preview/preview-view.ts
+--- a/src/link-tooltip/preview/preview-view.ts
++++ b/src/link-tooltip/preview/preview-view.ts
+@@ -1,3 +1,5 @@
++import { posToDOMRect } from '@milkdown/prose'
++import type { EditorState } from '@milkdown/prose/state'
+ import type { Ctx, Slice } from '@milkdown/ctx'
+ import type { Mark } from '@milkdown/prose/model'
+ import type { PluginView } from '@milkdown/prose/state'
+@@ -63,12 +65,13 @@
+   }
+ 
+   #hide = () => {
++    this.#hovering = false
+     this.#provider.hide()
+     this.#provider.element.removeEventListener('mouseenter', this.#onMouseEnter)
+     this.#provider.element.removeEventListener('mouseleave', this.#onMouseLeave)
+   }
+ 
+-  show = (mark: Mark, from: number, to: number, rect: DOMRect) => {
++  show = (mark: Mark, from: number, to: number, rect: DOMRect | (() => DOMRect)) => {
+     this.#config.value = this.ctx.get(linkTooltipConfig.key)
+     this.#src.value = mark.attrs.href
+     this.#onEdit.value = () => {
+@@ -79,18 +82,18 @@
+       this.#hide()
+     }
+ 
+-    this.#provider.show({ getBoundingClientRect: () => rect }, this.#editorView)
++    this.#provider.show({ getBoundingClientRect: () => typeof rect === 'function' ? rect() : posToDOMRect(this.#editorView, from, to) }, this.#editorView)
+     this.#provider.element.addEventListener('mouseenter', this.#onMouseEnter)
+     this.#provider.element.addEventListener('mouseleave', this.#onMouseLeave)
+   }
+ 
+-  hide = () => {
+-    if (this.#hovering) return
++  hide = (force = false) => {
++    if (!force && this.#hovering) return
+ 
+     this.#hide()
+   }
+ 
+-  update = () => {}
++  update = (view: EditorView, previous?: EditorState) => { if (previous && !previous.doc.eq(view.state.doc)) this.#hide() }
+ 
+   destroy = () => {
+     this.#app.unmount()
+diff --git a/src/link-tooltip/utils.ts b/src/link-tooltip/utils.ts
+--- a/src/link-tooltip/utils.ts
++++ b/src/link-tooltip/utils.ts
+@@ -1,3 +1,4 @@
++import { posToDOMRect } from '@milkdown/prose'
+ import type { Ctx } from '@milkdown/ctx'
+ import type { Mark, Node } from '@milkdown/prose/model'
+ import type { EditorView } from '@milkdown/prose/view'
+@@ -36,7 +37,8 @@
+   view: EditorView,
+   event: MouseEvent
+ ) {
+-  const $pos = view.posAtCoords({ left: event.clientX, top: event.clientY })
++  const link = event.target instanceof Element ? event.target.closest('a') : null
++  const $pos = link && view.dom.contains(link) ? { pos: view.posAtDOM(link, 0) } : null
+   if (!$pos) return
+ 
+   const { pos } = $pos
+@@ -54,3 +56,17 @@
+ 
+   return { show: true, pos, node, mark }
+ }
++
++export function liveLinkRect(view: EditorView, from: number, to: number, event: MouseEvent, lost: () => void) {
++  const link = event.target instanceof Element ? event.target.closest('a') : null
++  const fragments = link ? Array.from(link.getClientRects()) : []
++  const index = Math.max(0, fragments.findIndex(r => event.clientY >= r.top && event.clientY <= r.bottom && event.clientX >= r.left && event.clientX <= r.right))
++  return () => {
++    if (link && !link.isConnected) { lost(); return new DOMRect() }
++    const rects = link ? Array.from(link.getClientRects()) : []
++    const rect = rects[Math.min(index, rects.length - 1)] ?? posToDOMRect(view, from, to)
++    const toolbar = view.dom.closest('.milkdown')?.querySelector('.milkdown-top-bar')?.getBoundingClientRect()
++    if (rect.bottom < Math.max(0, toolbar?.bottom ?? 0) || rect.top > window.innerHeight) lost()
++    return rect
++  }
++}
+diff --git a/src/table-block/dnd/drag-over-handler.ts b/src/table-block/dnd/drag-over-handler.ts
+--- a/src/table-block/dnd/drag-over-handler.ts
++++ b/src/table-block/dnd/drag-over-handler.ts
+@@ -1,4 +1,6 @@
+-import { computePosition, offset } from '@floating-ui/dom'
++import { trackTablePosition } from '../view/utils'
++import { localSize, localPoint } from '@milkdown/plugin-tooltip'
++import { offset } from '@floating-ui/dom'
+ import { throttle } from 'lodash-es'
+ 
+ import type { Refs } from '../view/types'
+@@ -22,17 +24,18 @@
+     const info = dragInfo.value
+     if (!info) return
+ 
+-    if (!contentRoot.offsetParent) return
+-
+-    const wrapperOffsetTop = (contentRoot.offsetParent as HTMLElement).offsetTop
+-    const wrapperOffsetLeft = (contentRoot.offsetParent as HTMLElement)
+-      .offsetLeft
++    const parent = preview.offsetParent as HTMLElement | null
++    if (!parent) return
++    const rect = contentRoot.getBoundingClientRect()
++    const origin = localPoint(parent, rect.left, rect.top)
++    const pointer = localPoint(parent, e.clientX, e.clientY)
++    const wrapperOffsetTop = origin.y, wrapperOffsetLeft = origin.x
+ 
+     if (info.type === 'col') {
+-      const width = dom.col.getBoundingClientRect().width
+-      const { left, width: fullWidth } = contentRoot.getBoundingClientRect()
+-      const leftGap = wrapperOffsetLeft - left
+-      const previewLeft = e.clientX + leftGap - width / 2
++      const width = localSize(dom.col).width
++      const left = origin.x, fullWidth = localSize(contentRoot).width
++      const leftGap = 0
++      const previewLeft = pointer.x - width / 2
+ 
+       const [startX] = info.startCoords
+       const direction = startX < e.clientX ? 'right' : 'left'
+@@ -50,30 +53,28 @@
+       const dragOverColumn = getDragOverColumn(contentRoot, e.clientX)
+       if (dragOverColumn) {
+         const [col, index] = dragOverColumn
+-        const yHandleWidth = yHandle.getBoundingClientRect().width
+-        const contentBoundary = content.getBoundingClientRect()
++        const yHandleWidth = localSize(yHandle).width
++        const contentBoundary = localSize(content)
+         info.endIndex = index
+ 
+-        computePosition(col, yHandle, {
++        trackTablePosition(col, yHandle, {
+           placement: direction === 'left' ? 'left' : 'right',
+           middleware: [offset(direction === 'left' ? -1 * yHandleWidth : 0)],
+-        })
+-          .then(({ x }) => {
++        }, ({ x }) => {
+             yHandle.dataset.show = 'true'
+             Object.assign(yHandle.style, {
+-              height: `${contentBoundary.height}px`,
++              height: `${localSize(content).height}px`,
+               left: `${x}px`,
+               top: `${wrapperOffsetTop}px`,
+             })
+           })
+-          .catch(console.error)
+       }
+     } else if (info.type === 'row') {
+-      const height = dom.row.getBoundingClientRect().height
+-      const { top, height: fullHeight } = contentRoot.getBoundingClientRect()
++      const height = localSize(dom.row).height
++      const top = origin.y, fullHeight = localSize(contentRoot).height
+ 
+-      const topGap = wrapperOffsetTop - top
+-      const previewTop = e.clientY + topGap - height / 2
++      const topGap = 0
++      const previewTop = pointer.y - height / 2
+ 
+       const [_, startY] = info.startCoords
+       const direction = startY < e.clientY ? 'down' : 'up'
+@@ -91,22 +92,20 @@
+       const dragOverRow = getDragOverRow(contentRoot, e.clientY)
+       if (dragOverRow) {
+         const [row, index] = dragOverRow
+-        const xHandleHeight = xHandle.getBoundingClientRect().height
+-        const contentBoundary = content.getBoundingClientRect()
++        const xHandleHeight = localSize(xHandle).height
++        const contentBoundary = localSize(content)
+         info.endIndex = index
+ 
+-        computePosition(row, xHandle, {
++        trackTablePosition(row, xHandle, {
+           placement: direction === 'up' ? 'top' : 'bottom',
+           middleware: [offset(direction === 'up' ? -1 * xHandleHeight : 0)],
+-        })
+-          .then(({ y }) => {
++        }, ({ y }) => {
+             xHandle.dataset.show = 'true'
+             Object.assign(xHandle.style, {
+-              width: `${contentBoundary.width}px`,
++              width: `${localSize(content).width}px`,
+               top: `${y}px`,
+             })
+           })
+-          .catch(console.error)
+       }
+     }
+   }, 20)
+diff --git a/src/table-block/dnd/preview.ts b/src/table-block/dnd/preview.ts
+--- a/src/table-block/dnd/preview.ts
++++ b/src/table-block/dnd/preview.ts
+@@ -1,3 +1,4 @@
++import { localSize, localPoint } from '@milkdown/plugin-tooltip'
+ export function clearPreview(previewRoot: HTMLElement) {
+   while (previewRoot.firstChild) previewRoot.removeChild(previewRoot.firstChild)
+ }
+@@ -9,16 +10,14 @@
+   tableContent: HTMLElement,
+   index: number
+ ) {
+-  const { width: tableWidth, height: tableHeight } = tableContent
+-    .querySelector('tbody')!
+-    .getBoundingClientRect()
++  const { width: tableWidth, height: tableHeight } = localSize(tableContent.querySelector('tbody')!)
+   if (axis === 'y') {
+     const rows = tableContent.querySelectorAll('tr')
+     const row = rows[index]
+     if (!row) return
+ 
+     previewRoot.appendChild(row.cloneNode(true))
+-    const height = row.getBoundingClientRect().height
++    const height = localSize(row).height
+ 
+     Object.assign(preview.style, {
+       width: `${tableWidth}px`,
+@@ -38,7 +37,7 @@
+       const col = row.children[index]
+       if (!col) return
+ 
+-      if (width === undefined) width = col.getBoundingClientRect().width
++      if (width === undefined) width = localSize(col).width
+ 
+       const tr = col.parentElement!.cloneNode(false)
+       const clone = col.cloneNode(true)
+diff --git a/src/table-block/view/pointer.ts b/src/table-block/view/pointer.ts
+--- a/src/table-block/view/pointer.ts
++++ b/src/table-block/view/pointer.ts
+@@ -1,6 +1,8 @@
++import { trackTablePosition } from './utils'
++import { localSize, localPoint } from '@milkdown/plugin-tooltip'
+ import type { EditorView } from '@milkdown/prose/view'
+ 
+-import { computePosition, offset } from '@floating-ui/dom'
++import { offset } from '@floating-ui/dom'
+ import { throttle } from 'lodash-es'
+ 
+ import type { Refs } from './types'
+@@ -63,30 +65,28 @@
+     if (colButtonGroup) colButtonGroup.dataset.show = 'false'
+ 
+     if (closeToBoundary) {
+-      const contentBoundary = content.getBoundingClientRect()
++      const contentBoundary = localSize(content)
+       rowHandle.dataset.show = 'false'
+       colHandle.dataset.show = 'false'
+       xHandle.dataset.displayType = 'tool'
+       yHandle.dataset.displayType = 'tool'
+ 
+-      const yHandleWidth = yHandle.getBoundingClientRect().width
+-      const xHandleHeight = xHandle.getBoundingClientRect().height
++      const yHandleWidth = localSize(yHandle).width
++      const xHandleHeight = localSize(xHandle).height
+ 
+       // display vertical line handle
+       if (closeToBoundaryLeft || closeToBoundaryRight) {
+         lineHoverIndex.value![1] = closeToBoundaryLeft ? colIndex : colIndex + 1
+-        computePosition(dom.col, yHandle, {
++        trackTablePosition(dom.col, yHandle, {
+           placement: closeToBoundaryLeft ? 'left' : 'right',
+           middleware: [offset(closeToBoundaryLeft ? -1 * yHandleWidth : 0)],
+-        })
+-          .then(({ x }) => {
++        }, ({ x }) => {
+             yHandle.dataset.show = 'true'
+             Object.assign(yHandle.style, {
+-              height: `${contentBoundary.height}px`,
++              height: `${localSize(content).height}px`,
+               left: `${x}px`,
+             })
+           })
+-          .catch(console.error)
+       } else {
+         yHandle.dataset.show = 'false'
+       }
+@@ -95,18 +95,16 @@
+       // won't display if the row is the header row
+       if (index[0] !== 0 && (closeToBoundaryTop || closeToBoundaryBottom)) {
+         lineHoverIndex.value![0] = closeToBoundaryTop ? rowIndex : rowIndex + 1
+-        computePosition(dom.row, xHandle, {
++        trackTablePosition(dom.row, xHandle, {
+           placement: closeToBoundaryTop ? 'top' : 'bottom',
+           middleware: [offset(closeToBoundaryTop ? -1 * xHandleHeight : 0)],
+-        })
+-          .then(({ y }) => {
++        }, ({ y }) => {
+             xHandle.dataset.show = 'true'
+             Object.assign(xHandle.style, {
+-              width: `${contentBoundary.width}px`,
++              width: `${localSize(content).width}px`,
+               top: `${y}px`,
+             })
+           })
+-          .catch(console.error)
+       } else {
+         xHandle.dataset.show = 'false'
+       }
+diff --git a/src/table-block/view/utils.ts b/src/table-block/view/utils.ts
+--- a/src/table-block/view/utils.ts
++++ b/src/table-block/view/utils.ts
+@@ -1,8 +1,41 @@
++import { computePosition, type ComputePositionConfig, type ComputePositionReturn } from '@floating-ui/dom'
++import { observeFloating, fitFloating } from '@milkdown/plugin-tooltip'
++
++const positions = new WeakMap<HTMLElement, () => void>()
++/** One live placement per table control; new targets invalidate pending results. */
++export function trackTablePosition(reference: Element, node: HTMLElement, options: Partial<ComputePositionConfig>, apply: (position: ComputePositionReturn) => void) {
++  positions.get(node)?.()
++  let disposed = false, generation = 0
++  let stop = () => {}
++  const dispose = () => { disposed = true; generation++; stop() }
++  positions.set(node, dispose)
++  node.dataset.show = 'true'
++  stop = observeFloating(reference, node, () => {
++    const version = ++generation
++    if (!reference.isConnected) { node.dataset.show = 'false'; dispose(); return }
++    if (disposed || !reference.isConnected || !node.isConnected || node.dataset.show === 'false') return
++    computePosition(reference, node, options).then(position => {
++      if (disposed || version !== generation || !reference.isConnected || !node.isConnected || node.dataset.show === 'false') return
++      apply(position)
++      const menu = node.querySelector<HTMLElement>('.button-group')
++      if (menu) {
++        fitFloating(node)
++        node.style.overflow = 'visible'
++        if (menu.dataset.show === 'true') {
++          menu.style.transform = 'none'
++          menu.style.left = '0px'
++          menu.style.top = `${-menu.offsetHeight - 8}px`
++          fitFloating(menu)
++        }
++      }
++    }).catch(console.error)
++  })
++}
++
+ import type { Node } from '@milkdown/prose/model'
+ import type { EditorView } from '@milkdown/prose/view'
+ import type { Ref } from 'vue'
+ 
+-import { computePosition } from '@floating-ui/dom'
+ import { findParent } from '@milkdown/prose'
+ import { CellSelection, findTable } from '@milkdown/prose/tables'
+ 
+@@ -153,15 +186,13 @@
+   const { headerCol: col } = dom
+   colHandle.dataset.show = 'true'
+   if (before) before(colHandle)
+-  computePosition(col, colHandle, { placement: 'top' })
+-    .then(({ x, y }) => {
++  trackTablePosition(col, colHandle, { placement: 'top' }, ({ x, y }) => {
+       Object.assign(colHandle.style, {
+         left: `${x}px`,
+         top: `${y}px`,
+       })
+       if (after) after(colHandle)
+     })
+-    .catch(console.error)
+ }
+ 
+ export function computeRowHandlePositionByIndex({
+@@ -180,13 +211,11 @@
+   const { row } = dom
+   rowHandle.dataset.show = 'true'
+   if (before) before(rowHandle)
+-  computePosition(row, rowHandle, { placement: 'left' })
+-    .then(({ x, y }) => {
++  trackTablePosition(row, rowHandle, { placement: 'left' }, ({ x, y }) => {
+       Object.assign(rowHandle.style, {
+         left: `${x}px`,
+         top: `${y}px`,
+       })
+       if (after) after(rowHandle)
+     })
+-    .catch(console.error)
+-}
++}

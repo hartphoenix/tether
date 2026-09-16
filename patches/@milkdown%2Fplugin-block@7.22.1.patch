@@ -1,0 +1,239 @@
+diff --git a/lib/index.js b/lib/index.js
+index dd21ce7068fca62a37812d2048b85920306778ea..5020910440bae02d67a0dd99e0d3a542dc39da14 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1,3 +1,4 @@
++import { observeFloating, fitFloating } from '@milkdown/plugin-tooltip'
+ import { browser, findParent } from "@milkdown/prose";
+ import { $ctx, $prose } from "@milkdown/utils";
+ import { NodeSelection, Plugin, PluginKey } from "@milkdown/prose/state";
+@@ -185,24 +186,19 @@ var BlockService = class {
+ 			return false;
+ 		};
+ 		this.dragoverCallback = (view, event) => {
+-			if (this.#dragging) {
+-				const root = this.#view?.dom.parentElement;
+-				if (!root) return false;
+-				const hasHorizontalScrollbar = root.scrollHeight > root.clientHeight;
+-				const rootRect = root.getBoundingClientRect();
+-				if (hasHorizontalScrollbar) {
+-					if (root.scrollTop > 0 && Math.abs(event.y - rootRect.y) < buffer) {
+-						root.scrollTop = root.scrollTop > 10 ? root.scrollTop - 10 : 0;
+-						return false;
+-					}
+-					const totalHeight = Math.round(view.dom.getBoundingClientRect().height);
+-					if (Math.round(root.scrollTop + rootRect.height) < totalHeight && Math.abs(event.y - (rootRect.height + rootRect.y)) < buffer) {
+-						root.scrollTop = root.scrollTop + 10;
+-						return false;
+-					}
+-				}
+-			}
+-			return false;
++    if (!this.#dragging) return false
++    const win = view.dom.ownerDocument.defaultView
++    let root = view.dom.parentElement
++    while (root && root !== view.dom.ownerDocument.body && !(root.scrollHeight > root.clientHeight && /auto|scroll/.test(win.getComputedStyle(root).overflowY))) root = root.parentElement
++    const page = !root || root === view.dom.ownerDocument.body
++    const target = page ? view.dom.ownerDocument.scrollingElement : root
++    const rect = target.getBoundingClientRect()
++    const top = page ? 44 : rect.top, bottom = page ? win.innerHeight : rect.bottom
++    const scale = page ? 1 : rect.height / target.offsetHeight || 1
++    if (event.clientY < top + 40) target.scrollTop -= 12 / scale
++    else if (event.clientY > bottom - 40) target.scrollTop += 12 / scale
++    return false
++
+ 		};
+ 		this.dragenterCallback = (view) => {
+ 			if (!view.dragging) return;
+@@ -303,6 +299,8 @@ withMeta(blockPlugin, { displayName: "Prose<block>" });
+ //#endregion
+ //#region src/block-provider.ts
+ var BlockProvider = class {
++	#cleanupPosition;
++	#positionVersion = 0;
+ 	#element;
+ 	#ctx;
+ 	#service;
+@@ -329,6 +327,8 @@ var BlockProvider = class {
+ 			});
+ 		};
+ 		this.destroy = () => {
++    this.#cleanupPosition?.();
++    this.#positionVersion++;
+ 			this.#service?.unBind();
+ 			this.#service?.removeEvent(this.#element);
+ 			this.#element.remove();
+@@ -355,19 +355,29 @@ var BlockProvider = class {
+ 				const offsetExt = offset(offsetOption);
+ 				middleware.push(offsetExt);
+ 			}
++    this.#cleanupPosition?.();
++    this.#element.dataset.show = "true";
++    this.#cleanupPosition = observeFloating(virtualEl, this.#element, () => {
++      if (!dom.isConnected || dom.getBoundingClientRect().bottom < 0 || dom.getBoundingClientRect().top > window.innerHeight) { this.hide(); return; }
++      const version = ++this.#positionVersion;
+ 			computePosition(virtualEl, this.#element, {
+ 				placement: this.#getPlacement ? this.#getPlacement(deriveContext) : "left",
+ 				middleware: [...middleware, ...this.#middleware],
+ 				...this.#floatingUIOptions
+ 			}).then(({ x, y }) => {
++      if (version !== this.#positionVersion || !this.#element.isConnected || this.#element.dataset.show !== "true") return;
+ 				Object.assign(this.#element.style, {
+ 					left: `${x}px`,
+ 					top: `${y}px`
+ 				});
++				fitFloating(this.#element);
+ 				this.#element.dataset.show = "true";
+ 			}).catch(console.error);
++    });
+ 		};
+ 		this.hide = () => {
++    this.#cleanupPosition?.();
++    this.#positionVersion++;
+ 			this.#element.dataset.show = "false";
+ 		};
+ 		this.#ctx = options.ctx;
+@@ -382,7 +392,7 @@ var BlockProvider = class {
+ 	}
+ 	#init() {
+ 		const view = this.#ctx.get(editorViewCtx);
+-		(this.#root ?? view.dom.parentElement ?? document.body).appendChild(this.#element);
++		(this.#root ?? view.dom.closest(".milkdown") ?? view.dom.parentElement ?? document.body).appendChild(this.#element);
+ 		const service = this.#ctx.get(blockServiceInstance.key);
+ 		service.bind(this.#ctx, (message) => {
+ 			if (message.type === "hide") {
+diff --git a/package.json b/package.json
+index c5323e5bb524212254cd4a9f604166bcfc91814b..fb893e0cd7d17c8ce6497fe215fb495e52462a89 100644
+--- a/package.json
++++ b/package.json
+@@ -31,7 +31,8 @@
+     "@milkdown/ctx": "7.22.1",
+     "@milkdown/core": "7.22.1",
+     "@milkdown/prose": "7.22.1",
+-    "@milkdown/utils": "7.22.1"
++    "@milkdown/utils": "7.22.1",
++    "@milkdown/plugin-tooltip": "7.22.1"
+   },
+   "scripts": {
+     "build": "vite build"
+diff --git a/src/block-provider.ts b/src/block-provider.ts
+index c22540db6195dc404844dee439655aa56d25e691..811b5f03f13ff10d7f80b879c36236d1c8b45705 100644
+--- a/src/block-provider.ts
++++ b/src/block-provider.ts
+@@ -1,3 +1,4 @@
++import { observeFloating, fitFloating } from '@milkdown/plugin-tooltip'
+ import type {
+   ComputePositionConfig,
+   Middleware,
+@@ -49,6 +50,9 @@ export interface BlockProviderOptions {
+ 
+ /// A provider for creating block.
+ export class BlockProvider {
++  #cleanupPosition?: () => void
++  #positionVersion = 0
++
+   /// @internal
+   readonly #element: HTMLElement
+ 
+@@ -104,7 +108,7 @@ export class BlockProvider {
+   /// @internal
+   #init() {
+     const view = this.#ctx.get(editorViewCtx)
+-    const root = this.#root ?? view.dom.parentElement ?? document.body
++    const root = this.#root ?? view.dom.closest<HTMLElement>('.milkdown') ?? view.dom.parentElement ?? document.body
+     root.appendChild(this.#element)
+ 
+     const service = this.#ctx.get(blockServiceInstance.key)
+@@ -139,6 +143,8 @@ export class BlockProvider {
+ 
+   /// Destroy the block.
+   destroy = () => {
++    this.#cleanupPosition?.();
++    this.#positionVersion++;
+     this.#service?.unBind()
+     this.#service?.removeEvent(this.#element)
+     this.#element.remove()
+@@ -169,6 +175,11 @@ export class BlockProvider {
+       middleware.push(offsetExt)
+     }
+ 
++    this.#cleanupPosition?.();
++    this.#element.dataset.show = "true";
++    this.#cleanupPosition = observeFloating(virtualEl, this.#element, () => {
++      if (!dom.isConnected || dom.getBoundingClientRect().bottom < 0 || dom.getBoundingClientRect().top > window.innerHeight) { this.hide(); return; }
++      const version = ++this.#positionVersion;
+     computePosition(virtualEl, this.#element, {
+       placement: this.#getPlacement
+         ? this.#getPlacement(deriveContext)
+@@ -177,17 +188,22 @@ export class BlockProvider {
+       ...this.#floatingUIOptions,
+     })
+       .then(({ x, y }) => {
++      if (version !== this.#positionVersion || !this.#element.isConnected || this.#element.dataset.show !== "true") return;
+         Object.assign(this.#element.style, {
+           left: `${x}px`,
+           top: `${y}px`,
+         })
++        fitFloating(this.#element)
+         this.#element.dataset.show = 'true'
+       })
+       .catch(console.error)
++    });
+   }
+ 
+   /// Hide the block.
+   hide = () => {
++    this.#cleanupPosition?.();
++    this.#positionVersion++;
+     this.#element.dataset.show = 'false'
+   }
+ }
+diff --git a/src/block-service.ts b/src/block-service.ts
+index 17b0f4e861670b0caa21a1f51b44907ecc03c7d1..ab0eaf88068d9e4e7d16f8884f95842766154e5b 100644
+--- a/src/block-service.ts
++++ b/src/block-service.ts
+@@ -256,32 +256,19 @@ export class BlockService {
+ 
+   /// @internal
+   dragoverCallback = (view: EditorView, event: DragEvent) => {
+-    if (this.#dragging) {
+-      const root = this.#view?.dom.parentElement
+-      if (!root) return false
+-
+-      const hasHorizontalScrollbar = root.scrollHeight > root.clientHeight
+-
+-      const rootRect = root.getBoundingClientRect()
+-      if (hasHorizontalScrollbar) {
+-        if (root.scrollTop > 0 && Math.abs(event.y - rootRect.y) < buffer) {
+-          const top = root.scrollTop > 10 ? root.scrollTop - 10 : 0
+-          root.scrollTop = top
+-          return false
+-        }
+-        const totalHeight = Math.round(view.dom.getBoundingClientRect().height)
+-        const scrollBottom = Math.round(root.scrollTop + rootRect.height)
+-        if (
+-          scrollBottom < totalHeight &&
+-          Math.abs(event.y - (rootRect.height + rootRect.y)) < buffer
+-        ) {
+-          const top = root.scrollTop + 10
+-          root.scrollTop = top
+-          return false
+-        }
+-      }
+-    }
++    if (!this.#dragging) return false
++    const win = view.dom.ownerDocument.defaultView!
++    let root = view.dom.parentElement
++    while (root && root !== view.dom.ownerDocument.body && !(root.scrollHeight > root.clientHeight && /auto|scroll/.test(win.getComputedStyle(root).overflowY))) root = root.parentElement
++    const page = !root || root === view.dom.ownerDocument.body
++    const target = page ? view.dom.ownerDocument.scrollingElement as HTMLElement : root!
++    const rect = target.getBoundingClientRect()
++    const top = page ? 44 : rect.top, bottom = page ? win.innerHeight : rect.bottom
++    const scale = page ? 1 : rect.height / target.offsetHeight || 1
++    if (event.clientY < top + 40) target.scrollTop -= 12 / scale
++    else if (event.clientY > bottom - 40) target.scrollTop += 12 / scale
+     return false
++
+   }
+ 
+   /// @internal

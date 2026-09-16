@@ -227,8 +227,6 @@ test("an open drawer expands threads inline while a closed drawer uses a canvas-
   ui.setState({ threads: [thread()] });
 
   ui.setRailOpen(true);
-  ui.setZoom(1.5);
-  expect(root.querySelector<HTMLElement>(".wm-annotation-rail")!.style.getPropertyValue("--wm-annotation-zoom")).toBe("1.5");
   root.querySelector<HTMLButtonElement>(".wm-thread-summary")!.click();
   expect(root.querySelector<HTMLElement>(".wm-thread-details")!.hidden).toBe(false);
   expect(document.querySelector(".wm-thread-popover")).toBeNull();
@@ -242,10 +240,10 @@ test("an open drawer expands threads inline while a closed drawer uses a canvas-
   expect(railStates).toEqual([true, false]);
   ui.openThread("c-1", trigger);
   const popover = document.querySelector<HTMLElement>(".wm-thread-popover")!;
-  expect(popover.style.getPropertyValue("--wm-annotation-zoom")).toBe("1.5");
-  expect(Number.parseFloat(popover.style.left) * 1.5).toBeGreaterThanOrEqual(22);
-  expect((Number.parseFloat(popover.style.left) + Number.parseFloat(popover.style.width)) * 1.5).toBeLessThanOrEqual(888);
-  expect(Number.parseFloat(popover.style.top) * 1.5).toBeGreaterThanOrEqual(22);
+  expect(popover.style.position).toBe('fixed');
+  expect(Number.parseFloat(popover.style.left)).toBeGreaterThanOrEqual(18);
+  expect(Number.parseFloat(popover.style.left)).toBeLessThanOrEqual(892);
+  expect(Number.parseFloat(popover.style.top)).toBeGreaterThanOrEqual(8);
   ui.destroy();
 });
 
@@ -312,10 +310,11 @@ test("ordinary footnote references open a read-only popover", () => {
   document.body.append(mount, editorRoot);
   const ui = createAnnotationUi({ root: mount, editorRoot });
   const reference = editorRoot.querySelector<HTMLElement>("sup")!;
+  reference.getBoundingClientRect = () => ({ left: 40, right: 60, top: 50, bottom: 70, width: 20, height: 20 } as DOMRect);
   reference.dispatchEvent(new nextWindow.MouseEvent("click", { bubbles: true, cancelable: true }));
-  expect(editorRoot.querySelector(".wm-footnote-popover")?.textContent).toContain("A plain footnote.");
+  expect(document.querySelector(".wm-footnote-popover")?.textContent).toContain("A plain footnote.");
   ui.closeFootnotePopover();
-  expect(editorRoot.querySelector(".wm-footnote-popover")).toBeNull();
+  expect(document.querySelector(".wm-footnote-popover")).toBeNull();
   ui.destroy();
 });
 

@@ -24,7 +24,6 @@
   width: 100%;
   flex-direction: column;
   gap: 8px;
-  zoom: var(--wm-annotation-zoom, 1);
 }
 
 .wm-annotation-rail-header,
@@ -244,7 +243,6 @@
   background: var(--wm-annotation-surface, #fffdf9);
   box-shadow: 0 12px 36px rgb(25 20 15 / 28%);
   color: #3a332c;
-  zoom: var(--wm-annotation-zoom, 1);
 }
 
 .wm-thread-popover { padding: 24px 10px 10px; }

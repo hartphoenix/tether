@@ -159,16 +159,16 @@ test("other hosts are untouched and unsupported highlight APIs install no hook",
   dom.window.close();
 });
 
-test.each([false, true])("centers zoomed matches with legacy WebKit coordinates: %s", (legacy) => {
+test("centers transformed matches using viewport coordinates", () => {
   const { dom, win, scrolls, highlights } = environment();
-  win.document.querySelector("#editor")!.innerHTML = '<div class="ProseMirror" style="zoom:1.5"><p>needle</p></div>';
+  win.document.querySelector("#editor")!.innerHTML = '<div class="ProseMirror" style="transform:scale(1.5)"><p>needle</p></div>';
   Object.defineProperty(win, "scrollY", { value: 200 });
-  win.HTMLElement.prototype.getBoundingClientRect = () => ({ width: legacy ? 100 : 200 } as DOMRect);
-  win.Range.prototype.getBoundingClientRect = () => ({ top: legacy ? 800 : 1300, height: legacy ? 20 : 30 } as DOMRect);
+  win.HTMLElement.prototype.getBoundingClientRect = () => ({ width: 200 } as DOMRect);
+  win.Range.prototype.getBoundingClientRect = () => ({ top: 1300, height: 30 } as DOMRect);
   const cleanup = installCmuxFindCompatibility(win);
   try {
     const cycle = search(win, "needle");
-    // The same document point (1515px) must be centered in both engines.
+    // The scaled viewport point plus window scroll must be centered exactly once.
     expect(scrolls[0]).toEqual({ top: 1515 - win.innerHeight / 2, behavior: "instant" });
     win.document.querySelector("p")!.textContent = "Edited passage";
     expect(cycle(1)).toEqual({ total: 0, current: 0 });
