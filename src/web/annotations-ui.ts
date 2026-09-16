@@ -1,3 +1,4 @@
+import { placeOverlay } from './overlay';
 import { iconSvg } from "./icons";
 import { renderCommentBody } from "./comment-body";
 import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
@@ -86,7 +87,6 @@ export interface AnnotationUiController {
   openThread(threadId: string, trigger?: HTMLElement): void;
   setRailOpen(open: boolean): void;
   isRailOpen(): boolean;
-  setZoom(scale: number): void;
   closeFootnotePopover(): void;
   destroy(): void;
 }
@@ -317,7 +317,7 @@ function showFootnotePopover(root: HTMLElement, reference: FootnoteReference): H
   const label = readFootnoteLabel(reference);
   const definition = findFootnoteDefinition(root, label);
   if (!definition) return null;
-  root.querySelector(".wm-footnote-popover")?.remove();
+  root.ownerDocument.querySelector(".wm-footnote-popover")?.remove();
   const popover = createElement("aside", "wm-footnote-popover");
   popover.setAttribute("role", "dialog");
   popover.setAttribute("aria-label", `Footnote ${label || "reference"}`);
@@ -331,11 +331,8 @@ function showFootnotePopover(root: HTMLElement, reference: FootnoteReference): H
   close.textContent = "×";
   close.addEventListener("click", () => popover.remove());
   popover.append(heading, close, body);
-  root.append(popover);
-  const referenceRect = reference.getBoundingClientRect();
-  const rootRect = root.getBoundingClientRect();
-  popover.style.left = `${Math.max(8, referenceRect.left - rootRect.left)}px`;
-  popover.style.top = `${Math.max(8, referenceRect.bottom - rootRect.top + 8)}px`;
+  root.ownerDocument.body.append(popover);
+  placeOverlay(popover, { root, policy: 'follow', reference: () => reference.isConnected ? reference.getBoundingClientRect() : null });
   return popover;
 }
 
@@ -366,7 +363,6 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   let threadPopover: HTMLElement | null = null;
   let railOpen = false;
   let showResolved = false;
-  let annotationZoom = 1;
   const rail = createElement("aside", "wm-annotation-rail");
   rail.setAttribute("aria-label", "Threads");
   root.append(rail);
@@ -397,7 +393,6 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       composer?.remove();
       composerAnchor = anchor;
       composer = createCommentComposer(anchor);
-      applyZoom(composer);
       document.body.append(composer);
       positionPopover(composer, anchor);
       composer.querySelector<HTMLTextAreaElement>("textarea")?.focus();
@@ -424,28 +419,14 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     isRailOpen() {
       return railOpen;
     },
-    setZoom(scale) {
-      if (!Number.isFinite(scale) || scale <= 0) return;
-      annotationZoom = scale;
-      applyZoom(rail);
-      if (composer) {
-        applyZoom(composer);
-        positionPopover(composer, composerAnchor);
-      }
-      if (threadPopover) {
-        applyZoom(threadPopover);
-        const thread = activeThreadId ? state.threads.find((candidate) => candidate.id === activeThreadId) : undefined;
-        positionPopover(threadPopover, thread?.anchor);
-      }
-    },
     closeFootnotePopover() {
-      editorRoot?.querySelector(".wm-footnote-popover")?.remove();
+      editorRoot?.ownerDocument.querySelector(".wm-footnote-popover")?.remove();
     },
     destroy() {
       if (destroyed) return;
       destroyed = true;
       editorRoot?.removeEventListener("click", handleEditorClick);
-      editorRoot?.querySelector(".wm-footnote-popover")?.remove();
+      editorRoot?.ownerDocument.querySelector(".wm-footnote-popover")?.remove();
       composer?.remove();
       composer = null;
       composerAnchor = undefined;
@@ -461,10 +442,6 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     return getEditorView?.() ?? editorView;
   }
 
-  function applyZoom(node: HTMLElement): void {
-    node.style.setProperty("--wm-annotation-zoom", String(annotationZoom));
-  }
-
   function navigateToThread(thread: AnnotationThread, trigger?: HTMLElement): void {
     const view = currentView();
     if (!view) return;
@@ -473,41 +450,22 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     highlight?.scrollIntoView?.({ block: "center", inline: "nearest" });
   }
 
+  const placements = new WeakMap<HTMLElement, () => void>();
   function positionPopover(node: HTMLElement, anchor?: AnnotationAnchor, trigger?: HTMLElement): void {
-    const view = currentView();
-    const resolved = view && anchor ? resolveAnchor(view.state.doc, anchor) : null;
-    const position = resolved?.ranges.at(-1)?.to ?? view?.state.selection.to;
-    const canvasRect = editorRoot?.getBoundingClientRect();
-    const hasCanvasBounds = Boolean(canvasRect && canvasRect.width > 0 && canvasRect.height > 0);
-    const bounds = {
-      left: Math.max(12, hasCanvasBounds ? canvasRect!.left + 12 : 12),
-      top: Math.max(12, hasCanvasBounds ? canvasRect!.top + 12 : 12),
-      right: Math.min(window.innerWidth - 12, hasCanvasBounds ? canvasRect!.right - 12 : window.innerWidth - 12),
-      bottom: Math.min(window.innerHeight - 12, hasCanvasBounds ? canvasRect!.bottom - 12 : window.innerHeight - 12),
-    };
-    let reference: { left: number; right: number; top: number; bottom: number } | undefined = trigger?.getBoundingClientRect();
-    if (!reference && view && position != null) {
-      try {
-        const coordinates = view.coordsAtPos(position);
-        reference = coordinates;
-      } catch {}
-    }
-    const availableWidth = Math.max(0, bounds.right - bounds.left);
-    const availableHeight = Math.max(0, bounds.bottom - bounds.top);
-    const localWidth = Math.min(340, availableWidth / annotationZoom);
-    const localMaxHeight = Math.min(560, availableHeight / annotationZoom);
-    node.style.width = `${localWidth}px`;
-    node.style.maxHeight = `${localMaxHeight}px`;
-    const box = node.getBoundingClientRect();
-    const width = box.width || localWidth * annotationZoom;
-    const height = box.height || localMaxHeight * annotationZoom;
-    let left = reference?.left ?? bounds.left;
-    let top = (reference?.bottom ?? bounds.top) + 8;
-    if (reference && top + height > bounds.bottom) top = reference.top - height - 8;
-    left = Math.max(bounds.left, Math.min(left, bounds.right - width));
-    top = Math.max(bounds.top, Math.min(top, bounds.bottom - height));
-    node.style.left = `${left / annotationZoom}px`;
-    node.style.top = `${top / annotationZoom}px`;
+    placements.get(node)?.();
+    placements.set(node, placeOverlay(node, {
+      root: editorRoot,
+      policy: 'pin',
+      reference: () => {
+        if (trigger?.isConnected) return trigger.getBoundingClientRect();
+        const view = currentView();
+        if (!view) return null;
+        const resolved = anchor ? resolveAnchor(view.state.doc, anchor) : null;
+        if (anchor && !resolved) return null;
+        const position = resolved?.ranges.at(-1)?.to ?? view.state.selection.to;
+        return view.coordsAtPos(position);
+      },
+    }));
   }
 
   function showThreadPopover(thread: AnnotationThread, trigger?: HTMLElement): void {
@@ -529,7 +487,6 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       renderRail();
     });
     popover.append(close, details);
-    applyZoom(popover);
     document.body.append(popover);
     threadPopover = popover;
     positionPopover(popover, thread.anchor, trigger);

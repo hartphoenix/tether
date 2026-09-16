@@ -11,12 +11,13 @@
   "scripts": {
     "test": "bun test",
     "check": "bun test && bunx tsc --noEmit && bun run build:web",
+    "check:geometry": "bun scripts/check-geometry.ts",
     "build:web": "bun build ./src/web/index.html --outdir ./dist --minify",
     "build:release": "bun scripts/build-release.ts"
   },
   "dependencies": {
-    "@milkdown/crepe": "^7.22.1",
-    "@milkdown/kit": "^7.22.1",
+    "@milkdown/crepe": "7.22.1",
+    "@milkdown/kit": "7.22.1",
     "unified": "^11.0.5",
     "remark-parse": "^11.0.0",
     "remark-gfm": "^4.0.1"
@@ -25,6 +26,13 @@
     "@types/bun": "^1.3.9",
     "@types/jsdom": "^27.0.0",
     "jsdom": "^29.1.1",
+    "playwright": "1.62.1",
     "typescript": "^5.9.2"
+  },
+  "patchedDependencies": {
+    "@milkdown/plugin-tooltip@7.22.1": "patches/@milkdown%2Fplugin-tooltip@7.22.1.patch",
+    "@milkdown/plugin-block@7.22.1": "patches/@milkdown%2Fplugin-block@7.22.1.patch",
+    "@milkdown/plugin-slash@7.22.1": "patches/@milkdown%2Fplugin-slash@7.22.1.patch",
+    "@milkdown/components@7.22.1": "patches/@milkdown%2Fcomponents@7.22.1.patch"
   }
 }

@@ -87,3 +87,41 @@ Required changes:
 Round 1 — Astra rejected the draft: missing early browser proof gate; scaled floating controls conflicted with stage clipping; incomplete menu inventory; ProseMirror nested-scroll unit mismatch; proposed removal of scrollbar clearance without evidence.
 
 Revision: retain unscaled Milkdown shell and portal free controls there; gate consumer migration on browser proof; add all enabled menus and nested-scroll adapter; preserve measured scrollbar clearance. Round 2 — Astra approved the revised plan as ready to execute. Added explicit SlashProvider coverage, drop insertion marker verification and the distinction between unscaled block handles and scene-local table controls. The browser proof remains a mandatory execution gate; implementation starts only after pre-build commits are pushed.
+
+## Execution result — 2026-09-16
+
+Implemented on `fix/canvas-geometry`. Pre-build commits `7d48306` (existing security-audit revision) and `f021e45` (this reviewed plan) were pushed before implementation. Hart subsequently live-tested the fixes at all application zoom levels, reported them solid, and approved committing and pushing the implementation.
+
+### Ownership after the change
+
+- `src/web/canvas.ts` and `canvas.css` own document scaling, scene width, measured scroll extent and reading-position preservation. A visible character anchors zoom through asynchronous node-view layout; user input cancels that adjustment. The toolbar and free Milkdown controls live in the unscaled shell.
+- `src/web/scroll-geometry.ts` owns ProseMirror selection scrolling. It consumes the required viewport displacement through each actual nested scroller, converting to that scroller's local units once, then scrolls the window below the sticky toolbar.
+- `src/web/overlay.ts` owns Tether overlay placement and follow/pin/dismiss policies. Annotation forms, footnotes, selection dialogs and pointer menus use it. Draft forms remain open through geometry changes; stale selection actions cannot modify old document coordinates.
+- The patched tooltip package owns the shared active-geometry scheduler, viewport/local conversion and Milkdown collision fitting. Block, slash, link, code-language and table controls consume those primitives. Free controls use the shell; embedded image/table controls use local scene units. Closed/detached controls stop tracking and asynchronous placements cannot revive them.
+- Native DOM ranges still own highlights and hit testing. The former cmux CSS-zoom correction, reciprocal toolbar zoom and separate annotation zoom have been removed.
+
+### Dependency maintenance
+
+Milkdown's entry dependencies are pinned to 7.22.1. Bun applies the four version-bound patches in `patches/`; `bun.lock` records their paths. Each patch changes both upstream TypeScript and shipped JavaScript/declarations. The helper is exported through the existing tooltip package; no additional production dependency is introduced. Playwright is a development dependency.
+
+To upgrade Milkdown, inspect the upstream implementations and remove each patch only when upstream supplies its behavior: live semantic link anchors and forced source-loss dismissal; shell-rooted free controls with guarded remeasurement; scene-local image/table dimensions and pointer conversion; bounded table and language menus. Re-run the geometry suite and complete check after replacing patches. Do not retain a patch merely because it still applies. When recording changes with Bun, exclude generated `.bun-tag-*` cache files from patches.
+
+A separate directory installed the final dependency tree with `bun install --frozen-lockfile --ignore-scripts`. Dependency patch application was verified from the lockfile, not solely from modified `node_modules`.
+
+### Verified
+
+`bun run check:geometry` ran against Chromium 151.0.7922.34 and WebKit 26.5 at 75%, 100%, 113%, 125% and 175%. The fixture uses actual Crepe, Tether canvas/annotation/selection controllers, production styles and served font assets. All ten runs passed, without browser errors in the final run:
+
+- Native caret placement and drag selection; correct scene offset parent and clipped scroll extent; document bottom reachable and toolbar sticky.
+- Actual hyperlink hover identity, live placement through scrolling, pointer transfer into the preview, forced dismissal when its source scrolls away and successful subsequent hover.
+- Comment entry preserved during scroll, comment creation and annotation highlight rendering; no Markdown mutation from zoom/hover/selection.
+- Rail reflow, nested code horizontal scrolling, bounded language picker with usable trigger, image resize tracking the pointer, actual table action hit testing/alignment, and nested table caret scrolling.
+- Stale Tags → detail transitions rejected without modifying Markdown; long wrapped text preserves its visible character within 3 viewport pixels across zoom changes.
+
+Four focused geometry tests cover nonzero origins, scaling, borders, nested scroll consumption, collision placement, draft pinning, source loss, dismissal and scheduler cleanup. The complete repository check passed: **316 tests, zero failures**, TypeScript check and production web build.
+
+Astra reviewed the implementation in addition to the plan. Review identified and led to fixes for stale tag descriptors, hovered-link source loss, whole-paragraph reading anchors, table reflow/cancellation, clipped table actions and synchronous image-resize observer writes. Final narrow review accepted the corrections with no remaining blockers; the complete check subsequently passed.
+
+### Limits of this verification
+
+Browser execution required the explicitly authorized terminal worker because this session cannot launch/connect to browsers through macOS IPC. The worker ran the repository scripts without changing test assertions. The fixture exercises actual editor modules but is not a daemon-backed application walkthrough. Native cmux/Wave webviews, older WebKit, browser-level page zoom, complete theme/overflow/latex/slash interactions and native row/column drag-and-drop were not end-to-end verified; their affected coordinate paths were inspected and patched where applicable. Hart subsequently reported the fixes solid at all zoom levels during live testing; that report does not establish exhaustive coverage of every interaction listed here. The supported application zoom range remains 75–175%; this implementation does not introduce a new range.

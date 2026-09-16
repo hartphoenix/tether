@@ -7,6 +7,9 @@ import { createCodeBlockCommand } from "@milkdown/kit/preset/commonmark";
 import { createAnnotationUi, captureAnchor, type AnnotationThread, type AnnotationUiController } from "./annotations-ui";
 import { apiErrorMessage } from "./api-error";
 import { createChromeControls } from "./chrome-controls";
+import { createCanvas } from './canvas';
+import { scrollSelectionIntoView } from './scroll-geometry';
+import './canvas.css';
 import { blockHandle } from "./block-handle";
 import { cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
 import { localDocumentLink } from "./local-document-link";
@@ -72,6 +75,7 @@ const saveReviewButton = document.querySelector<HTMLButtonElement>("#save-review
 const cancelReviewButton = document.querySelector<HTMLButtonElement>("#cancel-review")!;
 
 let crepe: Crepe | null = null;
+let canvas: ReturnType<typeof createCanvas> | null = null;
 let selectionUi: SelectionUiController | null = null;
 let annotationUi: AnnotationUiController | null = null;
 let toolbarLabelObserver: MutationObserver | null = null;
@@ -96,8 +100,7 @@ const chrome = createChromeControls({
   notice, zoomButton, zoomMenu, zoomSlider, zoomLabel,
   onZoomChange: (scale) => {
     const zoom = scale / 100;
-    editorRoot.style.setProperty("--wm-editor-zoom", String(zoom));
-    annotationUi?.setZoom(zoom);
+    canvas?.setScale(zoom);
   },
 });
 let themePicker: { destroy(): void } | null = null;
@@ -369,6 +372,8 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     commentButton.classList.remove("is-active");
     commentButton.setAttribute("aria-pressed", "false");
     await previousCrepe?.destroy();
+    canvas?.destroy();
+    canvas = null;
     editorRoot.replaceChildren();
     annotationsRoot.replaceChildren();
     currentPath = documentResponse.path;
@@ -451,7 +456,6 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       onEdit: async ({ thread, targetId, body }) => postAnnotation("/api/annotations/edit", { threadId: thread.id, targetId, body }, generation, currentPath),
       onDelete: async ({ thread, targetId }) => postAnnotation("/api/annotations/delete", { threadId: thread.id, targetId }, generation, currentPath),
     });
-    nextAnnotationUi.setZoom(chrome.getZoom() / 100);
     const annotationPlugin = $prose(() => nextAnnotationUi.plugin);
     nextCrepe.editor.use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
     try { await nextCrepe.create(); }
@@ -461,6 +465,9 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     annotationUi = nextAnnotationUi;
     const view = getEditorView();
     if (view) {
+      canvas = createCanvas(view);
+      view.setProps({ handleScrollToSelection: scrollSelectionIntoView });
+      canvas.setScale(chrome.getZoom() / 100);
       nextAnnotationUi.attachEditorView(view);
       document.title = documentTabTitle(currentPath, view.state.doc);
     }

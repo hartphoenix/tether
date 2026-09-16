@@ -1,0 +1,14 @@
+.wm-canvas-stage { position: relative; overflow: clip; }
+.wm-canvas-scene {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: calc(100% / var(--wm-editor-scale, 1));
+  transform: scale(var(--wm-editor-scale, 1));
+  transform-origin: top left;
+}
+.wm-canvas-scene .ProseMirror {
+  min-height: calc((100vh - 44px) / var(--wm-editor-scale, 1));
+}
+/* Hidden free controls must not contribute their static position to page overflow. */
+.milkdown > [data-show="false"] { display: none; }
