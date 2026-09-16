@@ -1,16 +1,17 @@
 import { expect, test } from "bun:test";
 import {
+  isSupportedCmuxVersion,
   CmuxHostAdapter,
   CmuxHostError,
   SUPPORTED_CMUX_BUILD,
   SUPPORTED_CMUX_COMMIT,
-  SUPPORTED_CMUX_VERSION,
+  MINIMUM_CMUX_VERSION,
   TETHER_RECENTS_TAB_TITLE,
   TETHER_REVIEW_TAB_TITLE,
   type CmuxCommandResult,
 } from "../src/hosts/cmux";
 
-const versionOutput = `cmux ${SUPPORTED_CMUX_VERSION} (${SUPPORTED_CMUX_BUILD}) [${SUPPORTED_CMUX_COMMIT}]`;
+const versionOutput = `cmux ${MINIMUM_CMUX_VERSION} (${SUPPORTED_CMUX_BUILD}) [${SUPPORTED_CMUX_COMMIT}]`;
 const daemonInstanceId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
 const ids = {
@@ -91,27 +92,40 @@ test("detects the supported build, captures immutable IDs, and sanitizes command
     return ok(identity);
   });
   expect(host.capabilities()).toEqual({ embeddedBrowser: true, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: true });
-  expect([host.detectedVersion(), host.detectedBuild(), host.detectedCommit()]).toEqual([SUPPORTED_CMUX_VERSION, SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT]);
-  expect(host.launchTarget()).toEqual({ host: "cmux", version: SUPPORTED_CMUX_VERSION, build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.source });
+  expect([host.detectedVersion(), host.detectedBuild(), host.detectedCommit()]).toEqual([MINIMUM_CMUX_VERSION, SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT]);
+  expect(host.launchTarget()).toEqual({ host: "cmux", version: MINIMUM_CMUX_VERSION, build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.source });
   expect(calls[1]?.command).toEqual(["cmux", "--json", "--id-format", "uuids", "identify", "--workspace", ids.workspace, "--surface", ids.source]);
   expect(calls[1]?.env.CMUX_SOCKET_CAPABILITY).toBe("memory-only-capability");
   expect(calls[1]?.env.UNRELATED_SECRET).toBeUndefined();
 });
 
-test("rejects a matching version with the wrong build or commit", async () => {
-  for (const output of [`cmux ${SUPPORTED_CMUX_VERSION} (101) [${SUPPORTED_CMUX_COMMIT}]`, `cmux ${SUPPORTED_CMUX_VERSION} (${SUPPORTED_CMUX_BUILD}) [fffffffff]`]) {
-    const host = adapter(async (command) => command.includes("--version") ? { exitCode: 0, stdout: output, stderr: "" } : ok(identity));
-    expect(await host.detect()).toBe(true);
+test("accepts baseline and later versions by numeric version, independent of build metadata", async () => {
+  for (const version of ["0.64.22", "0.64.24", "0.65.0", "0.100.0", "1.0.0"]) {
+    expect(isSupportedCmuxVersion(version)).toBe(true);
+    const host = await detected(async (command) => command.includes("--version")
+      ? { exitCode: 0, stdout: `cmux ${version} (104) [f5da007dd]`, stderr: "" } : ok(identity));
+    expect(host.capabilities().embeddedBrowser).toBe(true);
+    expect(host.launchTarget()).toMatchObject({ version, build: "104", commit: "f5da007dd" });
+  }
+  const host = await detected(async (command) => command.includes("--version")
+    ? { exitCode: 0, stdout: "cmux 0.64.24", stderr: "" } : ok(identity));
+  expect(host.launchTarget()).toEqual({ host: "cmux", version: "0.64.24", windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.source });
+});
+
+test("rejects older and malformed versions", async () => {
+  for (const version of ["0.64.21", "0.9.99", "0.63.99", "", "0.64", "unknown", "0.64.24junk", "9007199254740992.0.0"]) {
+    expect(isSupportedCmuxVersion(version)).toBe(false);
+    const host = adapter(async () => ({ exitCode: 0, stdout: `cmux ${version} (104) [f5da007dd]`, stderr: "" }));
+    await host.detect();
     expect(host.capabilities().embeddedBrowser).toBe(false);
-    await expect(host.openView({ url: "http://127.0.0.1:8420/launch?ticket=x", kind: "document", focus: true, target: { host: "cmux", version: SUPPORTED_CMUX_VERSION, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.source } })).rejects.toMatchObject({ code: "unsupported_version" });
+    await expect(host.openView({ url: "http://127.0.0.1:8420/launch?ticket=x", kind: "document", focus: true })).rejects.toMatchObject({ code: "unsupported_version" });
   }
 });
 
-test("rejects immutable targets without the exact supported build identity", async () => {
+test("rejects targets from versions below the supported minimum", async () => {
   const host = await detected(async (command) => command.includes("--version")
-    ? { exitCode: 0, stdout: versionOutput, stderr: "" }
-    : ok(identity));
-  const target = { ...host.launchTarget()!, build: "101" };
+    ? { exitCode: 0, stdout: versionOutput, stderr: "" } : ok(identity));
+  const target = { ...host.launchTarget()!, version: "0.64.21" };
   await expect(host.openView({ url: "http://127.0.0.1:8420/launch?ticket=x", kind: "document", focus: true, target })).rejects.toMatchObject({ code: "unsupported_version" });
 });
 
@@ -786,3 +800,57 @@ test("Folio prefers the active Tether pane when multiple review panes exist", as
     targetPolicy: "focused-workspace", target: host.launchTarget() });
   expect(commands.find((command) => command.includes("move-surface"))).toContain(ids.otherPane);
 });
+
+for (const existing of [false, true]) {
+  test(`creates chromeless Folio in Dock on newer cmux (${existing ? "migration" : "first launch"}) and reuses it`, async () => {
+    const commands: string[][] = [];
+    let currentId = existing ? ids.dockSurface : "";
+    let currentUrl = existing ? `http://127.0.0.1:8420/r/session/?instance=${daemonInstanceId}` : "";
+    const host = await detected(async (command) => {
+      commands.push(command);
+      if (command.includes("--version")) return { exitCode: 0, stdout: "cmux 0.64.24 (104) [f5da007dd]", stderr: "" };
+      if (command.includes("identify")) return ok(identity);
+      if (command.includes("tree")) return ok(tree(currentId ? [{ id: ids.dockPane, dock_scope: "global", surfaces: [{ id: currentId, type: "browser", title: TETHER_RECENTS_TAB_TITLE, url: currentUrl }] }] : []));
+      if (command.includes("new-surface")) return ok({ dock_surface_id: ids.dockSurface });
+      if (command.includes("browser.open_split")) return ok(openSplit({ source_pane_id: ids.dockPane }));
+      if (command.includes("navigate")) {
+        const url = new URL(command.at(-1)!);
+        currentId = ids.createdSurface;
+        currentUrl = `http://127.0.0.1:8420/r/session/?instance=${daemonInstanceId}${url.hash}`;
+      }
+      return ok({ surface_id: ids.createdSurface });
+    });
+    const request = { url: "http://127.0.0.1:8420/recents/launch?ticket=one", kind: "recents" as const, focus: true, target: host.launchTarget() };
+    expect(await host.openView(request)).toEqual({ launchConsumed: true });
+    const params = JSON.parse(commands.find((command) => command.includes("browser.open_split"))!.at(-1)!);
+    expect(params).toEqual({ window_id: ids.window, surface_id: ids.dockSurface, focus: false, show_omnibar: false });
+    const navigate = commands.findIndex((command) => command.includes("navigate"));
+    const close = commands.findIndex((command) => command.includes("close-surface") && command.includes(ids.dockSurface));
+    const focus = commands.findIndex((command) => command.includes("focus-panel"));
+    expect(navigate).toBeGreaterThan(-1);
+    expect(close).toBeGreaterThan(navigate);
+    expect(focus).toBeGreaterThan(close);
+    expect(commands[navigate]!.at(-1)).toEndWith("#tether-chromeless");
+    commands.length = 0;
+    expect(await host.openView(request)).toEqual({ launchConsumed: false });
+    expect(commands.some((command) => command.includes("browser.open_split") || command.includes("navigate") || command.includes("new-surface"))).toBe(false);
+  });
+}
+
+for (const failure of ["chrome", "navigation"]) {
+  test(`retains existing Folio if chromeless replacement fails during ${failure}`, async () => {
+    const commands: string[][] = [];
+    const host = await detected(async (command) => {
+      commands.push(command);
+      if (command.includes("--version")) return { exitCode: 0, stdout: "cmux 0.64.24 (104) [f5da007dd]", stderr: "" };
+      if (command.includes("identify")) return ok(identity);
+      if (command.includes("tree")) return ok(tree([{ id: ids.dockPane, dock_scope: "global", surfaces: [{ id: ids.dockSurface, type: "browser", title: TETHER_RECENTS_TAB_TITLE }] }]));
+      if (command.includes("browser.open_split")) return ok(openSplit({ show_omnibar: failure === "chrome" }));
+      if (command.includes("navigate")) return { exitCode: 1, stdout: "", stderr: "navigation failed" };
+      return ok({});
+    });
+    await expect(host.openView({ url: "http://127.0.0.1:8420/recents/launch?ticket=one", kind: "recents", focus: false, target: host.launchTarget() })).rejects.toMatchObject({ code: failure === "chrome" ? "invalid_response" : "command_failed" });
+    expect(commands.some((command) => command.includes("close-surface") && command.includes(ids.createdSurface))).toBe(true);
+    expect(commands.some((command) => command.includes("close-surface") && command.includes(ids.dockSurface))).toBe(false);
+  });
+}

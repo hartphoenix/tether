@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, lstat, mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { waitForDaemonStop } from "./wait-for-daemon-stop";
 const archive = resolve(process.argv[2] ?? "");
 if (!process.argv[2]) throw new Error("Usage: bun scripts/check-install.ts <release.tar.gz>");
 const hash = (await readFile(`${archive}.sha256`, "utf8")).trim().split(/\s+/)[0]!;
@@ -25,10 +26,7 @@ try {
   await writeFile(join(env.WAVETERM_CONFIG_DIR, "widgets.json"), JSON.stringify({ unrelated: { label: "Keep me" } }));
   await cli("setup", "--no-open", "--host", "browser", "--wave", "--agent-directory", join(scratch, "skills"));
   await cli("daemon", "stop");
-  for (let i = 0; i < 40; i++) {
-    if (!JSON.parse(await cli("daemon", "status")).data.running) break;
-    await Bun.sleep(100);
-  }
+  await waitForDaemonStop([join(bin, "tether")], { env });
   await cli("uninstall", "--confirm");
   if (await lstat(join(bin, "tether")).catch(() => null)) throw new Error("Uninstall left its command launcher.");
   if (!(await lstat(join(env.TETHER_CONFIG_DIR, "tether.sqlite"))).isFile()) throw new Error("Uninstall removed private data.");

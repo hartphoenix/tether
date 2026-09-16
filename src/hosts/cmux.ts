@@ -1,14 +1,19 @@
+import { versionAtLeast } from "./version";
 import { diagnosticText } from "../shared/diagnostics";
 import { createBrowserHost, type BrowserHostAdapter } from "./browser";
 import type { HostAdapter, HostTarget, OpenLocalFileRequest, OpenViewRequest } from "./host-adapter";
 import { PROTOCOL_VERSION, SERVICE_ID, type HostCapabilities } from "../shared/contracts";
 
-export const SUPPORTED_CMUX_VERSION = "0.64.22";
+// First verified release; build and commit are reference metadata, not gates.
+export const MINIMUM_CMUX_VERSION = "0.64.22";
 export const SUPPORTED_CMUX_BUILD = 102;
 export const SUPPORTED_CMUX_COMMIT = "ddd4a01bc";
 // Retained only to rediscover review panes created before document-derived titles.
 export const TETHER_REVIEW_TAB_TITLE = "Tether Review";
 export const TETHER_RECENTS_TAB_TITLE = "Recents";
+// cmux has no chrome-state getter/setter. Retain creation provenance in the
+// Folio URL fragment (never sent to the server) so later launches can reuse it.
+const CHROMELESS_FOLIO_FRAGMENT = "#tether-chromeless";
 
 export type CmuxCommandResult = { exitCode: number; stdout: string; stderr: string };
 export type CmuxCommandRunner = (command: string[], env: NodeJS.ProcessEnv) => Promise<CmuxCommandResult>;
@@ -98,8 +103,12 @@ function parseBuild(output: string): CmuxBuild | null {
   return { version: match[1]!, build: match[2] ? Number(match[2]) : null, commit: match[3]?.toLowerCase() ?? null };
 }
 
+export function isSupportedCmuxVersion(version: unknown): version is string {
+  return versionAtLeast(version, MINIMUM_CMUX_VERSION);
+}
+
 function supportedBuild(build: CmuxBuild | null): boolean {
-  return build?.version === SUPPORTED_CMUX_VERSION && build.build === SUPPORTED_CMUX_BUILD && build.commit === SUPPORTED_CMUX_COMMIT;
+  return isSupportedCmuxVersion(build?.version);
 }
 
 function stringField(value: unknown, name: string): string | undefined {
@@ -140,7 +149,8 @@ function liveRecentsUrl(raw: unknown, launchUrl: string, daemonInstanceId: strin
   try {
     const current = new URL(raw);
     return current.origin === new URL(launchUrl).origin && /^\/r\/[^/]+\/$/.test(current.pathname) &&
-      current.searchParams.size === 1 && current.searchParams.get("instance") === daemonInstanceId && !current.hash;
+      current.searchParams.size === 1 && current.searchParams.get("instance") === daemonInstanceId &&
+      (!current.hash || current.hash === CHROMELESS_FOLIO_FRAGMENT);
   } catch { return false; }
 }
 
@@ -148,7 +158,8 @@ function tetherRecentsUrl(raw: unknown): boolean {
   if (typeof raw !== "string" || !safeLoopbackUrl(raw)) return false;
   try {
     const url = new URL(raw);
-    return /^\/r\/[^/]+\/$/.test(url.pathname) && url.searchParams.has("instance") && !url.hash;
+    return /^\/r\/[^/]+\/$/.test(url.pathname) && url.searchParams.has("instance") &&
+      (!url.hash || url.hash === CHROMELESS_FOLIO_FRAGMENT);
   } catch { return false; }
 }
 
@@ -191,7 +202,7 @@ function requireResponseUuid(value: unknown, field: string): string {
   return value;
 }
 
-/** cmux 0.64.22 adapter using only structured CLI/socket responses. */
+/** cmux adapter using only structured CLI/socket responses. */
 export class CmuxHostAdapter implements HostAdapter {
   readonly id = "cmux" as const;
   private readonly env: NodeJS.ProcessEnv;
@@ -252,8 +263,7 @@ export class CmuxHostAdapter implements HostAdapter {
     const workspaceId = requireUuid(stringField(caller, "workspace_id"), "workspace ID");
     const surfaceId = requireUuid(stringField(caller, "surface_id"), "surface ID");
     return {
-      host: "cmux", version: SUPPORTED_CMUX_VERSION,
-      build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT,
+      ...this.targetIdentity(),
       windowId, workspaceId, surfaceId,
     };
   }
@@ -322,7 +332,7 @@ export class CmuxHostAdapter implements HostAdapter {
             try { url = new URL(surface.url); } catch { continue; }
             if (url.origin !== source.origin || url.pathname.replace(/\/$/, "") !== source.pathname.replace(/\/$/, "")) continue;
             matches.push({ target: {
-              host: "cmux", version: SUPPORTED_CMUX_VERSION, build: String(SUPPORTED_CMUX_BUILD), commit: SUPPORTED_CMUX_COMMIT,
+              ...this.targetIdentity(),
               windowId: requireUuid(stringField(window, "id"), "window ID"),
               workspaceId: requireUuid(stringField(workspace, "id"), "workspace ID"),
               surfaceId: requireUuid(stringField(surface, "id"), "surface ID"),
@@ -351,8 +361,8 @@ export class CmuxHostAdapter implements HostAdapter {
 
   private validatedTarget(target: HostTarget | undefined): HostTarget & { windowId: string; workspaceId: string; surfaceId: string } {
     if (!target || target.host !== "cmux") throw new CmuxHostError("invalid_target", "A captured cmux launch target is required.");
-    if (target.version !== SUPPORTED_CMUX_VERSION || target.build !== String(SUPPORTED_CMUX_BUILD) || target.commit !== SUPPORTED_CMUX_COMMIT) {
-      throw new CmuxHostError("unsupported_version", `Tether supports cmux ${SUPPORTED_CMUX_VERSION} build ${SUPPORTED_CMUX_BUILD} commit ${SUPPORTED_CMUX_COMMIT}; the target reports a different build.`);
+    if (!isSupportedCmuxVersion(target.version)) {
+      throw new CmuxHostError("unsupported_version", `Tether requires cmux ${MINIMUM_CMUX_VERSION} or later; the target reports an unsupported version.`);
     }
     return {
       ...target,
@@ -362,11 +372,19 @@ export class CmuxHostAdapter implements HostAdapter {
     };
   }
 
+  private targetIdentity(): HostTarget {
+    return {
+      host: "cmux", version: this.build!.version,
+      ...(this.build!.build === null ? {} : { build: String(this.build!.build) }),
+      ...(this.build!.commit === null ? {} : { commit: this.build!.commit }),
+    };
+  }
+
   private unsupportedBuildMessage(): string {
     const detected = this.build
       ? `${this.build.version} build ${this.build.build ?? "unknown"} commit ${this.build.commit ?? "unknown"}`
       : "no compatible version";
-    return `Tether supports cmux ${SUPPORTED_CMUX_VERSION} build ${SUPPORTED_CMUX_BUILD} commit ${SUPPORTED_CMUX_COMMIT}; detected ${detected}.`;
+    return `Tether requires cmux ${MINIMUM_CMUX_VERSION} or later; detected ${detected}.`;
   }
 
   private async serialized<T>(workspaceId: string, operation: () => Promise<T>): Promise<T> {
@@ -478,10 +496,7 @@ export class CmuxHostAdapter implements HostAdapter {
     const identity = await this.runJson<CmuxIdentity>(["--json", "--id-format", "uuids", "identify", "--no-caller"], undefined, true);
     const focused = identity.focused;
     return {
-      host: "cmux",
-      version: SUPPORTED_CMUX_VERSION,
-      build: String(SUPPORTED_CMUX_BUILD),
-      commit: SUPPORTED_CMUX_COMMIT,
+      ...this.targetIdentity(),
       windowId: requireUuid(stringField(focused, "window_id"), "focused window ID"),
       workspaceId: requireUuid(stringField(focused, "workspace_id"), "focused workspace ID"),
       surfaceId: requireUuid(stringField(focused, "surface_id"), "focused surface ID"),
@@ -495,10 +510,7 @@ export class CmuxHostAdapter implements HostAdapter {
     const workspaceId = requireUuid(stringField(focused, "workspace_id"), "focused workspace ID");
     const focusedSurfaceId = requireUuid(stringField(focused, "surface_id"), "focused surface ID");
     const target = {
-      host: "cmux",
-      version: SUPPORTED_CMUX_VERSION,
-      build: String(SUPPORTED_CMUX_BUILD),
-      commit: SUPPORTED_CMUX_COMMIT,
+      ...this.targetIdentity(),
       windowId,
       workspaceId,
       surfaceId: focusedSurfaceId,
@@ -532,17 +544,29 @@ export class CmuxHostAdapter implements HostAdapter {
 
     let surfaceId: string;
     let launchConsumed = true;
+    const chromelessDock = versionAtLeast(this.detectedVersion(), "0.64.24");
+    const folioUrl = chromelessDock ? `${request.url}${CHROMELESS_FOLIO_FRAGMENT}` : request.url;
     if (matches.length === 1) {
       surfaceId = requireUuid(stringField(matches[0], "id"), "Dock surface ID");
-      if (liveRecentsUrl(matches[0]?.url, request.url, daemonInstanceId)) launchConsumed = false;
-      else await this.navigateSurface(surfaceId, request.url, target);
+      if (chromelessDock && !String(matches[0]?.url ?? "").endsWith(CHROMELESS_FOLIO_FRAGMENT)) {
+        surfaceId = await this.replaceWithChromelessDockSurface(surfaceId, folioUrl, target);
+      } else if (liveRecentsUrl(matches[0]?.url, request.url, daemonInstanceId)) launchConsumed = false;
+      else await this.navigateSurface(surfaceId, folioUrl, target);
     } else {
       const created = await this.runJson<Record<string, unknown>>([
         "--json", "--id-format", "both", "new-surface", "--type", "browser", "--placement", "dock",
         "--workspace", target.workspaceId, "--window", target.windowId, "--focus", "false",
       ], target);
       surfaceId = requireUuid(stringField(created, "dock_surface_id"), "Dock surface ID");
-      await this.initializeCreatedDockSurface(surfaceId, request.url, target);
+      if (chromelessDock) {
+        const placeholderId = surfaceId;
+        try { surfaceId = await this.replaceWithChromelessDockSurface(placeholderId, folioUrl, target); }
+        catch (cause) {
+          try { await this.closeSurface(placeholderId, target); }
+          catch { /* preserve creation failure */ }
+          throw cause;
+        }
+      } else await this.initializeCreatedDockSurface(surfaceId, request.url, target);
     }
 
     if (request.focus) {
@@ -550,6 +574,36 @@ export class CmuxHostAdapter implements HostAdapter {
       await this.runJson(["--json", "--id-format", "both", "focus-panel", "--panel", surfaceId, "--workspace", target.workspaceId, "--window", target.windowId], target);
     }
     return { launchConsumed };
+  }
+
+  private async replaceWithChromelessDockSurface(
+    previousId: string,
+    url: string,
+    target: HostTarget & { windowId: string; workspaceId: string },
+  ): Promise<string> {
+    const created = await this.runJson<Record<string, unknown>>([
+      "--json", "--id-format", "both", "rpc", "browser.open_split", JSON.stringify({
+        window_id: target.windowId,
+        surface_id: previousId,
+        focus: false,
+        show_omnibar: false,
+      }),
+    ], target);
+    const surfaceId = requireResponseUuid(created.surface_id, "Dock surface ID");
+    try {
+      if (created.show_omnibar !== false || created.window_id !== target.windowId || typeof created.created_split !== "boolean") {
+        throw new CmuxHostError("invalid_response", "cmux did not confirm chromeless Dock placement.");
+      }
+      // Initialize before retiring the old view or focusing about:blank, which
+      // cmux treats as a new tab and reveals the omnibar for.
+      await this.navigateSurface(surfaceId, url, target);
+      await this.closeSurface(previousId, target);
+      return surfaceId;
+    } catch (cause) {
+      try { await this.closeSurface(surfaceId, target); }
+      catch { /* preserve the failure; the previous Folio remains available */ }
+      throw cause;
+    }
   }
 
   private async initializeCreatedDockSurface(surfaceId: string, url: string, target: HostTarget & { windowId: string; workspaceId: string }): Promise<void> {

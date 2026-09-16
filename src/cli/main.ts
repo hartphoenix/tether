@@ -10,7 +10,7 @@ import { cancelLaunch, controlLaunch, controlRecentsLaunch, controlRequest, Cont
 import { createBrowserHost } from "../hosts/browser";
 import { createWaveHost } from "../hosts/wave";
 import { startWaveBridge } from "../hosts/wave-bridge";
-import { createCmuxHost, CmuxHostAdapter, CmuxHostError, SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT, SUPPORTED_CMUX_VERSION } from "../hosts/cmux";
+import { createCmuxHost, CmuxHostAdapter, CmuxHostError, isSupportedCmuxVersion, MINIMUM_CMUX_VERSION } from "../hosts/cmux";
 import { cmuxBridgeStatus, startCmuxBridge, stopCmuxBridge, type CmuxBridgeStatus } from "../hosts/cmux-bridge";
 import type { HostAdapter } from "../hosts/host-adapter";
 import type { ProtocolResponse } from "../shared/contracts";
@@ -243,7 +243,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const version = cmux.detectedVersion();
       const build = cmux.detectedBuild();
       const commit = cmux.detectedCommit();
-      const supported = detected && version === SUPPORTED_CMUX_VERSION && build === SUPPORTED_CMUX_BUILD && commit === SUPPORTED_CMUX_COMMIT;
+      const supported = detected && isSupportedCmuxVersion(version);
       const target = cmux.launchTarget();
       let directPlacementReady = false;
       let directIssue: { code: string; message: string } | undefined;
@@ -253,7 +253,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
           directIssue = { code: cause instanceof CmuxHostError ? cause.code : "socket_unavailable", message: cause instanceof Error ? cause.message : String(cause) };
         }
       } else if (detected) {
-        directIssue = { code: supported ? "socket_unavailable" : "unsupported_version", message: supported ? "cmux target capture is unavailable." : `Tether supports cmux ${SUPPORTED_CMUX_VERSION}; detected ${version ?? "an unknown version"}.` };
+        directIssue = { code: supported ? "socket_unavailable" : "unsupported_version", message: supported ? "cmux target capture is unavailable." : `Tether requires cmux ${MINIMUM_CMUX_VERSION} or later; detected ${version ?? "an unknown version"}.` };
       } else {
         directIssue = { code: "cmux_not_detected", message: "cmux was not detected in this terminal." };
       }

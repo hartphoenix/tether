@@ -1,3 +1,4 @@
+import { versionAtLeast } from "./version";
 import { diagnosticText } from "../shared/diagnostics";
 import type { HostCapabilities } from "../shared/contracts";
 import type { HostAdapter, HostTarget, OpenViewRequest, OpenViewResult } from "./host-adapter";
@@ -6,7 +7,11 @@ import { syncWaveRecentLaunchers } from "./wave-launchers";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const SUPPORTED_WAVE_VERSION = "0.14.5";
+export const MINIMUM_WAVE_VERSION = "0.14.5";
+
+export function isSupportedWaveVersion(version: unknown): version is string {
+  return versionAtLeast(version, MINIMUM_WAVE_VERSION);
+}
 
 export type WaveCommandResult = { exitCode: number; stdout: string; stderr: string };
 export type WaveCommandRunner = (command: string[], env: NodeJS.ProcessEnv) => Promise<WaveCommandResult>;
@@ -88,10 +93,10 @@ export class WaveHostAdapter implements HostAdapter {
   }
 
   capabilities(): HostCapabilities {
-    if (!this.version) return { ...unavailable };
+    if (!isSupportedWaveVersion(this.version)) return { ...unavailable };
     return {
       embeddedBrowser: true,
-      hiddenNavigation: this.version === SUPPORTED_WAVE_VERSION,
+      hiddenNavigation: true,
       widgetInstallation: true,
       fileNavigatorHook: false,
       revealFile: true,
@@ -130,11 +135,12 @@ export class WaveHostAdapter implements HostAdapter {
 
   async openView(request: OpenViewRequest): Promise<OpenViewResult> {
     const { url, target } = request;
+    if (!isSupportedWaveVersion(this.version)) {
+      throw Object.assign(new Error(`Tether requires Wave ${MINIMUM_WAVE_VERSION} or later; detected ${this.version ?? "an unknown version"}.`), { code: "unsupported_version" });
+    }
     if (!this.env.WAVETERM_JWT) throw new Error("Wave view placement requires WAVETERM_JWT. Relaunch Tether from a Wave widget or terminal.");
     const destination = await this.resolveTarget(target);
-    const command = this.version === SUPPORTED_WAVE_VERSION
-      ? [this.wshPath, "createblock", "web", `url=${url}`, "web:hidenav=true"]
-      : [this.wshPath, "web", "open", url];
+    const command = [this.wshPath, "createblock", "web", `url=${url}`, "web:hidenav=true"];
     const result = await this.run(command, commandEnvironment(this.env, destination));
     if (result.exitCode !== 0) throw Object.assign(new Error(diagnosticText(result.stderr || result.stdout || `wsh exited with status ${result.exitCode}`)), { code: "host_command_failed", exitCode: result.exitCode });
     const launcherBlock = target?.blockId ?? this.env.WAVETERM_BLOCKID ?? jwtBlockId(this.env.WAVETERM_JWT);

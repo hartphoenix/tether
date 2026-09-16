@@ -53,6 +53,8 @@ test("renders Folio Active and Archive views with organization controls", async 
   expect(html).toContain("<title>Tether Folio</title>");
   expect(html).toContain("Export with annotations");
   expect(html).toContain("Restart service");
+  expect(dom.window.document.querySelector("#app-menu")?.textContent).not.toContain("Getting started");
+  expect(dom.window.document.querySelector("#clear-unpinned")).toBeNull();
   expect([...dom.window.document.querySelectorAll(".name")].map((node) => node.textContent)).toEqual(["one.md"]);
   expect(dom.window.document.querySelector(".attention")?.textContent).toBe("1");
 
@@ -87,15 +89,6 @@ test("accepts a lower snapshot sequence after the daemon instance changes", asyn
   events().emit({ instanceId: "new", sequence: 1, files: [archived], retention: { mode: "days", days: 30 } });
   dom.window.document.querySelector<HTMLButtonElement>('[data-view="archive"]')!.click();
   expect(dom.window.document.querySelector(".name")?.textContent).toBe("two.md");
-});
-
-test("Getting started requests a scoped welcome launch", async () => {
-  const { dom, requests } = runPage({ instanceId: "one", sequence: 1, files: [], retention: { mode: "forever" } });
-  await Bun.sleep(0);
-  dom.window.document.querySelector<HTMLButtonElement>("#welcome")!.click();
-  await Bun.sleep(0);
-  expect(requests).toContainEqual({ endpoint: "welcome", body: {} });
-  dom.window.close();
 });
 
 test("confirms immediate-retention clearing before sending the mutation", async () => {

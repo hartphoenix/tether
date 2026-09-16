@@ -8,9 +8,8 @@ import { runtimeEntry } from "../runtime-paths";
 import type { OpenLocalFileRequest, OpenViewRequest, OpenViewResult } from "./host-adapter";
 import {
   createCmuxHost,
-  SUPPORTED_CMUX_BUILD,
-  SUPPORTED_CMUX_COMMIT,
-  SUPPORTED_CMUX_VERSION,
+  isSupportedCmuxVersion,
+  MINIMUM_CMUX_VERSION,
 } from "./cmux";
 
 const LOOPBACK = "127.0.0.1";
@@ -24,8 +23,8 @@ export type CmuxBridgeRecord = {
   instanceId: string;
   daemonInstanceId: string;
   cmuxVersion: string;
-  cmuxBuild: number;
-  cmuxCommit: string;
+  cmuxBuild: number | null;
+  cmuxCommit: string | null;
   cmuxSocketFingerprint: string;
   startedAt: string;
 };
@@ -36,8 +35,8 @@ export type CmuxBridgeStatus = {
   instanceId?: string;
   daemonInstanceId?: string;
   cmuxVersion?: string;
-  cmuxBuild?: number;
-  cmuxCommit?: string;
+  cmuxBuild?: number | null;
+  cmuxCommit?: string | null;
   cmuxSocketFingerprint?: string;
   startedAt?: string;
   issue?: { code: string; message: string };
@@ -55,21 +54,21 @@ function alive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
-async function requireSupportedCmux(env: NodeJS.ProcessEnv): Promise<void> {
+async function requireSupportedCmux(env: NodeJS.ProcessEnv): Promise<Pick<CmuxBridgeRecord, "cmuxVersion" | "cmuxBuild" | "cmuxCommit">> {
   const bundled = env.CMUX_BUNDLED_CLI_PATH;
   const fromPath = env.PATH?.split(delimiter).map((directory) => join(directory, "cmux")).find(existsSync);
   const host = createCmuxHost({ env, cmuxPath: bundled || fromPath || "/Applications/cmux.app/Contents/Resources/bin/cmux" });
   const detected = await host.detect();
   const actual = `${host.detectedVersion() ?? "unknown"} build ${host.detectedBuild() ?? "unknown"} commit ${host.detectedCommit() ?? "unknown"}`;
-  if (!detected || host.detectedVersion() !== SUPPORTED_CMUX_VERSION || host.detectedBuild() !== SUPPORTED_CMUX_BUILD ||
-    host.detectedCommit() !== SUPPORTED_CMUX_COMMIT) {
+  if (!detected || !isSupportedCmuxVersion(host.detectedVersion())) {
     throw new CmuxBridgeError(
       "unsupported_version",
-      `Tether callbacks require cmux ${SUPPORTED_CMUX_VERSION} build ${SUPPORTED_CMUX_BUILD} commit ${SUPPORTED_CMUX_COMMIT}; detected ${actual}.`,
+      `Tether callbacks require cmux ${MINIMUM_CMUX_VERSION} or later; detected ${actual}.`,
       400,
     );
   }
   await host.probeSocket();
+  return { cmuxVersion: host.detectedVersion()!, cmuxBuild: host.detectedBuild(), cmuxCommit: host.detectedCommit() };
 }
 
 export function fingerprintCmuxSocket(path: string): string {
@@ -101,7 +100,9 @@ function validRecord(value: Partial<CmuxBridgeRecord>): value is CmuxBridgeRecor
   if (!Number.isSafeInteger(value.pid) || !value.pid || value.pid < 1 || !alive(value.pid) ||
     typeof value.origin !== "string" || typeof value.instanceId !== "string" || !value.instanceId ||
     typeof value.daemonInstanceId !== "string" || !value.daemonInstanceId ||
-    value.cmuxVersion !== SUPPORTED_CMUX_VERSION || value.cmuxBuild !== SUPPORTED_CMUX_BUILD || value.cmuxCommit !== SUPPORTED_CMUX_COMMIT ||
+    !isSupportedCmuxVersion(value.cmuxVersion) ||
+    (value.cmuxBuild !== null && (!Number.isSafeInteger(value.cmuxBuild) || value.cmuxBuild! < 0)) ||
+    (value.cmuxCommit !== null && (typeof value.cmuxCommit !== "string" || !/^[0-9a-f]+$/.test(value.cmuxCommit))) ||
     typeof value.cmuxSocketFingerprint !== "string" || !/^[0-9a-f]{64}$/.test(value.cmuxSocketFingerprint) ||
     typeof value.startedAt !== "string") return false;
   try {
@@ -288,17 +289,17 @@ export async function waitForCmuxBridge(config: TetherConfig, daemonInstanceId: 
 export async function startCmuxBridge(
   config: TetherConfig,
   env = process.env,
-  options: { wait?: boolean; cmuxVersion?: string; cmuxBuild?: number; cmuxCommit?: string } = {},
+  options: { wait?: boolean; cmuxVersion?: string; cmuxBuild?: number | null; cmuxCommit?: string | null } = {},
 ): Promise<CmuxBridgeRecord | null> {
   if (!env.CMUX_SOCKET_PATH || !env.CMUX_SOCKET_CAPABILITY) {
     throw new CmuxBridgeError("bridge_bootstrap_unsupported", "cmux bridge requires the signed socket capability from a cmux terminal.");
   }
-  if ((options.cmuxVersion && options.cmuxVersion !== SUPPORTED_CMUX_VERSION) ||
-    (options.cmuxBuild !== undefined && options.cmuxBuild !== SUPPORTED_CMUX_BUILD) ||
-    (options.cmuxCommit && options.cmuxCommit !== SUPPORTED_CMUX_COMMIT)) {
-    throw new CmuxBridgeError("unsupported_version", `Tether callbacks require cmux ${SUPPORTED_CMUX_VERSION} build ${SUPPORTED_CMUX_BUILD} commit ${SUPPORTED_CMUX_COMMIT}.`, 400);
+  const identity = await requireSupportedCmux(env);
+  if ((options.cmuxVersion !== undefined && options.cmuxVersion !== identity.cmuxVersion) ||
+    (options.cmuxBuild !== undefined && options.cmuxBuild !== identity.cmuxBuild) ||
+    (options.cmuxCommit !== undefined && options.cmuxCommit !== identity.cmuxCommit)) {
+    throw new CmuxBridgeError("bridge_relaunch_required", "cmux changed during launch; retry from a cmux terminal.");
   }
-  await requireSupportedCmux(env);
   const socketFingerprint = fingerprintCmuxSocket(env.CMUX_SOCKET_PATH);
   const discovery = await readDiscovery(config);
   if (!discovery) throw new CmuxBridgeError("daemon_unavailable", "The Tether daemon must be running before the cmux bridge starts.");
@@ -307,6 +308,7 @@ export async function startCmuxBridge(
   try {
     const existing = await readCmuxBridge(config);
     if (existing?.daemonInstanceId === discovery.instanceId && existing.cmuxSocketFingerprint === socketFingerprint &&
+      existing.cmuxVersion === identity.cmuxVersion && existing.cmuxBuild === identity.cmuxBuild && existing.cmuxCommit === identity.cmuxCommit &&
       await cmuxBridgeHealthy(config, discovery.instanceId, socketFingerprint)) return existing;
     await stopCmuxBridge(config);
     const childEnv: NodeJS.ProcessEnv = {
@@ -319,9 +321,9 @@ export async function startCmuxBridge(
       CMUX_BUNDLED_CLI_PATH: env.CMUX_BUNDLED_CLI_PATH,
       CMUX_WORKSPACE_ID: env.CMUX_WORKSPACE_ID,
       CMUX_SURFACE_ID: env.CMUX_SURFACE_ID,
-      TETHER_CMUX_VERSION: SUPPORTED_CMUX_VERSION,
-      TETHER_CMUX_BUILD: String(SUPPORTED_CMUX_BUILD),
-      TETHER_CMUX_COMMIT: SUPPORTED_CMUX_COMMIT,
+      TETHER_CMUX_VERSION: identity.cmuxVersion,
+      TETHER_CMUX_BUILD: identity.cmuxBuild === null ? "" : String(identity.cmuxBuild),
+      TETHER_CMUX_COMMIT: identity.cmuxCommit ?? "",
       TETHER_CMUX_SOCKET_FINGERPRINT: socketFingerprint,
       TETHER_DAEMON_INSTANCE_ID: discovery.instanceId,
       TETHER_DAEMON_ORIGIN: discovery.origin,

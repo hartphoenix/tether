@@ -15,7 +15,7 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
-test("runs a credential-isolated bridge process for Wave actions after the launcher exits", async () => {
+test.each(["0.14.5", "0.15.0"])("runs Wave %s callbacks after the launcher exits", async version => {
   const directory = await mkdtemp(join("/tmp", "tether-wave-bridge-process-"));
   directories.push(directory);
   const config = resolveConfig({ profile: "bridge-process", runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
@@ -26,7 +26,7 @@ test("runs a credential-isolated bridge process for Wave actions after the launc
   await mkdir(bin);
   const log = join(directory, "wsh.log");
   const wsh = join(bin, "wsh");
-  await writeFile(wsh, `#!/bin/sh\nif [ "$1" = version ]; then echo 'wsh v0.14.5'; else printf '%s\\n' "$*" >> '${log}'; fi\n`);
+  await writeFile(wsh, `#!/bin/sh\nif [ "$1" = version ]; then echo 'wsh v${version}'; else printf '%s\\n' "$*" >> '${log}'; fi\n`);
   await chmod(wsh, 0o700);
   await startWaveBridge(config, { PATH: `${bin}:/usr/bin:/bin`, WAVETERM: "1", TERM_PROGRAM: "waveterm", WAVETERM_JWT: "memory-only", WAVETERM_WSHBINARY: wsh });
   const gateway = new HostGateway(config, createBrowserHost({ open: async () => {} }));
@@ -53,7 +53,10 @@ test("routes Wave session opens through the authenticated bridge without exposin
   expect(await gateway.openView({ url: "http://127.0.0.1:8420/launch?ticket=opaque", kind: "document", focus: true, target: { host: "wave", version: "0.14.5", workspaceId: "one", tabId: "two" } })).toEqual({ launchConsumed: true });
   expect(received).toEqual([{ auth: `Bearer ${token}`, body: { url: "http://127.0.0.1:8420/launch?ticket=opaque", kind: "document", focus: true, target: { host: "wave", version: "0.14.5", workspaceId: "one", tabId: "two" } } }]);
   expect(fallbackOpened).toEqual([]);
-  expect(gateway.capabilities({ host: "wave", version: "0.14.5" }).hiddenNavigation).toBe(true);
+  for (const version of ["0.14.5", "0.14.6", "0.15.0", "1.0.0"]) {
+    expect(gateway.capabilities({ host: "wave", version }).hiddenNavigation).toBe(true);
+  }
+  expect(gateway.capabilities({ host: "wave", version: "0.14.4" }).embeddedBrowser).toBe(false);
   await removeWaveBridge(config);
   await expect(gateway.openView({ url: "http://127.0.0.1:8420/", kind: "document", focus: true, target: { host: "wave" } })).rejects.toThrow("Relaunch Tether from Wave");
 });

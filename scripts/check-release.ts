@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { resolveConfig } from "../src/server/config";
 import { controlLaunch } from "../src/server/lifecycle";
+import { waitForDaemonStop } from "./wait-for-daemon-stop";
 
 const root = resolve(process.argv[2] ?? "");
 if (!process.argv[2]) throw new Error("Usage: bun scripts/check-release.ts <candidate-directory>");
@@ -41,10 +42,7 @@ try {
   const pending = await command("pending", setup.path, "--actor", "assistant");
   if (!pending.events.length) throw new Error("The agent cannot see the welcome comment.");
   await command("daemon", "stop");
-  for (let i = 0; i < 40; i++) {
-    if (!(await command("daemon", "status")).running) break;
-    await Bun.sleep(100);
-  }
+  await waitForDaemonStop([join(root, "tether")], { env, cwd: scratch });
   await command("backup", "--output", join(scratch, "backup"));
   await command("restore", "--source", join(scratch, "backup"), "--directory", join(scratch, "restored"));
   console.log(`Packaged startup, repeat setup, reader assets, review, and backup/restore passed. Evidence: ${scratch}`);
