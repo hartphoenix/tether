@@ -177,7 +177,7 @@ test("keeps direct and callback placement issues separate in cmux status", async
   });
 });
 
-test("does not report a matching cmux semver with the wrong build as supported", async () => {
+test("reports a newer cmux version as supported independently of target readiness", async () => {
   const cmuxHost = new CmuxHostAdapter({
     cmuxPath: "cmux",
     env: {
@@ -186,7 +186,7 @@ test("does not report a matching cmux semver with the wrong build as supported",
       CMUX_SOCKET_PATH: "/tmp/cmux.sock",
     },
     externalHost: { openExternal: async () => {}, revealFile: async () => {} },
-    run: async () => ({ exitCode: 0, stdout: `cmux 0.64.22 (${SUPPORTED_CMUX_BUILD + 1}) [${SUPPORTED_CMUX_COMMIT}]`, stderr: "" }),
+    run: async () => ({ exitCode: 0, stdout: `cmux 0.64.24 (${SUPPORTED_CMUX_BUILD + 1}) [${SUPPORTED_CMUX_COMMIT}]`, stderr: "" }),
   });
   const result = await runCli(["cmux", "status"], {
     cmuxHost,
@@ -196,11 +196,11 @@ test("does not report a matching cmux semver with the wrong build as supported",
     ok: true,
     data: {
       detected: true,
-      supported: false,
-      version: "0.64.22",
+      supported: true,
+      version: "0.64.24",
       build: SUPPORTED_CMUX_BUILD + 1,
       commit: SUPPORTED_CMUX_COMMIT,
-      directPlacement: { ready: false, issue: { code: "unsupported_version" } },
+      directPlacement: { ready: false, issue: { code: "socket_unavailable" } },
       callbackPlacement: { ready: true },
     },
   });

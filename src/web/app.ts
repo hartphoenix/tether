@@ -429,6 +429,14 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     nextAnnotationUi = createAnnotationUi({
       root: annotationsRoot,
       onExport: exportReview,
+      onCopyFilePath: async () => {
+        try {
+          await navigator.clipboard.writeText(currentPath);
+          chrome.setNotice("File path copied.");
+        } catch {
+          chrome.setNotice("Could not copy the file path to the clipboard.");
+        }
+      },
       editorRoot,
       getEditorView,
       onNotice: (message) => chrome.setNotice(message),

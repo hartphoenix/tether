@@ -1,6 +1,6 @@
 import { diagnosticText, errorDetails } from "../shared/diagnostics";
 import { PROTOCOL_VERSION, SERVICE_ID } from "../shared/contracts";
-import { createCmuxHost, SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT, SUPPORTED_CMUX_VERSION } from "./cmux";
+import { createCmuxHost, isSupportedCmuxVersion, MINIMUM_CMUX_VERSION } from "./cmux";
 import { fingerprintCmuxSocket, removeCmuxBridge, writeCmuxBridge } from "./cmux-bridge";
 import { prepareConfig, readControlToken, readDiscovery, resolveConfig } from "../server/config";
 import { isAbsolute } from "node:path";
@@ -19,15 +19,27 @@ if (!process.env.CMUX_SOCKET_PATH || process.env.TETHER_CMUX_SOCKET_FINGERPRINT 
 }
 const cmuxSocketFingerprint = process.env.TETHER_CMUX_SOCKET_FINGERPRINT;
 
+const cmuxVersion = process.env.TETHER_CMUX_VERSION ?? "";
+const cmuxBuild = process.env.TETHER_CMUX_BUILD ? Number(process.env.TETHER_CMUX_BUILD) : null;
+const cmuxCommit = process.env.TETHER_CMUX_COMMIT || null;
+if (!isSupportedCmuxVersion(cmuxVersion)) throw new Error("Unsupported cmux bridge version.");
+class BridgeServiceError extends Error {
+  constructor(readonly code: string, message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 const host = createCmuxHost();
 async function requireSupportedCmux(): Promise<void> {
   const detected = await host.detect();
-  if (!detected || host.detectedVersion() !== SUPPORTED_CMUX_VERSION || host.detectedBuild() !== SUPPORTED_CMUX_BUILD ||
-    host.detectedCommit() !== SUPPORTED_CMUX_COMMIT) {
+  if (!detected || !isSupportedCmuxVersion(host.detectedVersion())) {
     const actual = `${host.detectedVersion() ?? "unknown"} build ${host.detectedBuild() ?? "unknown"} commit ${host.detectedCommit() ?? "unknown"}`;
     throw new BridgeBuildError(
-      `Tether callbacks require cmux ${SUPPORTED_CMUX_VERSION} build ${SUPPORTED_CMUX_BUILD} commit ${SUPPORTED_CMUX_COMMIT}; detected ${actual}.`,
+      `Tether callbacks require cmux ${MINIMUM_CMUX_VERSION} or later; detected ${actual}.`,
     );
+  }
+  if (host.detectedVersion() !== cmuxVersion || host.detectedBuild() !== cmuxBuild || host.detectedCommit() !== cmuxCommit) {
+    throw new BridgeServiceError("bridge_relaunch_required", "cmux changed; relaunch Tether from a cmux terminal.", 503);
   }
   await host.probeSocket();
 }
@@ -40,11 +52,6 @@ class BridgeBuildError extends Error {
 await requireSupportedCmux();
 
 const instanceId = crypto.randomUUID();
-if (process.env.TETHER_CMUX_VERSION !== SUPPORTED_CMUX_VERSION || process.env.TETHER_CMUX_BUILD !== String(SUPPORTED_CMUX_BUILD) ||
-  process.env.TETHER_CMUX_COMMIT !== SUPPORTED_CMUX_COMMIT) throw new Error("Unsupported cmux bridge build identity.");
-const cmuxVersion = SUPPORTED_CMUX_VERSION;
-const cmuxBuild = SUPPORTED_CMUX_BUILD;
-const cmuxCommit = SUPPORTED_CMUX_COMMIT;
 let stopped = false;
 let resolveClosed!: () => void;
 const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
@@ -55,11 +62,6 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const requestKeys = new Set(["url", "kind", "focus", "allowFocusedFallback", "targetPolicy", "sourceUrl", "target"]);
 const targetKeys = new Set(["host", "version", "build", "commit", "windowId", "workspaceId", "surfaceId"]);
 
-class BridgeServiceError extends Error {
-  constructor(readonly code: string, message: string, readonly status: number) {
-    super(message);
-  }
-}
 
 function object(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -68,7 +70,7 @@ function object(value: unknown): Record<string, unknown> | null {
 function validTarget(value: unknown): HostTarget | null {
   const target = object(value);
   if (!target || Object.keys(target).some((key) => !targetKeys.has(key)) || target.host !== "cmux" ||
-    target.version !== SUPPORTED_CMUX_VERSION || target.build !== String(SUPPORTED_CMUX_BUILD) || target.commit !== SUPPORTED_CMUX_COMMIT ||
+    !isSupportedCmuxVersion(target.version) ||
     !UUID.test(String(target.windowId ?? "")) ||
     !UUID.test(String(target.workspaceId ?? "")) || !UUID.test(String(target.surfaceId ?? ""))) return null;
   return Object.fromEntries(Object.entries(target).map(([key, entry]) => [key, String(entry)]));

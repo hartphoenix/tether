@@ -69,6 +69,8 @@ TETHER_PROFILE=preview ./mdreview daemon stop
 
 ## Wave installation
 
+Tether requires Wave `0.14.5` or later; newer versions keep hidden navigation and widget support. Host compatibility uses minimum versions, not exact release, build, or commit matches.
+
 Install or refresh the four canonical Tether launchers. This atomically removes retired legacy, preview, and duplicate widget definitions while preserving unrelated widgets:
 
 ```sh
@@ -104,7 +106,7 @@ Errors retain a stable `error.code` and a readable message; `error.details.diagn
 
 ## cmux integration
 
-Tether currently gates cmux support to the exact verified build `0.64.22 (102) [ddd4a01bc]`. From a cmux terminal, opening a document creates or reuses one Tether review pane beside the invoking surface; later documents become tabs in that pane:
+Tether accepts cmux `0.64.22` and later, preserving socket authorization and validating operation responses rather than pinning a build or commit. If cmux changes while Tether is running, relaunch Tether from a cmux terminal to refresh its callback bridge. From a cmux terminal, opening a document creates or reuses one Tether review pane beside the invoking surface; later documents become tabs in that pane:
 
 ```sh
 TETHER_PROFILE=preview ./mdreview open /absolute/path/to/document.md

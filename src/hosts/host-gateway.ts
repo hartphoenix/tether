@@ -2,10 +2,10 @@ import type { HostCapabilities } from "../shared/contracts";
 import type { RecentEntry } from "../recents/registry";
 import type { TetherConfig } from "../server/config";
 import type { HostAdapter, HostTarget, OpenLocalFileRequest, OpenViewRequest, OpenViewResult } from "./host-adapter";
-import { SUPPORTED_CMUX_BUILD, SUPPORTED_CMUX_COMMIT, SUPPORTED_CMUX_VERSION } from "./cmux";
+import { isSupportedCmuxVersion } from "./cmux";
 import { openThroughCmuxBridge, openLocalFileThroughCmuxBridge } from "./cmux-bridge";
 import { openThroughWaveBridge, updateWaveRecentsThroughBridge } from "./wave-bridge";
-import { SUPPORTED_WAVE_VERSION } from "./wave";
+import { isSupportedWaveVersion } from "./wave";
 
 const unavailable: HostCapabilities = {
   embeddedBrowser: false,
@@ -25,16 +25,15 @@ export class HostGateway implements HostAdapter {
 
   capabilities(target?: HostTarget): HostCapabilities {
     if (target?.host === "wave") return {
-      embeddedBrowser: true,
-      hiddenNavigation: target.version === SUPPORTED_WAVE_VERSION,
-      widgetInstallation: true,
+      embeddedBrowser: isSupportedWaveVersion(target.version),
+      hiddenNavigation: isSupportedWaveVersion(target.version),
+      widgetInstallation: isSupportedWaveVersion(target.version),
       fileNavigatorHook: false,
       revealFile: true,
     };
     if (target?.host === "cmux") return {
       ...unavailable,
-      embeddedBrowser: target.version === SUPPORTED_CMUX_VERSION &&
-        target.build === String(SUPPORTED_CMUX_BUILD) && target.commit === SUPPORTED_CMUX_COMMIT,
+      embeddedBrowser: isSupportedCmuxVersion(target.version),
     };
     return this.fallback.capabilities(target);
   }
