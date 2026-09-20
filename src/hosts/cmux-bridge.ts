@@ -295,11 +295,6 @@ export async function startCmuxBridge(
     throw new CmuxBridgeError("bridge_bootstrap_unsupported", "cmux bridge requires the signed socket capability from a cmux terminal.");
   }
   const identity = await requireSupportedCmux(env);
-  if ((options.cmuxVersion !== undefined && options.cmuxVersion !== identity.cmuxVersion) ||
-    (options.cmuxBuild !== undefined && options.cmuxBuild !== identity.cmuxBuild) ||
-    (options.cmuxCommit !== undefined && options.cmuxCommit !== identity.cmuxCommit)) {
-    throw new CmuxBridgeError("bridge_relaunch_required", "cmux changed during launch; retry from a cmux terminal.");
-  }
   const socketFingerprint = fingerprintCmuxSocket(env.CMUX_SOCKET_PATH);
   const discovery = await readDiscovery(config);
   if (!discovery) throw new CmuxBridgeError("daemon_unavailable", "The Tether daemon must be running before the cmux bridge starts.");
@@ -307,9 +302,8 @@ export async function startCmuxBridge(
   if (!lock) return options.wait === false ? null : waitForCmuxBridge(config, discovery.instanceId, socketFingerprint);
   try {
     const existing = await readCmuxBridge(config);
-    if (existing?.daemonInstanceId === discovery.instanceId && existing.cmuxSocketFingerprint === socketFingerprint &&
-      existing.cmuxVersion === identity.cmuxVersion && existing.cmuxBuild === identity.cmuxBuild && existing.cmuxCommit === identity.cmuxCommit &&
-      await cmuxBridgeHealthy(config, discovery.instanceId, socketFingerprint)) return existing;
+    if (existing?.cmuxSocketFingerprint === socketFingerprint &&
+      await cmuxBridgeHealthy(config, discovery.instanceId, socketFingerprint)) return await readCmuxBridge(config);
     await stopCmuxBridge(config);
     const childEnv: NodeJS.ProcessEnv = {
       PATH: env.PATH,

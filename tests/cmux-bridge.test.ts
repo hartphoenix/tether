@@ -370,24 +370,38 @@ esac
       url: `${oldOrigin}/launch?ticket=obsolete`, kind: "document", focus: false, target,
     })).rejects.toMatchObject({ code: "invalid_request" });
   }
-  await writeFile(versionFile, `cmux ${version} (${build + 1}) [${commit}]\n`);
+  // Compatible host updates change diagnostics, never authorization policy.
+  await writeFile(versionFile, `cmux 0.65.0 (${build + 1}) [abcdef123]\n`);
   expect(await cmuxBridgeStatus(config)).toMatchObject({
-    running: true,
-    callbackPlacementReady: false,
-    issue: { code: "bridge_relaunch_required" },
+    running: true, callbackPlacementReady: true, cmuxVersion: "0.65.0", cmuxBuild: build + 1, cmuxCommit: "abcdef123",
   });
-  await expect(openThroughCmuxBridge(config, {
-    url: `${current.origin}/launch?ticket=still-valid-shape`,
-    kind: "document",
-    focus: false,
-    target: { host: "cmux", version, build: String(build), commit: commit, windowId: ids.window, workspaceId: ids.workspace, surfaceId: ids.surface },
-  })).rejects.toMatchObject({ code: "bridge_relaunch_required", status: 503 });
+  const unchanged = await startCmuxBridge(config, { ...bridgeEnv, CMUX_SOCKET_PATH: replacementSocket }, buildOptions);
+  expect(unchanged?.instanceId).toBe(replacementRecord!.instanceId);
+  await openThroughCmuxBridge(config, {
+    url: `${current.origin}/launch?ticket=still-valid-shape`, kind: "document", focus: false, target,
+  });
+  await writeFile(versionFile, 'cmux 0.64.21 (1) [abcdef]\n');
+  expect(await cmuxBridgeStatus(config)).toMatchObject({ running: true, callbackPlacementReady: false, issue: { code: "unsupported_version" } });
   await writeFile(versionFile, `cmux ${version} (${build}) [${commit}]\n`);
+  // An unavailable host must not destroy its retained in-memory capability.
+  const onlineExecutable = await readFile(executable, "utf8");
+  await writeFile(executable, onlineExecutable.replace("case \"$*\" in", "echo 'socket not found' >&2; exit 1\ncase \"$*\" in"));
+  expect((await cmuxBridgeStatus(config)).callbackPlacementReady).toBe(false);
+  expect((await readCmuxBridge(config))?.instanceId).toBe(replacementRecord!.instanceId);
+  await writeFile(executable, onlineExecutable);
+  expect((await cmuxBridgeStatus(config)).callbackPlacementReady).toBe(true);
   await current.stop();
   const unplanned = createDaemon({ config, startupGraceMs: 600_000 });
-  daemons.push(unplanned);
-  await unplanned.ready;
-  await expect(openThroughCmuxBridge(config, {
+  daemons.push(unplanned); await unplanned.ready;
+  await openThroughCmuxBridge(config, {
     url: `${unplanned.origin}/launch?ticket=unplanned`, kind: "document", focus: false, target,
+  });
+  expect(await readCmuxBridge(config)).toMatchObject({ instanceId: replacementRecord!.instanceId, daemonInstanceId: unplanned.instanceId });
+  const impostor = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ service: "other" }) });
+  servers.push(impostor);
+  await writeDiscovery(config, { protocol: 1, instanceId: "impostor", pid: process.pid, origin: `http://127.0.0.1:${impostor.port}`, startedAt: new Date().toISOString() });
+  await expect(openThroughCmuxBridge(config, {
+    url: `http://127.0.0.1:${impostor.port}/launch?ticket=x`, kind: "document", focus: false, target,
   })).rejects.toMatchObject({ code: "bridge_relaunch_required" });
+
 }, 20_000);

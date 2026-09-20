@@ -67,6 +67,10 @@ TETHER_PROFILE=preview ./mdreview daemon status
 TETHER_PROFILE=preview ./mdreview daemon stop
 ```
 
+Reader and Folio cookies persist across host restarts and renew during use. When the host restores its tabs, Tether resumes their saved URLs, reader drafts, conflict state, and reading positions; it does not reopen historical conversations. Failed reader initialization and disconnected loaded pages retry automatically. Agent document registration continues while host views are closed.
+
+This recovery requires the detached service to remain available at its saved address and the host to retain its browser cookies. Reboot, cleared browser storage, explicitly quitting Tether, or terminating its host bridge still requires launching Tether again. A webview that fails navigation before Tether's page loads cannot run its retry code. After upgrading from session-only cookies, existing views must contact the updated service once before the host quits.
+
 ## Wave installation
 
 Tether requires Wave `0.14.5` or later; newer versions keep hidden navigation and widget support. Host compatibility uses minimum versions, not exact release, build, or commit matches.
@@ -106,7 +110,7 @@ Errors retain a stable `error.code` and a readable message; `error.details.diagn
 
 ## cmux integration
 
-Tether accepts cmux `0.64.22` and later, preserving socket authorization and validating operation responses rather than pinning a build or commit. If cmux changes while Tether is running, relaunch Tether from a cmux terminal to refresh its callback bridge. From a cmux terminal, opening a document creates or reuses one Tether review pane beside the invoking surface; later documents become tabs in that pane:
+Tether accepts cmux `0.64.22` and later, preserving socket authorization and validating operation responses rather than pinning a build or commit. Its callback bridge retains its in-memory capability across host downtime, accepts compatible cmux updates, and reconnects to an authenticated replacement Tether daemon. From a cmux terminal, opening a document creates or reuses one Tether review pane beside the invoking surface; later documents become tabs in that pane:
 
 ```sh
 TETHER_PROFILE=preview ./mdreview open /absolute/path/to/document.md

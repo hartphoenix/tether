@@ -18,6 +18,7 @@ import { createSelectionUi, reviewNoteIconSvg, type SelectionUiController } from
 import { createThemePicker } from "./themes";
 import { documentTabTitle, filenameStem } from "./document-title";
 import { DraftPersistence, recoverDraft } from "./draft-recovery";
+import { createReconnectLoop } from "./reconnect";
 import { installCmuxFindCompatibility } from "./hosts/cmux-find";
 import type { SessionBootstrap } from "../shared/contracts";
 import "./annotations-ui.css";
@@ -95,6 +96,8 @@ let disconnected = false;
 let incomingReview: IncomingReview | null = null;
 let documentGeneration = 0;
 let readOnly = false;
+let initialized = false;
+let initializing = false;
 
 const chrome = createChromeControls({
   notice, zoomButton, zoomMenu, zoomSlider, zoomLabel,
@@ -173,7 +176,7 @@ function compactTopBar(): void {
     menu.append(code);
   }
   const tools = [...inner.children].filter((element) => element.classList.contains("top-bar-item") || element.classList.contains("top-bar-divider"));
-  menu.append(...tools);
+  if (tools.length) menu.append(...tools);
   const inlineCode = menu.querySelectorAll(".top-bar-item")[topBarLabels.indexOf("Inline code")];
   const codeBlock = menu.querySelector("[data-insert-code]")!;
   if (inlineCode && inlineCode.nextElementSibling !== codeBlock) inlineCode.after(codeBlock);
@@ -214,6 +217,7 @@ function labelCrepeTools(): void {
 async function fetchResponse(pathname: string, init: RequestInit = {}): Promise<Response> {
   const response = await fetch(apiPath(pathname), {
     ...init,
+    signal: init.signal ?? AbortSignal.timeout(10_000),
     credentials: "same-origin",
     headers: { ...(init.body === undefined ? {} : { "content-type": "application/json" }), ...init.headers },
   });
@@ -227,7 +231,7 @@ async function fetchResponse(pathname: string, init: RequestInit = {}): Promise<
 }
 
 async function loadDocument(): Promise<DocumentResponse> {
-  const response = await fetch(apiPath("api/file"), { credentials: "same-origin" });
+  const response = await fetch(apiPath("api/file"), { credentials: "same-origin", signal: AbortSignal.timeout(10_000) });
   if (response.ok || response.status === 422) return await response.json() as DocumentResponse;
   const text = await response.text();
   throw new Error(text || response.statusText);
@@ -298,14 +302,14 @@ const draftPersistence = new DraftPersistence(async (mutation) => {
     : { method: "POST", body: JSON.stringify(mutation.draft) });
 });
 function scheduleSave(): void {
-  if (readOnly || switching) return;
+  if (readOnly || switching || initializing) return;
   void persistDraft();
   if (currentMarkdown() === savedEditorMarkdown || conflicted || incomingReview) return;
   if (saveTimer != null) clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => void save(), 600);
 }
 async function persistDraft(): Promise<void> {
-  if (!crepe || !currentPath || switching) return;
+  if (!crepe || !currentPath || switching || initializing) return;
   const markdown = currentMarkdown();
   await draftPersistence.update({
     editorMarkdown: markdown,
@@ -501,8 +505,8 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     }
   } finally { if (generation === documentGeneration) switching = false; }
   if (generation !== documentGeneration) return;
-  if (!readOnly) await refreshAnnotations(generation, currentPath);
-  await lease(generation, currentPath);
+  // Bootstrap already carries annotations. Network refresh belongs to the
+  // reconnect loop, after the draft has been recovered and editing is enabled.
 }
 
 async function beginIncomingReview(generation = documentGeneration, path = currentPath): Promise<void> {
@@ -568,37 +572,56 @@ async function lease(generation = documentGeneration, path = currentPath): Promi
     }
     disconnected = true;
     chrome.setNotice(`Disconnected: ${(error as Error).message}`, 0);
+    throw error;
   }
 }
 async function start(): Promise<void> {
   const bootstrap = await api<SessionBootstrap>("api/bootstrap");
-  themePicker = createThemePicker(themeButton, themeMenu, editorRoot, {
-    initialTheme: bootstrap.preferences.theme,
-    customThemes: bootstrap.preferences.customThemes,
-    makerButton: document.querySelector<HTMLButtonElement>("#theme-maker")!,
-    persist: (mutation) => api("api/preferences", { method: "PUT", body: JSON.stringify(mutation) }),
-    onError: (message) => chrome.setNotice(message),
-  });
-  await openDocument(false, bootstrap.document as DocumentResponse);
-  const draft = bootstrap.draft;
-  const recovery = recoverDraft(bootstrap.document, draft);
-  if (recovery && crepe) {
-    const prepared = prepareMarkdown(recovery.body);
-    currentFrontmatter = prepared.frontmatter;
-    currentBodyRevision = recovery.baseRevision;
-    if (recovery.conflicted) showConflict("Recovered draft: the file changed. Review your draft before saving or reload the file.");
-    crepe.editor.action(replaceAll(prepared.editorMarkdown));
-    if (!recovery.conflicted) chrome.setNotice("Recovered unsaved draft.");
+  initializing = true;
+  editorRoot.inert = true;
+  annotationsRoot.inert = true;
+  themePicker?.destroy();
+  try {
+    themePicker = createThemePicker(themeButton, themeMenu, editorRoot, {
+      initialTheme: bootstrap.preferences.theme,
+      customThemes: bootstrap.preferences.customThemes,
+      makerButton: document.querySelector<HTMLButtonElement>("#theme-maker")!,
+      persist: (mutation) => api("api/preferences", { method: "PUT", body: JSON.stringify(mutation) }),
+      onError: (message) => chrome.setNotice(message),
+    });
+    await openDocument(false, bootstrap.document as DocumentResponse);
+    const draft = bootstrap.draft;
+    const recovery = recoverDraft(bootstrap.document, draft);
+    if (recovery && crepe) {
+      const prepared = prepareMarkdown(recovery.body);
+      currentFrontmatter = prepared.frontmatter;
+      currentBodyRevision = recovery.baseRevision;
+      if (recovery.conflicted) showConflict("Recovered draft: the file changed. Review your draft before saving or reload the file.");
+      crepe.editor.action(replaceAll(prepared.editorMarkdown));
+      if (!recovery.conflicted) chrome.setNotice("Recovered unsaved draft.");
+    }
+    // Font and canvas layout can otherwise clamp a restored position to zero.
+    await Promise.race([document.fonts.ready, new Promise(resolve => setTimeout(resolve, 1000))]);
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    window.scrollTo(0, bootstrap.scroll ?? draft?.scroll ?? 0);
+    initialized = true;
+  } finally {
+    initializing = false;
+    editorRoot.inert = !initialized;
+    annotationsRoot.inert = !initialized;
   }
-  window.scrollTo(0, bootstrap.scroll ?? draft?.scroll ?? 0);
 }
 
 let positionTimer: number | undefined;
+function persistPosition(keepalive = false): void {
+  clearTimeout(positionTimer);
+  if (!initialized || initializing) return;
+  void api("api/position", { method: "POST", body: JSON.stringify({ scroll: window.scrollY }), keepalive }).catch(() => {});
+}
 addEventListener("scroll", () => {
-  if (positionTimer) clearTimeout(positionTimer);
-  positionTimer = window.setTimeout(() => {
-    void api("api/position", { method: "POST", body: JSON.stringify({ scroll: window.scrollY }) }).catch(() => {});
-  }, 150);
+  if (!initialized || initializing) return;
+  clearTimeout(positionTimer);
+  positionTimer = window.setTimeout(() => persistPosition(), 150);
 }, { passive: true });
 
 commentButton.addEventListener("click", () => {
@@ -640,9 +663,28 @@ editorRoot.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
 });
-addEventListener("pagehide", () => {
+const connection = createReconnectLoop({
+  run: async () => {
+    if (!initialized) await start();
+    else await lease();
+    // Retry the latest editor state, not an obsolete failed draft request.
+    await persistDraft();
+  },
+  onError: error => chrome.setNotice(`${initialized ? "Disconnected" : "Startup failed"}: ${(error as Error).message}`, 0),
+});
+addEventListener("pageshow", () => connection.wake());
+addEventListener("online", () => connection.wake());
+addEventListener("visibilitychange", () => {
+  if (document.hidden) { persistPosition(true); void persistDraft(); connection.pause(); }
+  else connection.wake();
+});
+addEventListener("pagehide", event => {
+  persistPosition(true);
+  connection.pause();
   const body = new Blob([JSON.stringify({ clientId })], { type: "application/json" });
   navigator.sendBeacon(apiPath("api/release"), body);
+  if ((event as PageTransitionEvent).persisted) return;
+  connection.dispose();
   selectionUi?.destroy();
   annotationUi?.destroy();
   toolbarLabelObserver?.disconnect();
@@ -650,5 +692,4 @@ addEventListener("pagehide", () => {
   themePicker?.destroy();
   chrome.destroy();
 });
-setInterval(() => void lease(), 15_000);
-void start().catch((error) => chrome.setNotice(`Startup failed: ${error.message}`, 0));
+connection.wake();

@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import { mkdtemp, readFile, realpath, rm, writeFile, rename, mkdir, symlink, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { startDaemon, type TetherDaemon } from '../src/server/server';
+import { createDaemon, startDaemon, type TetherDaemon } from '../src/server/server';
 import { resolveConfig } from '../src/server/config';
 import { controlRequest, controlRecentsLaunch } from '../src/server/lifecycle';
 import { anchorForQuote } from '../src/server/quote-anchor';
@@ -9,27 +9,55 @@ import { bodyRevision } from '../src/core/annotation-ledger';
 const directories:string[]=[]; const daemons:TetherDaemon[]=[];
 afterEach(async()=>{for(const d of daemons.splice(0))await d.stop();for(const p of directories.splice(0))await rm(p,{recursive:true,force:true});});
 async function fixture(){const directory=await mkdtemp('/tmp/tether-recovery-');directories.push(directory);const path=join(directory,'document.md');await writeFile(path,'# Target\n\nOriginal body.\n');const config=resolveConfig({profile:'test',runtimeDir:join(directory,'runtime'),configDir:join(directory,'config')});return {directory,path:await realpath(path),config};}
-async function launch(daemon:TetherDaemon,path:string){const grant=await daemon.service.open(path);const response=await fetch(daemon.mintTicket(grant).url,{redirect:'manual'});return {grant,location:response.headers.get('location')!,cookie:response.headers.get('set-cookie')!.split(';')[0]};}
+async function launch(daemon:TetherDaemon,path:string){const grant=await daemon.service.open(path);const response=await fetch(daemon.mintTicket(grant).url,{redirect:'manual'});return {grant,location:response.headers.get('location')!,setCookie:response.headers.get('set-cookie')!,cookie:response.headers.get('set-cookie')!.split(';')[0]};}
 function post(d:TetherDaemon,location:string,cookie:string,route:string,body:unknown){return fetch(new URL(route,d.origin+location),{method:'POST',headers:{cookie,origin:d.origin,'content-type':'application/json'},body:JSON.stringify(body)});}
 
 test('restart retains scoped reader and Folio access, draft, position, and private review',async()=>{
  const f=await fixture();let daemon=await startDaemon({config:f.config,web:()=>new Response('reader')});daemons.push(daemon);
  const s=await launch(daemon,f.path);const doc=await daemon.service.read(s.grant);
+ expect(s.setCookie).toContain('Max-Age=34560000');
+ expect(s.setCookie).toContain('HttpOnly; SameSite=Strict');
  await daemon.service.appendComment({session:s.grant,actor:'hart',body:'Private note',anchor:anchorForQuote(doc.body,'Target',doc.bodyRevision),expectedBodyRevision:doc.bodyRevision});
  expect((await post(daemon,s.location,s.cookie,'api/draft',{body:'Recovered body',baseRevision:doc.bodyRevision,scroll:123})).status).toBe(200);
  expect((await post(daemon,s.location,s.cookie,'api/position',{scroll:456})).status).toBe(200);
  const folio=await controlRecentsLaunch(f.config);const exchange=await fetch(folio.url,{redirect:'manual'});const fl=exchange.headers.get('location')!,fc=exchange.headers.get('set-cookie')!.split(';')[0];
+ expect(exchange.headers.get('set-cookie')).toContain('Max-Age=34560000');
  const beforeOrigin=daemon.origin;
  const views=daemon.service.store.db.query('SELECT verifier FROM reader_views').all();expect(JSON.stringify(views)).not.toContain(s.cookie.split('=')[1]);
  await daemon.stop();
  daemon=await startDaemon({config:f.config,web:()=>new Response('reader')});daemons.push(daemon);
  expect(daemon.origin).toBe(beforeOrigin);
  const response=await fetch(new URL('api/bootstrap',daemon.origin+s.location),{headers:{cookie:s.cookie}});expect(response.status).toBe(200);
+ expect(response.headers.get('set-cookie')).toContain(s.cookie+';');
+ expect(response.headers.get('set-cookie')).toContain('Max-Age=34560000');
  const data=await response.json() as any;
  expect(data.draft.body).toBe('Recovered body');expect(data.scroll).toBe(456);expect(data.document.annotations.threads[0].comment.body).toBe('Private note');
  expect((await fetch(new URL('api/bootstrap',daemon.origin+s.location))).status).toBe(401);
- expect((await fetch(new URL('api/snapshot',daemon.origin+fl),{headers:{cookie:fc}})).status).toBe(200);
+ const folioRestored=await fetch(new URL('api/snapshot',daemon.origin+fl),{headers:{cookie:fc}});
+ expect(folioRestored.status).toBe(200);
+ expect(folioRestored.headers.get('set-cookie')).toContain(fc+';');
+ expect(folioRestored.headers.get('set-cookie')).toContain('Max-Age=34560000');
  expect(await readFile(f.path,'utf8')).toBe(doc.body);
+});
+
+test('restored routes wait for startup instead of rejecting valid saved cookies', async () => {
+ const f=await fixture(); const before=await startDaemon({config:f.config,web:()=>new Response('reader')});daemons.push(before);
+ const reader=await launch(before,f.path);
+ const folio=await controlRecentsLaunch(f.config);const exchange=await fetch(folio.url,{redirect:'manual'});
+ const folioUrl=new URL(exchange.headers.get('location')!,before.origin);
+ const cookie=exchange.headers.get('set-cookie')!.split(';')[0]!;
+ await before.stop();
+ const after=createDaemon({config:f.config,port:before.port,persistentViews:true,web:()=>new Response('reader')});daemons.push(after);
+ let release!:()=>void;
+ const pause=new Promise<void>(resolve=>{release=resolve});
+ after.service.recoverMoves=()=>pause;
+ let completed=0;
+ const requests=[fetch(new URL('api/bootstrap',after.origin+reader.location),{headers:{cookie:reader.cookie}}),fetch(folioUrl,{headers:{cookie}})].map(p=>p.then(r=>{completed++;return r}));
+ await Bun.sleep(30);expect(completed).toBe(0);
+ release();await after.ready;
+ for(const response of await Promise.all(requests))expect(response.status).toBe(200);
+ const denied=await fetch(new URL('api/bootstrap',after.origin+reader.location));
+ expect(denied.status).toBe(401);expect(denied.headers.get('set-cookie')).toBeNull();
 });
 
 test('immediate archive invalidates a live view rather than resurrecting deleted data',async()=>{

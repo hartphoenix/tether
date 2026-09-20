@@ -137,6 +137,12 @@ function cookieValue(request: Request, name: string): string | null {
   return null;
 }
 
+// Renew on use; absence and expired presence leases never revoke a view.
+const VIEW_COOKIE_AGE = 400 * 24 * 60 * 60;
+function viewCookie(name: string, value: string, root: string): string {
+  return `${name}=${value}; Path=${root}; HttpOnly; SameSite=Strict; Max-Age=${VIEW_COOKIE_AGE}`;
+}
+
 async function requestJson(request: Request): Promise<Record<string, unknown>> {
   const route = new URL(request.url).pathname;
   const limit = route.includes("/import") ? INPUT_LIMITS.package : route.includes("/review/") ? 1024 * 1024 : INPUT_LIMITS.markdown + 1024 * 1024;
@@ -622,8 +628,12 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     const url = new URL(request.url);
     const pathname = url.pathname;
     if (pathname === "/health" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId });
+    // The listener exists before SQLite views are reconstructed. A restored
+    // browser must not mistake that interval for revoked authorization.
+    try { await ready; } catch { return error("service_unavailable", "Tether could not finish starting.", 503); }
+    if (stopped) return error("service_stopping", "Tether is restarting.", 503);
     if (pathname === "/favicon.png" && request.method === "GET") {
-      return new Response(Bun.file(resolve(runtimeRoot(), process.env.TETHER_INSTALL_ROOT ? "dist/favicon.png" : "src/web/favicon.png")), {
+      return new Response(await readFile(resolve(runtimeRoot(), process.env.TETHER_INSTALL_ROOT ? "dist/favicon.png" : "src/web/favicon.png")), {
         headers: { "content-type": "image/png", "cache-control": "public, max-age=3600", "x-content-type-options": "nosniff" },
       });
     }
@@ -651,7 +661,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const root = sessionRoutes(id).root;
       return new Response(null, { status: 302, headers: {
         location: root,
-        "set-cookie": `tether_session=${session.cookie}; Path=${root}; HttpOnly; SameSite=Strict`,
+        "set-cookie": viewCookie("tether_session", session.cookie, root),
         "cache-control": "no-store",
         "referrer-policy": "no-referrer",
       } });
@@ -670,7 +680,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const root = `/r/${encodeURIComponent(id)}/`;
       return new Response(null, { status: 302, headers: {
         location: `${root}?instance=${encodeURIComponent(daemon.instanceId)}`,
-        "set-cookie": `tether_recents=${session.cookie}; Path=${root}; HttpOnly; SameSite=Strict`,
+        "set-cookie": viewCookie("tether_recents", session.cookie, root),
         "cache-control": "no-store", "referrer-policy": "no-referrer",
       } });
     }
@@ -918,7 +928,19 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const requests = new Set<Promise<Response>>();
   const bunServer = Bun.serve({ hostname: LOOPBACK, port: options.port ?? 0, fetch: (request: Request) => {
     if (stopped) return error("service_stopping", "Tether is restarting.", 503);
-    const pending = requestHandler(request);
+    const pending = requestHandler(request).then(response => {
+      const match = /^\/(s|r)\/([^/]+)\/(?:api\/(?:bootstrap|lease|snapshot))?$/.exec(new URL(request.url).pathname);
+      if (!response.ok || !match) return response;
+      const session = match[1] === "s" ? sessions.get(match[2]!) : recentsSessions.get(match[2]!);
+      const name = match[1] === "s" ? "tether_session" : "tether_recents";
+      const cookie = cookieValue(request, name);
+      if (!session || !verifiesCookie(cookie, session.verifier ?? cookieVerifier(session.cookie))) return response;
+      // Includes old session-only cookies and verifier-only restored sessions.
+      const headers = new Headers(response.headers);
+      headers.set("set-cookie", viewCookie(name, cookie!, `/${match[1]}/${match[2]}/`));
+      headers.set("cache-control", "no-store");
+      return new Response(response.body, { status: response.status, headers });
+    });
     requests.add(pending);
     void pending.finally(() => requests.delete(pending)).catch(() => {});
     return pending;
@@ -936,6 +958,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     stop: async () => {
       if (stopped) return;
       stopped = true;
+      settleReady(); // Release requests waiting for startup before draining them.
       if (timer) clearInterval(timer);
       timer = undefined;
       for (const close of [...recentsStreamClosers]) close();
