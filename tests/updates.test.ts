@@ -8,7 +8,7 @@ import { completeManagedUpdate } from "../src/server/daemon";
 const directories: string[] = [];
 afterEach(async () => { for (const dir of directories.splice(0)) await rm(dir, { recursive: true, force: true }); });
 function release(tag = "v0.2.0") {
-  return { tag_name: tag, draft: false, prerelease: false, assets: ["tether-darwin-arm64.tar.gz", "tether-darwin-arm64.tar.gz.sha256"].map(name => ({ name, browser_download_url: `https://github.com/hartphoenix/tether/releases/download/${tag}/${name}` })) };
+  return { version: tag.slice(1), tag, notes: `https://github.com/hartphoenix/tether/releases/tag/${tag}`, sha256: "a".repeat(64) };
 }
 async function fixture() {
   const dir = await mkdtemp("/tmp/tether-updates-"); directories.push(dir);
@@ -20,9 +20,9 @@ async function fixture() {
   const config = resolveConfig({ configDir: join(dir, "config"), runtimeDir: join(dir, "runtime") });
   await mkdir(config.configDir);
   let calls = 0, installs = 0, now = 0;
-  let response: unknown = release();
-  const options = { config, root, architecture: "arm64", now: () => now, fetch: async () => { calls++; return Response.json(response); }, install: async () => { installs++; } };
-  return { options, service: new UpdateService(options), calls: () => calls, installs: () => installs, advance: () => { now += 6 * 60 * 60 * 1000; }, release: (value: unknown) => { response = value; } };
+  let response: ReturnType<typeof release> | null = release();
+  const options = { config, root, architecture: "arm64", now: () => now, discover: async () => { calls++; return response; }, install: async () => { installs++; } };
+  return { options, service: new UpdateService(options), calls: () => calls, installs: () => installs, advance: () => { now += 6 * 60 * 60 * 1000; }, release: (value: ReturnType<typeof release> | null) => { response = value; } };
 }
 
 test("compares numeric stable versions and rejects prereleases and malformed tags", () => {
@@ -47,13 +47,6 @@ test("coalesces checks, persists dismissal across restarts, resurfaces the next 
   expect((await f.service.status()).installing).toBe(true);
 });
 
-test("requires matching architecture assets, stable releases, and a newer version", async () => {
-  const f = await fixture();
-  for (const value of [release("v0.1.0"), release("v0.0.1"), release("v0.2.0-rc.1"), { ...release(), draft: true }, { ...release(), prerelease: true }, { ...release(), assets: [] }, { ...release(), assets: [{ name: "tether-darwin-arm64.tar.gz", browser_download_url: "https://evil.invalid" }] }]) {
-    f.release(value); f.advance();
-    expect((await f.service.status()).available).toBeNull();
-  }
-});
 
 test("source checkouts never check or install; failed checks are silent and bounded", async () => {
   const f = await fixture();
@@ -62,7 +55,7 @@ test("source checkouts never check or install; failed checks are silent and boun
   expect(f.calls()).toBe(0);
   await expect(source.install("v0.2.0")).rejects.toThrow();
   let calls = 0;
-  const offline = new UpdateService({ ...f.options, fetch: async () => { calls++; throw new Error("Offline"); } });
+  const offline = new UpdateService({ ...f.options, discover: async () => { calls++; throw new Error("Offline"); } });
   expect((await offline.status()).available).toBeNull();
   await offline.status();
   expect(calls).toBe(1);
@@ -109,4 +102,21 @@ test("installer failure restores service with a retry notice; failed new-runtime
     launch: async () => { launches++; throw new Error("New daemon unavailable"); },
   })).rejects.toThrow("New daemon unavailable");
   expect(launches).toBe(1);
+});
+
+
+test("persists attempts separately from successful checks and surfaces prolonged failure", async () => {
+  const f = await fixture();
+  await f.service.status();
+  const offline = new UpdateService({ ...f.options, discover: async () => { throw new Error("Offline"); } });
+  f.advance();
+  const first = await offline.status(true);
+  expect(first.lastSuccess).toBe(0);
+  expect(first.checkFailed).toBe(true);
+  expect(first.prolongedFailure).toBe(false);
+  for (let i = 0; i < 4; i++) f.advance();
+  expect((await new UpdateService({ ...f.options, discover: async () => { throw new Error("Offline"); } }).status()).prolongedFailure).toBe(true);
+  const recovered = await new UpdateService(f.options).status(true);
+  expect(recovered.prolongedFailure).toBe(false);
+  expect(recovered.lastSuccess).toBe(recovered.lastAttempt);
 });

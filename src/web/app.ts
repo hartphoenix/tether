@@ -1,3 +1,4 @@
+import { mountUpdateNotice } from "./update-notice";
 import { iconSvg } from "./icons";
 import { Crepe } from "@milkdown/crepe";
 import { EditorStatus, editorViewCtx } from "@milkdown/kit/core";
@@ -308,7 +309,7 @@ function scheduleSave(): void {
   if (saveTimer != null) clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => void save(), 600);
 }
-async function persistDraft(): Promise<void> {
+async function persistDraft(strict = false): Promise<void> {
   if (!crepe || !currentPath || switching || initializing) return;
   const markdown = currentMarkdown();
   await draftPersistence.update({
@@ -317,7 +318,7 @@ async function persistDraft(): Promise<void> {
     body: restoreMarkdown(markdown, currentFrontmatter),
     baseRevision: currentBodyRevision,
     scroll: window.scrollY,
-  });
+  }, strict);
 }
 async function save(): Promise<boolean> {
   if (!crepe || !currentPath) return true;
@@ -693,3 +694,14 @@ addEventListener("pagehide", event => {
   chrome.destroy();
 });
 connection.wake();
+
+
+const updateNotice = document.createElement("aside");
+updateNotice.id = "update-notice";
+updateNotice.hidden = true;
+updateNotice.setAttribute("aria-live", "polite");
+document.body.prepend(updateNotice);
+mountUpdateNotice(updateNotice, new URL("api", location.href).pathname, message => chrome.setNotice(message), async () => {
+  if (!initialized || initializing || switching) throw new Error("Wait for the document to finish loading.");
+  await persistDraft(true);
+}, false);

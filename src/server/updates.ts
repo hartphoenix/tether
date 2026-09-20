@@ -1,27 +1,32 @@
-import { readFile, writeFile, rename, realpath } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { readFile, writeFile, rename } from "node:fs/promises";
+import { join } from "node:path";
 import type { TetherConfig } from "./config";
+import { discoverVerifiedRelease } from "../releases/verified-update";
+export { newerVersion } from "../releases/verified-update";
 
-const repository = "https://github.com/hartphoenix/tether";
 const interval = 6 * 60 * 60 * 1000;
+const prolonged = 24 * 60 * 60 * 1000;
 export type AvailableUpdate = { version: string; tag: string; notes: string };
-type UpdateState = { dismissed?: string; failed?: boolean };
-export type UpdateStatus = { available: AvailableUpdate | null; installing: boolean; failed: boolean };
-
-export function newerVersion(candidate: string, installed: string): boolean {
-  if (!/^\d+\.\d+\.\d+$/.test(candidate) || !/^\d+\.\d+\.\d+$/.test(installed)) return false;
-  const a = candidate.split(".").map(BigInt), b = installed.split(".").map(BigInt);
-  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i]! > b[i]!;
-  return false;
+type UpdateState = { dismissed?: string | null; failed?: boolean; lastAttempt?: number; lastSuccess?: number; failureSince?: number | null };
+export type UpdateStatus = { managed: boolean; available: AvailableUpdate | null; installing: boolean; failed: boolean; lastAttempt?: number; lastSuccess?: number; checkFailed: boolean; prolongedFailure: boolean };
+const writes = new Map<string, Promise<void>>();
+async function state(config: TetherConfig): Promise<UpdateState> {
+  try { return JSON.parse(await readFile(join(config.configDir, "updates.json"), "utf8")) ?? {}; }
+  catch { return {}; }
+}
+/** Merge fields so supervisor outcomes preserve check history. */
+export async function writeUpdateState(config: TetherConfig, patch: UpdateState): Promise<void> {
+  const path = join(config.configDir, "updates.json");
+  const next = (writes.get(path) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    const temporary = `${path}.${crypto.randomUUID()}.tmp`;
+    await writeFile(temporary, JSON.stringify({ ...await state(config), ...patch }), { mode: 0o600 });
+    await rename(temporary, path);
+  });
+  writes.set(path, next);
+  try { await next; } finally { if (writes.get(path) === next) writes.delete(path); }
 }
 
-export async function writeUpdateState(config: TetherConfig, state: UpdateState): Promise<void> {
-  const path = join(config.configDir, "updates.json"), temporary = `${path}.${crypto.randomUUID()}.tmp`;
-  await writeFile(temporary, JSON.stringify(state), { mode: 0o600 });
-  await rename(temporary, path);
-}
-
-/** One check per daemon, shared by all Folio views. No document data leaves the machine. */
+/** One authenticated check per daemon, shared by reader and Folio views. */
 export class UpdateService {
   private checkedAt = -Infinity;
   private pending?: Promise<void>;
@@ -31,64 +36,55 @@ export class UpdateService {
     config: TetherConfig;
     root?: string;
     install?: (tag: string) => Promise<void>;
-    fetch?: (url: string, init: RequestInit) => Promise<Response>;
+    discover?: typeof discoverVerifiedRelease;
     now?: () => number;
     architecture?: string;
   }) {}
 
-  private async state(): Promise<UpdateState> {
-    try { return JSON.parse(await readFile(join(this.options.config.configDir, "updates.json"), "utf8")) ?? {}; }
-    catch { return {}; }
-  }
-
-  private async check(): Promise<void> {
-    if (!this.options.root || !this.options.install) return;
-    const now = (this.options.now ?? Date.now)();
+  private async check(force = false): Promise<void> {
+    if (!this.options.root) return;
     if (this.pending) return this.pending;
-    if (now - this.checkedAt < interval) return;
+    const now = (this.options.now ?? Date.now)();
+    if (now - this.checkedAt < (force ? 10_000 : interval)) return;
     this.checkedAt = now;
     this.pending = (async () => {
+      await writeUpdateState(this.options.config, { lastAttempt: now });
       try {
-        const installation = dirname(dirname(this.options.root!));
-        if (await realpath(join(installation, "current")) !== await realpath(this.options.root!)) return;
-        await readFile(join(installation, "install.json"), "utf8");
-        const installed = JSON.parse(await readFile(join(this.options.root!, "release.json"), "utf8"));
-        const response = await (this.options.fetch ?? fetch)("https://api.github.com/repos/hartphoenix/tether/releases/latest", {
-          headers: { accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(8000), redirect: "error",
-        });
-        if (!response.ok) throw new Error("Release check unavailable");
-        const release = await response.json() as { tag_name?: string; draft?: boolean; prerelease?: boolean; assets?: { name: string; browser_download_url: string }[] };
-        const tag = release.tag_name ?? "", version = tag.replace(/^v/, "");
-        const asset = `tether-darwin-${this.options.architecture ?? process.arch}.tar.gz`;
-        const complete = [asset, `${asset}.sha256`].every(name => release.assets?.some(item => item.name === name && item.browser_download_url === `${repository}/releases/download/${tag}/${name}`));
-        this.available = /^v\d+\.\d+\.\d+$/.test(tag) && !release.draft && !release.prerelease && complete && newerVersion(version, installed.version)
-          ? { version, tag, notes: `${repository}/releases/tag/${tag}` } : null;
-      } catch { /* Offline, unpublished, malformed, and rate-limited responses stay quiet. */ }
+        this.available = await (this.options.discover ?? discoverVerifiedRelease)(this.options.root!, this.options.architecture);
+        await writeUpdateState(this.options.config, { lastSuccess: now, failureSince: null });
+      } catch {
+        // A previously advertised target must not stay installable after failed verification.
+        this.available = null;
+        const previous = await state(this.options.config);
+        await writeUpdateState(this.options.config, { failureSince: previous.failureSince ?? now });
+      }
     })().finally(() => { this.pending = undefined; });
     return this.pending;
   }
 
-  async status(): Promise<UpdateStatus> {
-    await this.check();
-    const state = await this.state();
-    return { available: state.dismissed === this.available?.tag ? null : this.available, installing: this.installing, failed: state.failed === true };
+  async status(force = false): Promise<UpdateStatus> {
+    await this.check(force);
+    const saved = await state(this.options.config);
+    return { managed: Boolean(this.options.root), available: saved.dismissed === this.available?.tag ? null : this.available, installing: this.installing, failed: saved.failed === true,
+      lastAttempt: saved.lastAttempt, lastSuccess: saved.lastSuccess, checkFailed: saved.failureSince != null,
+      prolongedFailure: saved.failureSince != null && (this.options.now ?? Date.now)() - saved.failureSince >= prolonged };
   }
 
   async dismiss(tag: unknown): Promise<void> {
-    if (!this.available || tag !== this.available.tag || this.installing) throw new Error("Update changed. Refresh Folio.");
+    if (!this.available || tag !== this.available.tag || this.installing) throw new Error("Update changed. Check again.");
     await writeUpdateState(this.options.config, { dismissed: this.available.tag });
   }
 
   async install(tag: unknown): Promise<void> {
     if (this.installing) return;
     await this.check();
-    if (!this.available || tag !== this.available.tag || !this.options.install) throw new Error("Update unavailable. Refresh Folio.");
-    // Claim before awaiting: two views must not launch competing installers.
+    if (!this.available || tag !== this.available.tag || !this.options.install) throw new Error("Update unavailable. Check again.");
     if (this.installing) return;
     this.installing = true;
     try {
-      await writeUpdateState(this.options.config, {});
+      await writeUpdateState(this.options.config, { dismissed: null, failed: false });
+      // The installed CLI refreshes metadata and verifies the archive again before execution.
       await this.options.install(this.available.tag);
-    } catch (cause) { this.installing = false; throw cause; }
+    } catch (cause) { this.installing = false; await writeUpdateState(this.options.config, { failed: true }); throw cause; }
   }
 }

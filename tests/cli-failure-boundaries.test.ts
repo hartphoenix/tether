@@ -63,9 +63,11 @@ test("uninstall reports the first removed launcher if removing the second fails"
 
 test("failed updater preserves its backup, exit code, and safe bounded subprocess evidence", async () => {
   const result = await isolated(`
-    const release=join(root,"releases","v1"),configDir=join(root,"config");
-    await fs.mkdir(release,{recursive:true});await fs.mkdir(configDir);
-    await fs.writeFile(join(root,"install.json"),JSON.stringify({binDirectory:join(root,"bin")}));
+    const {signedRepository}=await import(modulePath("tests/fixtures/signed-repository.ts"));
+    const publisher=await signedRepository();
+    const release=publisher.root,configDir=join(root,"config");
+    await fs.mkdir(configDir);
+    await fs.writeFile(join(publisher.directory,"install.json"),JSON.stringify({binDirectory:join(root,"bin")}));
     await fs.writeFile(join(release,"install.sh"),'echo install-attempt; echo WAVETERM_JWT=fixture-credential >&2; exit 7');
     process.env.TETHER_INSTALL_ROOT=release;
     const {PrivateStore}=await import(modulePath("src/storage/private-store.ts"));
@@ -73,6 +75,7 @@ test("failed updater preserves its backup, exit code, and safe bounded subproces
     const {runCli}=await import(modulePath("src/cli/main.ts"));
     const {resolveConfig}=await import(modulePath("src/server/config.ts"));
     const result=await runCli(["update"],{config:resolveConfig({configDir,runtimeDir:join(root,"runtime")})});
+    await publisher.close();
     const backup=result.response.error.details.completed[0].path;
     console.log(JSON.stringify({result,backupExists:await fs.stat(join(backup,"manifest.json")).then(()=>true,()=>false)}));
   `);

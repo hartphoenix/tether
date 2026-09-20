@@ -3,8 +3,8 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { join } from "node:path";
 import { createBrowserHost } from "../src/hosts/browser";
 import { HostGateway } from "../src/hosts/host-gateway";
-import { removeWaveBridge, startWaveBridge, stopWaveBridge, writeWaveBridge } from "../src/hosts/wave-bridge";
-import { ensureControlToken, prepareConfig, resolveConfig } from "../src/server/config";
+import { removeWaveBridge, readWaveBridge, startWaveBridge, stopWaveBridge, writeWaveBridge } from "../src/hosts/wave-bridge";
+import { ensureControlToken, prepareConfig, resolveConfig, writeDiscovery } from "../src/server/config";
 
 const directories: string[] = [];
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
@@ -26,14 +26,35 @@ test.each(["0.14.5", "0.15.0"])("runs Wave %s callbacks after the launcher exits
   await mkdir(bin);
   const log = join(directory, "wsh.log");
   const wsh = join(bin, "wsh");
-  await writeFile(wsh, `#!/bin/sh\nif [ "$1" = version ]; then echo 'wsh v${version}'; else printf '%s\\n' "$*" >> '${log}'; fi\n`);
+  await writeFile(wsh, `#!/bin/sh\nif [ "$1" = version ]; then echo 'wsh v${version}'; elif [ "$1" = blocks ]; then echo "[]"; else printf '%s\\n' "$*" >> '${log}'; fi\n`);
   await chmod(wsh, 0o700);
-  await startWaveBridge(config, { PATH: `${bin}:/usr/bin:/bin`, WAVETERM: "1", TERM_PROGRAM: "waveterm", WAVETERM_JWT: "memory-only", WAVETERM_WSHBINARY: wsh });
+  await writeDiscovery(config, { protocol: 1, pid: process.pid, instanceId: "test-daemon", origin: "http://127.0.0.1:8420", startedAt: new Date().toISOString() });
+  const environment = { PATH: `${bin}:/usr/bin:/bin`, WAVETERM: "1", TERM_PROGRAM: "waveterm", WAVETERM_JWT: "memory-only", WAVETERM_WSHBINARY: wsh };
+  const [first, second] = await Promise.all([startWaveBridge(config, environment), startWaveBridge(config, environment)]);
+  expect(first?.instanceId).toBe(second?.instanceId);
   const gateway = new HostGateway(config, createBrowserHost({ open: async () => {} }));
   await gateway.openView({ url: "http://127.0.0.1:8420/launch?ticket=one", kind: "document", focus: true, target: { host: "wave", version: "0.14.5" } });
   expect(await readFile(log, "utf8")).toContain("createblock web url=http://127.0.0.1:8420/launch?ticket=one web:hidenav=true");
+  await expect(gateway.openView({ url: "http://127.0.0.1:9999/launch?ticket=wrong", kind: "document", focus: false, target: { host: "wave" } })).rejects.toThrow("current Tether");
+  await expect(gateway.openView({ url: "http://127.0.0.1:8420/unrelated", kind: "document", focus: false, target: { host: "wave" } })).rejects.toThrow("current Tether");
+  const executable = await readFile(wsh, "utf8");
+  await writeFile(wsh, "#!/bin/sh\nexit 1\n");
+  await expect(startWaveBridge(config, environment)).rejects.toThrow();
+  expect((await readWaveBridge(config))?.instanceId).toBe(first?.instanceId);
+  await writeFile(wsh, executable.replace(`v${version}`, "v0.16.0"));
+  await writeDiscovery(config, { protocol: 1, pid: process.pid, instanceId: "successor", origin: "http://127.0.0.1:8421", startedAt: new Date().toISOString() });
+  await gateway.openView({ url: "http://127.0.0.1:8421/launch?ticket=new", kind: "document", focus: false, target: { host: "wave" } });
+  expect((await startWaveBridge(config, environment))?.instanceId).toBe(first?.instanceId);
+  const fresh = join(bin, "fresh-wsh");
+  await writeFile(fresh, executable); await chmod(fresh, 0o700);
+  await writeFile(wsh, "#!/bin/sh\nexit 1\n");
+  const replaced = await startWaveBridge(config, { ...environment, WAVETERM_WSHBINARY: fresh });
+  expect(replaced?.instanceId).not.toBe(first?.instanceId);
+  expect((await fetch(`${replaced!.origin}/health`)).status).toBe(401);
+  expect(await readFile(config.waveBridgePath, "utf8")).not.toContain("memory-only");
+
   await stopWaveBridge(config);
-});
+}, 15_000);
 
 test("routes Wave session opens through the authenticated bridge without exposing document authority", async () => {
   const directory = await mkdtemp(join("/tmp", "tether-wave-bridge-"));

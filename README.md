@@ -6,6 +6,16 @@ Open a Markdown file, highlight a passage, and leave a comment. Ask your coding 
 
 Tether currently targets macOS. Use it in Wave, cmux, or your browser, with one shared Folio and conversation store. Linux and Windows contributions are welcome; those platforms are not yet validated.
 
+## Bounded agent work and recovery
+
+Register a finished artifact with `TETHER_PROFILE=preview ./mdreview recents add /absolute/path/file.md`; its receipt is sufficient. For review, start with `pending <file> --actor assistant`, fetch relevant `thread <file> <thread-id>` results, then use `document context <file> <thread-id> --max-bytes 4096` only when local text is needed. Independent thread reads may run together; retain warnings, continuations, conflict information, and complete mutation receipts. `document diff <file> --from-revision <revision> --max-bytes 4096` returns an explicit unavailable result and bounded outline when its base is absent. A full `document read` is an explicit escalation. Acknowledge the original fully reviewed cursor after handling its threads.
+
+If an occupied saved port moves the daemon, an old reader cannot discover the new address. Run `./mdreview open /absolute/path/file.md --resume <view-id> --host browser` (or the intended supported host), using the ID from that reader's `/s/<view-id>/` URL. This explicitly reauthorizes the same document/view, rotates its cookie, and preserves its draft and conflict base. It opens a new host view; it does not rearrange existing tabs. Close the obsolete view after recovery. Folio can be relaunched normally.
+
+Wave callbacks no longer expire after five idle minutes. A retained bridge probes host readiness; an authenticated new Wave launcher can replace an obsolete credential only after proving fresh access. Temporary host absence preserves the bridge. Native Wave quit/reopen credential continuity remains unverified; relaunch from a Wave terminal when renewed access is required.
+
+
+
 ## Start using Tether
 
 Tether is preparing its first packaged release. Until release assets are published, run from a checkout with Bun installed:

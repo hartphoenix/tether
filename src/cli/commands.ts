@@ -38,9 +38,9 @@ export const commandSpecs: Record<string, CommandSpec> = {
   doctor: { name: "doctor", usage: "tether doctor", min: 0, max: 0 },
   backup: { name: "backup", usage: "tether backup --output <new-directory>", min: 0, max: 0, flags: { "--output": { value: true } }, required: ["--output"] },
   restore: { name: "restore", usage: "tether restore --source <backup-directory> --directory <new-directory>", min: 0, max: 0, flags: { "--source": { value: true }, "--directory": { value: true } }, required: ["--source", "--directory"] },
-  update: { name: "update", usage: "tether update [--version <vX.Y.Z>]", min: 0, max: 0, flags: { "--version": { value: true } } },
+  update: { name: "update", usage: "tether update [--check] [--version <vX.Y.Z>]", min: 0, max: 0, flags: { "--version": { value: true }, "--check": {} } },
   uninstall: { name: "uninstall", usage: "tether uninstall --confirm", min: 0, max: 0, flags: { "--confirm": {} }, required: ["--confirm"] },
-  open: { name: "open", usage: "mdreview open <file> [--focus|--no-focus]", min: 1, max: 1, flags: focusFlags },
+  open: { name: "open", usage: "mdreview open <file> [--focus|--no-focus] [--resume <view-id>]", min: 1, max: 1, flags: { ...focusFlags, "--resume": { value: true } } },
   recent: { name: "recent", usage: "mdreview recent <1|2|3> [--focus|--no-focus]", min: 1, max: 1, flags: focusFlags },
   recents: { name: "recents", usage: "mdreview recents [--focus|--no-focus]", min: 0, max: 0, flags: focusFlags },
   "recents.add": { name: "recents.add", usage: "mdreview recents add <file>", min: 1, max: 1 },
@@ -93,61 +93,70 @@ function commandPrefix(argv: string[]): { name: string; start: number } {
 export function parseCommand(argv: string[]): ParsedCommand {
   const prefix = commandPrefix(argv);
   const spec = commandSpecs[prefix.name];
-  if (!spec) usage(`Unknown command: ${prefix.name}.`);
-  const rest = argv.slice(prefix.start);
-  const boundary = rest.indexOf("--");
-  const help = rest.slice(0, boundary < 0 ? rest.length : boundary).includes("--help");
-  if (help) {
-    if (rest.length !== 1 || rest[0] !== "--help") usage("--help must be the only command argument.");
-    return { spec, positionals: [], flags: new Map(), help: true };
+  if (!spec) usage("Unknown command.");
+  try {
+    const rest = argv.slice(prefix.start);
+    const boundary = rest.indexOf("--");
+    const help = rest.slice(0, boundary < 0 ? rest.length : boundary).includes("--help");
+    if (help) {
+      if (rest.length !== 1 || rest[0] !== "--help") usage("--help must be the only command argument.");
+      return { spec, positionals: [], flags: new Map(), help: true };
+    }
+    const flags = new Map<string, string | true>();
+    const positionals: string[] = [];
+    let literals = false;
+    for (let index = 0; index < rest.length; index += 1) {
+      const token = rest[index]!;
+      if (!literals && token === "--") { literals = true; continue; }
+      if (!literals && token.startsWith("--")) {
+        const flag = spec.flags?.[token];
+        if (!flag) usage(`Unknown flag for ${spec.name}.`);
+        if (flags.has(token)) usage(`Flag may be specified only once: ${token}.`);
+        if (flag.value) {
+          const value = rest[++index];
+          if (!value || value === "--" || value.startsWith("--")) usage(`${token} requires a value.`);
+          flags.set(token, value);
+        } else flags.set(token, true);
+      } else positionals.push(token);
+    }
+    if (positionals.length < spec.min || positionals.length > spec.max) usage(spec.usage);
+    for (const name of spec.required ?? []) if (!flags.has(name)) usage(`${name} is required. ${spec.usage}`);
+    if (flags.has("--check") && flags.has("--version")) usage("--check and --version cannot be used together.");
+    if (flags.has("--focus") && flags.has("--no-focus")) usage("--focus and --no-focus cannot be used together.");
+    if (flags.has("--candidate-id") && !flags.has("--expected-body-revision")) usage("--candidate-id requires --expected-body-revision.");
+    for (const key of ["--expected-body-revision", "--from-revision"]) {
+      const value = flags.get(key);
+      if (value !== undefined && (typeof value !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value))) usage(`${key} requires sha256:<64 lowercase hex characters>.`);
+    }
+    const maxBytes = flags.get("--max-bytes");
+    if (typeof maxBytes === "string" && (Number(maxBytes) < 2048 || Number(maxBytes) > 65536)) usage("--max-bytes must be between 2048 and 65536.");
+    const status = flags.get("--status");
+    if (status !== undefined && status !== "open" && status !== "resolved") usage("--status must be open or resolved.");
+    const view = flags.get("--view");
+    const host = flags.get("--host");
+    if (host !== undefined && !["auto", "browser", "wave", "cmux"].includes(String(host))) usage("--host must be auto, browser, wave, or cmux.");
+    if (view !== undefined && view !== "active" && view !== "archive") usage("--view must be active or archive.");
+    const sort = flags.get("--sort");
+    if (typeof sort === "string" && !["opened", "modified", "activity", "added", "created", "name"].includes(sort)) usage("--sort must be opened, modified, activity, added, created, or name.");
+    for (const name of ["--before-sequence", "--limit", "--expected-thread-sequence", "--max-bytes", "--radius"] as const) {
+      const value = flags.get(name);
+      if (typeof value === "string") positiveInteger(value, name);
+    }
+    const offset = flags.get("--offset");
+    if (typeof offset === "string" && (!Number.isSafeInteger(Number(offset)) || Number(offset) < 0)) usage("--offset must be a nonnegative integer.");
+    for (const [flag, value] of flags) {
+      if (typeof value === "string" && Buffer.byteLength(value) > (flag === "--quote" ? 65536 : 8192)) usage(`${flag} is too long.`);
+    }
+    const retention = flags.get("--retention");
+    if (typeof retention === "string" && retention !== "forever" && retention !== "immediate") positiveInteger(retention, "--retention");
+    return { spec, positionals, flags, help: false };
+  } catch (cause) {
+    if (cause instanceof CliUsageError) {
+      const message = cause.message.replace(usageText, "").trim();
+      throw new CliUsageError(message.includes(spec.usage) ? message : `${message} Usage: ${spec.usage}`);
+    }
+    throw cause;
   }
-  const flags = new Map<string, string | true>();
-  const positionals: string[] = [];
-  let literals = false;
-  for (let index = 0; index < rest.length; index += 1) {
-    const token = rest[index]!;
-    if (!literals && token === "--") { literals = true; continue; }
-    if (!literals && token.startsWith("--")) {
-      const flag = spec.flags?.[token];
-      if (!flag) usage(`Unknown flag for ${spec.name}: ${token}.`);
-      if (flags.has(token)) usage(`Flag may be specified only once: ${token}.`);
-      if (flag.value) {
-        const value = rest[++index];
-        if (!value || value === "--" || value.startsWith("--")) usage(`${token} requires a value.`);
-        flags.set(token, value);
-      } else flags.set(token, true);
-    } else positionals.push(token);
-  }
-  if (positionals.length < spec.min || positionals.length > spec.max) usage(spec.usage);
-  for (const name of spec.required ?? []) if (!flags.has(name)) usage(`${name} is required. ${spec.usage}`);
-  if (flags.has("--focus") && flags.has("--no-focus")) usage("--focus and --no-focus cannot be used together.");
-  if (flags.has("--candidate-id") && !flags.has("--expected-body-revision")) usage("--candidate-id requires --expected-body-revision.");
-  for (const key of ["--expected-body-revision", "--from-revision"]) {
-    const value = flags.get(key);
-    if (value !== undefined && (typeof value !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value))) usage(`${key} requires sha256:<64 lowercase hex characters>.`);
-  }
-  const maxBytes = flags.get("--max-bytes");
-  if (typeof maxBytes === "string" && (Number(maxBytes) < 2048 || Number(maxBytes) > 65536)) usage("--max-bytes must be between 2048 and 65536.");
-  const status = flags.get("--status");
-  if (status !== undefined && status !== "open" && status !== "resolved") usage("--status must be open or resolved.");
-  const view = flags.get("--view");
-  const host = flags.get("--host");
-  if (host !== undefined && !["auto", "browser", "wave", "cmux"].includes(String(host))) usage("--host must be auto, browser, wave, or cmux.");
-  if (view !== undefined && view !== "active" && view !== "archive") usage("--view must be active or archive.");
-  const sort = flags.get("--sort");
-  if (typeof sort === "string" && !["opened", "modified", "activity", "added", "created", "name"].includes(sort)) usage("--sort must be opened, modified, activity, added, created, or name.");
-  for (const name of ["--before-sequence", "--limit", "--expected-thread-sequence", "--max-bytes", "--radius"] as const) {
-    const value = flags.get(name);
-    if (typeof value === "string") positiveInteger(value, name);
-  }
-  const offset = flags.get("--offset");
-  if (typeof offset === "string" && (!Number.isSafeInteger(Number(offset)) || Number(offset) < 0)) usage("--offset must be a nonnegative integer.");
-  for (const [flag, value] of flags) {
-    if (typeof value === "string" && Buffer.byteLength(value) > (flag === "--quote" ? 65536 : 8192)) usage(`${flag} is too long.`);
-  }
-  const retention = flags.get("--retention");
-  if (typeof retention === "string" && retention !== "forever" && retention !== "immediate") positiveInteger(retention, "--retention");
-  return { spec, positionals, flags, help: false };
 }
 
 export function requiredFlag(parsed: ParsedCommand, name: string): string {

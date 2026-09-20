@@ -1,0 +1,283 @@
+{
+  "date": "2026-09-20",
+  "baseline": "04dc6b7",
+  "candidate": "working tree",
+  "units": "UTF-8 bytes of serialized argv and raw JSON envelopes including newline; no provider-token attribution",
+  "baselineRun": {
+    "measurement": "synthetic CLI envelopes; one sequential call per exchange; setup excluded; equal-length random fixture paths",
+    "scenarios": [
+      {
+        "scenario": "registration",
+        "requests": [
+          [
+            "recents",
+            "add",
+            "$FIXTURE/doc.md"
+          ]
+        ],
+        "exchanges": 1,
+        "inputBytes": 57,
+        "responseBytes": 125,
+        "completed": true
+      },
+      {
+        "scenario": "review",
+        "requests": [
+          [
+            "pending",
+            "$FIXTURE/doc.md",
+            "--actor",
+            "assistant"
+          ],
+          [
+            "thread",
+            "$FIXTURE/doc.md",
+            "a-a9884e08-45fe-4800-a79d-0b0d15a2f8d0"
+          ],
+          [
+            "reply",
+            "$FIXTURE/doc.md",
+            "a-a9884e08-45fe-4800-a79d-0b0d15a2f8d0",
+            "--actor",
+            "assistant",
+            "--body-file",
+            "$FIXTURE/reply.txt",
+            "--operation-id",
+            "reply"
+          ],
+          [
+            "acknowledge",
+            "$FIXTURE/doc.md",
+            "--actor",
+            "assistant",
+            "--cursor",
+            "$CURSOR",
+            "--operation-id",
+            "ack"
+          ],
+          [
+            "pending",
+            "$FIXTURE/doc.md",
+            "--actor",
+            "assistant"
+          ]
+        ],
+        "exchanges": 5,
+        "inputBytes": 583,
+        "responseBytes": 2851,
+        "completed": true
+      },
+      {
+        "scenario": "invalid-context-correction",
+        "requests": [
+          [
+            "document",
+            "context",
+            "$FIXTURE/doc.md",
+            "--start-line",
+            "2"
+          ],
+          [
+            "document",
+            "context",
+            "--help"
+          ],
+          [
+            "document",
+            "context",
+            "$FIXTURE/doc.md",
+            "a-a9884e08-45fe-4800-a79d-0b0d15a2f8d0"
+          ]
+        ],
+        "exchanges": 3,
+        "inputBytes": 215,
+        "responseBytes": 1097,
+        "completed": true
+      },
+      {
+        "scenario": "unavailable-diff",
+        "requests": [
+          [
+            "document",
+            "diff",
+            "$FIXTURE/doc.md",
+            "--from-revision",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "--max-bytes",
+            "2048"
+          ]
+        ],
+        "exchanges": 1,
+        "inputBytes": 172,
+        "responseBytes": 492,
+        "completed": true
+      },
+      {
+        "scenario": "daemon-loss",
+        "requests": [
+          [
+            "thread",
+            "$FIXTURE/doc.md",
+            "a-a9884e08-45fe-4800-a79d-0b0d15a2f8d0"
+          ]
+        ],
+        "exchanges": 1,
+        "inputBytes": 91,
+        "responseBytes": 718,
+        "completed": true
+      },
+      {
+        "scenario": "large-document-cold-start",
+        "requests": [
+          [
+            "document",
+            "outline",
+            "$FIXTURE/doc.md",
+            "--max-bytes",
+            "2048"
+          ]
+        ],
+        "exchanges": 1,
+        "inputBytes": 83,
+        "responseBytes": 295,
+        "completed": true
+      }
+    ]
+  },
+  "candidateRun": {
+    "measurement": "synthetic CLI envelopes; one sequential call per exchange; setup excluded; equal-length random fixture paths",
+    "scenarios": [
+      {
+        "scenario": "registration",
+        "requests": [
+          [
+            "recents",
+            "add",
+            "$FIXTURE/doc.md"
+          ]
+        ],
+        "exchanges": 1,
+        "inputBytes": 57,
+        "responseBytes": 125,
+        "completed": true
+      },
+      {
+        "scenario": "review",
+        "requests": [
+          [
+            "pending",
+            "$FIXTURE/doc.md",
+            "--actor",
+            "assistant"
+          ],
+          [
+            "thread",
+            "$FIXTURE/doc.md",
+            "a-3ba8c407-515f-41c9-8081-ae51d06be7ab"
+          ],
+          [
+            "reply",
+            "$FIXTURE/doc.md",
+            "a-3ba8c407-515f-41c9-8081-ae51d06be7ab",
+            "--actor",
+            "assistant",
+            "--body-file",
+            "$FIXTURE/reply.txt",
+            "--operation-id",
+            "reply"
+          ],
+          [
+            "acknowledge",
+            "$FIXTURE/doc.md",
+            "--actor",
+            "assistant",
+            "--cursor",
+            "$CURSOR",
+            "--operation-id",
+            "ack"
+          ],
+          [
+            "pending",
+            "$FIXTURE/doc.md",
+            "--actor",
+            "assistant"
+          ]
+        ],
+        "exchanges": 5,
+        "inputBytes": 583,
+        "responseBytes": 2851,
+        "completed": true
+      },
+      {
+        "scenario": "invalid-context-correction",
+        "requests": [
+          [
+            "document",
+            "context",
+            "$FIXTURE/doc.md",
+            "--start-line",
+            "2"
+          ],
+          [
+            "document",
+            "context",
+            "$FIXTURE/doc.md",
+            "a-3ba8c407-515f-41c9-8081-ae51d06be7ab"
+          ]
+        ],
+        "exchanges": 2,
+        "inputBytes": 184,
+        "responseBytes": 559,
+        "completed": true
+      },
+      {
+        "scenario": "unavailable-diff",
+        "requests": [
+          [
+            "document",
+            "diff",
+            "$FIXTURE/doc.md",
+            "--from-revision",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "--max-bytes",
+            "2048"
+          ]
+        ],
+        "exchanges": 1,
+        "inputBytes": 172,
+        "responseBytes": 492,
+        "completed": true
+      },
+      {
+        "scenario": "daemon-loss",
+        "requests": [
+          [
+            "thread",
+            "$FIXTURE/doc.md",
+            "a-3ba8c407-515f-41c9-8081-ae51d06be7ab"
+          ]
+        ],
+        "exchanges": 1,
+        "inputBytes": 91,
+        "responseBytes": 718,
+        "completed": true
+      },
+      {
+        "scenario": "large-document-cold-start",
+        "requests": [
+          [
+            "document",
+            "outline",
+            "$FIXTURE/doc.md",
+            "--max-bytes",
+            "2048"
+          ]
+        ],
+        "exchanges": 1,
+        "inputBytes": 83,
+        "responseBytes": 295,
+        "completed": true
+      }
+    ]
+  }
+}

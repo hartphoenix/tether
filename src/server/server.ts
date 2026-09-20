@@ -1,3 +1,4 @@
+import { version as sourceVersion } from "../../package.json";
 import { diagnosticText, diagnosticValue, errorDetails } from "../shared/diagnostics";
 import { preferencesFrom, updatePreferences } from "../shared/themes";
 import { runtimeRoot } from "../runtime-paths";
@@ -212,6 +213,7 @@ const fallbackHtml = `<!doctype html><meta charset="utf-8"><title>Tether</title>
  * the extracted product services without changing this HTTP boundary.
  */
 export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
+  const releaseVersion = process.env.TETHER_INSTALL_ROOT ? JSON.parse(readFileSync(resolve(runtimeRoot(), "release.json"), "utf8")).version : sourceVersion;
   const config = options.config ?? resolveConfig();
   const now = options.now ?? Date.now;
   const updates = options.updates ?? new UpdateService({ config, root: process.env.TETHER_INSTALL_ROOT, install: options.update });
@@ -234,7 +236,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     views.forgetPath(path);
   } }), hostAdapter);
   const instanceId = crypto.randomUUID();
-  const tickets = new Map<string, { grant: DocumentSession; expiresAt: number; target?: HostTarget }>();
+  const tickets = new Map<string, { grant: DocumentSession; expiresAt: number; target?: HostTarget; resumeId?: string }>();
   const recentsTickets = new Map<string, { expiresAt: number; target?: HostTarget }>();
   const sessions = new Map<string, Session>();
   const recentsSessions = new Map<string, RecentsSession>();
@@ -260,10 +262,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const originFor = (port: number) => `http://${LOOPBACK}:${port}`;
   let daemon!: TetherDaemon;
 
-  function mintTicket(grant: DocumentSession, target?: HostTarget): Ticket {
+  function mintTicket(grant: DocumentSession, target?: HostTarget, resumeId?: string): Ticket {
     const ticket = randomToken();
     const expiresAt = now() + ticketMs;
-    tickets.set(ticket, { grant, expiresAt, target });
+    tickets.set(ticket, { grant, expiresAt, target, resumeId });
     return { ticket, expiresAt, url: `${daemon.origin}/launch?ticket=${encodeURIComponent(ticket)}` };
   }
 
@@ -441,6 +443,21 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       return { restarting: body.action === "restart", quitting: body.action === "quit" };
     }
     throw invalidRequest("Unknown Folio action.");
+  }
+
+  async function updateRequest(request: Request, suffix: string): Promise<Response | undefined> {
+      if (request.method === "GET" && suffix === "/api/updates") return json(await updates.status(), { headers: { "cache-control": "no-store" } });
+      if (request.method === "POST" && ["/api/updates/install", "/api/updates/dismiss", "/api/updates/check"].includes(suffix)) {
+        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
+        try {
+          const body = await requestJson(request);
+          if (suffix.endsWith("/check")) return json(await updates.status(true));
+          if (suffix.endsWith("/install")) await updates.install(body.tag);
+          else await updates.dismiss(body.tag);
+          return json({ ok: true });
+        } catch (cause) { return codedError(cause, "update_failed", 409); }
+      }
+    return undefined;
   }
 
   function sessionFrom(request: Request, pathname: string): Session | Response {
@@ -647,17 +664,26 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         service.close(pending.grant);
         return error("ticket_expired", "The launch ticket has expired.", 401);
       }
-      const id = randomToken();
+      if (pending.resumeId && sessions.get(pending.resumeId)?.grant.realPath !== pending.grant.realPath) {
+        service.close(pending.grant);
+        return error("session_expired", "The saved view is no longer available.", 401);
+      }
+      const id = pending.resumeId ?? randomToken();
       const createdAt = now();
       const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt, lastSeen: createdAt, leases: new Map(), ...(pending.target ? { target: pending.target } : {}) };
-      sessions.set(id, session);
-      views.put({ id, kind: "document", path: session.grant.realPath, verifier: cookieVerifier(session.cookie), createdAt, target: session.target });
+      const previous = sessions.get(id);
       try { await recents.record(pending.grant.realPath, pending.target); }
       catch (cause) {
-        sessions.delete(id);
         service.close(pending.grant);
         return error("launch_failed", cause instanceof Error ? cause.message : String(cause), 500);
       }
+      if (pending.resumeId && sessions.get(id) !== previous) {
+        service.close(pending.grant);
+        return error("session_expired", "The saved view changed during launch. Relaunch explicitly.", 401);
+      }
+      views.put({ id, kind: "document", path: session.grant.realPath, verifier: cookieVerifier(session.cookie), createdAt, target: session.target });
+      sessions.set(id, session);
+      if (previous) service.close(previous.grant);
       const root = sessionRoutes(id).root;
       return new Response(null, { status: 302, headers: {
         location: root,
@@ -696,16 +722,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         return new Response(folioHtml({ pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
       if (request.method === "GET" && suffix === "/api/files") return json(await recents.files());
-      if (request.method === "GET" && suffix === "/api/updates") return json(await updates.status(), { headers: { "cache-control": "no-store" } });
-      if (request.method === "POST" && ["/api/updates/install", "/api/updates/dismiss"].includes(suffix)) {
-        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
-        try {
-          const body = await requestJson(request);
-          if (suffix.endsWith("/install")) await updates.install(body.tag);
-          else await updates.dismiss(body.tag);
-          return json({ ok: true });
-        } catch (cause) { return codedError(cause, "update_failed", 409); }
-      }
+      const updateResponse = await updateRequest(request, suffix);
+      if (updateResponse) return updateResponse;
       if (request.method === "GET" && suffix === "/api/snapshot") return json({ ...await recents.folioSnapshot({ view: "all" }), instanceId });
       if (request.method === "GET" && suffix === "/api/events") return recentsEventStream(request);
       if (request.method === "POST" && suffix === "/api/filters") {
@@ -786,11 +804,16 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const expected = await readControlToken(config);
       if (!expected || request.headers.get("authorization") !== `Bearer ${expected}`) return error("forbidden", "Control authorization is required.", 403);
       try {
+        if (pathname === "/control/updates/check" && request.method === "POST") return json(await updates.status(true));
         if (pathname === "/control/launch" && request.method === "POST") {
           const body = await requestJson(request);
           const grant = await service.open(typeof body.path === "string" ? body.path : "");
+          if (body.resumeId !== undefined && (typeof body.resumeId !== "string" || sessions.get(body.resumeId)?.grant.realPath !== grant.realPath)) {
+            service.close(grant);
+            throw invalidRequest("The saved view must belong to this document and remain authorized.");
+          }
           const target = hostTarget(body.target);
-          const ticket = mintTicket(grant, target);
+          const ticket = mintTicket(grant, target, body.resumeId as string | undefined);
           return json({ ...ticket, path: grant.path });
         }
         if (pathname.startsWith("/control/folio/") && request.method === "POST") {
@@ -907,7 +930,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           if (pathname.startsWith("/control/review/") && !["pending", "thread", "threads", "event", "quote-candidates", "operation"].includes(pathname.split("/").at(-1)!)) await recents.refresh();
           return json(result);
         }
-        if (pathname === "/control/status" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId, origin: daemon.origin, pid: process.pid, sessions: sessions.size });
+        if (pathname === "/control/status" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId, origin: daemon.origin, pid: process.pid, sessions: sessions.size, version: releaseVersion });
         if (pathname === "/control/stop" && request.method === "POST") { setTimeout(() => { void daemon.stop(); }, 50); return json({ stopping: true }); }
       } catch (cause) { return controlError(cause); }
       return error("not_found", "Control endpoint not found.", 404);
@@ -917,6 +940,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (session instanceof Response) return session;
       const sessionRoot = sessionRoutes(session.id).root;
       const suffix = pathname.slice(sessionRoot.length - 1);
+      const updateResponse = await updateRequest(request, suffix);
+      if (updateResponse) return updateResponse;
       if (suffix.startsWith("/api/")) return sessionApi(request, session, pathname);
       if (options.web) return options.web(request, session);
       if (suffix === "/" || suffix === "") return new Response(fallbackHtml, { headers: { "content-type": "text/html; charset=utf-8" } });
@@ -926,9 +951,13 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   }
 
   const requests = new Set<Promise<Response>>();
-  const bunServer = Bun.serve({ hostname: LOOPBACK, port: options.port ?? 0, fetch: (request: Request) => {
+  let bunServer: ReturnType<typeof Bun.serve>;
+  try { bunServer = Bun.serve({ hostname: LOOPBACK, port: options.port ?? 0, fetch: (request: Request) => {
+    if (request.headers.get("host") !== new URL(daemon.origin).host) return error("host_mismatch", "The request must use the Tether listener address.", 403);
     if (stopped) return error("service_stopping", "Tether is restarting.", 503);
     const pending = requestHandler(request).then(response => {
+      response = new Response(response.body, { status: response.status, headers: response.headers });
+      response.headers.set("referrer-policy", "no-referrer");
       const match = /^\/(s|r)\/([^/]+)\/(?:api\/(?:bootstrap|lease|snapshot))?$/.exec(new URL(request.url).pathname);
       if (!response.ok || !match) return response;
       const session = match[1] === "s" ? sessions.get(match[2]!) : recentsSessions.get(match[2]!);
@@ -944,7 +973,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     requests.add(pending);
     void pending.finally(() => requests.delete(pending)).catch(() => {});
     return pending;
-  } });
+  } }); } catch (cause) {
+    if (!options.service) privateStore.close();
+    throw cause;
+  }
   const boundPort = bunServer.port!;
   daemon = {
     server: bunServer,
@@ -1051,7 +1083,14 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<TetherDa
     const responder = await createWebBundleResponder();
     configured = { ...configured, web: (request: Request) => responder(request) };
   }
-  const daemon = createDaemon(configured);
+  let daemon: TetherDaemon;
+  try { daemon = createDaemon(configured); }
+  catch (cause) {
+    if (options.port !== undefined || !port || (cause as NodeJS.ErrnoException).code !== "EADDRINUSE") throw cause;
+    // A saved address is a preference, not authority to contact its new owner.
+    // Restore the same grants on a fresh listener; explicit launches use discovery.
+    daemon = createDaemon({ ...configured, port: 0 });
+  }
   try {
     // Complete synchronous listener bookkeeping before async initialization
     // can publish discovery and let a launcher observe a successful startup.

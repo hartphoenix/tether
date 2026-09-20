@@ -26,15 +26,12 @@ scratch=$(mktemp -d)
 # Keep failed candidates available for diagnosis; nothing recursively deleted.
 asset="tether-darwin-$architecture.tar.gz"
 if [ -z "$archive_path" ]; then
-  if [ "$release_version" = latest ]; then
-    base=https://github.com/hartphoenix/tether/releases/latest/download
-  else
-    base="https://github.com/hartphoenix/tether/releases/download/$release_version"
+  if [ -x "$install_root/current/mdreview" ]; then
+    if [ "$release_version" = latest ]; then exec "$install_root/current/mdreview" update; fi
+    exec "$install_root/current/mdreview" update --version "$release_version"
   fi
-  archive_path="$scratch/$asset"
-  curl --fail --location --proto '=https' --tlsv1.2 "$base/$asset" --output "$archive_path"
-  curl --fail --location --proto '=https' --tlsv1.2 "$base/$asset.sha256" --output "$scratch/checksum"
-  expected_sha=$(awk 'NR==1 {print $1}' "$scratch/checksum")
+  echo 'First installation requires a publisher-authenticated archive and independently authenticated SHA-256 digest. Network bootstrap is not configured.' >&2
+  exit 1
 fi
 [[ "$expected_sha" =~ ^[a-fA-F0-9]{64}$ ]] || { echo 'A SHA-256 checksum is required.' >&2; exit 1; }
 actual_sha=$(shasum -a 256 "$archive_path" | awk '{print $1}')
@@ -51,7 +48,10 @@ mkdir "$scratch/candidate"
 tar -xzf "$archive_path" -C "$scratch/candidate"
 candidate="$scratch/candidate"
 [ -x "$candidate/tether" ] && [ -x "$candidate/runtime/bun" ] && [ -f "$candidate/release.json" ] || { echo 'Incomplete release.' >&2; exit 1; }
-"$candidate/runtime/bun" -e 'const m=await Bun.file(process.argv[1]).json(); if(m.platform!==process.platform||m.architecture!==process.arch)process.exit(1)' "$candidate/release.json"
+[ "$(/usr/bin/plutil -extract platform raw -o - "$candidate/release.json")" = darwin ] && [ "$(/usr/bin/plutil -extract architecture raw -o - "$candidate/release.json")" = "$architecture" ] || { echo 'Wrong release platform.' >&2; exit 1; }
+candidate_version=$(/usr/bin/plutil -extract version raw -o - "$candidate/release.json")
+[[ "$candidate_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid candidate version.' >&2; exit 1; }
+[ "$release_version" = latest ] || [ "$release_version" = "v$candidate_version" ] || { echo 'Candidate version differs from authenticated metadata.' >&2; exit 1; }
 mkdir -p "$install_root/releases" "$bin_directory"
 install_root=$(cd "$install_root" && pwd -P)
 bin_directory=$(cd "$bin_directory" && pwd -P)

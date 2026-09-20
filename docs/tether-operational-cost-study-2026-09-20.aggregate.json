@@ -1,0 +1,211 @@
+{
+  "study_date": "2026-09-20",
+  "method": "Local JSONL scan; unique outer call IDs; parsed literal/template exec_command commands; protocol envelopes recovered from nested tool results; bytes measured after compact JSON reserialization. No transcript bodies, identifiers, or source log paths retained. Counts are extraction lower bounds, not invocation census.",
+  "substantive_cli_cutoff_utc": "2026-09-14T13:42:35Z",
+  "latest_cli_cutoff_utc": "2026-09-16T18:09:41Z",
+  "session_files_scanned": 392,
+  "sessions": [
+    {
+      "sample": "S01",
+      "first_matched_date": "2026-09-15",
+      "last_matched_date": "2026-09-15",
+      "cli_outer_calls": 6,
+      "cli_batch_visible_bytes": 19843,
+      "cli_batch_shell_input_bytes": 2237,
+      "other_read_batch_visible_bytes": 142597,
+      "whole_session_window_counter_delta": {
+        "input_tokens": 1847197,
+        "cached_input_tokens": 1761024,
+        "output_tokens": 8444
+      },
+      "counter_window_start_utc": "2026-09-14T13:42:36.942Z",
+      "counter_window_end_utc": "2026-09-16T14:24:07.139Z"
+    },
+    {
+      "sample": "S02",
+      "first_matched_date": "2026-09-15",
+      "last_matched_date": "2026-09-20",
+      "cli_outer_calls": 15,
+      "cli_batch_visible_bytes": 158282,
+      "cli_batch_shell_input_bytes": 6326,
+      "other_read_batch_visible_bytes": 398073,
+      "whole_session_window_counter_delta": {
+        "input_tokens": 6990541,
+        "cached_input_tokens": 6006400,
+        "output_tokens": 22197
+      },
+      "counter_window_start_utc": "2026-09-15T15:31:09.286Z",
+      "counter_window_end_utc": "2026-09-20T18:37:58.438Z"
+    },
+    {
+      "sample": "S03",
+      "first_matched_date": "2026-09-15",
+      "last_matched_date": "2026-09-16",
+      "cli_outer_calls": 8,
+      "cli_batch_visible_bytes": 16054,
+      "cli_batch_shell_input_bytes": 19196,
+      "other_read_batch_visible_bytes": 196172,
+      "whole_session_window_counter_delta": {
+        "input_tokens": 30095805,
+        "cached_input_tokens": 29528576,
+        "output_tokens": 102235
+      },
+      "counter_window_start_utc": "2026-09-15T22:31:36.839Z",
+      "counter_window_end_utc": "2026-09-16T14:45:12.912Z"
+    },
+    {
+      "sample": "S04",
+      "first_matched_date": "2026-09-16",
+      "last_matched_date": "2026-09-16",
+      "cli_outer_calls": 12,
+      "cli_batch_visible_bytes": 48229,
+      "cli_batch_shell_input_bytes": 4279,
+      "other_read_batch_visible_bytes": 150474,
+      "whole_session_window_counter_delta": {
+        "input_tokens": 20903856,
+        "cached_input_tokens": 20529280,
+        "output_tokens": 51214
+      },
+      "counter_window_start_utc": "2026-09-16T15:30:40.109Z",
+      "counter_window_end_utc": "2026-09-16T18:10:20.739Z"
+    },
+    {
+      "sample": "S05",
+      "first_matched_date": "2026-09-16",
+      "last_matched_date": "2026-09-20",
+      "cli_outer_calls": 6,
+      "cli_batch_visible_bytes": 87058,
+      "cli_batch_shell_input_bytes": 3527,
+      "other_read_batch_visible_bytes": 192729,
+      "whole_session_window_counter_delta": {
+        "input_tokens": 12294311,
+        "cached_input_tokens": 11952384,
+        "output_tokens": 37072
+      },
+      "counter_window_start_utc": "2026-09-16T18:14:35.495Z",
+      "counter_window_end_utc": "2026-09-20T18:09:45.028Z"
+    },
+    {
+      "sample": "S06",
+      "first_matched_date": "2026-09-20",
+      "last_matched_date": "2026-09-20",
+      "cli_outer_calls": 6,
+      "cli_batch_visible_bytes": 38554,
+      "cli_batch_shell_input_bytes": 4564,
+      "other_read_batch_visible_bytes": 155233,
+      "whole_session_window_counter_delta": {
+        "input_tokens": 1756380,
+        "cached_input_tokens": 1569664,
+        "output_tokens": 7610
+      },
+      "counter_window_start_utc": "2026-09-20T18:17:22.082Z",
+      "counter_window_end_utc": "2026-09-20T19:28:51.411Z"
+    }
+  ],
+  "protocol_envelopes": {
+    "acknowledge": {
+      "count": 7,
+      "bytes": 3585,
+      "min_bytes": 497,
+      "max_bytes": 522,
+      "failures": {}
+    },
+    "cmux.status": {
+      "count": 2,
+      "bytes": 1050,
+      "min_bytes": 443,
+      "max_bytes": 607,
+      "failures": {}
+    },
+    "daemon.status": {
+      "count": 1,
+      "bytes": 257,
+      "min_bytes": 257,
+      "max_bytes": 257,
+      "failures": {}
+    },
+    "document.context": {
+      "count": 2,
+      "bytes": 1063,
+      "min_bytes": 242,
+      "max_bytes": 821,
+      "failures": {
+        "usage": 1
+      }
+    },
+    "document.diff": {
+      "count": 1,
+      "bytes": 1501,
+      "min_bytes": 1501,
+      "max_bytes": 1501,
+      "failures": {}
+    },
+    "document.save": {
+      "count": 1,
+      "bytes": 347,
+      "min_bytes": 347,
+      "max_bytes": 347,
+      "failures": {}
+    },
+    "help": {
+      "count": 7,
+      "bytes": 4236,
+      "min_bytes": 491,
+      "max_bytes": 1076,
+      "failures": {}
+    },
+    "pending": {
+      "count": 8,
+      "bytes": 29615,
+      "min_bytes": 424,
+      "max_bytes": 12429,
+      "failures": {
+        "daemon_unreachable": 1
+      }
+    },
+    "recents.add": {
+      "count": 23,
+      "bytes": 3650,
+      "min_bytes": 123,
+      "max_bytes": 428,
+      "failures": {
+        "daemon_unreachable": 1
+      }
+    },
+    "reply": {
+      "count": 7,
+      "bytes": 4040,
+      "min_bytes": 572,
+      "max_bytes": 584,
+      "failures": {}
+    },
+    "resolve": {
+      "count": 9,
+      "bytes": 5256,
+      "min_bytes": 576,
+      "max_bytes": 588,
+      "failures": {}
+    },
+    "thread": {
+      "count": 16,
+      "bytes": 17003,
+      "min_bytes": 421,
+      "max_bytes": 4429,
+      "failures": {}
+    }
+  },
+  "study_exclusion": {
+    "boundary": "First user response_item message containing the explicit operational-cost subagent study request; records at or after that event excluded within that session. The operational-study agent path is also excluded.",
+    "boundary_timestamp_utc": null,
+    "timestamp_note": "Not retained in the aggregate extraction; event boundary is known.",
+    "inherited_tool_calls": "Deduplicated by call ID across scanned session files."
+  },
+  "counter_validation": {
+    "endpoint_deltas_nonnegative": true,
+    "intermediate_counter_reset_check": false,
+    "compaction_reconciliation": false,
+    "fork_counter_reconciliation": false,
+    "interpretation": "Raw endpoint differences over full session windows; no complete independently attributed task totals or cross-session sum claimed."
+  },
+  "before_after_control": "No matched pre-update cohort was collected; no measured causal before/after savings."
+}

@@ -2,7 +2,7 @@
 title: Tether — product and release plan
 status: active — preparing first public macOS release
 created: 2026-08-28
-updated: 2026-09-09
+updated: 2026-09-20
 ---
 # Tether product and release plan
 
@@ -16,11 +16,13 @@ This release plan supersedes the historical extraction plan below. In particular
 
 ## Current implementation checkpoint
 
+
+
 Reviewed 2026-09-07 against the working tree, README, CLI, lifecycle/config code, and [private Folio implementation](private-folio-implementation.md). The tree contains ongoing implementation work; presence in code is not release validation.
 
 - Markdown bodies and private reviews are separate. SQLite holds conversations, Folio metadata, review receipts, and recovery state. Existing embedded footers remain ordinary document content, without automatic import.
 - Folio supports active/archive views, intake, filtering, pinning, Locate, retention, and `.tether` transfers. A transfer includes current open threads; it is not a complete backup of private state.
-- The source checkout provides `mdreview`, `tether`, and `Open Tether.command`. A macOS release builder now bundles the runtime, web assets, CLI, daemon, and host bridges; a checksum-verifying installer manages versioned releases. An unsigned Apple Silicon candidate has passed isolated local smoke checks. Signing is optional; public publication requires approval.
+- The source checkout provides `mdreview`, `tether`, and `Open Tether.command`. A macOS release builder now bundles the runtime, web assets, CLI, daemon, and host bridges; a checksum-verifying installer manages versioned releases. An unsigned Apple Silicon candidate has passed isolated local smoke checks. Apple Developer ID signing/notarization is optional; authenticated update metadata is required. Public publication requires approval.
 - Normal launches already share the established `preview` profile; `default` aliases it. Preserve existing data when packaging. Users should not need profile environment variables.
 - Wave and cmux adapters exist with version/build restrictions. The browser adapter exists, but a fresh-user browser walkthrough remains unverified in this review.
 - Persistent view state and controlled restart recovery exist. Packaged startup, reboot, stale tabs, occupied ports, and stopped-service recovery still need end-to-end release validation.
@@ -57,7 +59,7 @@ If a requested or detected integration is incompatible or unavailable, explain w
 
 Provide a clickable macOS launcher that works outside the source checkout and uses the same startup path. Outside a terminal, use browser unless a saved host destination can be resolved reliably. Include matching startup instructions in README and Folio's stopped screen. A disconnected browser page cannot itself restart a dead local service without a separate launch mechanism; provide a working launcher/command and honest recovery guidance.
 
-The runtime and web assets are packaged together, with installed entry points for the daemon and both host bridges. Start on demand; launch-at-login is optional future convenience. Managed installations passively check for stable releases through Folio, at most once every six hours. A bottom notice offers Install, Release Notes, and Dismiss; dismissal persists per version across views and restarts. Install drains active requests, stops the service, creates a private-state backup, installs the offered version, and starts the selected runtime. The terminal update command still requires a stopped service. Uninstall removes owned command/widget launchers and retains private data, agent skills, and versioned release files. The published download/update path cannot be validated until release assets exist.
+
 
 ## First-use document
 

@@ -82,3 +82,12 @@ test("a failed write does not block the next queued draft", async () => {
 
   expect(calls.map(({ method }) => method)).toEqual(["DELETE", "POST"]);
 });
+
+test("explicit update preparation reports a failed draft write and still permits later recovery", async () => {
+  let fail = true;
+  const persistence = new DraftPersistence(async () => { if (fail) throw new Error("offline"); });
+  const draft = { editorMarkdown: "unsaved", savedEditorMarkdown: "saved", body: "unsaved", baseRevision: "rev-1", scroll: 12 };
+  await expect(persistence.update(draft, true)).rejects.toThrow("offline");
+  fail = false;
+  await persistence.update(draft, true);
+});

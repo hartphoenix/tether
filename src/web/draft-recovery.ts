@@ -18,24 +18,24 @@ export class DraftPersistence {
 
   constructor(private readonly send: (mutation: DraftMutation) => Promise<void>) {}
 
-  update(update: DraftUpdate): Promise<void> {
+  update(update: DraftUpdate, strict = false): Promise<void> {
     return this.enqueue(update.editorMarkdown === update.savedEditorMarkdown
       ? { method: "DELETE" }
       : {
           method: "POST",
           draft: { body: update.body, baseRevision: update.baseRevision, scroll: update.scroll },
-        });
+        }, strict);
   }
 
   clear(): Promise<void> {
     return this.enqueue({ method: "DELETE" });
   }
 
-  private enqueue(mutation: DraftMutation): Promise<void> {
+  private enqueue(mutation: DraftMutation, strict = false): Promise<void> {
     const write = this.writes.then(() => this.send(mutation));
     // A failed request must not prevent later recovery writes from running.
     this.writes = write.catch(() => {});
-    return this.writes;
+    return strict ? write : this.writes;
   }
 }
 
