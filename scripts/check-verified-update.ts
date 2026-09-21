@@ -1,12 +1,12 @@
 import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { signedRepository } from "../tests/fixtures/signed-repository";
+import { publisherFixture } from "../tests/fixtures/publisher";
 import { resolveConfig } from "../src/server/config";
 import { controlLaunch, controlRecentsLaunch, statusDaemon, stopDaemon } from "../src/server/lifecycle";
 import { waitForDaemonStop } from "./wait-for-daemon-stop";
 
 // Two real packages, ephemeral in-memory publisher keys, isolated profiles only.
-const publisher = await signedRepository();
+const publisher = await publisherFixture();
 const scratch = publisher.directory;
 const configs: ReturnType<typeof resolveConfig>[] = [];
 async function run(args: string[], env?: Record<string, string>, ok = true) {
@@ -23,7 +23,7 @@ try {
     await run([process.execPath, "--no-env-file", "scripts/build-release.ts", destination, version, publisher.root]);
     archives.push(join(scratch, version, `tether-${process.platform}-${process.arch}.tar.gz`));
   }
-  publisher.publish("0.2.0", { archive: new Uint8Array(await Bun.file(archives[1]!).arrayBuffer()) });
+  await publisher.publish(archives[1]!);
   for (const mode of ["cli", "reader", "folio"]) {
     const base = join(scratch, mode), installation = join(base, "installation"), bin = join(base, "bin");
     const config = resolveConfig({ profile: "verified-check", configDir: join(base, "config"), runtimeDir: join(base, "runtime") });
