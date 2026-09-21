@@ -14,7 +14,7 @@ If an occupied saved port moves the daemon, an old reader cannot discover the ne
 
 Wave callbacks no longer expire after five idle minutes. A retained bridge probes host readiness; an authenticated new Wave launcher can replace an obsolete credential only after proving fresh access. Temporary host absence preserves the bridge. Native Wave quit/reopen credential continuity remains unverified; relaunch from a Wave terminal when renewed access is required.
 
-
+Managed releases support `tether update --check` and update notices in both readers and Folio. See [[docs/release.md|release and recovery]] for supported installation and recovery procedures.
 
 ## Start using Tether
 

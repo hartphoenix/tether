@@ -16,7 +16,7 @@ This release plan supersedes the historical extraction plan below. In particular
 
 ## Current implementation checkpoint
 
-
+2026-09-20 implementation: focused CLI correction hints, exact HTTP authority/no-referrer policy, retained Wave callbacks, explicit saved-view relaunch after port contention, and managed updates are implemented. Reader/Folio update notices and explicit checks share verification state. Two packaged versions pass isolated CLI and scoped HTTP update/recovery checks; native Wave and real-browser validation remain open. See [[release.md|release and recovery]]; older checkpoint descriptions below are historical.
 
 Reviewed 2026-09-07 against the working tree, README, CLI, lifecycle/config code, and [private Folio implementation](private-folio-implementation.md). The tree contains ongoing implementation work; presence in code is not release validation.
 
@@ -59,7 +59,7 @@ If a requested or detected integration is incompatible or unavailable, explain w
 
 Provide a clickable macOS launcher that works outside the source checkout and uses the same startup path. Outside a terminal, use browser unless a saved host destination can be resolved reliably. Include matching startup instructions in README and Folio's stopped screen. A disconnected browser page cannot itself restart a dead local service without a separate launch mechanism; provide a working launcher/command and honest recovery guidance.
 
-
+The runtime and web assets are packaged together, with installed entry points for the daemon and both host bridges. Start on demand; launch-at-login is optional future convenience. Managed installations check available releases through readers and Folio, at most once every six hours, with explicit checks available. A bottom notice offers Install, Release Notes, and Dismiss; dismissal persists per version across views and restarts. Install drains active requests, stops the service, creates a private-state backup, installs the offered version, and starts the selected runtime. The terminal update command still requires a stopped service. Uninstall removes owned command/widget launchers and retains private data, agent skills, and versioned release files. The published download/update path cannot be validated until release assets exist.
 
 ## First-use document
 

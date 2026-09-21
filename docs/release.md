@@ -27,9 +27,7 @@ First installation currently requires an archive and independently authenticated
 bash scripts/install.sh --archive /absolute/path/to/tether-darwin-arm64.tar.gz --sha256 <authenticated-hash> --no-open
 ```
 
-
-
-
+The installer checks the supplied archive before installing. Public installation is still under validation.
 
 Default locations are `~/.local/share/tether` for versioned releases and `~/.local/bin` for commands. `TETHER_INSTALL_DIR` and `TETHER_BIN_DIR` accept absolute alternatives. The installer preserves unrelated commands and shell profiles, prints a PATH instruction when needed, and invokes setup through its absolute path. It retains temporary download evidence and older release directories for recovery.
 
@@ -39,13 +37,11 @@ For agent use, run `tether setup --agent-directory /absolute/path/to/skills --no
 
 ## Update and uninstall
 
+Managed installations offer update notices in readers and Folio. Use **Check for updates** or `tether update --check` to check explicitly. Source checkouts update through Git.
 
+Updates preserve a private-state backup and restart the selected runtime. Save work before quitting a host. Reader pages reconnect without being automatically reloaded; Folio reloads after a successful update. Run `tether doctor` if reconnection stalls.
 
-Reader and Folio notices offer Install, Release Notes, and Dismiss. Dismissal persists per profile/version. Installation drains in-flight requests, stops the daemon, backs up private state, refreshes signed metadata, verifies the pinned candidate, installs, and starts the selected runtime. The initiating reader first waits for its recovery draft to persist; failure prevents installation. Readers keep their mounted editors through reconnection and are not automatically reloaded. Other views' unsent edits remain in their mounted pages; save work before quitting a host. Folio reloads after success. A failed new-runtime startup never automatically falls back to an older database runtime.
-
-
-
-
+Packaged update and recovery workflows have isolated tests; native browser/host acceptance remains a separate gate.
 
 For a terminal update, save edits and quit Tether first. A normal service restart uses the current executable; it is not a software update.
 
