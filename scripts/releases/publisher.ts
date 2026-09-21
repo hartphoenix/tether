@@ -113,10 +113,11 @@ async function refreshMetadata(directory: string, root: Metadata<Root>, targets:
   await atomic(join(metadata, "timestamp.json"), encode(timestamp));
   return { version, expires: timestamp.signed.expires };
 }
-export async function initializePublisher(input: { directory: string; vault: string; metadataUrl: string; targetsUrl: string }, vault: PublisherVault, now = Date.now()) {
+export async function initializePublisher(input: { directory: string; vault: string; metadataUrl: string; targetsUrl: string; publisherDocument?: Uint8Array }, vault: PublisherVault, now = Date.now()) {
   const metadataUrl = url(input.metadataUrl), targetsUrl = url(input.targetsUrl);
   await mkdir(input.directory, { mode: 0o700 }); await privateDirectory(input.directory);
-  const publisher = generate(), snapshot = generate(), timestamp = generate();
+  const publisher = input.publisherDocument ? parseKey(input.publisherDocument) : generate();
+  const snapshot = generate(), timestamp = generate();
   const title = `Tether publisher ${crypto.randomUUID()}`;
   // Recovery intent is durable before the only external mutation. Never retry init over it.
   await exclusive(join(input.directory, "setup.json"), JSON.stringify({ vault: input.vault, title, publicKey: publisher.public.keyVal.public }));
@@ -126,7 +127,7 @@ export async function initializePublisher(input: { directory: string; vault: str
     item = await vault.create(input.vault, title, contents);
     const restored = parseKey(await vault.read(input.vault, item));
     if (restored.public.keyID !== publisher.public.keyID) throw new Error("Vault verification failed.");
-  } catch { throw new Error("Initialization incomplete. Inspect setup.json and the named 1Password item before retrying; it may already exist."); }
+  } catch { throw new Error("Initialization incomplete. Inspect setup.json and the named vault item before retrying; it may already exist."); }
   finally { contents.fill(0); }
   const settings: Settings = { format: 1, vault: input.vault, item, publicKey: publisher.public.keyVal.public!, metadataUrl, targetsUrl };
   await exclusive(join(input.directory, "publisher.json"), JSON.stringify(settings));
@@ -175,7 +176,7 @@ export async function approveRelease(directory: string, archive: string, approve
     const existing = previous.signed.targets[name];
     if (existing && !newerVersion(candidate.version, String(existing.custom.version))) throw new Error("Release must advance the approved version for this architecture.");
     const publisher = parseKey(await vault.read(settings.vault, settings.item));
-    if (publisher.public.keyVal.public !== settings.publicKey) throw new Error("1Password publisher key does not match the installed trust root.");
+    if (publisher.public.keyVal.public !== settings.publicKey) throw new Error("Publisher key does not match the installed trust root.");
     const metadata = join(directory, "public/metadata"), version = await nextVersion(metadata, "targets");
     const targets = signed(new Targets({ specVersion, version, expires: expires(90, now), targets: { ...previous.signed.targets, [name]: new TargetFile({ path: name, length: candidate.bytes.length, hashes: { sha256: candidate.sha256 }, unrecognizedFields: { custom: { version: candidate.version, platform: candidate.platform, architecture: candidate.architecture } } }) } }), publisher);
     root.verifyDelegate("targets", targets);

@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { initializePublisher, inspectArchive, approveRelease, refreshPublisher, renewPublisher } from './releases/publisher';
-import { onePassword } from './releases/vault';
+import { publisherVault, publisherDocument, keychainVaultName } from './releases/environment-vault';
 
 const help = `Usage: bun scripts/release-publisher.ts <command> [flags]
   init --directory <new-private-directory> --vault <vault> --metadata-url <url> --targets-url <url>
@@ -23,12 +23,12 @@ export async function run(args = process.argv.slice(2)) {
   if (schema.some(flag => !flags[flag])) throw new Error('Missing publisher arguments. Use --help.');
   if (command === 'inspect') { const { bytes, ...summary } = await inspectArchive(resolve(flags.archive!)); return summary; }
   const directory = resolve(flags.directory!);
-  if (command === 'init') return initializePublisher({ directory, vault: flags.vault!, metadataUrl: flags['metadata-url']!, targetsUrl: flags['targets-url']! }, onePassword());
-  if (command === 'approve') return approveRelease(directory, resolve(flags.archive!), flags.sha256!, onePassword());
-  if (command === 'renew') return renewPublisher(directory, onePassword());
+  if (command === 'init') return initializePublisher({ directory, vault: flags.vault!, metadataUrl: flags['metadata-url']!, targetsUrl: flags['targets-url']!, publisherDocument: flags.vault === keychainVaultName ? publisherDocument() : undefined }, publisherVault());
+  if (command === 'approve') return approveRelease(directory, resolve(flags.archive!), flags.sha256!, publisherVault());
+  if (command === 'renew') return renewPublisher(directory, publisherVault());
   return refreshPublisher(directory);
 }
 if (import.meta.main) {
   try { console.log(JSON.stringify({ ok: true, data: await run() })); }
-  catch { console.error(JSON.stringify({ ok: false, error: 'Publisher operation failed. Check arguments, private-state permissions, and 1Password access. For interrupted initialization, inspect setup.json and its named vault item before retrying.' })); process.exitCode = 1; }
+  catch { console.error(JSON.stringify({ ok: false, error: 'Publisher operation failed. Check arguments, private-state permissions, and publisher credential access. For interrupted initialization, inspect setup.json and its named vault item before retrying.' })); process.exitCode = 1; }
 }
