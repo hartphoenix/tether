@@ -11,7 +11,6 @@ import { createChromeControls } from "./chrome-controls";
 import { createCanvas } from './canvas';
 import { scrollSelectionIntoView } from './scroll-geometry';
 import './canvas.css';
-import { blockHandle } from "./block-handle";
 import { cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
 import { localDocumentLink } from "./local-document-link";
 import { prepareMarkdown, restoreMarkdown } from "../core/markdown-codec";
@@ -400,9 +399,9 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     const nextCrepe = new Crepe({
       root: editorRoot,
       defaultValue: prepared.editorMarkdown,
-      features: { [Crepe.Feature.TopBar]: true },
+      features: { [Crepe.Feature.TopBar]: true, [Crepe.Feature.BlockEdit]: false },
       featureConfigs: {
-        [Crepe.Feature.BlockEdit]: { blockHandle },
+        [Crepe.Feature.Placeholder]: { text: "..." },
         [Crepe.Feature.TopBar]: {
           headingOptions: [
             { label: "P", level: null },
