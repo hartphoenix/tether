@@ -548,9 +548,9 @@ describe("session API", () => {
     const session = await exchange(daemon, file.path);
     const origin = { origin: daemon.origin };
 
-    const preference = await sessionFetch(daemon, session.location, session.cookie, "api/preferences", { method: "PUT", headers: origin, body: JSON.stringify({ theme: "nord" }) });
+    const preference = await sessionFetch(daemon, session.location, session.cookie, "api/preferences", { method: "PUT", headers: origin, body: JSON.stringify({ theme: "tether" }) });
     expect(preference.status).toBe(200);
-    expect((await (await sessionFetch(daemon, session.location, session.cookie, "api/bootstrap")).json() as { preferences: { theme: string } }).preferences.theme).toBe("nord");
+    expect((await (await sessionFetch(daemon, session.location, session.cookie, "api/bootstrap")).json() as { preferences: { theme: string } }).preferences.theme).toBe("tether");
 
     const open = await sessionFetch(daemon, session.location, session.cookie, "api/open", { method: "POST", headers: origin, body: JSON.stringify({ target: "other" }) });
     expect(open.status).toBe(200);
@@ -807,8 +807,8 @@ test("Folio theme events follow committed saves and reconnect with the current p
   });
   const events = await connect();
   expect(await events.next()).toEqual(folioTheme());
-  expect((await put({ theme: "nord" })).status).toBe(200);
-  expect(await events.next()).toEqual(folioTheme({ theme: "nord" }));
+  expect((await put({ theme: "tether" })).status).toBe(200);
+  expect(await events.next()).toEqual(folioTheme({ theme: "tether" }));
   const theme = { ...tetherDesign(true), id: "custom-live", name: "Live" };
   expect((await put({ theme: theme.id, saveTheme: theme })).status).toBe(200);
   expect(await events.next()).toEqual(folioTheme({ design: theme }));

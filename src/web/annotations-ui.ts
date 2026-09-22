@@ -1,6 +1,7 @@
 import { placeOverlay } from './overlay';
 import { iconSvg } from "./icons";
 import { renderCommentBody } from "./comment-body";
+import { keepContentEndVisible, overlayScrollHeader } from "./scroll-geometry";
 import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
@@ -204,12 +205,13 @@ function createAnnotationPlugin(controller: AnnotationUiControllerLike): Plugin<
   const plugin = new Plugin<AnnotationPluginState>({
     key: annotationUiPluginKey,
     state: {
-      init: (_config, state) => ({ threads: [], decorations: DecorationSet.create(state.doc, []) }),
+      init: (_config, state) => ({ threads: [], draftAnchor: null, decorations: DecorationSet.create(state.doc, []) }),
       apply: (transaction, previous, _oldState, newState) => {
         const meta = transaction.getMeta(annotationUiPluginKey) as AnnotationPluginMeta | undefined;
-        if (meta?.threads) return { threads: meta.threads, decorations: createAnnotationDecorations(newState.doc, meta.threads) };
-        if (transaction.docChanged) {
-          return { threads: previous.threads, decorations: createAnnotationDecorations(newState.doc, previous.threads) };
+        if (meta || transaction.docChanged) {
+          const threads = meta?.threads ?? previous.threads;
+          const draftAnchor = meta?.draftAnchor === undefined ? previous.draftAnchor : meta.draftAnchor;
+          return { threads, draftAnchor, decorations: createAnnotationDecorations(newState.doc, threads, draftAnchor) };
         }
         return previous;
       },
@@ -234,11 +236,13 @@ function createAnnotationPlugin(controller: AnnotationUiControllerLike): Plugin<
 
 interface AnnotationPluginState {
   threads: readonly AnnotationThread[];
+  draftAnchor: AnnotationAnchor | null;
   decorations: DecorationSet;
 }
 
 interface AnnotationPluginMeta {
   threads: readonly AnnotationThread[];
+  draftAnchor?: AnnotationAnchor | null;
 }
 
 interface AnnotationUiControllerLike {
@@ -250,8 +254,16 @@ export const annotationUiPluginKey = new PluginKey<AnnotationPluginState>("wave-
 export function createAnnotationDecorations(
   doc: ProseMirrorNode,
   threads: readonly AnnotationThread[],
+  draftAnchor: AnnotationAnchor | null = null,
 ): DecorationSet {
   const decorations: Decoration[] = [];
+  if (draftAnchor) {
+    for (const range of resolveAnchor(doc, draftAnchor)?.ranges ?? []) {
+      decorations.push(Decoration.inline(range.from, range.to, {
+        class: "wm-annotation-highlight",
+      }, { draft: true }));
+    }
+  }
   const badges = new Map<number, { threadId: string; count: number }>();
   for (const thread of threads) {
     if (thread.orphaned || thread.deleted) continue;
@@ -367,6 +379,12 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   const rail = createElement("aside", "wm-annotation-rail");
   rail.setAttribute("aria-label", "Threads");
   root.append(rail);
+  const content = createElement("div", "wm-annotation-rail-content");
+  const scroller = createElement("div", "wm-annotation-rail-scroll");
+  scroller.append(content);
+  rail.append(scroller);
+  const stopEndRecovery = keepContentEndVisible(content, scroller);
+  let stopHeaderOverlay = () => {};
 
   const controller: AnnotationUiController & AnnotationUiControllerLike = {
     plugin: undefined as unknown as ReturnType<typeof createAnnotationPlugin>,
@@ -375,16 +393,13 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       state = { threads: [...nextState.threads] };
       renderRail();
       onPendingCountChange(attentionCount());
-      const view = getEditorView?.() ?? editorView;
-      if (view) {
-        view.dispatch(view.state.tr.setMeta(annotationUiPluginKey, { threads: visibleThreads() } satisfies AnnotationPluginMeta));
-      }
+      syncDecorations();
       const active = activeThreadId && state.threads.find((thread) => thread.id === activeThreadId && !thread.deleted);
       if (active && !railOpen) showThreadPopover(active);
     },
     attachEditorView(view) {
       editorView = view;
-      view.dispatch(view.state.tr.setMeta(annotationUiPluginKey, { threads: visibleThreads() } satisfies AnnotationPluginMeta));
+      syncDecorations(view);
     },
     detachEditorView(view) {
       if (!view || editorView === view) editorView = null;
@@ -392,10 +407,12 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     openCommentComposer(anchor) {
       if (destroyed) return;
       composer?.remove();
-      composerAnchor = anchor;
-      composer = createCommentComposer(anchor);
+      const view = currentView();
+      composerAnchor = anchor ?? (view ? captureAnchor(view) : null) ?? undefined;
+      composer = createCommentComposer(composerAnchor);
       document.body.append(composer);
-      positionPopover(composer, anchor);
+      syncDecorations();
+      positionPopover(composer, composerAnchor);
       composer.querySelector<HTMLTextAreaElement>("textarea")?.focus();
     },
     openThread(threadId, trigger) {
@@ -426,11 +443,14 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      stopEndRecovery();
+      stopHeaderOverlay();
       editorRoot?.removeEventListener("click", handleEditorClick);
       editorRoot?.ownerDocument.querySelector(".wm-footnote-popover")?.remove();
       composer?.remove();
       composer = null;
       composerAnchor = undefined;
+      syncDecorations();
       threadPopover?.remove();
       threadPopover = null;
       rail.remove();
@@ -514,12 +534,16 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     const form = createElement("form", "wm-annotation-form");
     form.append(heading, textarea, error, actions);
     section.append(form);
-    cancel.addEventListener("click", () => {
-      composer?.remove();
-      composer = null;
-      composerAnchor = undefined;
+    const close = () => {
+      // An older in-flight save must not clear a newer composer's highlight.
+      if (composer === section) {
+        composer = null;
+        composerAnchor = undefined;
+        syncDecorations();
+      }
       section.remove();
-    });
+    };
+    cancel.addEventListener("click", close);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const body = textarea.value;
@@ -537,11 +561,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       }
       error.hidden = true;
       setBusy(submit, true);
-      Promise.resolve(onCreateComment({ body, anchor: resolvedAnchor })).then(() => {
-        composer = null;
-        composerAnchor = undefined;
-        section.remove();
-      }).catch((reason: unknown) => {
+      Promise.resolve(onCreateComment({ body, anchor: resolvedAnchor })).then(close).catch((reason: unknown) => {
         setBusy(submit, false);
         error.textContent = reason instanceof Error ? reason.message : "Comment could not be created.";
         error.hidden = false;
@@ -704,9 +724,10 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     return state.threads.filter((thread) => !thread.deleted && (showResolved || !thread.resolved));
   }
 
-  function syncDecorations(): void {
-    const view = currentView();
-    if (view) view.dispatch(view.state.tr.setMeta(annotationUiPluginKey, { threads: visibleThreads() } satisfies AnnotationPluginMeta));
+  function syncDecorations(view = currentView()): void {
+    if (view && !view.isDestroyed) view.dispatch(view.state.tr.setMeta(annotationUiPluginKey, {
+      threads: visibleThreads(), draftAnchor: composerAnchor ?? null,
+    } satisfies AnnotationPluginMeta));
   }
 
   function renderThread(thread: AnnotationThread, orphaned: boolean): HTMLElement {
@@ -767,8 +788,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   }
 
   function renderRail(): void {
-    rail.replaceChildren();
-    const content = createElement("div", "wm-annotation-rail-content");
+    content.replaceChildren();
     const allThreads = state.threads.filter((thread) => !thread.deleted);
     const threads = visibleThreads().sort(threadSort);
     const view = currentView();
@@ -828,7 +848,10 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     }
     controls.append(hide);
     header.append(title, controls, badge);
-    content.append(header);
+    rail.querySelector(".wm-annotation-rail-header")?.remove();
+    rail.prepend(header);
+    stopHeaderOverlay();
+    stopHeaderOverlay = overlayScrollHeader(scroller, header);
     if (threads.length === 0) {
       const empty = createElement("p", "wm-empty-comments");
       empty.textContent = allThreads.length ? "No open threads." : "No threads.";
@@ -843,7 +866,6 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       for (const thread of orphanedThreads) group.append(renderThread(thread, true));
       content.append(group);
     }
-    rail.append(content);
     renderRailVisibility();
   }
 

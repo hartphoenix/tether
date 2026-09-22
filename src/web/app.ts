@@ -316,7 +316,7 @@ async function persistDraft(strict = false): Promise<void> {
     savedEditorMarkdown,
     body: restoreMarkdown(markdown, currentFrontmatter),
     baseRevision: currentBodyRevision,
-    scroll: window.scrollY,
+    scroll: canvas?.scroller.scrollTop ?? 0,
   }, strict);
 }
 async function save(): Promise<boolean> {
@@ -603,7 +603,7 @@ async function start(): Promise<void> {
     // Font and canvas layout can otherwise clamp a restored position to zero.
     await Promise.race([document.fonts.ready, new Promise(resolve => setTimeout(resolve, 1000))]);
     await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-    window.scrollTo(0, bootstrap.scroll ?? draft?.scroll ?? 0);
+    if (canvas) canvas.scroller.scrollTop = bootstrap.scroll ?? draft?.scroll ?? 0;
     initialized = true;
   } finally {
     initializing = false;
@@ -616,13 +616,14 @@ let positionTimer: number | undefined;
 function persistPosition(keepalive = false): void {
   clearTimeout(positionTimer);
   if (!initialized || initializing) return;
-  void api("api/position", { method: "POST", body: JSON.stringify({ scroll: window.scrollY }), keepalive }).catch(() => {});
+  void api("api/position", { method: "POST", body: JSON.stringify({ scroll: canvas?.scroller.scrollTop ?? 0 }), keepalive }).catch(() => {});
 }
-addEventListener("scroll", () => {
+addEventListener("scroll", (event) => {
+  if (event.target !== canvas?.scroller) return;
   if (!initialized || initializing) return;
   clearTimeout(positionTimer);
   positionTimer = window.setTimeout(() => persistPosition(), 150);
-}, { passive: true });
+}, { passive: true, capture: true });
 
 commentButton.addEventListener("click", () => {
   if (!annotationUi) return;

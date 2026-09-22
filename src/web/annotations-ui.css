@@ -21,6 +21,7 @@
 .wm-annotation-rail[hidden] { display: none; }
 .wm-annotation-rail-content {
   display: flex;
+  align-self: flex-start;
   width: 100%;
   flex-direction: column;
   gap: 8px;

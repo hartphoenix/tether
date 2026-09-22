@@ -31,7 +31,7 @@ test("wikilinks use an interceptable same-origin route and restore exactly", () 
 });
 
 test("reports Milkdown's representative Markdown normalization", async () => {
-  const dom = new JSDOM('<!doctype html><div id="editor"></div>', { url: "http://localhost" });
+  const dom = new JSDOM('<!doctype html><div id="editor"></div>', { url: "http://localhost", pretendToBeVisual: true });
   const window = dom.window as unknown as Window & typeof globalThis;
   Object.assign(globalThis, {
     window,

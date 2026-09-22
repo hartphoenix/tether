@@ -29,7 +29,7 @@ function anchor(exact: string, values: Partial<AnnotationAnchor> = {}): Annotati
 }
 
 function installDom(): Window & typeof globalThis {
-  const dom = new JSDOM("<!doctype html><body></body>", { url: "http://localhost" });
+  const dom = new JSDOM("<!doctype html><body></body>", { url: "http://localhost", pretendToBeVisual: true });
   const nextWindow = dom.window as unknown as Window & typeof globalThis;
   Object.assign(globalThis, {
     window: nextWindow,
@@ -300,6 +300,80 @@ test("the plugin updates decorations from metadata without changing the document
   expect(next.doc.eq(state.doc)).toBe(true);
   expect(annotationUiPluginKey.getState(next)?.decorations.find()).toHaveLength(2);
   ui.destroy();
+});
+
+test('composer highlights immediately, survives edits and failed saves, and hands off to the saved thread', async () => {
+  const win = installDom();
+  const root = document.createElement('div');
+  const editorRoot = document.createElement('div');
+  document.body.append(root, editorRoot);
+  const { schema, doc } = documentWith('alpha beta');
+  let failSave = true;
+  let finishSave: (() => void) | undefined;
+  const ui = createAnnotationUi({ root, editorRoot, onCreateComment: async ({ body, anchor }) => {
+    if (failSave) throw new Error('Try again');
+    await new Promise<void>(resolve => { finishSave = resolve; });
+    ui.setState({ threads: [{ ...thread(), body, anchor }] });
+  } });
+  let state = EditorState.create({ schema, doc, plugins: [ui.plugin], selection: TextSelection.create(doc, 1, 6) });
+  const view = {
+    get state() { return state; }, dom: editorRoot,
+    coordsAtPos: () => ({ left: 0, right: 10, top: 0, bottom: 20 }),
+    dispatch(transaction: Parameters<typeof state.apply>[0]) { state = state.apply(transaction); },
+  } as unknown as import('@milkdown/kit/prose/view').EditorView;
+  ui.attachEditorView(view);
+  const decorations = () => annotationUiPluginKey.getState(state)!.decorations.find();
+  const drafts = () => decorations().filter(decoration => decoration.spec.draft);
+  const form = () => document.querySelector<HTMLFormElement>('.wm-annotation-form')!;
+  const cancel = () => form().querySelector<HTMLButtonElement>('.wm-button-secondary')!.click();
+  const submit = () => {
+    form().querySelector('textarea')!.value = 'Please revise';
+    form().dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
+  };
+  const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+
+  ui.openCommentComposer();
+  expect(drafts().map(({ from, to }) => [from, to])).toEqual([[1, 6]]);
+  expect(decorations()).toHaveLength(1); // No count badge or persisted thread.
+  expect(annotationUiPluginKey.getState(state)!.threads).toHaveLength(0);
+  expect(state.doc.eq(doc)).toBe(true);
+  view.dispatch(state.tr.setSelection(TextSelection.create(state.doc, 6)));
+  ui.setState({ threads: [] });
+  expect(drafts()).toHaveLength(1);
+  view.dispatch(state.tr.insertText('prefix ', 1));
+  expect(drafts().map(({ from, to }) => [from, to])).toEqual([[8, 13]]);
+  cancel();
+  expect(decorations()).toHaveLength(0);
+
+  const selected = anchor('alpha', { projectionStart: 7, projectionEnd: 12 });
+  ui.openCommentComposer(selected);
+  submit();
+  await settle();
+  expect(form().textContent).toContain('Try again');
+  expect(drafts()).toHaveLength(1);
+  failSave = false;
+  submit();
+  expect(drafts()).toHaveLength(1); // Keep the highlight throughout the request.
+  finishSave!();
+  await settle();
+  expect(document.querySelector('.wm-annotation-form')).toBeNull();
+  expect(drafts()).toHaveLength(0);
+  expect(decorations()).toHaveLength(2); // Saved highlight and count badge.
+
+  // An older save finishing must not dismiss a replacement composer.
+  ui.openCommentComposer(selected);
+  submit();
+  ui.openCommentComposer(anchor('beta', { projectionStart: 13, projectionEnd: 17 }));
+  finishSave!();
+  await settle();
+  expect(form()).not.toBeNull();
+  expect(drafts().map(({ from, to }) => [from, to])).toEqual([[14, 18]]);
+  cancel();
+  expect(decorations()).toHaveLength(2);
+  ui.openCommentComposer(selected);
+  ui.destroy();
+  expect(drafts()).toHaveLength(0);
+  expect(decorations()).toHaveLength(2);
 });
 
 test("ordinary footnote references open a read-only popover", () => {

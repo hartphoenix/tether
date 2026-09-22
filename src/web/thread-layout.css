@@ -24,9 +24,47 @@
   --wm-annotation-surface: var(--wm-color-surface);
   border-color: var(--wm-annotation-border);
 }
-.wm-annotation-rail { padding: 16px 12px 28px; }
+.wm-annotation-rail { padding: 0; flex-direction: column; overflow: hidden; }
+.wm-annotation-rail,
+:root[data-wm-designed] .wm-annotation-rail {
+  background: color-mix(in srgb, var(--wm-annotation-surface) 70%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+.wm-annotation-rail-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin-top: calc(-1 * var(--wm-scroll-header-height, 0px));
+  padding: calc(var(--wm-scroll-header-height, 0px) + 12px) 12px 28px;
+  scroll-padding-top: calc(var(--wm-scroll-header-height, 0px) + 12px);
+}
 .wm-annotation-rail-content { gap: 12px; }
-.wm-annotation-rail-header { gap: 8px; padding: 0 4px 8px; }
+.wm-annotation-rail-header {
+  position: relative;
+  flex-shrink: 0;
+  z-index: 2;
+  gap: 8px;
+  margin: 0;
+  padding: 16px 16px 8px;
+  --wm-rail-header-background: color-mix(in srgb, var(--wm-annotation-surface) 70%, transparent);
+  background: var(--wm-rail-header-background);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+.wm-annotation-rail-header::after {
+  content: "";
+  position: absolute;
+  inset: 100% 0 auto;
+  height: 12px;
+  background: var(--wm-rail-header-background);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent);
+  mask-image: linear-gradient(to bottom, black, transparent);
+  pointer-events: none;
+}
 .wm-annotation-rail-header h2 { font-size: 15px; font-weight: 600; letter-spacing: 0; }
 .wm-annotation-rail-controls { gap: 10px; }
 .wm-thread-card { border-radius: 10px; box-shadow: none; }

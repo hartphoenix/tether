@@ -1,4 +1,5 @@
 import type { EditorView } from '@milkdown/kit/prose/view';
+import { keepContentEndVisible, overlayScrollHeader } from './scroll-geometry';
 
 /** The document alone scales; its shell, toolbar and free overlays stay in viewport pixels. */
 export function createCanvas(view: EditorView) {
@@ -9,9 +10,14 @@ export function createCanvas(view: EditorView) {
   stage.className = 'wm-canvas-stage';
   const scene = document.createElement('div');
   scene.className = 'wm-canvas-scene';
-  view.dom.before(stage);
+  const scroller = document.createElement('div');
+  scroller.className = 'wm-document-scroll';
+  view.dom.before(scroller);
+  scroller.append(stage);
   stage.append(scene);
   scene.append(view.dom);
+  const header = shell.querySelector<HTMLElement>('.milkdown-top-bar');
+  const stopHeaderOverlay = header ? overlayScrollHeader(scroller, header) : () => {};
   let scale = 1;
   let destroyed = false;
   let frame = 0;
@@ -34,9 +40,12 @@ export function createCanvas(view: EditorView) {
   win.addEventListener('resize', update);
   measure();
 
+  const stopEndRecovery = keepContentEndVisible(view.dom, scroller);
+
   return {
     shell,
     stage,
+    scroller,
     scene,
     get scale() { return scale; },
     setScale(next: number) {
@@ -90,7 +99,7 @@ export function createCanvas(view: EditorView) {
           const connected = anchor instanceof HTMLElement ? anchor.isConnected : anchor.startContainer.isConnected;
           if (!connected) return;
           measure();
-          win.scrollBy(0, anchor.getBoundingClientRect().top - before);
+          scroller.scrollTop += anchor.getBoundingClientRect().top - before;
           if (--remaining > 0) followFrame = win.requestAnimationFrame(follow);
           else followFrame = 0;
         };
@@ -102,12 +111,14 @@ export function createCanvas(view: EditorView) {
       if (destroyed) return;
       destroyed = true;
       observer.disconnect();
+      stopEndRecovery();
+      stopHeaderOverlay();
       cancelFollow();
       for (const event of ['wheel', 'touchstart', 'pointerdown', 'keydown']) win.removeEventListener(event, cancelFollow);
       win.cancelAnimationFrame(frame);
       win.removeEventListener('resize', update);
-      stage.before(view.dom);
-      stage.remove();
+      scroller.before(view.dom);
+      scroller.remove();
       shell.style.removeProperty('--wm-editor-scale');
     },
   };
