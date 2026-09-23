@@ -34,6 +34,11 @@ const budgetFlags = { "--max-bytes": { value: true }, "--continuation": { value:
 const mutationActorFlags = { "--actor": { value: true } } as const;
 const operationFlags = { "--operation-id": { value: true }, "--expected-thread-sequence": { value: true } } as const;
 export const commandSpecs: Record<string, CommandSpec> = {
+  resume: { name: "resume", usage: "tether resume [--inspect]", min: 0, max: 0, flags: { "--inspect": {} } },
+  "cmux.attach": { name: "cmux.attach", usage: "tether cmux attach", min: 0, max: 0 },
+  "startup.status": { name: "startup.status", usage: "tether startup status", min: 0, max: 0 },
+  "startup.enable": { name: "startup.enable", usage: "tether startup enable", min: 0, max: 0 },
+  "startup.disable": { name: "startup.disable", usage: "tether startup disable", min: 0, max: 0 },
   setup: { name: "setup", usage: "tether setup [--host auto|browser|wave|cmux] [--wave] [--agent-directory <skills-directory>] [--no-open]", min: 0, max: 0, flags: { "--host": { value: true }, "--wave": {}, "--agent-directory": { value: true }, "--no-open": {} } },
   "skills.list": { name: "skills.list", usage: "tether skills list", min: 0, max: 0 },
   "skills.read": { name: "skills.read", usage: "tether skills read <id>", min: 1, max: 1 },
@@ -87,7 +92,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
 
 function commandPrefix(argv: string[]): { name: string; start: number } {
   const [first, second] = argv;
-  if (["daemon", "cmux", "wave", "document", "skills"].includes(first ?? "")) return { name: `${first}.${second ?? ""}`, start: 2 };
+  if (["daemon", "cmux", "wave", "document", "skills", "startup"].includes(first ?? "")) return { name: `${first}.${second ?? ""}`, start: 2 };
   if (first === "recents" && second === "add") return { name: "recents.add", start: 2 };
   if (first === "folio" && second && commandSpecs[`folio.${second}`]) return { name: `folio.${second}`, start: 2 };
   return { name: first ?? "unknown", start: 1 };

@@ -5,6 +5,7 @@ import { readDiscovery, acquireStartupLock, prepareConfig, removeStaleRuntime, r
 import { PROTOCOL_VERSION, SERVICE_ID, type DiscoveryRecord } from "../shared/contracts";
 import { runtimeEntry } from "../runtime-paths";
 import type { HostTarget } from "../hosts/host-adapter";
+import { automationTransaction, beginAttempt, completeAttempt, disableAutomation, ownsAttempt, readAutomation, type AutomationState, type Attempt } from "./automation-state";
 
 const LOOPBACK = "127.0.0.1";
 const WAIT_MS = 100;
@@ -38,6 +39,9 @@ export class ControlRequestError extends Error {
 }
 
 export type EnsureDaemonOptions = {
+  generation?: string;
+  attempt?: Attempt;
+  signal?: AbortSignal;
   config?: TetherConfig;
   /** Used by tests and alternate launchers; defaults to this source checkout's daemon entrypoint. */
   command?: string[];
@@ -72,9 +76,10 @@ export async function discoverDaemon(config = resolveConfig()): Promise<Discover
   return value;
 }
 
-async function waitForDiscovery(config: TetherConfig, attempts: number, startup?: { report: string; child: Bun.Subprocess }): Promise<DiscoveryRecord | null> {
+async function waitForDiscovery(config: TetherConfig, attempts: number, startup?: { report: string; child: Bun.Subprocess }, validate?: () => Promise<void>): Promise<DiscoveryRecord | null> {
   let lastIssue: unknown;
   for (let index = 0; index < attempts; index += 1) {
+    await validate?.();
     try {
       const value = await discoverDaemon(config);
       if (value) return value;
@@ -99,30 +104,65 @@ function defaultCommand(): string[] {
   return [process.execPath, "--no-env-file", runtimeEntry("daemon"), "serve"];
 }
 
+/** Login and a newly restored cmux shell may arrive together. Join the
+ * existing automatic attempt without treating that normal race as a crash. */
+export async function ensureAutomaticDaemon(config: TetherConfig, runtime: NonNullable<AutomationState["runtime"]>): Promise<DiscoveryRecord> {
+  let attempt: Attempt;
+  try { attempt = await beginAttempt(config, "daemon", runtime); }
+  catch (cause) {
+    const state = await readAutomation(config);
+    if (!state.enabled || !state.daemon || state.runtime?.root !== runtime.root || state.runtime.digest !== runtime.digest) throw cause;
+    const owner = state.daemon;
+    const found = await waitForDiscovery(config, WAIT_ATTEMPTS * 2, undefined, async () => {
+      if (!ownsAttempt(await readAutomation(config), owner)) throw new Error("Automatic startup was cancelled.");
+    });
+    if (!found) throw new Error("The existing automatic startup did not become ready; inspect startup status.");
+    return found;
+  }
+  return ensureDaemon({ config, generation: attempt.generation, attempt });
+}
+
 /** Start or reuse the one daemon for this profile. The lock covers all state decisions. */
 export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<DiscoveryRecord> {
   const config = options.config ?? resolveConfig();
   await prepareConfig(config);
+  const validate = async () => {
+    options.signal?.throwIfAborted();
+    if (options.generation !== undefined || options.attempt) {
+      const state = await readAutomation(config);
+      if (options.generation !== undefined && state.generation !== options.generation || options.attempt && !ownsAttempt(state, options.attempt)) throw new Error("Startup was cancelled.");
+    }
+  };
+  const reuse = async (record: DiscoveryRecord) => {
+    await validate();
+    // A concurrent manual launcher won. Release only our unused reservation;
+    // never adopt its process as an automatic child or clear a live owner.
+    if (options.attempt && (await readAutomation(config))[options.attempt.role]?.pid !== record.pid) await completeAttempt(config, options.attempt);
+    return record;
+  };
   const existing = await discoverDaemon(config);
-  if (existing) return existing;
+  if (existing) return reuse(existing);
 
   let lock: Awaited<ReturnType<typeof acquireStartupLock>> | null = null;
-  try {
-    lock = await acquireStartupLock(config);
-  } catch (error) {
-    // Permission and filesystem failures are not evidence of another launcher.
-    if ((error as NodeJS.ErrnoException)?.code !== "writer_busy") throw error;
-    // A peer owns startup. Wait for it to publish and validate discovery; do
-    // not launch a second process merely because its port is not ready yet.
-    const converged = await waitForDiscovery(config, options.waitAttempts ?? WAIT_ATTEMPTS);
-    if (converged) return converged;
-    throw new Error("Another Tether daemon appears to be starting but did not become healthy.");
+  for (let index = 0; !lock; index++) {
+    await validate();
+    try { lock = await acquireStartupLock(config); }
+    catch (error) {
+      // A startup owner may exit without publishing (for example login yielding
+      // to an attachment's reserved attempt). Reacquire only after its kernel
+      // lock is released; never infer ownership from age or absent discovery.
+      if ((error as NodeJS.ErrnoException)?.code !== "writer_busy") throw error;
+      const converged = await discoverDaemon(config);
+      if (converged) return reuse(converged);
+      if (index >= (options.waitAttempts ?? WAIT_ATTEMPTS)) throw new Error("Another Tether daemon appears to be starting but did not become healthy.");
+      await Bun.sleep(WAIT_MS);
+    }
   }
 
   let primaryFailure: unknown;
   try {
     const winner = await discoverDaemon(config);
-    if (winner) return winner;
+    if (winner) return reuse(winner);
     const command = options.command ?? defaultCommand();
     const inherited = options.env ?? process.env;
     // Never pass host/browser credentials or the caller's arbitrary secrets to
@@ -141,12 +181,21 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
     const report = join(reportDirectory, "failure.json");
     let child: Bun.Subprocess | undefined;
     try {
-      if (options.spawn) await options.spawn(command, env);
-      else {
-        child = Bun.spawn(command, { env: { ...env, TETHER_STARTUP_REPORT: report }, detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
-        child.unref();
-      }
-      const started = await waitForDiscovery(config, options.waitAttempts ?? WAIT_ATTEMPTS * 2, child ? { report, child } : undefined);
+      const spawn = async () => {
+        options.signal?.throwIfAborted();
+        if (options.spawn) await options.spawn(command, env);
+        else {
+          child = Bun.spawn(command, { env: { ...env, TETHER_STARTUP_REPORT: report, ...(options.generation !== undefined ? { TETHER_LIFECYCLE_GENERATION: options.generation } : {}), ...(options.attempt ? { TETHER_AUTOMATION_ATTEMPT: JSON.stringify(options.attempt) } : {}) }, detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+          child.unref();
+        }
+      };
+      if (options.generation !== undefined || options.attempt) await automationTransaction(config, async state => {
+        if (options.generation !== undefined && state.generation !== options.generation || options.attempt && !ownsAttempt(state, options.attempt)) throw new Error("Startup was cancelled by a newer lifecycle decision.");
+        await spawn();
+      });
+      else await spawn();
+      const started = await waitForDiscovery(config, options.waitAttempts ?? WAIT_ATTEMPTS * 2, child ? { report, child } : undefined, validate);
+      options.signal?.throwIfAborted();
       if (!started) throw new ControlRequestError("daemon_start_timeout", "Tether did not become ready before the startup deadline.", 503, { outcome: "outcome_unknown", stage: "startup" });
       return started;
     } catch (cause) {
@@ -182,9 +231,15 @@ export async function statusDaemon(config = resolveConfig()): Promise<DaemonStat
 }
 
 export async function stopDaemon(config = resolveConfig()): Promise<{ running: boolean; stopping: boolean }> {
+  await disableAutomation(config);
+  const { stopHostBridges } = await import("./stop-hosts");
+  const cleanup = stopHostBridges(config);
+  // Consume failure now while still stopping the service; report it afterward.
+  const helpers = cleanup.then(() => null, cause => cause);
   const discovery = await discoverDaemon(config);
   if (!discovery) {
     await removeStaleRuntime(config);
+    const issue = await helpers; if (issue) throw issue;
     return { running: false, stopping: false };
   }
   const { readControlToken } = await import("./config");
@@ -192,6 +247,7 @@ export async function stopDaemon(config = resolveConfig()): Promise<{ running: b
   if (!token) throw new Error("Daemon control credential is unavailable.");
   const response = await fetch(`${discovery.origin}/control/stop`, { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000) });
   if (!response.ok) throw new Error((await response.text()) || "Unable to stop the daemon.");
+  const issue = await helpers; if (issue) throw issue;
   return { running: true, stopping: true };
 }
 
@@ -228,8 +284,9 @@ export function validateControlResponse(pathname: string, payload: unknown): boo
 const readRoutes = new Set(["/control/updates/check", "/control/document/read", "/control/document/outline", "/control/document/context", "/control/document/diff", "/control/review/thread", "/control/review/threads", "/control/review/event", "/control/review/pending", "/control/review/quote-candidates", "/control/review/operation", "/control/folio/list", "/control/folio/export"]);
 
 /** Authenticated, bounded control client; transport failure never implies rollback. */
-export async function controlRequest<T>(config: TetherConfig, pathname: string, body: Record<string, unknown>, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
-  const discovery = await ensureDaemon({ config });
+export async function controlRequest<T>(config: TetherConfig, pathname: string, body: Record<string, unknown>, options: { signal?: AbortSignal; timeoutMs?: number; start?: boolean } = {}): Promise<T> {
+  const discovery = options.start === false ? await discoverDaemon(config) : await ensureDaemon({ config });
+  if (!discovery) throw new ControlRequestError("daemon_unavailable", "Tether is not running.", 503);
   const { readControlToken } = await import("./config");
   const token = await readControlToken(config);
   if (!token) throw new ControlRequestError("control_unavailable", "Daemon control credential is unavailable.", 503, { outcome: "not_applied" });

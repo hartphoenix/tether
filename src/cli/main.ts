@@ -7,7 +7,7 @@ import { readBoundedInput, writeExport } from "./io";
 import { usageText, commandSpecs, CliUsageError, parseCommand, requiredFlag, optionalFlag, readOptions, focusPreference, positiveInteger, usage } from "./commands";
 import { dirname, resolve } from "node:path";
 import { resolveConfig, type TetherConfig } from "../server/config";
-import { cancelLaunch, controlLaunch, controlRecentsLaunch, controlRequest, ControlRequestError, ensureDaemon, statusDaemon, stopDaemon } from "../server/lifecycle";
+import { cancelLaunch, controlLaunch, controlRecentsLaunch, controlRequest, ControlRequestError, ensureAutomaticDaemon, ensureDaemon, statusDaemon, stopDaemon } from "../server/lifecycle";
 import { createBrowserHost } from "../hosts/browser";
 import { createWaveHost } from "../hosts/wave";
 import { startWaveBridge } from "../hosts/wave-bridge";
@@ -22,6 +22,10 @@ import { backupState, restoreState } from "./backup";
 import { installVerifiedRelease } from "../releases/verified-update";
 import { UpdateService } from "../server/updates";
 import { runtimeRoot } from "../runtime-paths";
+import type { RecoveryView } from "../hosts/recovery";
+import { beginAttempt, readAutomation, disableAutomation } from "../server/automation-state";
+import { runtimeFingerprint } from "../server/startup-assets";
+import { enableStartup, disableStartup, startupStatus } from "./startup";
 
 export type CliDependencies = {
   waveLaunchers?: WaveLauncherOptions;
@@ -122,6 +126,30 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     command = parsed.spec.name;
     if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage, ...(command === "setup" ? { agentSetup: agentSetupGuidance } : {}), reporting: reportingGuidance }), exitCode: 0 };
     const config = dependencies.config ?? resolveConfig();
+    if (command === "startup.status") return { response: success(command, await startupStatus(config)), exitCode: 0 };
+    if (command === "startup.enable") return { response: success(command, await enableStartup(config)), exitCode: 0 };
+    if (command === "startup.disable") return { response: success(command, await disableStartup(config)), exitCode: 0 };
+    if (command === "cmux.attach") {
+      const state = await readAutomation(config);
+      if (!state.enabled || !state.runtime) return { response: success(command, { attached: false, reason: "startup_disabled" }), exitCode: 0 };
+      if (await realpath(runtimeRoot()) !== state.runtime.root || await realpath(process.execPath) !== await realpath(resolve(state.runtime.root, "runtime/bun"))) throw new Error("Automatic attachment must use the enabled packaged runtime.");
+      if (await runtimeFingerprint(state.runtime.root) !== state.runtime.digest) throw new Error("Startup runtime changed; attachment is blocked.");
+      if (!process.env.CMUX_SOCKET_CAPABILITY || !process.env.CMUX_SOCKET_PATH) throw new Error("Attach requires fresh cmux authority.");
+      const attempt = await beginAttempt(config, "bridge", state.runtime);
+      if (!(await statusDaemon(config)).running) {
+        await ensureAutomaticDaemon(config, state.runtime);
+      }
+      await startCmuxBridge(config, process.env, { attempt });
+      return { response: success(command, { attached: true }), exitCode: 0 };
+    }
+    if (command === "resume") {
+      const inspect = parsed.flags.has("--inspect");
+      const host = await launchHost(dependencies, "cmux");
+      if (!host.recoverViews) throw new Error("This host does not support in-place recovery.");
+      const inventory = await controlRequest<{ views: RecoveryView[] }>(config, "/control/recovery/views", {}, { start: !inspect });
+      if (!inspect && !dependencies.host) await startCmuxBridge(config, process.env, cmuxBridgeOptions(host));
+      return { response: success(command, await host.recoverViews(inventory.views, inspect)), exitCode: 0 };
+    }
     const selectedHost = parsed.flags.has("--host") ? hostPreference(optionalFlag(parsed, "--host")!) : ["open", "recent", "recents", "folio", "setup"].includes(command) ? await readHostPreference(config) : "auto";
     if (command === "skills.list") return { response: success(command, { reviews: await listAgentSkillReviews(config) }), exitCode: 0 };
     if (command === "skills.read") return { response: success(command, await readAgentSkillReview(config, parsed.positionals[0]!)), exitCode: 0 };
@@ -133,7 +161,10 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     if (command === "restore") return { response: success(command, await restoreState(requiredFlag(parsed, "--source"), requiredFlag(parsed, "--directory"))), exitCode: 0 };
     if (command === "uninstall") {
       if (!process.env.TETHER_INSTALL_ROOT) throw new Error("This command removes a managed installation, not a source checkout.");
+      await disableAutomation(config);
       if ((await statusDaemon(config)).running) throw new Error("Save your work and quit Tether before uninstalling: tether daemon stop");
+      const startup = await disableStartup(config);
+      if (!startup.unloaded || !startup.stopped || startup.preserved) throw new Error("Startup cleanup is incomplete; installation was preserved.");
       const root = dirname(dirname(runtimeRoot()));
       const installation = JSON.parse(await readFile(resolve(root, "install.json"), "utf8"));
       if (typeof installation.binDirectory !== "string") throw new Error("Missing installation metadata.");
@@ -159,6 +190,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         return { response: success(command, checked), exitCode: 0 };
       }
       if ((await statusDaemon(config)).running) throw new Error("Save your work and quit Tether before updating: tether daemon stop");
+      await disableAutomation(config, true);
       const output = resolve(config.configDir, "..", `backup-before-update-${Date.now()}`);
       const backup = await backupState(config, output);
       completed.push({ step: "backup_created", path: backup.directory });
@@ -249,7 +281,6 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     }
     if (argv[0] === "daemon" && argv[1] === "status") return { response: success(command, await statusDaemon(config)), exitCode: 0 };
     if (argv[0] === "daemon" && argv[1] === "stop") {
-      await stopCmuxBridge(config).catch(() => {});
       return { response: success(command, await stopDaemon(config)), exitCode: 0 };
     }
     if (argv[0] === "cmux" && argv[1] === "status" && argv.length === 2) {

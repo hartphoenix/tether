@@ -71,6 +71,10 @@ if [ -L "$install_root/current" ] && [ "$(readlink "$install_root/current")" != 
   current_root=$(cd "$install_root/current" && pwd -P)
   status=$(TETHER_INSTALL_ROOT="$current_root" "$current_root/runtime/bun" --no-env-file "$current_root/lib/cli.js" daemon status)
   "$candidate/runtime/bun" --no-env-file -e 'const s=JSON.parse(process.argv[1]);if(!s.ok||s.data.running){console.error("Save your work and quit Tether before replacing this installation. Use tether update for backup first.");process.exit(1)}' "$status"
+  if [ -f "$current_root/lib/login.js" ]; then
+    startup_status=$(TETHER_INSTALL_ROOT="$current_root" "$current_root/runtime/bun" --no-env-file "$current_root/lib/cli.js" startup status)
+    "$candidate/runtime/bun" --no-env-file -e 'const s=JSON.parse(process.argv[1]);if(!s.ok||s.data.enabled){console.error("Disable login startup before replacing this installation: tether startup disable");process.exit(1)}' "$startup_status"
+  fi
 fi
 if [ ! -d "$destination" ]; then mv "$candidate" "$destination"; fi
 ln -s "$destination" "$install_root/current.new.$$"

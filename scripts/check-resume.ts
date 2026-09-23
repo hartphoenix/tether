@@ -42,7 +42,7 @@ for (const browser of [chromium, webkit]) {
     check(await page.locator(".ProseMirror").count() === 1, "duplicate editor after retry");
     const readerUrl = page.url();
     const bootstrap = await page.evaluate(async () => (await fetch("api/bootstrap")).json());
-    await page.evaluate(() => scrollTo(0, 1200));
+    await page.evaluate(() => document.querySelector<HTMLElement>(".wm-document-scroll")!.scrollTop = 1200);
     await page.waitForTimeout(300);
     // Pause/resume through BFCache signals without destroying the mounted UI.
     await page.evaluate(() => dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
@@ -81,7 +81,7 @@ for (const browser of [chromium, webkit]) {
     await loaded(restored);
     check((await restored.locator(".ProseMirror").innerText()).includes("my recovered edit"), "draft lost across browser restart");
     check(await restored.locator("#conflict").isVisible(), "conflicting draft was not flagged");
-    check(await restored.evaluate(() => scrollY) > 1000, "reading position lost during initialization");
+    check(await restored.evaluate(() => document.querySelector<HTMLElement>(".wm-document-scroll")!.scrollTop) > 1000, "reading position lost during initialization");
     await wake(restored); // Network failure AFTER mounting/recovering the editor.
     await restored.waitForTimeout(1000);
     check(bootstraps === 1, "post-mount failure reran bootstrap");

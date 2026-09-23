@@ -1,5 +1,7 @@
+import { automationTransaction, ownsAttempt, completeAttempt, type Attempt } from "../server/automation-state";
+import { acquireFileLock } from "../documents/path-lock";
 import { errorDetails } from "../shared/diagnostics";
-import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
@@ -76,24 +78,8 @@ export function fingerprintCmuxSocket(path: string): string {
 }
 
 async function acquireBridgeLock(config: TetherConfig): Promise<{ release: () => Promise<void> } | null> {
-  const path = `${config.cmuxBridgePath}.starting`;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      await mkdir(path, { mode: 0o700 });
-      return { release: () => rmdir(path).catch(() => {}) };
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
-      try {
-        const info = await stat(path);
-        if (Date.now() - info.mtimeMs > 15_000) {
-          await rmdir(path);
-          continue;
-        }
-      } catch { continue; }
-      return null;
-    }
-  }
-  return null;
+  try { return await acquireFileLock(`${config.cmuxBridgePath}.lock`); }
+  catch (cause) { if ((cause as { code?: string }).code === "writer_busy") return null; throw cause; }
 }
 
 function validRecord(value: Partial<CmuxBridgeRecord>): value is CmuxBridgeRecord {
@@ -289,7 +275,7 @@ export async function waitForCmuxBridge(config: TetherConfig, daemonInstanceId: 
 export async function startCmuxBridge(
   config: TetherConfig,
   env = process.env,
-  options: { wait?: boolean; cmuxVersion?: string; cmuxBuild?: number | null; cmuxCommit?: string | null } = {},
+  options: { wait?: boolean; cmuxVersion?: string; cmuxBuild?: number | null; cmuxCommit?: string | null; attempt?: Attempt } = {},
 ): Promise<CmuxBridgeRecord | null> {
   if (!env.CMUX_SOCKET_PATH || !env.CMUX_SOCKET_CAPABILITY) {
     throw new CmuxBridgeError("bridge_bootstrap_unsupported", "cmux bridge requires the signed socket capability from a cmux terminal.");
@@ -302,8 +288,11 @@ export async function startCmuxBridge(
   if (!lock) return options.wait === false ? null : waitForCmuxBridge(config, discovery.instanceId, socketFingerprint);
   try {
     const existing = await readCmuxBridge(config);
-    if (existing?.cmuxSocketFingerprint === socketFingerprint &&
-      await cmuxBridgeHealthy(config, discovery.instanceId, socketFingerprint)) return await readCmuxBridge(config);
+    if (!options.attempt && existing?.cmuxSocketFingerprint === socketFingerprint &&
+      await cmuxBridgeHealthy(config, discovery.instanceId, socketFingerprint)) {
+      if (options.attempt) await completeAttempt(config, options.attempt);
+      return await readCmuxBridge(config);
+    }
     await stopCmuxBridge(config);
     const childEnv: NodeJS.ProcessEnv = {
       PATH: env.PATH,
@@ -325,18 +314,32 @@ export async function startCmuxBridge(
       TETHER_RUNTIME_DIR: config.runtimeDir,
       TETHER_CONFIG_DIR: config.configDir,
       TETHER_INSTALL_ROOT: env.TETHER_INSTALL_ROOT,
+      ...(options.attempt ? { TETHER_AUTOMATION_ATTEMPT: JSON.stringify(options.attempt) } : {}),
     };
     // cmux 0.64.22 signs a capability into each terminal specifically so an
     // inherited child remains authorized after detachment and reparenting.
     // Keep that broad cmux authority only in this narrow bridge's environment.
-    const child = Bun.spawn([process.execPath, "--no-env-file", runtimeEntry("cmux-bridge")], {
+    const spawn = () => Bun.spawn([process.execPath, "--no-env-file", runtimeEntry("cmux-bridge")], {
       env: childEnv,
       detached: true,
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
     });
-    child.unref();
-    return options.wait === false ? null : waitForCmuxBridge(config, discovery.instanceId, socketFingerprint);
+    const child = options.attempt ? await automationTransaction(config, async state => {
+      if (!ownsAttempt(state, options.attempt!)) throw new Error("Automatic attachment was cancelled.");
+      return spawn();
+    }) : spawn();
+    try {
+      // Ownership lasts until readiness; even fire-and-forget callers cannot
+      // abandon a child that might publish after startup exclusion is released.
+      const record = await waitForCmuxBridge(config, discovery.instanceId, socketFingerprint);
+      child.unref();
+      return record;
+    } catch (cause) {
+      if (child.exitCode === null) child.kill("SIGKILL");
+      await child.exited;
+      throw cause;
+    }
   } finally { await lock.release(); }
 }

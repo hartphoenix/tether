@@ -66,7 +66,7 @@ test("failed updater preserves its backup, exit code, and safe bounded subproces
     const {signedRepository}=await import(modulePath("tests/fixtures/signed-repository.ts"));
     const publisher=await signedRepository();
     const release=publisher.root,configDir=join(root,"config");
-    await fs.mkdir(configDir);
+    await fs.mkdir(configDir,{mode:0o700});
     await fs.writeFile(join(publisher.directory,"install.json"),JSON.stringify({binDirectory:join(root,"bin")}));
     await fs.writeFile(join(release,"install.sh"),'echo install-attempt; echo WAVETERM_JWT=fixture-credential >&2; exit 7');
     process.env.TETHER_INSTALL_ROOT=release;

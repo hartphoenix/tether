@@ -1,5 +1,6 @@
 import type { HostCapabilities } from "../shared/contracts";
 import type { RecentEntry } from "../recents/registry";
+import type { RecoveryReport, RecoveryView } from "./recovery";
 
 export type HostTarget = Record<string, string>;
 export type InstallResult = { installed: boolean; message?: string };
@@ -26,4 +27,5 @@ export interface HostAdapter {
   revealFile?(path: string): Promise<void>;
   recentsChanged?(entries: RecentEntry[], target?: HostTarget): Promise<boolean | void>;
   installLaunchers?(): Promise<InstallResult>;
+  recoverViews?(views: RecoveryView[], inspect?: boolean): Promise<RecoveryReport>;
 }

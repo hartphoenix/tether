@@ -9,6 +9,8 @@ import { dirname, extname, join, resolve } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
 import { PrivateStore } from "../storage/private-store";
 import { ViewStore, cookieVerifier, verifiesCookie } from "./view-store";
+import { disableAutomation } from "./automation-state";
+import { stopHostBridges } from "./stop-hosts";
 import { anchorForQuote, quoteCandidates } from "./quote-anchor";
 import { AgentReads } from "../documents/agent-reads";
 import { INPUT_LIMITS, invalidRequest, validateControlInput } from "../shared/control-input";
@@ -59,6 +61,9 @@ export type DaemonOptions = {
   idleMs?: number;
   actor?: string;
   restart?: () => Promise<void>;
+  quit?: () => Promise<void>;
+  background?: boolean;
+  publishStartup?: (publish: () => Promise<void>) => Promise<void>;
   update?: (tag: string) => Promise<void>;
   updates?: Pick<UpdateService, "status" | "install" | "dismiss">;
   persistentViews?: boolean;
@@ -246,6 +251,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const startedAt = now();
   let emptySince = 0;
   let stopped = false;
+  let stopping: Promise<void> | undefined;
+  let initialization: Promise<void> = Promise.resolve();
+  let maintenance: Promise<unknown> = Promise.resolve();
+  let maintenanceRunning = false;
+  let maintenanceEnabled = !options.background;
   let timer: ReturnType<typeof setInterval> | undefined;
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
@@ -440,7 +450,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (body.action !== "restart" && body.action !== "quit") throw invalidRequest("Unknown service action.");
       if (body.action === "restart" && !options.restart) throw invalidRequest("Restart is unavailable in this embedded test service.");
       if (body.action === "restart") await prepareCmuxBridgeRestart(config, instanceId);
-      setTimeout(() => { void (body.action === "restart" ? options.restart!() : daemon.stop()); }, 250);
+      if (body.action === "quit") await disableAutomation(config);
+      setTimeout(() => { void (body.action === "restart" ? options.restart!() : quit()).catch(() => {}); }, 250);
       return { restarting: body.action === "restart", quitting: body.action === "quit" };
     }
     throw invalidRequest("Unknown Folio action.");
@@ -815,6 +826,15 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const expected = await readControlToken(config);
       if (!expected || request.headers.get("authorization") !== `Bearer ${expected}`) return error("forbidden", "Control authorization is required.", 403);
       try {
+        if (pathname === "/control/activate" && request.method === "POST") { maintenanceEnabled = true; return json({ activated: true }); }
+        if (pathname === "/control/recovery/views" && request.method === "POST") {
+          const inventory = [
+            ...[...sessions.values()].map(session => ({ id: session.id, kind: "document", url: `${daemon.origin}${sessionRoutes(session.id).root}` })),
+            ...[...recentsSessions.values()].map(session => ({ id: session.id, kind: "folio", url: `${daemon.origin}/r/${session.id}/?instance=${instanceId}` })),
+          ];
+          if (inventory.length > 500) return error("inventory_too_large", "Too many retained views for one recovery pass.", 409);
+          return json({ views: inventory });
+        }
         if (pathname === "/control/updates/check" && request.method === "POST") return json(await updates.status(true));
         if (pathname === "/control/launch" && request.method === "POST") {
           const body = await requestJson(request);
@@ -824,6 +844,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
             throw invalidRequest("The saved view must belong to this document and remain authorized.");
           }
           const target = hostTarget(body.target);
+          maintenanceEnabled = true;
           const ticket = mintTicket(grant, target, body.resumeId as string | undefined);
           return json({ ...ticket, path: grant.path });
         }
@@ -833,6 +854,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         }
         if (pathname === "/control/recents/launch" && request.method === "POST") {
           const body = await requestJson(request);
+          maintenanceEnabled = true;
           return json(mintRecentsTicket(hostTarget(body.target)));
         }
         if (pathname === "/control/recents/add" && request.method === "POST") {
@@ -942,7 +964,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           return json(result);
         }
         if (pathname === "/control/status" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId, origin: daemon.origin, pid: process.pid, sessions: sessions.size, version: releaseVersion });
-        if (pathname === "/control/stop" && request.method === "POST") { setTimeout(() => { void daemon.stop(); }, 50); return json({ stopping: true }); }
+        if (pathname === "/control/stop" && request.method === "POST") { await disableAutomation(config); setTimeout(() => { void quit().catch(() => {}); }, 50); return json({ stopping: true }); }
       } catch (cause) { return controlError(cause); }
       return error("not_found", "Control endpoint not found.", 404);
     }
@@ -968,6 +990,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   }
 
   const requests = new Set<Promise<Response>>();
+  async function quit(): Promise<void> {
+    if (options.quit) return options.quit();
+    try { await stopHostBridges(config); } finally { await daemon.stop(); }
+  }
   let bunServer: ReturnType<typeof Bun.serve>;
   try { bunServer = Bun.serve({ hostname: LOOPBACK, port: options.port ?? 0, fetch: (request: Request) => {
     if (request.headers.get("host") !== new URL(daemon.origin).host) return error("host_mismatch", "The request must use the Tether listener address.", 403);
@@ -1004,13 +1030,16 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     service,
     ready,
     closed,
-    stop: async () => {
-      if (stopped) return;
+    stop: () => {
+      if (stopping) return stopping;
       stopped = true;
       settleReady(); // Release requests waiting for startup before draining them.
       if (timer) clearInterval(timer);
       timer = undefined;
       for (const close of [...recentsStreamClosers]) close();
+      stopping = (async () => {
+      await initialization;
+      await maintenance.catch(() => {});
       await Promise.allSettled([...requests]);
       for (const session of sessions.values()) service.close(session.grant);
       sessions.clear();
@@ -1025,12 +1054,14 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       await removeDiscovery(config, instanceId);
       settleReady();
       resolveClosed();
+      })();
+      return stopping;
     },
     mintTicket,
     sessions,
   };
 
-  void (async () => {
+  initialization = (async () => {
     try {
       await prepareConfig(config);
       await service.recoverMoves();
@@ -1052,14 +1083,18 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         }
       }
       await ensureControlToken(config);
-      await recents.expire();
+      if (maintenanceEnabled) await recents.expire();
       if (stopped) return;
-      await writeDiscovery(config, { protocol: PROTOCOL_VERSION, instanceId, pid: process.pid, origin: daemon.origin, startedAt: new Date(startedAt).toISOString() });
+      const publish = () => writeDiscovery(config, { protocol: PROTOCOL_VERSION, instanceId, pid: process.pid, origin: daemon.origin, startedAt: new Date(startedAt).toISOString() });
+      if (options.publishStartup) await options.publishStartup(publish); else await publish();
       if (stopped) { await removeDiscovery(config, instanceId); return; }
       let lastExpiry = now();
       timer = setInterval(() => {
         const current = now();
-        if (current - lastExpiry >= 60_000) { lastExpiry = current; void recents.expire().catch(() => {}); }
+        if (maintenanceEnabled && !maintenanceRunning && current - lastExpiry >= 60_000) {
+          lastExpiry = current; maintenanceRunning = true;
+          maintenance = recents.expire().catch(() => {}).finally(() => { maintenanceRunning = false; });
+        }
         for (const session of [...sessions.values()]) {
           for (const [lease, expiry] of session.leases) if (expiry <= current) session.leases.delete(lease);
         }

@@ -15,6 +15,7 @@ await copyFile(process.execPath, join(destination, "runtime/bun"));
 await chmod(join(destination, "runtime/bun"), 0o755);
 const entries = {
   "update-agent-skills": "scripts/update-agent-skills.ts",
+  login: "src/server/login.ts",
   cli: "src/cli/main.ts", public: "src/cli/public.ts", daemon: "src/server/daemon.ts",
   "wave-bridge": "src/hosts/wave-bridge-daemon.ts", "cmux-bridge": "src/hosts/cmux-bridge-daemon.ts",
 };

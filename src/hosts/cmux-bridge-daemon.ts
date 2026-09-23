@@ -5,9 +5,17 @@ import { fingerprintCmuxSocket, removeCmuxBridge, writeCmuxBridge } from "./cmux
 import { prepareConfig, readControlToken, readDiscovery, resolveConfig } from "../server/config";
 import { isAbsolute } from "node:path";
 import type { HostTarget, OpenViewRequest } from "./host-adapter";
+import { automationTransaction, claimAttempt, completeAttempt, readAutomation, ownsAttempt, type Attempt } from "../server/automation-state";
+import { controlRequest } from "../server/lifecycle";
+import type { RecoveryView } from "./recovery";
 
 const config = resolveConfig();
 await prepareConfig(config);
+let automation: Attempt | undefined;
+if (process.env.TETHER_AUTOMATION_ATTEMPT) {
+  automation = await claimAttempt(config, JSON.parse(process.env.TETHER_AUTOMATION_ATTEMPT));
+  delete process.env.TETHER_AUTOMATION_ATTEMPT;
+}
 const [token, currentDiscovery] = await Promise.all([readControlToken(config), readDiscovery(config)]);
 if (!token || !currentDiscovery) throw new Error("cmux bridge credentials or daemon discovery are unavailable.");
 let discovery = currentDiscovery;
@@ -58,6 +66,35 @@ await requireSupportedCmux();
 
 const instanceId = crypto.randomUUID();
 let stopped = false;
+const eventAbort = new AbortController();
+let eventTask: Promise<void> | undefined;
+let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+let recoveryTask: Promise<void> = Promise.resolve();
+const attempted = new Set<string>();
+let recovering = false;
+let recoveryDirty = false;
+function scheduleRecovery(): void {
+  if (stopped || !automation) return;
+  recoveryDirty = true;
+  if (recoveryTimer || recovering) return;
+  recoveryTimer = setTimeout(() => {
+    recoveryTimer = undefined;
+    recovering = true; recoveryDirty = false;
+    recoveryTask = (async () => {
+      if (stopped || !automation || !ownsAttempt(await readAutomation(config), automation)) return;
+      if (!await currentDaemon()) return;
+      const inventory = await controlRequest<{ views: RecoveryView[] }>(config, "/control/recovery/views", {}, { start: false });
+      const views = inventory.views.filter(view => !attempted.has(view.id));
+      const report = await host.recoverViews(views, false, eventAbort.signal);
+      for (const result of report.results) if (result.status === "navigated" && result.viewId) attempted.add(result.viewId);
+    })().finally(() => {
+      recovering = false;
+      if (recoveryDirty && !stopped) scheduleRecovery();
+    });
+    void recoveryTask.catch(() => {});
+  }, 300);
+}
+
 let resolveClosed!: () => void;
 const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
 const authorized = (request: Request) => request.headers.get("authorization") === `Bearer ${token}`;
@@ -163,7 +200,9 @@ async function currentDaemon(): Promise<boolean> {
     if (status.service !== SERVICE_ID || status.protocol !== PROTOCOL_VERSION || status.instanceId !== current.instanceId ||
         status.pid !== current.pid || status.origin !== current.origin) return false;
     discovery = current;
+    attempted.clear();
     await publishRecord();
+    scheduleRecovery();
     return true;
   })();
   try { return await refreshing; }
@@ -239,13 +278,22 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
   return json({ error: { code: "not_found", message: "Not found." } }, 404);
 } });
 
-async function shutdown(): Promise<void> {
+async function shutdown(clean = true): Promise<void> {
   if (stopped) return;
   stopped = true;
+  const deadline = setTimeout(() => process.exit(1), 10_000);
+  deadline.unref();
   clearInterval(timer);
+  clearTimeout(recoveryTimer);
+  eventAbort.abort();
   server.stop(true);
+  await eventTask?.catch(() => {});
+  await recoveryTask.catch(() => {});
+  await Promise.allSettled([...workspaceChains.values()]);
   await publication.catch(() => {});
   await removeCmuxBridge(config, instanceId);
+  if (automation && clean) await completeAttempt(config, automation);
+  clearTimeout(deadline);
   resolveClosed();
 }
 
@@ -262,7 +310,9 @@ const timer = setInterval(async () => {
 const bridgeStartedAt = new Date().toISOString();
 let publication = Promise.resolve();
 function publishRecord(): Promise<void> {
-  const next = publication.catch(() => {}).then(() => stopped ? undefined : writeCmuxBridge(config, {
+  const next = publication.catch(() => {}).then(async () => {
+    if (stopped) return;
+    const publish = () => writeCmuxBridge(config, {
     pid: process.pid,
     origin: `http://127.0.0.1:${server.port}`,
     instanceId,
@@ -272,11 +322,25 @@ function publishRecord(): Promise<void> {
     cmuxCommit,
     cmuxSocketFingerprint,
     startedAt: bridgeStartedAt,
-  }));
+  });
+    if (automation) await automationTransaction(config, async state => {
+      if (!ownsAttempt(state, automation!)) throw new Error("Automatic attachment was cancelled.");
+      await publish();
+    }); else await publish();
+  });
   publication = next;
   return next;
 }
 await publishRecord();
 published = true;
+if (automation) {
+  scheduleRecovery();
+  eventTask = host.watchRecovery(scheduleRecovery, eventAbort.signal);
+  void eventTask.catch(async () => {
+    let hostGone = false;
+    try { await host.probeSocket(); } catch { hostGone = true; }
+    await shutdown(hostGone);
+  });
+}
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => void shutdown());
 await closed;

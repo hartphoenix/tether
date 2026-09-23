@@ -18,7 +18,25 @@ If another process occupies the saved port, the daemon moves to a different one.
 tether open /absolute/path/to/document.md --resume VIEW_ID --host browser
 ```
 
-Take the ID from the reader's `/s/<view-id>/` URL and choose the host you want. The command renews access to that document and view with a new cookie, keeping its draft and the base revision used to check conflicts. It opens a view without rearranging your existing tabs. Once you've recovered the document, close the obsolete tab. You can relaunch Folio normally.
+Take the ID from the reader's `/s/<view-id>/` URL and choose the host you want. The command renews access to that document and view with a new cookie, keeping its draft and the base revision used to check conflicts. It opens a view without rearranging your existing tabs. If the port changes, origin-scoped Folio display preferences may reset; reader drafts and positions remain in Tether's saved view state. Once you've recovered the document, close the obsolete tab. You can relaunch Folio normally.
+
+## Existing cmux panes
+
+From a cmux terminal, `tether resume --inspect` reports eligible panes without starting the service or navigating. `tether resume` starts the service and repairs positively identified Tether error pages in existing panes. It does not create, focus, close, or rearrange panes, reload mounted editors, execute terminal history, or renew browser authorization. Unknown pages, loading pages, duplicate view IDs, and native browser error documents that cmux cannot inspect are skipped. If cookies were lost, explicitly reopen the document as described above.
+
+## Optional login startup
+
+Packaged macOS installations support `tether startup status`, `tether startup enable`, and `tether startup disable`. Installation leaves startup disabled. Stop Tether before enabling it; enabling registers a per-user LaunchAgent and starts the pinned installed runtime. Source checkouts cannot register themselves.
+
+For cmux attachment, source the `hook` path returned by enable from an interactive cmux shell's startup file. Tether does not edit shell files. The hook needs the fresh capability provided by cmux; credentials are never saved. cmux must restore a terminal that executes the hook. Restoring browser panes alone cannot establish that authority.
+
+The login job runs once per login, with no KeepAlive, timer, or automatic crash retry. A persistent attempt marker is created before the application starts. A crash, failed import, missing executable, or interrupted startup leaves it blocked across subsequent logins. Inspect `startup status`, fix the cause, stop remaining processes, then explicitly enable again to reset the block. A clean shutdown permits the next login. Fast user switching leaves each account's processes and private state separate.
+
+`daemon stop`, Quit, and `startup disable` suppress future automatic starts. `daemon restart` transfers the current automatic attempt to its successor. Updates disable automation; re-enable against the new installation after verification. Changing the installed runtime also invalidates another profile's pinned runtime. Background restoration does not activate retention cleanup until an explicit open or activation.
+
+`startup disable` unloads the job, stops Tether and its bridges, and removes an unchanged owned plist; its result reports incomplete cleanup. Uninstall refuses to proceed if that cleanup fails. Save the `disableMarker` and `target` returned by enable: if the CLI itself is broken, create that marker with `/usr/bin/touch /absolute/path/to/startup-disabled`, then run `/bin/launchctl bootout TARGET` using the saved target. The shell guard honors the marker before loading Bun. Do not delete attempt markers to force repeated retries.
+
+Native cmux recovery still needs validation on the host/version in use. Tether restores its saved view state; cmux owns workspace layout and other terminal processes.
 
 ## Private review backup
 
@@ -38,6 +56,7 @@ Restoring the backup brings back comments, replies, resolved history, Folio entr
 - Your ordinary Markdown files and customized agent skill need separate backups.
 - The backup leaves out the list of skills enrolled in automatic updates and any proposed updates awaiting review. Use setup to register a restored skill again. Keep a customized copy for review, since setup won't overwrite it with different instructions.
 - The practice guide's banner image isn't included. Run setup in the restored profile to recreate it.
+- Login startup is not restored; explicitly enable it for the verified installation.
 - Browser cookies stay in the browser. If you lose them, open your documents again to authorize new views.
 
 Choose a new directory for the restore. The command won't overwrite existing state:

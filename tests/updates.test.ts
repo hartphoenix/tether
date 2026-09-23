@@ -120,3 +120,27 @@ test("persists attempts separately from successful checks and surfaces prolonged
   expect(recovered.prolongedFailure).toBe(false);
   expect(recovered.lastSuccess).toBe(recovered.lastAttempt);
 });
+
+test("terminating an update kills its installer group and launches no successor", async () => {
+  const f = await fixture();
+  const executable = join(f.options.root, "mdreview");
+  await writeFile(executable, '#!/bin/sh\nsleep 60 &\nprintf "%s" "$!" > "$0.child"\nwait\n', { mode: 0o700 });
+  const abort = new AbortController();
+  let launches = 0;
+  const update = completeManagedUpdate(f.options.config, f.options.root, "v0.2.0", {
+    signal: abort.signal, launch: async () => { launches++; return {} as never; },
+  });
+  const settled = update.then(() => null, cause => cause as Error);
+  try {
+    for (let n = 0; n < 100 && !await Bun.file(executable + ".child").exists(); n++) await Bun.sleep(20);
+    const pid = Number(await readFile(executable + ".child", "utf8"));
+    abort.abort();
+    expect(await settled).toBeInstanceOf(Error);
+    for (let n = 0; n < 100; n++) {
+      try { process.kill(pid, 0); } catch { break; }
+      await Bun.sleep(20);
+    }
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(launches).toBe(0);
+  } finally { abort.abort(); await settled; }
+}, 5000);
