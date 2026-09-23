@@ -18,13 +18,16 @@
   "dependencies": {
     "@milkdown/crepe": "7.22.1",
     "@milkdown/kit": "7.22.1",
-    "unified": "^11.0.5",
+    "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
-    "remark-gfm": "^4.0.1"
+    "tuf-js": "6.0.0",
+    "unified": "^11.0.5"
   },
   "devDependencies": {
+    "@tufjs/models": "5.0.0",
     "@types/bun": "^1.3.9",
     "@types/jsdom": "^27.0.0",
+    "@types/retry": "0.12.5",
     "jsdom": "^29.1.1",
     "playwright": "1.62.1",
     "typescript": "^5.9.2"

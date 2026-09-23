@@ -1,6 +1,8 @@
 import { chmod, copyFile, cp, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { version } from "../package.json";
+import { version as packageVersion } from "../package.json";
+const version = process.argv[3] ?? packageVersion;
+if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Expected a stable release version.");
 
 if (process.platform !== "darwin") throw new Error("Release builds currently support macOS only.");
 const destination = resolve(process.argv[2] ?? `dist/release/tether-${version}-darwin-${process.arch}`);
@@ -39,6 +41,10 @@ for await (const path of new Bun.Glob("**/{*OFL.txt,LICENSE*}").scan({ cwd: "src
   await copyFile(join("src/web", path), target);
 }
 await copyFile("scripts/install.sh", join(destination, "install.sh"));
+// Explicit directory containing public trust material only. Never infer signing keys.
+if (process.argv[4]) {
+  for (const name of ["update-root.json", "update-trust.json"]) await copyFile(join(resolve(process.argv[4]), name), join(destination, name));
+}
 for (const [name, entry] of [["tether", "public"], ["mdreview", "cli"], ["Open Tether.command", "public"]]) {
   const launcher = `#!/bin/zsh\nset -euo pipefail\nexport TETHER_INSTALL_ROOT="\${0:A:h}"\nexec "$TETHER_INSTALL_ROOT/runtime/bun" "$TETHER_INSTALL_ROOT/lib/${entry}.js" "$@"\n`;
   await writeFile(join(destination, name!), launcher, { mode: 0o755 });

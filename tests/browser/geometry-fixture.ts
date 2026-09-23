@@ -5,7 +5,6 @@ import { $prose } from '@milkdown/kit/utils';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { createAnnotationUi, captureAnchor } from '../../src/web/annotations-ui';
 import { createSelectionUi } from '../../src/web/selection-ui';
-import { blockHandle } from '../../src/web/block-handle';
 import { applyDesign } from '../../src/web/themes';
 import { tetherDesign } from '../../src/shared/themes';
 import { createCanvas } from '../../src/web/canvas';
@@ -29,7 +28,7 @@ const annotations = createAnnotationUi({
   onCreateComment: ({body, anchor}) => annotations.setState({threads: [{id:'test-comment', actor:'human', createdAt:'2026-09-16T00:00:00Z', body, anchor}]}),
 });
 const selection = createSelectionUi({onNotice: message => console.info(message)});
-const crepe = new Crepe({root, defaultValue: markdown, features: {[Crepe.Feature.TopBar]: true}, featureConfigs: {[Crepe.Feature.BlockEdit]: {blockHandle}}});
+const crepe = new Crepe({root, defaultValue: markdown, features: {[Crepe.Feature.TopBar]: true, [Crepe.Feature.BlockEdit]: false}, featureConfigs: {[Crepe.Feature.Placeholder]: {text: "..."}}});
 crepe.editor.use(selection.plugin).use($prose(() => annotations.plugin));
 await crepe.create();
 view = crepe.editor.action(ctx => ctx.get(editorViewCtx));

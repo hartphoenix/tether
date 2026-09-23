@@ -19,6 +19,7 @@ export type DaemonStatus = {
   origin?: string;
   startedAt?: string;
   sessions?: number;
+  version?: string;
   controlIssue?: Record<string, unknown>;
 };
 
@@ -174,7 +175,7 @@ export async function statusDaemon(config = resolveConfig()): Promise<DaemonStat
     const response = await fetch(`${discovery.origin}/control/status`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(500) });
     if (!response.ok) throw new ControlRequestError("control_failed", "Daemon status could not be read.", response.status);
     const payload = await response.json() as Record<string, unknown>;
-    return { running: true, protocol: discovery.protocol, service: SERVICE_ID, instanceId: discovery.instanceId, pid: discovery.pid, origin: discovery.origin, startedAt: discovery.startedAt, sessions: typeof payload.sessions === "number" ? payload.sessions : undefined };
+    return { running: true, protocol: discovery.protocol, service: SERVICE_ID, instanceId: discovery.instanceId, pid: discovery.pid, origin: discovery.origin, startedAt: discovery.startedAt, sessions: typeof payload.sessions === "number" ? payload.sessions : undefined, version: typeof payload.version === "string" ? payload.version : undefined };
   } catch (cause) {
     return { running: true, protocol: discovery.protocol, service: SERVICE_ID, instanceId: discovery.instanceId, pid: discovery.pid, origin: discovery.origin, startedAt: discovery.startedAt, controlIssue: errorDetails(cause) };
   }
@@ -199,6 +200,7 @@ export function validateControlResponse(pathname: string, payload: unknown): boo
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
   const value = payload as Record<string, unknown>;
   if ("error" in value) return false;
+  if (pathname === "/control/updates/check") return typeof value.managed === "boolean" && typeof value.checkFailed === "boolean" && typeof value.installing === "boolean";
   if (pathname.endsWith("/launch")) return typeof value.url === "string" && typeof value.expiresAt === "number" && (pathname !== "/control/launch" || typeof value.path === "string");
   if (pathname === "/control/document/read") return typeof value.path === "string" && typeof value.body === "string" && typeof value.bodyRevision === "string";
   if (pathname === "/control/review/pending") return Array.isArray(value.events) && typeof value.cursor === "string" && typeof value.maxSequence === "number";
@@ -223,7 +225,7 @@ export function validateControlResponse(pathname: string, payload: unknown): boo
   return Object.keys(value).length > 0;
 }
 
-const readRoutes = new Set(["/control/document/read", "/control/document/outline", "/control/document/context", "/control/document/diff", "/control/review/thread", "/control/review/threads", "/control/review/event", "/control/review/pending", "/control/review/quote-candidates", "/control/review/operation", "/control/folio/list", "/control/folio/export"]);
+const readRoutes = new Set(["/control/updates/check", "/control/document/read", "/control/document/outline", "/control/document/context", "/control/document/diff", "/control/review/thread", "/control/review/threads", "/control/review/event", "/control/review/pending", "/control/review/quote-candidates", "/control/review/operation", "/control/folio/list", "/control/folio/export"]);
 
 /** Authenticated, bounded control client; transport failure never implies rollback. */
 export async function controlRequest<T>(config: TetherConfig, pathname: string, body: Record<string, unknown>, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
@@ -279,8 +281,8 @@ export async function controlRequest<T>(config: TetherConfig, pathname: string, 
   return payload as T;
 }
 
-export async function controlLaunch(config: TetherConfig, path: string, target?: HostTarget): Promise<{ url: string; expiresAt: number; path: string }> {
-  return controlRequest(config, "/control/launch", { path, ...(target ? { target } : {}) });
+export async function controlLaunch(config: TetherConfig, path: string, target?: HostTarget, resumeId?: string): Promise<{ url: string; expiresAt: number; path: string }> {
+  return controlRequest(config, "/control/launch", { path, ...(target ? { target } : {}), ...(resumeId ? { resumeId } : {}) });
 }
 
 export async function controlRecentsLaunch(config: TetherConfig, target?: HostTarget): Promise<{ url: string; expiresAt: number }> {

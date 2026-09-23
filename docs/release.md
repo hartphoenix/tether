@@ -21,13 +21,13 @@ The package includes the Bun runtime, bundled CLI/daemon/host bridges, browser a
 
 ## Installer
 
-After release assets are published, the intended one-line entry point is:
+First installation currently requires an archive and independently authenticated digest, supplied explicitly:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hartphoenix/tether/main/scripts/install.sh | bash
+bash scripts/install.sh --archive /absolute/path/to/tether-darwin-arm64.tar.gz --sha256 <authenticated-hash> --no-open
 ```
 
-For a pinned release, pass `--version vX.Y.Z` to the script. For local candidate testing, use `bash scripts/install.sh --archive /absolute/path/to/tether-darwin-arm64.tar.gz --sha256 <sidecar-hash> --no-open`. Replace the architecture and hash with those of the candidate. The installer verifies SHA-256 before extraction and rejects archive links, special files, and parent/absolute paths. A checksum detects corruption; it does not replace release signing.
+The installer checks the supplied archive before installing. Public installation is still under validation.
 
 Default locations are `~/.local/share/tether` for versioned releases and `~/.local/bin` for commands. `TETHER_INSTALL_DIR` and `TETHER_BIN_DIR` accept absolute alternatives. The installer preserves unrelated commands and shell profiles, prints a PATH instruction when needed, and invokes setup through its absolute path. It retains temporary download evidence and older release directories for recovery.
 
@@ -37,9 +37,11 @@ For agent use, run `tether setup --agent-directory /absolute/path/to/skills --no
 
 ## Update and uninstall
 
-Managed installations check for a newer stable GitHub release when Folio opens and at most once every six hours while it remains open. Checks send no document data and stay quiet offline. Only releases with the matching Mac architecture's archive and checksum are offered. Source checkouts do not check for managed updates.
+Managed installations offer update notices in readers and Folio. Use **Check for updates** or `tether update --check` to check explicitly. Source checkouts update through Git.
 
-Folio shows a brief bottom alert with **Install**, **Release Notes**, and **Dismiss**. Dismissal is stored per profile and version, so the next version appears again. Install immediately starts the update: drain in-flight requests, stop the service, back up private state, run the pinned release installer, and launch the selected runtime on the saved listener. Existing scoped views reconnect. Folio reloads after successful installation; open readers retain their page and drafts. If installation fails before switching, the old runtime restarts and Folio offers another attempt. A failed new-runtime startup never triggers an automatic database downgrade; run `tether doctor` if reconnection stalls.
+Updates preserve a private-state backup and restart the selected runtime. Save work before quitting a host. Reader pages reconnect without being automatically reloaded; Folio reloads after a successful update. Run `tether doctor` if reconnection stalls.
+
+Packaged update and recovery workflows have isolated tests; native browser/host acceptance remains a separate gate.
 
 For a terminal update, save edits and quit Tether first. A normal service restart uses the current executable; it is not a software update.
 

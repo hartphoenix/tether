@@ -2,7 +2,7 @@
 
 ## Protect human attention
 
-Complete the requested outcome with the least total demand on my attention. Infer a concrete finish line from my request and stop after verifying it. Handle routine decisions and verification yourself. Surface additional work only when evidence shows it blocks this outcome or presents a material risk. Omit optional improvements, speculative concerns, and follow-up suggestions; don’t create todos for them. Report the result, verification, and any decision only I can make, in at most five sentences.
+Complete the requested outcome with the least total demand on my attention. Infer a concrete finish line from my request and stop after verifying it. Handle routine decisions and verification yourself. Surface additional work only when evidence shows it blocks this outcome or presents a material risk. Omit optional improvements, speculative concerns, and follow-up suggestions; don’t create todos for them. Report the result, verification, and any decision only I can make, in at most five sentences. Anytime you write reports, plans, or documentation for me to read, keep them as brief as possible.
 
 ## Cold start
 
@@ -12,12 +12,12 @@ Tether owns its Markdown viewer, review service, and recent-document registry. W
 
 ## Architecture invariants
 
-- Run one daemon per OS user and profile. Multiple documents and multiple views of one document share that daemon and its per-real-path mutation queue.
-- Keep the document model, review model, daemon API, and web client host-neutral. Wave, cmux, and later environments belong behind capability-reporting adapters.
-- An explicit path-scoped operation grants file access. Recents is a convenience index and never grants read or write authority.
-- Keep Markdown-body and private-conversation revisions independent. Store annotations in private SQLite; opening/commenting must not alter Markdown bytes. Use conflict-checked, atomic body saves.
-- Treat browser leases and release events as presence signals only. Missed heartbeats, suspended webviews, reloads, and laptop sleep must not revoke a document-scoped session.
-- Report unsupported host capabilities explicitly. Do not silently substitute a system-browser action for a requested embedded-host action.
+* Run one daemon per OS user and profile. Multiple documents and multiple views of one document share that daemon and its per-real-path mutation queue.
+* Keep the document model, review model, daemon API, and web client host-neutral. Wave, cmux, and later environments belong behind capability-reporting adapters.
+* An explicit path-scoped operation grants file access. Recents is a convenience index and never grants read or write authority.
+* Keep Markdown-body and private-conversation revisions independent. Store annotations in private SQLite; opening/commenting must not alter Markdown bytes. Use conflict-checked, atomic body saves.
+* Treat browser leases and release events as presence signals only. Missed heartbeats, suspended webviews, reloads, and laptop sleep must not revoke a document-scoped session.
+* Report unsupported host capabilities explicitly. Do not silently substitute a system-browser action for a requested embedded-host action.
 
 ## Review workflow
 
@@ -31,11 +31,11 @@ Use actor `assistant`. Start with compact state and escalate only as needed:
 
 Resolution is the user's attention state, not the assistant's work queue:
 
-- Resolve a thread only when it requires no further reading or action from the user.
-- Leave a thread open when the user still needs to read a response, answer a question, make a decision, or perform an action. In particular, answering a user's question does not by itself resolve the thread.
-- A completed instruction may be resolved when its result needs no further user attention.
-- Acknowledgement means the assistant has seen events; it is independent of resolution.
-- `orphaned` means the thread's document location was lost. It is independent of open/resolved state, and orphaned threads remain replyable.
+* Resolve a thread only when it requires no further reading or action from the user.
+* Leave a thread open when the user still needs to read a response, answer a question, make a decision, or perform an action. In particular, answering a user's question does not by itself resolve the thread.
+* A completed instruction may be resolved when its result needs no further user attention.
+* Acknowledgement means the assistant has seen events; it is independent of resolution.
+* `orphaned` means the thread's document location was lost. It is independent of open/resolved state, and orphaned threads remain replyable.
 
 Use revision-safe CLI operations documented in [README.md](README.md). Annotation mutations require an operation ID: retry with the same ID and identical input, or inspect `operation <file> --operation-id <id>`. A missing receipt does not prove nonapplication. Consumer identity belongs to pending/acknowledge; it defaults to the actor. Do not edit private SQLite state directly.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { diagnosticText, diagnosticOutput, errorDetails, operationError } from "../shared/diagnostics";
+import { diagnosticText, errorDetails, operationError } from "../shared/diagnostics";
 import { commandResult } from "./results";
 import { realpath, readFile, readlink, unlink, rename } from "node:fs/promises";
 import { readBoundedInput, writeExport } from "./io";
@@ -18,6 +18,8 @@ import { RecentsRegistry } from "../recents/registry";
 import { installWaveLaunchers, uninstallWaveLaunchers, waveLauncherStatus } from "../hosts/wave-launchers";
 import { hostPreference, readHostPreference, saveHostPreference, seedWelcome, installAgentSkill, type HostPreference } from "./setup";
 import { backupState, restoreState } from "./backup";
+import { installVerifiedRelease } from "../releases/verified-update";
+import { UpdateService } from "../server/updates";
 import { runtimeRoot } from "../runtime-paths";
 
 export type CliDependencies = {
@@ -141,16 +143,18 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     }
     if (command === "update") {
       if (!process.env.TETHER_INSTALL_ROOT) throw new Error("Source checkouts update through Git. Use the release installer for a managed installation.");
+      if (parsed.flags.has("--check")) {
+        const checked = (await statusDaemon(config)).running
+          ? await controlRequest(config, "/control/updates/check", {}, { timeoutMs: 60_000 })
+          : await new UpdateService({ config, root: runtimeRoot() }).status(true);
+        return { response: success(command, checked), exitCode: 0 };
+      }
       if ((await statusDaemon(config)).running) throw new Error("Save your work and quit Tether before updating: tether daemon stop");
       const output = resolve(config.configDir, "..", `backup-before-update-${Date.now()}`);
       const backup = await backupState(config, output);
       completed.push({ step: "backup_created", path: backup.directory });
       const version = optionalFlag(parsed, "--version");
-      const root = dirname(dirname(runtimeRoot()));
-      const installation = JSON.parse(await readFile(resolve(root, "install.json"), "utf8"));
-      const child = Bun.spawn(["/bin/bash", resolve(runtimeRoot(), "install.sh"), "--no-open", ...(version ? ["--version", version] : [])], { stdout: "pipe", stderr: "pipe", env: { ...process.env, TETHER_INSTALL_DIR: root, TETHER_BIN_DIR: installation.binDirectory } });
-      const [exitCode, log, stderr] = await Promise.all([child.exited, diagnosticOutput(child.stdout), diagnosticOutput(child.stderr)]);
-      if (exitCode !== 0) throw Object.assign(new Error(`Update failed; backup retained at ${backup.directory}. ${diagnosticText(log)}`), { code: "update_failed", exitCode, details: { outcome: "outcome_unknown", stage: "installer", stdout: log, stderr } });
+      const log = await installVerifiedRelease(runtimeRoot(), config, version);
       return { response: success(command, { backup, message: log, next: "Run tether to start the updated release." }), exitCode: 0 };
     }
     if (command === "doctor") {
@@ -193,7 +197,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const canonicalPath = await realpath(resolve(path));
       const host = await launchHost(dependencies, selectedHost);
       const target = host.launchTarget?.();
-      const launch = await controlLaunch(config, canonicalPath, target);
+      const launch = await controlLaunch(config, canonicalPath, target, optionalFlag(parsed, "--resume"));
       completed.push({ step: "registered", path: canonicalPath });
       if (host.id === "wave" && !dependencies.host) {
         try { await startWaveBridge(config, process.env, { wait: false }); }

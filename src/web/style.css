@@ -227,3 +227,19 @@ body {
     max-height: 100vh;
   }
 }
+
+#update-notice:not([hidden]) {
+  position: fixed;
+  z-index: 100;
+  bottom: 12px;
+  inset-inline: 12px;
+  width: fit-content;
+  max-width: calc(100% - 48px);
+  padding: 8px 12px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: var(--wm-page-background, #17191c);
+  color: var(--wm-page-color, #e7e9ec);
+  font: 13px/1.5 system-ui, sans-serif;
+}
+#update-notice button, #update-notice a { color: inherit; }

@@ -1,6 +1,6 @@
 # Private review storage and Tether Folio
 
-Tether now keeps Markdown and review data separate. New review operations do not add annotation data to Markdown. Comments, replies, acknowledgement cursors, Folio state, and reader recovery state live in one private SQLite database.
+Tether keeps Markdown files and their annotation data separate. New review operations do not add annotation data to Markdown. Comments, replies, acknowledgement cursors, Folio state, and reader recovery state live in one private SQLite database.
 
 ## Identity and storage
 
@@ -18,7 +18,7 @@ There is no automatic migration for old embedded annotation ledgers. Old ledgers
 
 ## Folio
 
-Folio is a 
+Folio is a
 
 Double-click `Open Tether.command` in the checkout, or open Folio with:
 

@@ -39,7 +39,7 @@ function commandEnvironment(source: NodeJS.ProcessEnv, target?: HostTarget): Nod
 }
 
 async function runWaveCommand(command: string[], env: NodeJS.ProcessEnv): Promise<WaveCommandResult> {
-  const child = Bun.spawn(command, { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn(command, { env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 1500 });
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
     child.stdout ? new Response(child.stdout).text() : "",
@@ -101,6 +101,13 @@ export class WaveHostAdapter implements HostAdapter {
       fileNavigatorHook: false,
       revealFile: true,
     };
+  }
+
+  async probeConnection(): Promise<void> {
+    if (!await this.detect() || !isSupportedWaveVersion(this.version)) throw new Error("Wave is unavailable or unsupported. Open Tether from a supported Wave terminal.");
+    const result = await this.run([this.wshPath, "blocks", "list", "--json"], commandEnvironment(this.env));
+    if (result.exitCode !== 0) throw new Error("Wave connection unavailable. If Wave is open, relaunch Tether from a Wave terminal to renew access.");
+    if (!Array.isArray(JSON.parse(result.stdout))) throw new Error("Wave returned an invalid block list.");
   }
 
   launchTarget(): HostTarget | undefined {

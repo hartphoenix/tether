@@ -6,6 +6,16 @@ Open a Markdown file, highlight a passage, and leave a comment. Ask your coding 
 
 Tether currently targets macOS. Use it in Wave, cmux, or your browser, with one shared Folio and conversation store. Linux and Windows contributions are welcome; those platforms are not yet validated.
 
+## Bounded agent work and recovery
+
+Register a finished artifact with `TETHER_PROFILE=preview ./mdreview recents add /absolute/path/file.md`; its receipt is sufficient. For review, start with `pending <file> --actor assistant`, fetch relevant `thread <file> <thread-id>` results, then use `document context <file> <thread-id> --max-bytes 4096` only when local text is needed. Independent thread reads may run together; retain warnings, continuations, conflict information, and complete mutation receipts. `document diff <file> --from-revision <revision> --max-bytes 4096` returns an explicit unavailable result and bounded outline when its base is absent. A full `document read` is an explicit escalation. Acknowledge the original fully reviewed cursor after handling its threads.
+
+If an occupied saved port moves the daemon, an old reader cannot discover the new address. Run `./mdreview open /absolute/path/file.md --resume <view-id> --host browser` (or the intended supported host), using the ID from that reader's `/s/<view-id>/` URL. This explicitly reauthorizes the same document/view, rotates its cookie, and preserves its draft and conflict base. It opens a new host view; it does not rearrange existing tabs. Close the obsolete view after recovery. Folio can be relaunched normally.
+
+Wave callbacks no longer expire after five idle minutes. A retained bridge probes host readiness; an authenticated new Wave launcher can replace an obsolete credential only after proving fresh access. Temporary host absence preserves the bridge. Native Wave quit/reopen credential continuity remains unverified; relaunch from a Wave terminal when renewed access is required.
+
+Managed releases support `tether update --check` and update notices in both readers and Folio. See [[docs/release.md|release and recovery]] for supported installation and recovery procedures.
+
 ## Start using Tether
 
 Tether is preparing its first packaged release. Until release assets are published, run from a checkout with Bun installed:
@@ -67,6 +77,10 @@ TETHER_PROFILE=preview ./mdreview daemon status
 TETHER_PROFILE=preview ./mdreview daemon stop
 ```
 
+Reader and Folio cookies persist across host restarts and renew during use. When the host restores its tabs, Tether resumes their saved URLs, reader drafts, conflict state, and reading positions; it does not reopen historical conversations. Failed reader initialization and disconnected loaded pages retry automatically. Agent document registration continues while host views are closed.
+
+This recovery requires the detached service to remain available at its saved address and the host to retain its browser cookies. Reboot, cleared browser storage, explicitly quitting Tether, or terminating its host bridge still requires launching Tether again. A webview that fails navigation before Tether's page loads cannot run its retry code. After upgrading from session-only cookies, existing views must contact the updated service once before the host quits.
+
 ## Wave installation
 
 Tether requires Wave `0.14.5` or later; newer versions keep hidden navigation and widget support. Host compatibility uses minimum versions, not exact release, build, or commit matches.
@@ -106,7 +120,7 @@ Errors retain a stable `error.code` and a readable message; `error.details.diagn
 
 ## cmux integration
 
-Tether accepts cmux `0.64.22` and later, preserving socket authorization and validating operation responses rather than pinning a build or commit. If cmux changes while Tether is running, relaunch Tether from a cmux terminal to refresh its callback bridge. From a cmux terminal, opening a document creates or reuses one Tether review pane beside the invoking surface; later documents become tabs in that pane:
+Tether accepts cmux `0.64.22` and later, preserving socket authorization and validating operation responses rather than pinning a build or commit. Its callback bridge retains its in-memory capability across host downtime, accepts compatible cmux updates, and reconnects to an authenticated replacement Tether daemon. From a cmux terminal, opening a document creates or reuses one Tether review pane beside the invoking surface; later documents become tabs in that pane:
 
 ```sh
 TETHER_PROFILE=preview ./mdreview open /absolute/path/to/document.md

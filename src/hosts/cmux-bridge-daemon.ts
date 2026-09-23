@@ -19,9 +19,9 @@ if (!process.env.CMUX_SOCKET_PATH || process.env.TETHER_CMUX_SOCKET_FINGERPRINT 
 }
 const cmuxSocketFingerprint = process.env.TETHER_CMUX_SOCKET_FINGERPRINT;
 
-const cmuxVersion = process.env.TETHER_CMUX_VERSION ?? "";
-const cmuxBuild = process.env.TETHER_CMUX_BUILD ? Number(process.env.TETHER_CMUX_BUILD) : null;
-const cmuxCommit = process.env.TETHER_CMUX_COMMIT || null;
+let cmuxVersion = process.env.TETHER_CMUX_VERSION ?? "";
+let cmuxBuild = process.env.TETHER_CMUX_BUILD ? Number(process.env.TETHER_CMUX_BUILD) : null;
+let cmuxCommit = process.env.TETHER_CMUX_COMMIT || null;
 if (!isSupportedCmuxVersion(cmuxVersion)) throw new Error("Unsupported cmux bridge version.");
 class BridgeServiceError extends Error {
   constructor(readonly code: string, message: string, readonly status: number) {
@@ -30,18 +30,23 @@ class BridgeServiceError extends Error {
 }
 
 const host = createCmuxHost();
+let hostCheck: Promise<void> | undefined;
+let published = false;
 async function requireSupportedCmux(): Promise<void> {
-  const detected = await host.detect();
-  if (!detected || !isSupportedCmuxVersion(host.detectedVersion())) {
-    const actual = `${host.detectedVersion() ?? "unknown"} build ${host.detectedBuild() ?? "unknown"} commit ${host.detectedCommit() ?? "unknown"}`;
-    throw new BridgeBuildError(
-      `Tether callbacks require cmux ${MINIMUM_CMUX_VERSION} or later; detected ${actual}.`,
-    );
-  }
-  if (host.detectedVersion() !== cmuxVersion || host.detectedBuild() !== cmuxBuild || host.detectedCommit() !== cmuxCommit) {
-    throw new BridgeServiceError("bridge_relaunch_required", "cmux changed; relaunch Tether from a cmux terminal.", 503);
-  }
-  await host.probeSocket();
+  if (hostCheck) return hostCheck;
+  hostCheck = (async () => {
+    const detected = await host.detect();
+    if (!detected || !isSupportedCmuxVersion(host.detectedVersion())) {
+      throw new BridgeBuildError(`Tether callbacks require cmux ${MINIMUM_CMUX_VERSION} or later; detected ${host.detectedVersion() ?? "unknown"}.`);
+    }
+    await host.probeSocket();
+    const changed = cmuxVersion !== host.detectedVersion() || cmuxBuild !== host.detectedBuild() || cmuxCommit !== host.detectedCommit();
+    cmuxVersion = host.detectedVersion()!;
+    cmuxBuild = host.detectedBuild();
+    cmuxCommit = host.detectedCommit();
+    if (changed && published) await publishRecord();
+  })();
+  try { await hostCheck; } finally { hostCheck = undefined; }
 }
 
 class BridgeBuildError extends Error {
@@ -141,16 +146,15 @@ function issue(cause: unknown): { code: string; message: string; status: number;
   };
 }
 
-let restartUntil = 0;
 let refreshing: Promise<boolean> | undefined;
 async function currentDaemon(): Promise<boolean> {
   if (refreshing) return refreshing;
   refreshing = (async () => {
     const current = await readDiscovery(config);
     if (current?.instanceId === discovery.instanceId && current.origin === discovery.origin) return true;
-    if (!current || Date.now() >= restartUntil) return false;
-    // A controlled restart may renew the binding once. Verify the successor
-    // through the profile's authenticated control API before trusting its URL.
+    if (!current) return false;
+    // Verify a successor through the same profile's authenticated control API.
+    // Keep the in-memory host capability while the service is unavailable.
     const response = await fetch(`${current.origin}/control/status`, {
       headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000),
     });
@@ -158,10 +162,8 @@ async function currentDaemon(): Promise<boolean> {
     const status = await response.json() as Record<string, unknown>;
     if (status.service !== SERVICE_ID || status.protocol !== PROTOCOL_VERSION || status.instanceId !== current.instanceId ||
         status.pid !== current.pid || status.origin !== current.origin) return false;
-    await requireSupportedCmux();
-    await publishRecord(current.instanceId);
     discovery = current;
-    restartUntil = 0;
+    await publishRecord();
     return true;
   })();
   try { return await refreshing; }
@@ -197,7 +199,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
     if (body?.daemonInstanceId !== discovery.instanceId || !await currentDaemon()) {
       return json({ error: { code: "bridge_relaunch_required", message: "The Tether daemon instance changed." } }, 409);
     }
-    restartUntil = Date.now() + 30_000;
+    // Compatibility with older daemons: rebinding no longer has a deadline.
     return json({ prepared: true });
   }
   if (request.method === "POST" && url.pathname === "/stop") {
@@ -242,6 +244,7 @@ async function shutdown(): Promise<void> {
   stopped = true;
   clearInterval(timer);
   server.stop(true);
+  await publication.catch(() => {});
   await removeCmuxBridge(config, instanceId);
   resolveClosed();
 }
@@ -251,24 +254,29 @@ const timer = setInterval(async () => {
   if (checkingDaemon || stopped) return;
   checkingDaemon = true;
   try {
-    if (!await currentDaemon() && Date.now() >= restartUntil) await shutdown();
-  } catch { if (Date.now() >= restartUntil) await shutdown(); }
+    await currentDaemon();
+  } catch { /* Retry later; host quit, sleep, and service gaps retain authority. */ }
   finally { checkingDaemon = false; }
 }, 10_000);
 
-async function publishRecord(daemonInstanceId: string): Promise<void> {
-  await writeCmuxBridge(config, {
+const bridgeStartedAt = new Date().toISOString();
+let publication = Promise.resolve();
+function publishRecord(): Promise<void> {
+  const next = publication.catch(() => {}).then(() => stopped ? undefined : writeCmuxBridge(config, {
     pid: process.pid,
     origin: `http://127.0.0.1:${server.port}`,
     instanceId,
-    daemonInstanceId,
+    daemonInstanceId: discovery.instanceId,
     cmuxVersion,
     cmuxBuild,
     cmuxCommit,
     cmuxSocketFingerprint,
-    startedAt: new Date().toISOString(),
-  });
+    startedAt: bridgeStartedAt,
+  }));
+  publication = next;
+  return next;
 }
-await publishRecord(discovery.instanceId);
+await publishRecord();
+published = true;
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => void shutdown());
 await closed;

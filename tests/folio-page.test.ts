@@ -12,11 +12,13 @@ function runPage(snapshot: Record<string, unknown>, savedView?: string) {
   const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
   class FakeEventSource {
     static instance: FakeEventSource;
+    closed = false;
     listeners = new Map<string, (event: { data: string }) => void>();
     constructor() { FakeEventSource.instance = this; }
     addEventListener(name: string, listener: (event: { data: string }) => void) { this.listeners.set(name, listener); }
     emit(value: Record<string, unknown>) { this.listeners.get("snapshot")?.({ data: JSON.stringify(value) }); }
     onerror: (() => void) | null = null;
+    close() { this.closed = true; }
   }
   Object.defineProperty(dom.window, "EventSource", { value: FakeEventSource });
   Object.defineProperty(dom.window, "setInterval", { value: () => 0 });
@@ -41,6 +43,35 @@ function runPage(snapshot: Record<string, unknown>, savedView?: string) {
   dom.window.eval(script);
   return { dom, html, requests, events: () => FakeEventSource.instance };
 }
+
+test("Folio retains the original recovery dialog if refreshing after an action failure disconnects", async () => {
+  const file = { path: "/notes.md", name: "Notes", view: "active", hasConversation: true };
+  const { dom } = runPage({ sequence: 1, files: [file] });
+  await Bun.sleep(0);
+  Object.defineProperty(dom.window, "fetch", { value: async (input: string) => {
+    if (String(input).endsWith("snapshot")) throw new Error("offline");
+    return Response.json({ error: { code: "conversation_present", message: "This file now has a conversation." } }, { status: 409 });
+  } });
+  dom.window.document.querySelector<HTMLButtonElement>(".file")!.click();
+  await Bun.sleep(0);
+  expect(dom.window.document.querySelector("#recovery-message")?.textContent).toBe("This file now has a conversation.");
+  expect(dom.window.document.querySelector("#recovery-dialog")?.classList.contains("open")).toBe(true);
+  dom.window.close();
+});
+
+test("Folio stops its stream and disables actions on a lease-only authorization failure", async () => {
+  const snapshot = { sequence: 1, files: [] };
+  const { dom, events } = runPage(snapshot);
+  await Bun.sleep(0);
+  Object.defineProperty(dom.window, "fetch", { value: async (input: string) =>
+    String(input).endsWith("lease") ? new Response(null, { status: 401 }) : Response.json(snapshot) });
+  events().onerror?.();
+  await Bun.sleep(0);
+  expect(events().closed).toBe(true);
+  expect(dom.window.document.querySelector("#freshness")?.textContent).toContain("no longer has access");
+  expect(dom.window.document.querySelector<HTMLButtonElement>("#add")!.disabled).toBe(true);
+  dom.window.close();
+});
 
 test("renders Folio Active and Archive views with organization controls", async () => {
   const files = [
