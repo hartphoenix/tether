@@ -4,6 +4,7 @@ import { preferencesFrom, updatePreferences } from "../shared/themes";
 import { runtimeRoot } from "../runtime-paths";
 import { seedWelcome } from "../onboarding";
 import { UpdateService } from "./updates";
+import { listAgentSkillReviews, readAgentSkillReview, decideAgentSkillReview } from "../cli/agent-skills";
 import { dirname, extname, join, resolve } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
 import { PrivateStore } from "../storage/private-store";
@@ -446,6 +447,16 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   }
 
   async function updateRequest(request: Request, suffix: string): Promise<Response | undefined> {
+      if (request.method === "GET" && suffix === "/api/updates/skills") return json(await listAgentSkillReviews(config), { headers: { "cache-control": "no-store" } });
+      if (request.method === "POST" && ["/api/updates/skills/read", "/api/updates/skills/decide"].includes(suffix)) {
+        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
+        try {
+          const body = await requestJson(request);
+          if (suffix.endsWith("/read")) return json(await readAgentSkillReview(config, body.id), { headers: { "cache-control": "no-store" } });
+          await decideAgentSkillReview(config, body);
+          return json({ ok: true });
+        } catch (cause) { return codedError(cause, "skill_review_failed", 409); }
+      }
       if (request.method === "GET" && suffix === "/api/updates") return json(await updates.status(), { headers: { "cache-control": "no-store" } });
       if (request.method === "POST" && ["/api/updates/install", "/api/updates/dismiss", "/api/updates/check"].includes(suffix)) {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
@@ -940,6 +951,12 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (session instanceof Response) return session;
       const sessionRoot = sessionRoutes(session.id).root;
       const suffix = pathname.slice(sessionRoot.length - 1);
+      // Bundled documentation artwork only; this grants no arbitrary file access.
+      if (request.method === "GET" && /^\/(?:docs\/)?assets\/tether-banner(?:-tagline)?\.png$/.test(suffix)) {
+        return new Response(await readFile(resolve(runtimeRoot(), "docs/assets", suffix.split("/").at(-1)!)), {
+          headers: { "content-type": "image/png", "cache-control": "public, max-age=3600", "x-content-type-options": "nosniff" },
+        });
+      }
       const updateResponse = await updateRequest(request, suffix);
       if (updateResponse) return updateResponse;
       if (suffix.startsWith("/api/")) return sessionApi(request, session, pathname);

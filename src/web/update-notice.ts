@@ -1,12 +1,120 @@
+import type { AgentSkillReview } from "../cli/agent-skills";
+
 /** Serialized into the standalone Folio page; keep this function self-contained. */
-export function mountUpdateNotice(element: HTMLElement, api: string, reportError?: (message: string) => void, beforeInstall?: () => Promise<void>, reload = true): void {
+export function mountUpdateNotice(element: HTMLElement, api: string, reportError?: (message: string) => void, beforeInstall?: () => Promise<void>, reload = true, menuCheck?: HTMLButtonElement, packageButton?: HTMLButtonElement): void {
+  let popupOpen = false;
+  const closePopup = () => {
+    popupOpen = false;
+    packageButton?.setAttribute("aria-expanded", "false");
+    if (element.hasAttribute("data-update-popover")) element.hidden = true;
+  };
+  if (packageButton) {
+    packageButton.onclick = () => {
+      popupOpen = !popupOpen; element.hidden = !popupOpen;
+      packageButton.setAttribute("aria-expanded", String(popupOpen));
+    };
+    document.addEventListener("pointerdown", event => {
+      if (event.target instanceof Node && !element.contains(event.target) && !packageButton.contains(event.target)) closePopup();
+    });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && popupOpen) { closePopup(); packageButton.focus(); }
+    });
+  }
   let pending = false;
   let installing = false;
   let started = 0;
+  let reviewDialog: HTMLDialogElement | undefined;
+  let finishReview: (() => void) | undefined;
   const message = (text: string) => { element.hidden = false; element.textContent = text; };
   const post = async (action: string, tag: string) => {
     const response = await fetch(`${api}/updates/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tag }) });
     if (!response.ok) throw new Error("Update action failed");
+  };
+  const skillRequest = async (action: string, body?: unknown) => {
+    const response = await fetch(`${api}/updates/skills${action}`, { cache: "no-store", ...(body === undefined ? {} : {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error?.message ?? "Could not review agent instructions. Try again.");
+    return result;
+  };
+  const openReviews = async () => {
+    if (reviewDialog) { reviewDialog.focus(); return; }
+    const dialog = document.createElement("dialog");
+    reviewDialog = dialog;
+    dialog.setAttribute("aria-label", "Review agent instructions");
+    dialog.className = "tether-skill-review";
+    const style = document.createElement("style");
+    style.textContent = `
+      .tether-skill-review{--review-bg:var(--wm-page-background,var(--bg,Canvas));--review-text:var(--wm-page-color,var(--text,CanvasText));--review-panel:var(--wm-color-surface,var(--panel,Canvas));--review-line:var(--wm-color-outline,var(--line,GrayText));--review-accent:var(--wm-color-primary,var(--accent,Highlight));width:min(880px,90vw);max-height:85vh;overflow:auto;box-sizing:border-box;border:1px solid var(--review-line);border-radius:12px;padding:24px;background:var(--review-bg);color:var(--review-text);font:inherit;font-family:var(--wm-font-body,inherit);font-size:14px;line-height:1.5;box-shadow:0 16px 48px #0004}
+      .tether-skill-review::backdrop{background:#0005}
+      .tether-skill-review h2{font-family:var(--wm-font-heading,inherit);font-size:20px;margin:0 32px 12px 0}.tether-skill-review h3{font-size:14px;margin:0 0 8px}.tether-skill-review p{margin:8px 0 16px}
+      .tether-skill-review button{font:inherit;color:inherit;background:var(--review-panel);border:1px solid var(--review-line);border-radius:7px;padding:8px 12px;cursor:pointer}
+      .tether-skill-review button:hover{border-color:var(--review-accent)}.tether-skill-review button:focus-visible{outline:2px solid var(--review-accent);outline-offset:2px}.tether-skill-review button:disabled{opacity:.55;cursor:default}
+      .tether-skill-review button[data-copied]{background:color-mix(in srgb,var(--review-accent) 30%,var(--review-bg));border-color:var(--review-accent);color:var(--review-text)}
+      .tether-skill-review .review-close{position:absolute;right:16px;top:16px;padding:2px 9px;background:transparent;border:0;font-size:20px}
+      .tether-skill-review .review-card + .review-card{border-top:1px solid var(--review-line);margin-top:20px;padding-top:20px}
+      .tether-skill-review .review-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.tether-skill-review summary{cursor:pointer;color:var(--review-accent)}
+      .tether-skill-review .review-comparison{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));gap:16px;margin-top:12px}
+      .tether-skill-review pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:40vh;overflow:auto;font:12px/1.5 ui-monospace,monospace;padding:12px;border:1px solid var(--review-line);border-radius:7px;background:var(--review-panel)}
+    `;
+    const title = document.createElement("h2"); title.textContent = "Review agent instructions";
+    const explanation = document.createElement("p"); explanation.textContent = "Tether has updated instructions. Accept them, keep your copy, or work through a merge with your agent. Your app update can finish either way.";
+    const status = document.createElement("p"); status.setAttribute("role", "status");
+    const content = document.createElement("div");
+    finishReview = () => { content.replaceChildren(); status.textContent = "All agent instructions have been reviewed."; };
+    const close = document.createElement("button"); close.textContent = "×"; close.setAttribute("aria-label", "Close"); close.className = "review-close"; close.onclick = () => dialog.close();
+    dialog.append(style, title, explanation, status, content, close);
+    dialog.addEventListener("close", () => { dialog.remove(); reviewDialog = undefined; finishReview = undefined; element.querySelector<HTMLButtonElement>("[data-skill-review]")?.focus(); });
+    document.body.append(dialog); dialog.showModal();
+    let busy = false;
+    const button = (label: string, action: () => Promise<void>) => {
+      const node = document.createElement("button"); node.type = "button"; node.textContent = label;
+      node.onclick = async () => {
+        if (busy) return;
+        busy = true; status.textContent = "";
+        const buttons = [...content.querySelectorAll("button")]; buttons.forEach(item => item.disabled = true);
+        try { await action(); } catch (cause) { status.textContent = (cause as Error).message; }
+        finally { busy = false; buttons.forEach(item => item.disabled = false); }
+      };
+      return node;
+    };
+    const list = async () => {
+      const entries: Array<{ id: string; path: string }> = await skillRequest("");
+      const reviews: AgentSkillReview[] = await Promise.all(entries.map(entry => skillRequest("/read", { id: entry.id })));
+      content.replaceChildren();
+      if (!reviews.length) { status.textContent = "All agent instructions have been reviewed."; return; }
+      for (const review of reviews) {
+        const card = document.createElement("section"); card.className = "review-card"; card.dataset.skillId = review.id;
+        if (reviews.length > 1) {
+          const parts = review.path.split("/").filter(Boolean);
+          const location = parts.includes(".codex") ? "Codex" : parts.includes(".claude") ? "Claude Code" : parts.at(-3) ?? "Installed copy";
+          const heading = document.createElement("h3"); heading.textContent = `${parts.at(-2) ?? "Agent instructions"} — ${location}`; heading.title = review.path; card.append(heading);
+        }
+        const decide = async (action: string) => {
+          await skillRequest("/decide", { id: review.id, revision: review.revision, action });
+          await list(); await check();
+        };
+        const merge = button("Ask my agent to merge", async () => {
+          await navigator.clipboard.writeText(review.mergePrompt);
+          merge.textContent = "Prompt copied — paste in agent chat";
+          merge.dataset.copied = "true";
+        });
+        const actions = document.createElement("div"); actions.className = "review-actions";
+        actions.append(button("Accept new version", () => decide("replace")), button("Keep old version", () => decide("keep")), merge);
+        const details = document.createElement("details"), summary = document.createElement("summary"); summary.textContent = "Compare instructions";
+        const comparison = document.createElement("div"); comparison.className = "review-comparison";
+        for (const [label, text] of [["Your installed instructions", review.current], ["Updated instructions", review.proposed]]) {
+          const section = document.createElement("section"), heading = document.createElement("h3"), pre = document.createElement("pre");
+          heading.textContent = label!; pre.textContent = text!; section.append(heading, pre); comparison.append(section);
+        }
+        details.append(summary, comparison); card.append(actions, details); content.append(card);
+      }
+    };
+    try { await list(); } catch (cause) {
+      status.textContent = (cause as Error).message;
+      content.append(button("Retry", list));
+    }
   };
   const check = async (force = false) => {
     if (pending || document.hidden) return;
@@ -15,24 +123,40 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
       const response = await fetch(`${api}/updates${force ? "/check" : ""}`, { cache: "no-store", ...(force ? { method: "POST", headers: { "content-type": "application/json" }, body: "{}" } : {}), signal: AbortSignal.timeout(30_000) });
       if (!response.ok) throw new Error("Unavailable");
       const state = await response.json();
+      if (packageButton) {
+        packageButton.hidden = !state.available;
+        element.toggleAttribute("data-update-popover", Boolean(state.available || state.installing));
+        if (!state.available && !state.installing) closePopup();
+      }
+      if (!state.agentSkillReviewNeeded) finishReview?.();
+      if (menuCheck) menuCheck.hidden = !state.managed;
       if (state.installing) { installing = true; started ||= Date.now(); message("Installing Tether update…"); return; }
       if (installing) {
         installing = false;
-        if (!state.failed && !state.available) { if (reload) location.reload(); else message("Tether updated. Your document remains open."); return; }
+        if (!state.failed && !state.available) {
+          if (reload) { location.reload(); return; }
+          message("Tether updated. Your document remains open.");
+          if (!state.agentSkillReviewNeeded) return;
+        }
       }
       const update = state.available;
-      const checkButton = document.createElement("button");
-      checkButton.textContent = "Check for updates";
-      checkButton.onclick = () => void check(true);
+      const skillNotice = state.agentSkillReviewNeeded ? "Agent instructions need review. " : "";
+      const addSkillReview = () => {
+        if (!state.agentSkillReviewNeeded) return;
+        const review = document.createElement("button"); review.textContent = "Review agent instructions"; review.dataset.skillReview = "";
+        review.onclick = () => void openReviews(); element.append(" ", review);
+      };
       if (!update) {
-        if (!state.managed) { element.hidden = true; return; }
+        if (!state.managed && !skillNotice) { element.hidden = true; element.replaceChildren(); return; }
         const text = state.failed ? "Update failed. Run tether doctor. " : state.prolongedFailure ? "Updates have not verified for over a day. " : force ? (state.checkFailed ? "Could not verify updates. " : "No newer verified release. ") : "";
+        if (!skillNotice && !text) { element.hidden = true; element.replaceChildren(); return; }
         element.hidden = false;
-        element.replaceChildren(document.createTextNode(text), checkButton);
+        element.replaceChildren(document.createTextNode(skillNotice + text));
+        addSkillReview();
         return;
       }
-      element.hidden = false;
-      element.replaceChildren(document.createTextNode(state.failed ? "Update failed. " : ""), document.createTextNode(`Tether update available: version ${update.version}. `));
+      element.hidden = packageButton ? !popupOpen : false;
+      element.replaceChildren(document.createTextNode(skillNotice), document.createTextNode(state.failed ? "Update failed. " : ""), document.createTextNode(`Tether update available: version ${update.version}. `));
       const install = document.createElement("button");
       install.textContent = "Install";
       install.onclick = async () => {
@@ -53,15 +177,17 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
       dismiss.textContent = "Dismiss";
       dismiss.onclick = async () => {
         dismiss.disabled = true;
-        try { await post("dismiss", update.tag); element.hidden = true; }
+        try { await post("dismiss", update.tag); element.hidden = true; await check(); }
         catch { dismiss.disabled = false; (reportError ?? message)("Could not dismiss the update notice. Try again shortly."); }
       };
-      element.append(install, " | ", notes, " | ", dismiss, " | ", checkButton);
+      element.append(notes, " | ", install, " | ", dismiss);
+      addSkillReview();
     } catch {
       if (installing && Date.now() - started > 300_000) message("Update is taking longer. Run tether to reconnect.");
       // Failed passive checks never interrupt work or erase an existing notice.
     } finally { pending = false; }
   };
+  if (menuCheck) menuCheck.onclick = () => void check(true);
   void check();
   setInterval(() => { if (installing) void check(); }, 2000);
   setInterval(() => void check(), 60_000);

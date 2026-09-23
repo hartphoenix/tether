@@ -35,6 +35,9 @@ const mutationActorFlags = { "--actor": { value: true } } as const;
 const operationFlags = { "--operation-id": { value: true }, "--expected-thread-sequence": { value: true } } as const;
 export const commandSpecs: Record<string, CommandSpec> = {
   setup: { name: "setup", usage: "tether setup [--host auto|browser|wave|cmux] [--wave] [--agent-directory <skills-directory>] [--no-open]", min: 0, max: 0, flags: { "--host": { value: true }, "--wave": {}, "--agent-directory": { value: true }, "--no-open": {} } },
+  "skills.list": { name: "skills.list", usage: "tether skills list", min: 0, max: 0 },
+  "skills.read": { name: "skills.read", usage: "tether skills read <id>", min: 1, max: 1 },
+  "skills.merge": { name: "skills.merge", usage: "tether skills merge <id> --expected-revision <source-revision> --body-file <file> --confirm", min: 1, max: 1, flags: { "--expected-revision": { value: true }, "--body-file": { value: true }, "--confirm": {} }, required: ["--expected-revision", "--body-file", "--confirm"] },
   doctor: { name: "doctor", usage: "tether doctor", min: 0, max: 0 },
   backup: { name: "backup", usage: "tether backup --output <new-directory>", min: 0, max: 0, flags: { "--output": { value: true } }, required: ["--output"] },
   restore: { name: "restore", usage: "tether restore --source <backup-directory> --directory <new-directory>", min: 0, max: 0, flags: { "--source": { value: true }, "--directory": { value: true } }, required: ["--source", "--directory"] },
@@ -84,7 +87,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
 
 function commandPrefix(argv: string[]): { name: string; start: number } {
   const [first, second] = argv;
-  if (["daemon", "cmux", "wave", "document"].includes(first ?? "")) return { name: `${first}.${second ?? ""}`, start: 2 };
+  if (["daemon", "cmux", "wave", "document", "skills"].includes(first ?? "")) return { name: `${first}.${second ?? ""}`, start: 2 };
   if (first === "recents" && second === "add") return { name: "recents.add", start: 2 };
   if (first === "folio" && second && commandSpecs[`folio.${second}`]) return { name: `folio.${second}`, start: 2 };
   return { name: first ?? "unknown", start: 1 };

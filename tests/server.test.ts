@@ -82,7 +82,7 @@ test("Folio updates require a scoped cookie and same-origin installation or dism
   const file = await fixture();
   const actions: string[] = [];
   const daemon = createDaemon({ config: file.config, updates: {
-    status: async () => ({ managed: true, checkFailed: false, prolongedFailure: false, available: { version: "0.2.0", tag: "v0.2.0", notes: "https://github.com/hartphoenix/tether/releases/tag/v0.2.0" }, installing: false, failed: false }),
+    status: async () => ({ managed: true, agentSkillReviewNeeded: false, checkFailed: false, prolongedFailure: false, available: { version: "0.2.0", tag: "v0.2.0", notes: "https://github.com/hartphoenix/tether/releases/tag/v0.2.0" }, installing: false, failed: false }),
     install: async tag => { actions.push(`install:${tag}`); }, dismiss: async tag => { actions.push(`dismiss:${tag}`); },
   } });
   daemons.push(daemon); await daemon.ready;
@@ -539,6 +539,23 @@ describe("session API", () => {
     expect(final.annotations.events.map((event) => event.seq)).toEqual([1, 2]);
   });
 
+  test("serves bundled branding for the favicon and documentation banners", async () => {
+    const file = await fixture("Welcome\n");
+    const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000 });
+    daemons.push(daemon);
+    await daemon.ready;
+    const session = await exchange(daemon, file.path);
+    for (const path of ["assets/tether-banner.png", "docs/assets/tether-banner.png", "assets/tether-banner-tagline.png", "docs/assets/tether-banner-tagline.png"]) {
+      const response = await sessionFetch(daemon, session.location, session.cookie, path);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("image/png");
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(await readFile(`docs/assets/${path.split("/").at(-1)}`));
+    }
+    const icon = await fetch(`${daemon.origin}/favicon.png`);
+    expect(icon.status).toBe(200);
+    expect(Buffer.from(await icon.arrayBuffer())).toEqual(await readFile("docs/assets/tether-logo.png"));
+  });
+
   test("opens wikilinks in a new view, persists preferences, and survives reload release", async () => {
     const file = await fixture("[[other]]\n");
     const opened: string[] = [];
@@ -820,4 +837,37 @@ test("Folio theme events follow committed saves and reconnect with the current p
   const reconnected = await connect();
   expect(await reconnected.next()).toEqual(folioTheme({ design: edited }));
   await reconnected.cancel();
+});
+
+test("reader and Folio skill reviews require scoped access and same-origin decisions", async () => {
+  const { installAgentSkill, updateAgentSkills, readAgentSkillReview, listAgentSkillReviews } = await import("../src/cli/agent-skills");
+  const file = await fixture(), root = join(file.directory, "package");
+  const source = join(root, "integrations/agents/tether-review/SKILL.md");
+  await mkdir(join(root, "integrations/agents/tether-review"), { recursive: true });
+  await writeFile(source, "Original bundle");
+  const installed = await installAgentSkill(join(file.directory, "skills"), file.config, root);
+  await writeFile(installed.path, "Personal instructions"); await writeFile(source, "Updated bundle");
+  await updateAgentSkills(file.config, root);
+  const daemon = createDaemon({ config: file.config, opener: async () => {} }); daemons.push(daemon); await daemon.ready;
+  const reader = await exchange(daemon, file.path), folio = await exchangeRecents(daemon, file.config);
+  const [entry] = await listAgentSkillReviews(file.config);
+  for (const view of [reader, folio]) {
+    const url = new URL("api/updates/skills", `${daemon.origin}${view.location}`);
+    expect((await fetch(url)).status).toBe(401);
+    const response = await fetch(url, { headers: { cookie: view.cookie } });
+    expect(await response.json()).toEqual([{ id: entry!.id, path: installed.path }]);
+    for (const suffix of ["read", "decide"]) {
+      expect((await fetch(`${url}/${suffix}`, { method: "POST", headers: { cookie: view.cookie, origin: "https://unrelated.invalid" }, body: JSON.stringify({ id: entry!.id }) })).status).toBe(403);
+    }
+    const read = await fetch(`${url}/read`, { method: "POST", headers: { cookie: view.cookie, origin: daemon.origin }, body: JSON.stringify({ id: entry!.id }) });
+    expect((await read.json() as { current: string }).current).toBe("Personal instructions");
+    expect((await fetch(`${url}/decide`, { method: "POST", headers: { cookie: view.cookie, origin: daemon.origin }, body: JSON.stringify({ id: entry!.id, revision: "stale", action: "replace" }) })).status).toBe(409);
+  }
+  const review = await readAgentSkillReview(file.config, entry!.id);
+  const response = await fetch(new URL("api/updates/skills/decide", `${daemon.origin}${folio.location}`), {
+    method: "POST", headers: { cookie: folio.cookie, origin: daemon.origin }, body: JSON.stringify({ id: entry!.id, revision: review.revision, action: "replace" }),
+  });
+  expect(response.status).toBe(200);
+  expect(await readFile(installed.path, "utf8")).toBe("Updated bundle");
+  expect(await listAgentSkillReviews(file.config)).toEqual([]);
 });

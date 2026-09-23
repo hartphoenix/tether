@@ -49,7 +49,7 @@ test("uninstall reports the first removed launcher if removing the second fails"
     process.env.TETHER_INSTALL_ROOT=release;
     const realUnlink=fs.unlink;
     mock.module("node:fs/promises",()=>({...fs,unlink:async path=>{if(path===join(bin,"mdreview")) throw Object.assign(new Error("unlink denied"),{code:"EACCES",path,syscall:"unlink"});return realUnlink(path);}}));
-    mock.module(modulePath("src/hosts/wave-launchers.ts"),()=>({syncWaveRecentLaunchers:async()=>{},waveLauncherStatus:async()=>({installed:[]}),installWaveLaunchers:async()=>{},uninstallWaveLaunchers:async()=>{throw new Error("Must not touch Wave");}}));
+    mock.module(modulePath("src/hosts/wave-launchers.ts"),()=>({waveInstallationDetected:async()=>false,syncWaveRecentLaunchers:async()=>{},waveLauncherStatus:async()=>({installed:[]}),installWaveLaunchers:async()=>{},uninstallWaveLaunchers:async()=>{throw new Error("Must not touch Wave");}}));
     const {runCli}=await import(modulePath("src/cli/main.ts"));
     const {resolveConfig}=await import(modulePath("src/server/config.ts"));
     const config=resolveConfig({runtimeDir:join(root,"runtime"),configDir:join(root,"config")});

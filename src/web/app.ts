@@ -1,5 +1,7 @@
+import { updateControlStyles } from "./update-controls";
 import { mountUpdateNotice } from "./update-notice";
 import { iconSvg } from "./icons";
+import { decreaseQuoteLevel } from "./editor-commands";
 import { Crepe } from "@milkdown/crepe";
 import { EditorStatus, editorViewCtx } from "@milkdown/kit/core";
 import type { EditorView } from "@milkdown/kit/prose/view";
@@ -180,6 +182,25 @@ function compactTopBar(): void {
   const inlineCode = menu.querySelectorAll(".top-bar-item")[topBarLabels.indexOf("Inline code")];
   const codeBlock = menu.querySelector("[data-insert-code]")!;
   if (inlineCode && inlineCode.nextElementSibling !== codeBlock) inlineCode.after(codeBlock);
+  const quote = menu.querySelectorAll(".top-bar-item")[topBarLabels.indexOf("Increase quote level")];
+  if (quote && !menu.querySelector("[data-decrease-quote]")) {
+    const decrease = document.createElement("button");
+    decrease.type = "button";
+    decrease.dataset.decreaseQuote = "true";
+    decrease.className = "wm-comment-button";
+    decrease.innerHTML = iconSvg("quotes");
+    decrease.querySelector("svg")!.style.transform = "rotate(180deg)";
+    labelIconButton(decrease, "Decrease quote level");
+    decrease.addEventListener("pointerdown", event => event.preventDefault());
+    decrease.addEventListener("click", () => {
+      const view = getEditorView();
+      if (view?.editable) decreaseQuoteLevel(view.state, view.dispatch, view);
+      menu.hidden = true;
+      overflow?.querySelector("button")?.setAttribute("aria-expanded", "false");
+      view?.focus();
+    });
+    quote.before(decrease);
+  }
 }
 
 function integrateToolbarControls(): void {
@@ -190,7 +211,7 @@ function integrateToolbarControls(): void {
   compactTopBar();
 }
 
-const topBarLabels = ["Bold", "Italic", "Strikethrough", "Inline code", "Bulleted list", "Numbered list", "Task list", "Link", "Image", "Table", "Quote", "Horizontal rule"];
+const topBarLabels = ["Bold", "Italic", "Strikethrough", "Inline code", "Bulleted list", "Numbered list", "Task list", "Link", "Image", "Table", "Increase quote level", "Horizontal rule"];
 function labelIconButton(button: HTMLButtonElement, label: string): void {
   button.setAttribute("aria-label", label);
   button.title = label;
@@ -477,7 +498,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     annotationUi = nextAnnotationUi;
     const view = getEditorView();
     if (view) {
-      canvas = createCanvas(view);
+      canvas = createCanvas(view, updateNotice, updateButton);
       view.setProps({ handleScrollToSelection: scrollSelectionIntoView });
       canvas.setScale(chrome.getZoom() / 100);
       nextAnnotationUi.attachEditorView(view);
@@ -696,12 +717,23 @@ addEventListener("pagehide", event => {
 connection.wake();
 
 
+const updateStyle = document.createElement("style");
+updateStyle.textContent = updateControlStyles;
+document.head.append(updateStyle);
+const updateButton = document.createElement("button");
+updateButton.id = "update-package";
+updateButton.type = "button";
+updateButton.hidden = true;
+updateButton.title = "Update Available";
+updateButton.setAttribute("aria-label", "Update Available");
+updateButton.setAttribute("aria-expanded", "false");
+updateButton.setAttribute("aria-controls", "update-notice");
+updateButton.innerHTML = iconSvg("package") + '<span class="update-dot" aria-hidden="true"></span>';
 const updateNotice = document.createElement("aside");
 updateNotice.id = "update-notice";
 updateNotice.hidden = true;
 updateNotice.setAttribute("aria-live", "polite");
-document.body.prepend(updateNotice);
 mountUpdateNotice(updateNotice, new URL("api", location.href).pathname, message => chrome.setNotice(message), async () => {
   if (!initialized || initializing || switching) throw new Error("Wait for the document to finish loading.");
   await persistDraft(true);
-}, false);
+}, false, undefined, updateButton);

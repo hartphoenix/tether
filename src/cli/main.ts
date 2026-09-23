@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { pendingAgentSkillReviews, listAgentSkillReviews, readAgentSkillReview, mergeAgentSkill } from "./agent-skills";
 import { diagnosticText, errorDetails, operationError } from "../shared/diagnostics";
 import { commandResult } from "./results";
 import { realpath, readFile, readlink, unlink, rename } from "node:fs/promises";
@@ -15,14 +16,15 @@ import { cmuxBridgeStatus, startCmuxBridge, stopCmuxBridge, type CmuxBridgeStatu
 import type { HostAdapter } from "../hosts/host-adapter";
 import type { ProtocolResponse } from "../shared/contracts";
 import { RecentsRegistry } from "../recents/registry";
-import { installWaveLaunchers, uninstallWaveLaunchers, waveLauncherStatus } from "../hosts/wave-launchers";
-import { hostPreference, readHostPreference, saveHostPreference, seedWelcome, installAgentSkill, type HostPreference } from "./setup";
+import { installWaveLaunchers, uninstallWaveLaunchers, waveLauncherStatus, waveInstallationDetected, type WaveLauncherOptions } from "../hosts/wave-launchers";
+import { agentSetupGuidance, hostPreference, readHostPreference, saveHostPreference, seedWelcome, installAgentSkill, type HostPreference } from "./setup";
 import { backupState, restoreState } from "./backup";
 import { installVerifiedRelease } from "../releases/verified-update";
 import { UpdateService } from "../server/updates";
 import { runtimeRoot } from "../runtime-paths";
 
 export type CliDependencies = {
+  waveLaunchers?: WaveLauncherOptions;
   config?: TetherConfig;
   open?: (url: string) => Promise<void>;
   readBody?: (path: string) => Promise<string>;
@@ -93,6 +95,7 @@ async function bodyFile(path: string, dependencies: CliDependencies, limit = 256
 }
 
 function commandName(argv: string[]): string {
+  if (argv[0] === "skills") return `skills.${argv[1] ?? ""}`;
   if (argv[0] === "daemon") return `daemon.${argv[1] ?? ""}`;
   if (argv[0] === "document") return `document.${argv[1] ?? ""}`;
   if (argv[0] === "wave") return `wave.${argv[1] ?? ""}`;
@@ -117,9 +120,15 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     }
     const parsed = parseCommand(argv);
     command = parsed.spec.name;
-    if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage, reporting: reportingGuidance }), exitCode: 0 };
+    if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage, ...(command === "setup" ? { agentSetup: agentSetupGuidance } : {}), reporting: reportingGuidance }), exitCode: 0 };
     const config = dependencies.config ?? resolveConfig();
     const selectedHost = parsed.flags.has("--host") ? hostPreference(optionalFlag(parsed, "--host")!) : ["open", "recent", "recents", "folio", "setup"].includes(command) ? await readHostPreference(config) : "auto";
+    if (command === "skills.list") return { response: success(command, { reviews: await listAgentSkillReviews(config) }), exitCode: 0 };
+    if (command === "skills.read") return { response: success(command, await readAgentSkillReview(config, parsed.positionals[0]!)), exitCode: 0 };
+    if (command === "skills.merge") {
+      await mergeAgentSkill(config, parsed.positionals[0]!, requiredFlag(parsed, "--expected-revision"), resolve(requiredFlag(parsed, "--body-file")));
+      return { response: success(command, { merged: true, id: parsed.positionals[0]!, reviewNeeded: false }), exitCode: 0 };
+    }
     if (command === "backup") return { response: success(command, await backupState(config, requiredFlag(parsed, "--output"))), exitCode: 0 };
     if (command === "restore") return { response: success(command, await restoreState(requiredFlag(parsed, "--source"), requiredFlag(parsed, "--directory"))), exitCode: 0 };
     if (command === "uninstall") {
@@ -159,6 +168,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     }
     if (command === "doctor") {
       return { response: success(command, { platform: process.platform, architecture: process.arch, runtime: Bun.version,
+        agentSkillReviews: await pendingAgentSkillReviews(config),
         configDirectory: config.configDir, hostPreference: await readHostPreference(config).catch(cause => ({ error: errorDetails(cause) })), daemon: await statusDaemon(config),
         wave: await waveLauncherStatus(), cmux: (await runCli(["cmux", "status"], dependencies)).response,
       }), exitCode: 0 };
@@ -166,9 +176,9 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     if (command === "setup") {
       if (parsed.flags.has("--host")) { await saveHostPreference(config, selectedHost); completed.push({ step: "host_preference_saved", path: resolve(config.configDir, "launch.json") }); }
       const skillDirectory = optionalFlag(parsed, "--agent-directory");
-      const agent = skillDirectory ? await installAgentSkill(skillDirectory) : undefined;
+      const agent = skillDirectory ? await installAgentSkill(skillDirectory, config) : undefined;
       if (agent) completed.push({ step: "agent_skill_installed", path: agent.path });
-      const wave = parsed.flags.has("--wave") ? await installWaveLaunchers() : undefined;
+      const wave = (parsed.flags.has("--wave") || await waveInstallationDetected(dependencies.waveLaunchers)) ? await installWaveLaunchers(dependencies.waveLaunchers) : undefined;
       if (wave) completed.push({ step: "wave_launchers_installed" });
       const path = await seedWelcome(config);
       completed.push({ step: "welcome_document_ready", path });
@@ -179,7 +189,8 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         if (!opened.response.ok) throw Object.assign(new Error(opened.response.error.message), { code: opened.response.error.code, details: opened.response.error.details });
       }
       return { response: success(command, { path, hostPreference: selectedHost, agent, wave, opened: !parsed.flags.has("--no-open") && process.env.TETHER_SUPPRESS_BROWSER !== "1",
-        next: "Use tether to open Folio. Optional integrations: tether setup --wave or --agent-directory <skills-directory>.",
+        next: "Use tether to open Folio. Setup adds the Folio widget when Wave is detected; tether setup --wave also installs it explicitly.",
+        ...(!agent ? { agentSetup: agentSetupGuidance } : {}),
       }), exitCode: 0 };
     }
     if (argv[0] === "open" || argv[0] === "recent") {

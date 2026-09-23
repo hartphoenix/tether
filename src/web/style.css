@@ -241,11 +241,9 @@ body {
   }
 }
 
-#update-notice:not([hidden]) {
-  position: fixed;
-  z-index: 100;
-  bottom: 12px;
-  inset-inline: 12px;
+.milkdown > #update-notice:not([hidden]) {
+  flex-shrink: 0;
+  margin: 12px auto;
   width: fit-content;
   max-width: calc(100% - 48px);
   padding: 8px 12px;

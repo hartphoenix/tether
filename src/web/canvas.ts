@@ -2,7 +2,7 @@ import type { EditorView } from '@milkdown/kit/prose/view';
 import { keepContentEndVisible, overlayScrollHeader } from './scroll-geometry';
 
 /** The document alone scales; its shell, toolbar and free overlays stay in viewport pixels. */
-export function createCanvas(view: EditorView) {
+export function createCanvas(view: EditorView, notice?: HTMLElement, updateButton?: HTMLElement) {
   const document = view.dom.ownerDocument;
   const win = document.defaultView!;
   const shell = view.dom.closest<HTMLElement>('.milkdown')!;
@@ -17,6 +17,8 @@ export function createCanvas(view: EditorView) {
   stage.append(scene);
   scene.append(view.dom);
   const header = shell.querySelector<HTMLElement>('.milkdown-top-bar');
+  if (updateButton && header) header.append(updateButton);
+  if (notice) header ? header.after(notice) : scroller.before(notice);
   const stopHeaderOverlay = header ? overlayScrollHeader(scroller, header) : () => {};
   let scale = 1;
   let destroyed = false;
@@ -113,6 +115,8 @@ export function createCanvas(view: EditorView) {
       observer.disconnect();
       stopEndRecovery();
       stopHeaderOverlay();
+      notice?.remove();
+      updateButton?.remove();
       cancelFollow();
       for (const event of ['wheel', 'touchstart', 'pointerdown', 'keydown']) win.removeEventListener(event, cancelFollow);
       win.cancelAnimationFrame(frame);

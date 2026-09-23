@@ -1,7 +1,6 @@
-import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { constants } from "node:fs";
-import { join, resolve } from "node:path";
-import { runtimeRoot } from "../runtime-paths";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+export { installAgentSkill } from "./agent-skills";
 import type { TetherConfig } from "../server/config";
 export { seedWelcome } from "../onboarding";
 
@@ -21,16 +20,5 @@ export async function saveHostPreference(config: TetherConfig, host: HostPrefere
   await writeFile(temporary, JSON.stringify({ host }) + "\n", { mode: 0o600 });
   await rename(temporary, path);
 }
-export async function installAgentSkill(directory: string): Promise<{ path: string; installed: boolean }> {
-  const destination = resolve(directory, "tether-review");
-  await mkdir(destination, { recursive: true });
-  const source = join(runtimeRoot(), "integrations/agents/tether-review/SKILL.md");
-  const path = join(destination, "SKILL.md");
-  try { await copyFile(source, path, constants.COPYFILE_EXCL); }
-  catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
-    if (await readFile(source, "utf8") !== await readFile(path, "utf8")) throw new Error(`Existing skill differs; review it before updating: ${path}`);
-    return { path, installed: false };
-  }
-  return { path, installed: true };
-}
+
+export const agentSetupGuidance = "Ask whether the user wants the optional Tether review skill, which stays current with package updates. After consent, identify your own skills directory and run tether setup --agent-directory <skills-directory> --no-open for them. Ask if the directory is uncertain; do not guess. Customized skills are preserved for review during updates. Do not ask again if the user already accepted or declined in this setup.";
