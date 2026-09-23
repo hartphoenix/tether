@@ -96,7 +96,7 @@ async function waitForDiscovery(config: TetherConfig, attempts: number, startup?
 }
 
 function defaultCommand(): string[] {
-  return [process.execPath, runtimeEntry("daemon"), "serve"];
+  return [process.execPath, "--no-env-file", runtimeEntry("daemon"), "serve"];
 }
 
 /** Start or reuse the one daemon for this profile. The lock covers all state decisions. */

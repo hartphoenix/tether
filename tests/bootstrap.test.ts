@@ -18,12 +18,15 @@ async function fixture() {
   await writeFile(join(app, "release.json"), JSON.stringify({ version: "1.2.3", platform: "darwin", architecture: "arm64" }));
   for (const name of ["tether", "mdreview"]) await writeFile(join(app, name), '#!/bin/bash\nprintf "%s\\n" "$@" >> "$TEST_SETUP_LOG"\n', { mode: 0o755 });
   await writeFile(join(app, "runtime/bun"), `#!/bin/bash\nexec '${process.execPath.replaceAll("'", "'\\''")}' "$@"\n`, { mode: 0o755 });
+  await mkdir(join(app, "lib"));
+  await writeFile(join(app, "lib/cli.js"), 'import { appendFileSync } from "node:fs"; if(process.env.TETHER_PROFILE) throw new Error("Loaded caller env"); appendFileSync(process.env.TEST_SETUP_LOG, process.argv.slice(2).join("\\n") + "\\n");');
+  await writeFile(join(dir, ".env"), "TETHER_PROFILE=invalid/profile\n");
   const tar = Bun.spawn(["/usr/bin/tar", "-czf", env.TEST_ARCHIVE, "-C", app, "."], { env, stdout: "pipe", stderr: "pipe" });
   expect(await tar.exited).toBe(0);
   const bootstrap = join(dir, "install.sh");
   await buildBootstrap("1.2.3", bootstrap, [env.TEST_ARCHIVE]);
   const run = async (args: string[] = [], overrides: Record<string, string> = {}, piped = false) => {
-    const child = Bun.spawn(piped ? ["/bin/bash", "-s", "--", ...args] : ["/bin/bash", bootstrap, ...args], { stdin: piped ? Bun.file(bootstrap) : "ignore", env: { ...env, ...overrides }, stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn(piped ? ["/bin/bash", "-s", "--", ...args] : ["/bin/bash", bootstrap, ...args], { cwd: dir, stdin: piped ? Bun.file(bootstrap) : "ignore", env: { ...env, ...overrides }, stdout: "pipe", stderr: "pipe" });
     const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     return { code, out, err };
   };

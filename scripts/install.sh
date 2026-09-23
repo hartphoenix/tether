@@ -27,8 +27,10 @@ scratch=$(mktemp -d)
 asset="tether-darwin-$architecture.tar.gz"
 if [ -z "$archive_path" ]; then
   if [ -x "$install_root/current/mdreview" ]; then
-    if [ "$release_version" = latest ]; then exec "$install_root/current/mdreview" update; fi
-    exec "$install_root/current/mdreview" update --version "$release_version"
+    current_root=$(cd "$install_root/current" && pwd -P)
+    export TETHER_INSTALL_ROOT="$current_root"
+    if [ "$release_version" = latest ]; then exec "$current_root/runtime/bun" --no-env-file "$current_root/lib/cli.js" update; fi
+    exec "$current_root/runtime/bun" --no-env-file "$current_root/lib/cli.js" update --version "$release_version"
   fi
   echo 'First installation requires a publisher-authenticated archive and independently authenticated SHA-256 digest. Network bootstrap is not configured.' >&2
   exit 1
@@ -65,9 +67,10 @@ if [ -e "$install_root/current" ] && [ ! -L "$install_root/current" ]; then
 fi
 destination="$install_root/releases/$actual_sha"
 if [ -L "$install_root/current" ] && [ "$(readlink "$install_root/current")" != "$destination" ]; then
-  "$candidate/runtime/bun" -e 'const [old,next]=await Promise.all(process.argv.slice(1).map(p=>Bun.file(p).json()));const a=old.version.split(/[.-]/).slice(0,3).map(Number),b=next.version.split(/[.-]/).slice(0,3).map(Number);for(let i=0;i<3;i++){if(b[i]>a[i])break;if(b[i]<a[i]){console.error("Downgrade refused; restore into an isolated configuration instead.");process.exit(1)}}' "$install_root/current/release.json" "$candidate/release.json"
-  status=$("$install_root/current/mdreview" daemon status)
-  "$candidate/runtime/bun" -e 'const s=JSON.parse(process.argv[1]);if(!s.ok||s.data.running){console.error("Save your work and quit Tether before replacing this installation. Use tether update for backup first.");process.exit(1)}' "$status"
+  "$candidate/runtime/bun" --no-env-file -e 'const [old,next]=await Promise.all(process.argv.slice(1).map(p=>Bun.file(p).json()));const a=old.version.split(/[.-]/).slice(0,3).map(Number),b=next.version.split(/[.-]/).slice(0,3).map(Number);for(let i=0;i<3;i++){if(b[i]>a[i])break;if(b[i]<a[i]){console.error("Downgrade refused; restore into an isolated configuration instead.");process.exit(1)}}' "$install_root/current/release.json" "$candidate/release.json"
+  current_root=$(cd "$install_root/current" && pwd -P)
+  status=$(TETHER_INSTALL_ROOT="$current_root" "$current_root/runtime/bun" --no-env-file "$current_root/lib/cli.js" daemon status)
+  "$candidate/runtime/bun" --no-env-file -e 'const s=JSON.parse(process.argv[1]);if(!s.ok||s.data.running){console.error("Save your work and quit Tether before replacing this installation. Use tether update for backup first.");process.exit(1)}' "$status"
 fi
 if [ ! -d "$destination" ]; then mv "$candidate" "$destination"; fi
 ln -s "$destination" "$install_root/current.new.$$"
@@ -75,9 +78,9 @@ mv -fh "$install_root/current.new.$$" "$install_root/current"
 for name in tether mdreview; do
   if [ ! -L "$bin_directory/$name" ]; then ln -s "$install_root/current/$name" "$bin_directory/$name"; fi
 done
-"$destination/runtime/bun" -e 'await Bun.write(process.argv[1],JSON.stringify({binDirectory:process.argv[2]})+"\n")' "$install_root/install.json" "$bin_directory"
+"$destination/runtime/bun" --no-env-file -e 'await Bun.write(process.argv[1],JSON.stringify({binDirectory:process.argv[2]})+"\n")' "$install_root/install.json" "$bin_directory"
 if [ -f "$destination/lib/update-agent-skills.js" ]; then
-  TETHER_INSTALL_ROOT="$destination" "$destination/runtime/bun" "$destination/lib/update-agent-skills.js"
+  TETHER_INSTALL_ROOT="$destination" "$destination/runtime/bun" --no-env-file "$destination/lib/update-agent-skills.js"
 fi
 echo "Installed Tether: $destination"
 echo "Launcher: $install_root/current/Open Tether.command"

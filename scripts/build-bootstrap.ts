@@ -32,7 +32,9 @@ ${cases}
   local install_root="\${TETHER_INSTALL_DIR:-$HOME/.local/share/tether}"
   if [ -x "$install_root/current/mdreview" ]; then
     # Existing installations keep their signed update chain, even from an old bootstrap.
-    "$install_root/current/mdreview" update
+    local current_root
+    current_root=$(cd "$install_root/current" && pwd -P)
+    TETHER_INSTALL_ROOT="$current_root" "$current_root/runtime/bun" --no-env-file "$current_root/lib/cli.js" update
     return
   fi
   local download_dir

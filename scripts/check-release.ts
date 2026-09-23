@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, chmod } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { resolveConfig } from "../src/server/config";
@@ -20,6 +20,9 @@ async function command(...args: string[]) {
   return result.data;
 }
 try {
+  await writeFile(join(scratch, ".env"), "TETHER_PROFILE=invalid/profile\n");
+  await command("daemon", "status");
+  await chmod(join(scratch, ".env"), 0o000);
   const setup = await command("setup", "--host", "browser", "--agent-directory", join(scratch, "skills"), "--no-open");
   await command("setup", "--host", "browser", "--no-open");
   await command();

@@ -11,7 +11,7 @@ const env = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: tmpdir(), TETHER_IN
   TETHER_CONFIG_DIR: join(scratch, "config"), TETHER_RUNTIME_DIR: join(scratch, "runtime"),
   WAVETERM_CONFIG_DIR: join(scratch, "wave"), TETHER_SUPPRESS_BROWSER: "1" };
 async function run(args: string[], ok = true, overrides: Record<string, string> = {}) {
-  const child = Bun.spawn(args, { env: { ...env, ...overrides }, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn(args, { cwd: scratch, env: { ...env, ...overrides }, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   if (ok && code !== 0 || !ok && code === 0) throw new Error(`Unexpected command result: ${err} ${out}`);
   return out;
@@ -19,6 +19,7 @@ async function run(args: string[], ok = true, overrides: Record<string, string> 
 const install = ["/bin/bash", resolve("scripts/install.sh"), "--archive", archive, "--sha256", hash, "--no-open"];
 const cli = (...args: string[]) => run([join(bin, "tether"), ...args]);
 try {
+  await writeFile(join(scratch, ".env"), "TETHER_PROFILE=invalid/profile\n");
   await run([...install.slice(0, -3), "--sha256", "0".repeat(64), "--no-open"], false);
   const mockBin = join(scratch, "download-fixture");
   await mkdir(mockBin);

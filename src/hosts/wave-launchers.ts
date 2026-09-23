@@ -40,7 +40,7 @@ async function readWidgets(path: string): Promise<Widgets> {
 
 function commandWidget(label: string, description: string, icon: string, args: string[], order: number, mdreviewPath: string, runtimePath: string) {
   const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
-  const command = ["/usr/bin/env", "TETHER_PROFILE=preview", "TETHER_WAVE_LAUNCHER=1", ...(process.env.TETHER_INSTALL_ROOT ? [`TETHER_INSTALL_ROOT=${process.env.TETHER_INSTALL_ROOT}`] : []), runtimePath, mdreviewPath, ...args].map(quote).join(" ");
+  const command = ["/usr/bin/env", "TETHER_PROFILE=preview", "TETHER_WAVE_LAUNCHER=1", ...(process.env.TETHER_INSTALL_ROOT ? [`TETHER_INSTALL_ROOT=${process.env.TETHER_INSTALL_ROOT}`] : []), runtimePath, "--no-env-file", mdreviewPath, ...args].map(quote).join(" ");
   return {
     "display:order": order, icon, label, description,
     blockdef: { meta: {

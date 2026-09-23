@@ -23,7 +23,7 @@ export async function completeManagedUpdate(config: TetherConfig, root: string, 
   // The installer can switch successfully before a later bookkeeping failure.
   next = await realpath(join(dirname(dirname(root)), "current")).catch(() => root);
   // Never fall back to an old executable after a new one has opened the database.
-  await (dependencies.launch ?? ensureDaemon)({ config, command: [join(next, "runtime/bun"), join(next, "lib/daemon.js")], env: { ...process.env, TETHER_INSTALL_ROOT: next } });
+  await (dependencies.launch ?? ensureDaemon)({ config, command: [join(next, "runtime/bun"), "--no-env-file", join(next, "lib/daemon.js")], env: { ...process.env, TETHER_INSTALL_ROOT: next } });
 }
 
 if (import.meta.main) {
