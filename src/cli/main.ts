@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun --no-env-file
 import { pendingAgentSkillReviews, listAgentSkillReviews, readAgentSkillReview, mergeAgentSkill } from "./agent-skills";
 import { diagnosticText, errorDetails, operationError } from "../shared/diagnostics";
 import { commandResult } from "./results";

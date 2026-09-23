@@ -49,7 +49,7 @@ if (process.argv[4]) {
   for (const name of ["update-root.json", "update-trust.json"]) await copyFile(join(resolve(process.argv[4]), name), join(destination, name));
 }
 for (const [name, entry] of [["tether", "public"], ["mdreview", "cli"], ["Open Tether.command", "public"]]) {
-  const launcher = `#!/bin/zsh\nset -euo pipefail\nexport TETHER_INSTALL_ROOT="\${0:A:h}"\nexec "$TETHER_INSTALL_ROOT/runtime/bun" "$TETHER_INSTALL_ROOT/lib/${entry}.js" "$@"\n`;
+  const launcher = `#!/bin/zsh\nset -euo pipefail\nexport TETHER_INSTALL_ROOT="\${0:A:h}"\nexec "$TETHER_INSTALL_ROOT/runtime/bun" --no-env-file "$TETHER_INSTALL_ROOT/lib/${entry}.js" "$@"\n`;
   await writeFile(join(destination, name!), launcher, { mode: 0o755 });
 }
 await writeFile(join(destination, "release.json"), JSON.stringify({ version, platform: process.platform, architecture: process.arch, runtime: Bun.version }, null, 2) + "\n");

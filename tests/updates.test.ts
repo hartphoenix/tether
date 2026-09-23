@@ -79,7 +79,7 @@ test("update supervisor invokes the pinned backup/update command and relaunches 
     launch: async options => {
       launches++;
       const selected = await realpath(next);
-      expect(options?.command).toEqual([join(selected, "runtime/bun"), join(selected, "lib/daemon.js")]);
+      expect(options?.command).toEqual([join(selected, "runtime/bun"), "--no-env-file", join(selected, "lib/daemon.js")]);
       expect(options?.config).toEqual(f.options.config);
       expect(options?.env?.TETHER_INSTALL_ROOT).toBe(selected);
       return {} as never;

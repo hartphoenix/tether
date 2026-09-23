@@ -39,7 +39,7 @@ test("atomically replaces legacy and preview widgets with canonical Tether launc
   expect(widgets["tether-preview-recents"]).toBeUndefined();
   expect(widgets["tether-recents"].blockdef.meta).toMatchObject({
     controller: "shell", "cmd:jwt": true,
-    "cmd:initscript": "exec '/usr/bin/env' 'TETHER_PROFILE=preview' 'TETHER_WAVE_LAUNCHER=1' '/runtime/bun' '/product/mdreview' 'folio'",
+    "cmd:initscript": "exec '/usr/bin/env' 'TETHER_PROFILE=preview' 'TETHER_WAVE_LAUNCHER=1' '/runtime/bun' '--no-env-file' '/product/mdreview' 'folio'",
   });
   expect(widgets["tether-recents"]).toMatchObject({ label: "Tether Folio", description: "Open Tether Folio" });
   expect(Object.keys(widgets).filter(key => key.startsWith("tether-recent-"))).toEqual([]);

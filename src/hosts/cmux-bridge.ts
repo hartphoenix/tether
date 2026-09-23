@@ -329,7 +329,7 @@ export async function startCmuxBridge(
     // cmux 0.64.22 signs a capability into each terminal specifically so an
     // inherited child remains authorized after detachment and reparenting.
     // Keep that broad cmux authority only in this narrow bridge's environment.
-    const child = Bun.spawn([process.execPath, runtimeEntry("cmux-bridge")], {
+    const child = Bun.spawn([process.execPath, "--no-env-file", runtimeEntry("cmux-bridge")], {
       env: childEnv,
       detached: true,
       stdin: "ignore",
