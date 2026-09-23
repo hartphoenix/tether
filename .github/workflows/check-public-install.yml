@@ -20,13 +20,15 @@ jobs:
       EXPECTED_VERSION: ${{ inputs.version }}
       EXPECTED_SHA256: ${{ inputs.archive_sha256 }}
       TETHER_PROFILE: public-release-check
-      TETHER_INSTALL_DIR: ${{ runner.temp }}/tether-public/install
-      TETHER_BIN_DIR: ${{ runner.temp }}/tether-public/bin
-      TETHER_CONFIG_DIR: ${{ runner.temp }}/tether-public/config
-      TETHER_RUNTIME_DIR: ${{ runner.temp }}/tether-public/runtime
-      WAVETERM_CONFIG_DIR: ${{ runner.temp }}/tether-public/wave
       TETHER_SUPPRESS_BROWSER: '1'
     steps:
+      - name: Set isolated installation paths
+        run: |
+          echo "TETHER_INSTALL_DIR=$RUNNER_TEMP/tether-public/install" >> "$GITHUB_ENV"
+          echo "TETHER_BIN_DIR=$RUNNER_TEMP/tether-public/bin" >> "$GITHUB_ENV"
+          echo "TETHER_CONFIG_DIR=$RUNNER_TEMP/tether-public/config" >> "$GITHUB_ENV"
+          echo "TETHER_RUNTIME_DIR=$RUNNER_TEMP/tether-public/runtime" >> "$GITHUB_ENV"
+          echo "WAVETERM_CONFIG_DIR=$RUNNER_TEMP/tether-public/wave" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
