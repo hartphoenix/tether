@@ -1,3 +1,5 @@
+import { scrollViewportTop } from '../scroll-geometry';
+
 /**
  * Compatibility with cmux 0.64.22 (ddd4a01bc), BrowserFindScript.swift.
  * Its native find bar injects marks, then stores them in __cmuxFindMatches.
@@ -103,8 +105,16 @@ export function installCmuxFindCompatibility(win: Window & typeof globalThis): (
           if (!range) return;
           const rect = range.getBoundingClientRect();
           // Transform-scaled document ranges use ordinary viewport CSS pixels.
-          const center = rect.top + win.scrollY + rect.height / 2;
-          win.scrollTo({ top: center - win.innerHeight / 2, behavior: "instant" });
+          const element = anchor.parent.nodeType === 1 ? anchor.parent as Element : anchor.parent.parentElement;
+          const scroller = element?.closest<HTMLElement>('.wm-document-scroll');
+          if (scroller) {
+            const viewport = scroller.getBoundingClientRect();
+            const top = scrollViewportTop(scroller, viewport.top);
+            scroller.scrollTop += rect.top + rect.height / 2 - (top + (viewport.top + viewport.height - top) / 2);
+          } else {
+            const center = rect.top + win.scrollY + rect.height / 2;
+            win.scrollTo({ top: center - win.innerHeight / 2, behavior: "instant" });
+          }
         },
       }));
       // cmux still uses its local array to select/scroll the initial result.

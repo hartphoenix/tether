@@ -10,7 +10,7 @@ if (!process.argv[2]) throw new Error("Usage: bun scripts/check-release.ts <cand
 const scratch = await mkdtemp(join(tmpdir(), "tether-release-check-"));
 const config = resolveConfig({ configDir: join(scratch, "config"), runtimeDir: join(scratch, "runtime") });
 const env = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: tmpdir(), TETHER_CONFIG_DIR: config.configDir,
-  TETHER_RUNTIME_DIR: config.runtimeDir, TETHER_SUPPRESS_BROWSER: "1" };
+  TETHER_RUNTIME_DIR: config.runtimeDir, WAVETERM_CONFIG_DIR: join(scratch, "wave"), TETHER_SUPPRESS_BROWSER: "1" };
 async function command(...args: string[]) {
   const child = Bun.spawn([join(root, "tether"), ...args], { cwd: scratch, env, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -37,7 +37,7 @@ try {
   if (!page.ok || !script) throw new Error("Packaged reader did not serve its HTML.");
   if (!(await fetch(new URL(script, readerUrl), { headers: { cookie } })).ok) throw new Error("Packaged JavaScript is missing.");
   const text = await readFile(setup.path, "utf8");
-  await command("comment", setup.path, "--actor", "human", "--quote", "What would you like to build next?", "--body-file", setup.path, "--operation-id", "release-smoke-comment");
+  await command("comment", setup.path, "--actor", "human", "--quote", "Your Markdown stays in its original file.", "--body-file", setup.path, "--operation-id", "release-smoke-comment");
   if (await readFile(setup.path, "utf8") !== text) throw new Error("A comment changed Markdown.");
   const pending = await command("pending", setup.path, "--actor", "assistant");
   if (!pending.events.length) throw new Error("The agent cannot see the welcome comment.");

@@ -31,7 +31,7 @@ describe.each(["open", "setup"] as const)("%s failure after completed work", (co
       },
       openExternal: async () => {},
     };
-    result = await runCli(command === "open" ? ["open", path] : ["setup", "--host", "browser"], { config, host });
+    result = await runCli(command === "open" ? ["open", path] : ["setup", "--host", "browser"], { config, host, waveLaunchers: { widgetsPath: join(root, "absent-wave/widgets.json") } });
     // Establish that the intended failure boundary was reached.
     expect(result).toMatchObject({ exitCode: 1, response: { ok: false, error: { code: "placement_failed" } } });
     const listing = await runCli(["folio", "list"], { config });

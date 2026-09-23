@@ -45,7 +45,12 @@ test("the actual reader recovers its draft before post-mount requests, and prese
     const editor = doc.querySelector(".ProseMirror")!;
     expect(editor.textContent).toContain("My unsaved draft");
     expect(doc.querySelector<HTMLElement>("#conflict")!.hidden).toBe(false);
-    expect(win.scrollY).toBe(900);
+    const scroller = doc.querySelector<HTMLElement>(".wm-document-scroll")!;
+    expect(scroller.scrollTop).toBe(900);
+    expect(win.scrollY).toBe(0);
+    scroller.scrollTop = 1100;
+    scroller.dispatchEvent(new win.Event("scroll"));
+    await until(() => writes.some(write => write.route === "api/position" && write.body.scroll === 1100));
     await until(() => writes.some(write => write.route === "api/draft"));
     expect(writes.filter(write => write.route === "api/draft").every(write => write.body.body.includes("My unsaved draft") && write.body.baseRevision === "original")).toBe(true);
     win.dispatchEvent(new win.PageTransitionEvent("pageshow", { persisted: true }));

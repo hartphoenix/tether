@@ -1,5 +1,7 @@
 import type { EditorView } from "@milkdown/kit/prose/view";
 import type { Mark, MarkType, Node as ProseMirrorNode, NodeType } from "@milkdown/kit/prose/model";
+import { liftTarget } from "@milkdown/kit/prose/transform";
+import type { Command } from "@milkdown/kit/prose/state";
 import type { Selection } from "@milkdown/kit/prose/state";
 
 /** The two useful states for an affordance in a formatting surface. */
@@ -994,3 +996,14 @@ export function createReviewNote(view: EditorView, note: unknown, selection?: Se
   dispatch(view, transaction.scrollIntoView());
   return ok();
 }
+
+/** Lift selected quote children one level, preserving nested lists and other blocks. */
+export const decreaseQuoteLevel: Command = (state, dispatch) => {
+  const { $from, $to } = state.selection;
+  const range = $from.blockRange($to, node => node.type.name === "blockquote");
+  if (!range) return false;
+  const target = liftTarget(range);
+  if (target === null || target !== range.depth - 1) return false;
+  dispatch?.(state.tr.lift(range, target).scrollIntoView());
+  return true;
+};

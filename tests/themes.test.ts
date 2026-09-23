@@ -20,7 +20,7 @@ test('older custom themes inherit yellow annotations and preserve a chosen color
   }
 });
 
-test("offers all bundled Crepe themes and applies the selection", async () => {
+test("offers the four built-in themes and applies the selection", async () => {
   const dom = new JSDOM("<!doctype html><button></button><div></div><main></main>", { url: "http://localhost" });
   const previousDocument = globalThis.document;
   const previousNode = globalThis.Node;
@@ -30,11 +30,10 @@ test("offers all bundled Crepe themes and applies the selection", async () => {
     const button = document.querySelector("button")!;
     const menu = document.querySelector("div")!;
     const root = document.querySelector("main")!;
-    let selected = "frame-dark";
+    let selected = "tether-dark";
     const picker = createThemePicker(button, menu, root, { onChange: (theme) => { selected = theme; } });
     expect([...menu.querySelectorAll('button')].map(item => item.textContent)).toEqual([
       'Tether Light', 'Tether Dark', 'Light Treason', 'Dark Academia',
-      'Frame Light', 'Frame Dark', 'Crepe Light', 'Crepe Dark', 'Nord Light', 'Nord Dark',
     ]);
     for (const id of ['tether', 'tether-dark', 'light-treason', 'dark-academia'] as const) {
       menu.querySelector<HTMLButtonElement>(`[data-theme="${id}"]`)!.click();
@@ -46,18 +45,18 @@ test("offers all bundled Crepe themes and applies the selection", async () => {
     menu.querySelector<HTMLButtonElement>('[data-theme="tether-dark"]')!.click();
     await Promise.resolve();
     expect(root.dataset.wmTheme).toBe("tether-dark");
-    menu.querySelector<HTMLButtonElement>('[data-theme="nord"]')!.click();
-    expect(root.dataset.wmTheme).toBe("nord");
-    expect(document.documentElement.dataset.wmTheme).toBe("nord");
+    menu.querySelector<HTMLButtonElement>('[data-theme="tether"]')!.click();
+    expect(root.dataset.wmTheme).toBe("tether");
+    expect(document.documentElement.dataset.wmTheme).toBe("tether");
     await Promise.resolve();
-    expect(selected).toBe("nord");
+    expect(selected).toBe("tether");
     picker.destroy();
 
     const nextButton = document.createElement("button");
     const nextMenu = document.createElement("div");
     const nextRoot = document.createElement("main");
-    const nextPicker = createThemePicker(nextButton, nextMenu, nextRoot, { initialTheme: "nord" });
-    expect(nextRoot.dataset.wmTheme).toBe("nord");
+    const nextPicker = createThemePicker(nextButton, nextMenu, nextRoot, { initialTheme: "tether" });
+    expect(nextRoot.dataset.wmTheme).toBe("tether");
     nextPicker.destroy();
   } finally {
     globalThis.document = previousDocument;
@@ -111,7 +110,7 @@ test('maker previews, cancels, saves, and retains draft on failed persistence', 
     expect(panel().hidden).toBe(true); expect(state.customThemes).toHaveLength(1);
     expect(state.customThemes[0].metrics.bodySize).toBe(22);
     expect(state.customThemes[0].colors.annotation).toBe('#aa44cc');
-    expect(document.querySelectorAll('#menu button[data-theme]')).toHaveLength(11);
+    expect(document.querySelectorAll('#menu button[data-theme]')).toHaveLength(5);
     document.querySelector<HTMLButtonElement>('[data-edit-theme]')!.click();
     expect(panel().querySelector('[aria-label="Based on"]')).toBeNull();
     const save = [...panel().querySelectorAll('button')].find(b => b.textContent === 'Save changes')!;
@@ -130,7 +129,7 @@ test('maker previews, cancels, saves, and retains draft on failed persistence', 
     open();
     const basedOn = () => panel().querySelector<HTMLSelectElement>('[aria-label="Based on"]')!;
     expect(basedOn().value).toBe(state.customThemes[0].id);
-    expect(basedOn().options).toHaveLength(11);
+    expect(basedOn().options).toHaveLength(5);
     const size = panel().querySelector<HTMLInputElement>('[data-metric="bodySize"]')!;
     size.value = '25'; size.dispatchEvent(new dom.window.Event('input'));
     basedOn().value = 'tether'; basedOn().dispatchEvent(new dom.window.Event('change'));

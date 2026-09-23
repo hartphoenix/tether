@@ -3,6 +3,19 @@ import { contrastRatio, preferencesFrom, tetherDesign, updatePreferences, valida
 import { googleFontCandidates } from '../src/web/theme-fonts';
 
 const custom = (id = 'custom-one', name = 'Slate') => ({ ...tetherDesign(true), id, name });
+test('retired presets migrate while preserving custom designs and cannot be selected again', () => {
+  for (const family of ['crepe', 'frame', 'nord']) for (const dark of [false, true]) {
+    const retired = family + (dark ? '-dark' : '');
+    const replacement = dark ? 'tether-dark' : 'tether';
+    expect(preferencesFrom({ theme: retired }).theme).toBe(replacement);
+    expect(() => updatePreferences(preferencesFrom(null), { theme: retired })).toThrow('Theme not found');
+    const saved = { ...custom(), id: 'custom-one' as const, base: retired };
+    const restored = preferencesFrom({ theme: saved.id, customThemes: [saved] });
+    expect(restored.theme).toBe(saved.id);
+    expect(restored.customThemes).toEqual([{ ...saved, base: replacement }]);
+  }
+});
+
 test('Tether pairs share fonts and text, link, and inline code contrast exceeds 4.5:1', () => {
   expect(tetherDesign(true).fonts).toEqual(tetherDesign(false).fonts);
   for (const dark of [true, false]) {
@@ -15,7 +28,7 @@ test('Tether pairs share fonts and text, link, and inline code contrast exceeds 
 });
 test('preferences migrate without replacing valid existing choices and recover corrupt entries', () => {
   expect(preferencesFrom(null)).toEqual({ theme: 'tether-dark', customThemes: [] });
-  expect(preferencesFrom({ theme: 'nord' }).theme).toBe('nord');
+  expect(preferencesFrom({ theme: 'tether' }).theme).toBe('tether');
   const p = preferencesFrom({ theme: 'custom-one', customThemes: [{ nonsense: true }, custom()] });
   expect(p.theme).toBe('custom-one'); expect(p.customThemes).toHaveLength(1);
   expect(preferencesFrom({ theme: 'custom-missing' }).theme).toBe('tether-dark');
@@ -23,11 +36,11 @@ test('preferences migrate without replacing valid existing choices and recover c
 test('library operations retain other themes, reject collisions and protect built-ins', () => {
   let p = updatePreferences(preferencesFrom(null), { saveTheme: custom(), theme: 'custom-one' });
   p = updatePreferences(p, { saveTheme: custom('custom-two', 'Paper') });
-  p = updatePreferences(p, { theme: 'crepe' });
+  p = updatePreferences(p, { theme: 'tether' });
   expect(p.customThemes).toHaveLength(2);
   expect(() => updatePreferences(p, { saveTheme: custom('custom-three', 'slate') })).toThrow('already in use');
   expect(() => updatePreferences(p, { saveTheme: custom('custom-three', 'Tether Dark') })).toThrow('already in use');
-  expect(() => updatePreferences(p, { deleteTheme: 'crepe' })).toThrow();
+  expect(() => updatePreferences(p, { deleteTheme: 'tether' })).toThrow();
   p = updatePreferences(p, { theme: 'custom-one' });
   p = updatePreferences(p, { deleteTheme: 'custom-one' });
   expect(p.theme).toBe('tether-dark'); expect(p.customThemes[0].name).toBe('Paper');

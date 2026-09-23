@@ -27,14 +27,20 @@ async function topology(page: Page, scale: number) {
   const geometry = await page.evaluate(() => {
     const stage = document.querySelector<HTMLElement>('.wm-canvas-stage')!;
     const scene = document.querySelector<HTMLElement>('.wm-canvas-scene')!;
+    const scroller = document.querySelector<HTMLElement>('.wm-document-scroll')!;
+    const header = document.querySelector<HTMLElement>('.milkdown-top-bar')!;
     return { stage: stage.getBoundingClientRect().height, scene: scene.getBoundingClientRect().height,
+      scrollTop: scroller.getBoundingClientRect().top, headerTop: header.getBoundingClientRect().top,
+      scrollPadding: parseFloat(getComputedStyle(scroller).paddingTop), headerHeight: header.offsetHeight,
       pageWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth,
-      pageHeight: document.documentElement.scrollHeight, bottom: stage.getBoundingClientRect().bottom + scrollY,
+      pageHeight: document.documentElement.scrollHeight, viewportHeight: innerHeight,
+      scrollHeight: document.querySelector('.wm-document-scroll')!.scrollHeight, bottom: stage.offsetHeight + parseFloat(getComputedStyle(document.querySelector('.wm-document-scroll')!).paddingTop),
       clip: getComputedStyle(stage).overflow, parent: (window as any).audit.view.dom.offsetParent === scene };
   });
+  check(Math.abs(geometry.scrollTop - geometry.headerTop) <= 1 && Math.abs(geometry.scrollPadding - geometry.headerHeight) <= 1, `reader does not extend behind glass header: ${JSON.stringify(geometry)}`);
   check(Math.abs(geometry.stage - geometry.scene) <= 1.1, `stage height mismatch at ${scale}`);
   check(geometry.pageWidth <= geometry.viewportWidth + 1, `horizontal overflow at ${scale}`);
-  check(geometry.pageHeight <= Math.max(800, geometry.bottom) + 2, `phantom document extent at ${scale}: ${JSON.stringify(geometry)}`);
+  check(geometry.pageHeight <= geometry.viewportHeight + 2 && geometry.scrollHeight <= Math.max(geometry.viewportHeight, geometry.bottom) + 2, `phantom document extent at ${scale}: ${JSON.stringify(geometry)}`);
   check(geometry.clip === 'clip' && geometry.parent, 'incorrect clipping/offset parent');
   await page.locator('.ProseMirror p').nth(5).click();
   await page.waitForTimeout(100);
@@ -63,7 +69,7 @@ async function topology(page: Page, scale: number) {
   check(await preview.textContent().then(text => text?.includes('https://example.com/8')), 'wrong hovered link identity');
   const linkBefore = await page.locator('.ProseMirror a').nth(8).boundingBox();
   const previewBefore = await preview.boundingBox();
-  await page.evaluate(() => scrollBy(0, 60));
+  await page.evaluate(() => { document.querySelector('.wm-document-scroll')!.scrollTop += 60; });
   await page.waitForTimeout(120);
   const linkAfter = await page.locator('.ProseMirror a').nth(8).boundingBox();
   const previewAfter = await preview.boundingBox();
@@ -72,7 +78,7 @@ async function topology(page: Page, scale: number) {
   await page.mouse.move(previewAfter.x+previewAfter.width/2, previewAfter.y+previewAfter.height/2, { steps: 5 });
   await page.waitForTimeout(100);
   check(await preview.getAttribute('data-show') === 'true', 'hover transfer dismissed preview');
-  await page.evaluate(() => scrollBy(0, 900));
+  await page.evaluate(() => { document.querySelector('.wm-document-scroll')!.scrollTop += 900; });
   await page.waitForTimeout(100);
   check(await preview.getAttribute('data-show') === 'false', 'offscreen hovered source retained preview');
   await page.locator('.ProseMirror a').nth(8).evaluate(el => el.scrollIntoView({block:'center'}));
@@ -83,7 +89,7 @@ async function topology(page: Page, scale: number) {
   await page.evaluate(() => (window as any).audit.comment(8));
   const composer = page.locator('.wm-comment-popover');
   await composer.locator('textarea').fill('Keep this draft');
-  await page.evaluate(() => scrollBy(0, 30));
+  await page.evaluate(() => { document.querySelector('.wm-document-scroll')!.scrollTop += 30; });
   await page.waitForTimeout(80);
   check(await composer.locator('textarea').inputValue() === 'Keep this draft', 'comment lost input while repositioning');
   const formBox = await composer.boundingBox();
@@ -165,7 +171,7 @@ async function topology(page: Page, scale: number) {
     return { caret: c.left, left: b.left, right: b.right, scroll: scroller.scrollLeft, text: v.state.selection.$from.parent.textContent };
   });
   check(tableCaret.text === 'cell two' && tableCaret.scroll > 0 && tableCaret.caret >= tableCaret.left && tableCaret.caret <= tableCaret.right, `nested table caret scroll at ${scale}: ${JSON.stringify(tableCaret)}`);
-  await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight));
+  await page.evaluate(() => { const scroller = document.querySelector('.wm-document-scroll')!; scroller.scrollTop = scroller.scrollHeight; });
   const bottom = await page.locator('.ProseMirror p').last().boundingBox();
   check(bottom && bottom.y >= 0 && bottom.y + bottom.height <= 800, `last paragraph unreachable at ${scale}`);
   const toolbar = await page.locator('.milkdown-top-bar').boundingBox();
@@ -187,7 +193,7 @@ async function topology(page: Page, scale: number) {
     view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, paragraph));
   });
   await page.waitForTimeout(100);
-  await page.evaluate(() => scrollTo(0,500));
+  await page.evaluate(() => { document.querySelector('.wm-document-scroll')!.scrollTop = 500; });
   const visibleY = await page.evaluate(() => {
     const text = document.querySelector('.ProseMirror > p')!.firstChild!;
     const range = document.createRange();

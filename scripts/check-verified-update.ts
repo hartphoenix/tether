@@ -62,8 +62,12 @@ try {
       assert((await fetch(new URL("api/updates/install", view.url), { method: "POST", headers: { cookie: view.cookie, origin: view.url.origin, "content-type": "application/json" }, body: JSON.stringify({ tag: checked.available.tag }) })).ok, `${mode} install failed`);
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
-        const current = await statusDaemon(config);
-        if (current.running && current.instanceId !== before.instanceId) break;
+        // The old discovery record can briefly outlive its listener during replacement.
+        const current = await statusDaemon(config).catch(cause => {
+          if (cause?.code === "daemon_unreachable") return undefined;
+          throw cause;
+        });
+        if (current?.running && current.instanceId !== before.instanceId) break;
         await Bun.sleep(250);
       }
     }

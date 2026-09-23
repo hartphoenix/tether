@@ -5,9 +5,6 @@ export const builtInThemes = [
   { value: 'tether-dark', label: 'Tether Dark' },
   { value: 'light-treason', label: 'Light Treason' },
   { value: 'dark-academia', label: 'Dark Academia' },
-  { value: 'frame', label: 'Frame Light' }, { value: 'frame-dark', label: 'Frame Dark' },
-  { value: 'crepe', label: 'Crepe Light' }, { value: 'crepe-dark', label: 'Crepe Dark' },
-  { value: 'nord', label: 'Nord Light' }, { value: 'nord-dark', label: 'Nord Dark' },
 ] as const;
 export type BuiltInTheme = typeof builtInThemes[number]['value'];
 export type ThemeId = BuiltInTheme | `custom-${string}`;
@@ -54,6 +51,13 @@ export type CustomTheme = ThemeDesign & { id: `custom-${string}`; name: string }
 export type ThemePreferences = { theme: ThemeId; customThemes: CustomTheme[] };
 export type ThemeMutation = { theme?: ThemeId; saveTheme?: CustomTheme; deleteTheme?: string };
 
+// Migrate retired presets without losing custom designs based on them.
+function migrateTheme(value: unknown): unknown {
+  if (['frame', 'crepe', 'nord'].includes(value as string)) return 'tether';
+  if (['frame-dark', 'crepe-dark', 'nord-dark'].includes(value as string)) return 'tether-dark';
+  return value;
+}
+
 export function isBuiltInTheme(value: unknown): value is BuiltInTheme {
   return builtInThemes.some(t => t.value === value);
 }
@@ -74,12 +78,13 @@ export function validateCustomTheme(value: unknown): CustomTheme {
   const raw = object(value);
   if (typeof raw.id !== 'string' || !/^custom-[a-zA-Z0-9-]{1,80}$/.test(raw.id)) throw new Error('Invalid theme ID.');
   if (typeof raw.name !== 'string' || !raw.name.trim() || raw.name.trim().length > 64) throw new Error('Theme names must contain 1–64 characters.');
-  if (!isBuiltInTheme(raw.base)) throw new Error('Invalid template theme.');
+  const base = migrateTheme(raw.base);
+  if (!isBuiltInTheme(base)) throw new Error('Invalid template theme.');
   const colors = object(raw.colors), fonts = object(raw.fonts), values = object(raw.metrics);
-  const result = { id: raw.id, name: raw.name.trim(), base: raw.base, colors: {}, fonts: {}, metrics: {} } as CustomTheme;
+  const result = { id: raw.id, name: raw.name.trim(), base, colors: {}, fonts: {}, metrics: {} } as CustomTheme;
   for (const key of colorKeys) {
     if (key === 'annotation' && colors[key] === undefined) {
-      result.colors[key] = annotationColor(raw.base.endsWith('-dark'));
+      result.colors[key] = annotationColor(base.endsWith('-dark'));
       continue;
     }
     if (typeof colors[key] !== 'string' || !/^#[0-9a-f]{6}$/i.test(colors[key] as string)) throw new Error(`Invalid color: ${key}`);
@@ -105,7 +110,8 @@ export function preferencesFrom(value: unknown): ThemePreferences {
   if (Array.isArray(raw.customThemes)) for (const item of raw.customThemes.slice(0, 100)) {
     try { const theme = validateCustomTheme(item); if (!customThemes.some(t => t.id === theme.id)) customThemes.push(theme); } catch { /* Ignore corrupt entries, preserving valid themes. */ }
   }
-  const theme = isBuiltInTheme(raw.theme) || customThemes.some(t => t.id === raw.theme) ? raw.theme as ThemeId : 'tether-dark';
+  const selected = migrateTheme(raw.theme);
+  const theme = isBuiltInTheme(selected) || customThemes.some(t => t.id === selected) ? selected as ThemeId : 'tether-dark';
   return { theme, customThemes };
 }
 export function updatePreferences(current: ThemePreferences, value: unknown): ThemePreferences {

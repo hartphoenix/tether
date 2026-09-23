@@ -1,5 +1,6 @@
 import { chmod, copyFile, cp, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { buildBootstrap } from "./build-bootstrap";
 import { version as packageVersion } from "../package.json";
 const version = process.argv[3] ?? packageVersion;
 if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Expected a stable release version.");
@@ -13,6 +14,7 @@ await mkdir(join(destination, "runtime"));
 await copyFile(process.execPath, join(destination, "runtime/bun"));
 await chmod(join(destination, "runtime/bun"), 0o755);
 const entries = {
+  "update-agent-skills": "scripts/update-agent-skills.ts",
   cli: "src/cli/main.ts", public: "src/cli/public.ts", daemon: "src/server/daemon.ts",
   "wave-bridge": "src/hosts/wave-bridge-daemon.ts", "cmux-bridge": "src/hosts/cmux-bridge-daemon.ts",
 };
@@ -25,6 +27,7 @@ if (!web.success) throw new Error(web.logs.map(String).join("\n"));
 await copyFile("src/web/favicon.png", join(destination, "dist/favicon.png"));
 await mkdir(join(destination, "docs"));
 await copyFile("docs/getting-started.md", join(destination, "docs/getting-started.md"));
+await cp("docs/assets", join(destination, "docs/assets"), { recursive: true });
 await cp("integrations", join(destination, "integrations"), { recursive: true });
 await copyFile("LICENSE", join(destination, "LICENSE"));
 await mkdir(join(destination, "licenses"));
@@ -56,4 +59,5 @@ const tar = Bun.spawn(["tar", "-czf", archive, "-C", destination, "."], { env: {
 if (await tar.exited !== 0) throw new Error("Release archiving failed.");
 const hash = new Bun.CryptoHasher("sha256").update(await Bun.file(archive).arrayBuffer()).digest("hex");
 await writeFile(`${archive}.sha256`, `${hash}  tether-darwin-${process.arch}.tar.gz\n`, { flag: "wx" });
+await buildBootstrap(version, join(dirname(destination), "install.sh"), [archive]);
 console.log(destination);

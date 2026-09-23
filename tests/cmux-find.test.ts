@@ -176,3 +176,19 @@ test("centers transformed matches using viewport coordinates", () => {
     expect(highlights.size).toBe(0);
   } finally { cleanup(); dom.window.close(); }
 });
+
+test("centers find results in the document scroller without scrolling the page", () => {
+  const { dom, win, scrolls } = environment();
+  win.document.querySelector("#editor")!.innerHTML = '<header class="milkdown-top-bar"></header><div class="wm-document-scroll"><div class="ProseMirror"><p>needle</p></div></div>';
+  const scroller = win.document.querySelector<HTMLElement>('.wm-document-scroll')!;
+  scroller.scrollTop = 200;
+  scroller.getBoundingClientRect = () => ({ width: 800, top: 0, height: 800 } as DOMRect);
+  win.document.querySelector('header')!.getBoundingClientRect = () => ({ top: 0, bottom: 44, height: 44 } as DOMRect);
+  win.Range.prototype.getBoundingClientRect = () => ({ top: 1300, height: 30 } as DOMRect);
+  const cleanup = installCmuxFindCompatibility(win);
+  try {
+    search(win, "needle");
+    expect(scroller.scrollTop).toBe(200 + 1315 - (44 + 756 / 2));
+    expect(scrolls).toEqual([]);
+  } finally { cleanup(); dom.window.close(); }
+});

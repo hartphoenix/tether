@@ -1,4 +1,16 @@
+/* Outrank Milkdown's later universal margin/padding reset. */
+.milkdown > .wm-document-scroll {
+  flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain;
+  margin-top: calc(-1 * var(--wm-scroll-header-height, 0px));
+  padding-top: var(--wm-scroll-header-height, 0px);
+  scroll-padding-top: calc(var(--wm-scroll-header-height, 0px) + 8px);
+}
 .wm-canvas-stage { position: relative; overflow: clip; }
+.milkdown:has(> #update-notice:not([hidden]):not([data-update-popover])) > .wm-document-scroll {
+  margin-top: 0;
+  padding-top: 0;
+  scroll-padding-top: 8px;
+}
 .wm-canvas-scene {
   position: absolute;
   top: 0;

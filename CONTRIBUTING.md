@@ -1,13 +1,35 @@
 # Contributing to Tether
 
-Tether runs on macOS using Bun and TypeScript. Read README for the product flow and `docs/product-plan.md` for release scope.
+Read the [README](README.md) to get a feel for Tether, and use the [documentation map](docs/README.md) to find user and agent workflows. In your contribution, explain the problem, what changes for the user, and how you checked it.
 
-Run `bun install`, then `bun run check` before submitting a change. The full check runs unit/integration tests, TypeScript checking, and the browser build. Some tests need temporary loopback ports. See `docs/release.md` to build and exercise a packaged candidate.
+## Run from source
 
-Keep document/review logic independent of terminal hosts. Wave, cmux, and browsers report their capabilities through adapters. Comments belong in private SQLite, not Markdown. Preserve conflict checks, document-scoped access, and the separation between acknowledgement and resolution.
+Use macOS and Bun 1.3.9 to match CI and the bundled runtime license notice. From the checkout, run each command separately:
 
-For a bug report, include the Tether version, macOS version, CPU architecture, host/browser version, minimal reproduction, and expected/observed behavior.
+```sh
+bun install --frozen-lockfile
+cp /path/to/document.md /tmp/tether-example.md
+TETHER_PROFILE=development ./tether open /tmp/tether-example.md --host browser
+```
 
-Linux and Windows version contributions are welcome. Provide a build path, platform-specific file/open/picker behavior, and tests performed on the actual OS.
+Keep the `TETHER_PROFILE=development` prefix on later CLI calls. It gives your development work separate private state, but still edits the Markdown files you point it to. Use a disposable copy. `./tether` and `./mdreview` use the same service. Stop it with `TETHER_PROFILE=development ./tether daemon stop`.
 
-Prefer focused changes with a concrete before/after description and relevant verification. Open an issue before introducing a new terminal host, major dependency, or public extension API.
+## Check a change
+
+```sh
+bun run check
+```
+
+This runs unit and integration tests, TypeScript checking, and the browser build. The tests need temporary loopback ports. If you change editor geometry, also run `bun run check:geometry`. Check native host behavior in the host you changed.
+
+The [architecture guide](docs/contributing/architecture.md) explains the code boundaries; [package verification](docs/contributing/packages.md) covers installation and runtime checks. The GitHub workflow runs the full check plus package and installer checks on macOS.
+
+## Submit a contribution
+
+Keep changes focused and preserve unrelated work. List the commands you tested and any behavior you still need to check in a native host. Open an issue before introducing a new terminal host, major dependency, or public extension API.
+
+For a bug report, include your Tether and macOS versions, CPU architecture, and host or browser version. Describe how to reproduce it, what you expected, and what happened. Leave out private documents, conversations, and credentials.
+
+To add Linux or Windows support, provide a way to build Tether, implement file access, opening, and pickers for that platform, and test on the actual OS before advertising support.
+
+Keep personal plans, session records, audits, and publisher operations under ignored `.local/`. Public docs should help people use Tether or contribute to it; development history stays local.

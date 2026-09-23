@@ -76,6 +76,9 @@ for name in tether mdreview; do
   if [ ! -L "$bin_directory/$name" ]; then ln -s "$install_root/current/$name" "$bin_directory/$name"; fi
 done
 "$destination/runtime/bun" -e 'await Bun.write(process.argv[1],JSON.stringify({binDirectory:process.argv[2]})+"\n")' "$install_root/install.json" "$bin_directory"
+if [ -f "$destination/lib/update-agent-skills.js" ]; then
+  TETHER_INSTALL_ROOT="$destination" "$destination/runtime/bun" "$destination/lib/update-agent-skills.js"
+fi
 echo "Installed Tether: $destination"
 echo "Launcher: $install_root/current/Open Tether.command"
 case ":$PATH:" in *":$bin_directory:"*) ;; *) echo "To use tether in this shell: export PATH=\"$bin_directory:\$PATH\"" ;; esac

@@ -1,4 +1,4 @@
-import { builtInThemes, colorKeys, fontSlots, metrics, preferencesFrom, updatePreferences, tetherDesign, builtInDesign, type BuiltInTheme, type CustomTheme, type Metric, type ThemeDesign, type ThemeId, type ThemeMutation, type ThemePreferences } from '../shared/themes';
+import { builtInThemes, colorKeys, fontSlots, metrics, preferencesFrom, updatePreferences, builtInDesign, type BuiltInTheme, type CustomTheme, type Metric, type ThemeDesign, type ThemeId, type ThemeMutation, type ThemePreferences } from '../shared/themes';
 import { createThemeMaker } from './theme-maker';
 import { iconSvg } from './icons';
 import { createFontLoader } from './theme-fonts';
@@ -22,28 +22,6 @@ export function applyDesign(editorRoot: HTMLElement, base: BuiltInTheme, design?
   }
   html.style.setProperty('--wm-page-background', design.colors.background);
   html.style.setProperty('--wm-page-color', design.colors['on-background']);
-}
-
-function hexColor(value: string, fallback: string): string {
-  const short = /^#([\da-f])([\da-f])([\da-f])$/i.exec(value);
-  if (short) return `#${short.slice(1).map(v => v + v).join('')}`;
-  if (/^#[\da-f]{6}$/i.test(value)) return value;
-  const rgb = /^rgba?\((\d+)[, ]+(\d+)[, ]+(\d+)/.exec(value);
-  return rgb ? `#${rgb.slice(1).map(v => Number(v).toString(16).padStart(2, '0')).join('')}` : fallback;
-}
-
-/** Capture legacy palette and fonts from the actual selected CSS preset. */
-function templateDesign(root: HTMLElement, base: BuiltInTheme): ThemeDesign {
-  const result = tetherDesign(base.endsWith('-dark'));
-  result.base = base;
-  const computed = document.defaultView!.getComputedStyle(root.querySelector('.milkdown') ?? root);
-  for (const key of colorKeys) result.colors[key] = hexColor(computed.getPropertyValue(`--crepe-color-${key}`).trim(), result.colors[key]);
-  for (const [slot, token] of [['heading', 'title'], ['body', 'default'], ['code', 'code']] as const) {
-    const stack = computed.getPropertyValue(`--crepe-font-${token}`).trim();
-    if (stack) result.fonts[slot] = { family: stack.split(',')[0].replaceAll('"', '').replaceAll("'", '').trim(), fallback: slot === 'code' ? 'monospace' : stack.endsWith('sans-serif') ? 'sans-serif' : 'serif' };
-  }
-  result.metrics = { ...result.metrics, bodySize: 16, headingSize: 42, headingWeight: 400, headingSpacing: 0, codeSize: 14, lineHeight: 1.5, paragraphGap: 0.5 };
-  return result;
 }
 
 export function createThemePicker(
@@ -94,10 +72,7 @@ export function createThemePicker(
   const maker = options.makerButton ? createThemeMaker(options.makerButton, {
     selected: () => selected,
     template: (id) => {
-      const design = designFor(id);
-      if (design) return structuredClone(design);
-      applyDesign(editorRoot, id as BuiltInTheme);
-      return templateDesign(editorRoot, id as BuiltInTheme);
+      return structuredClone(designFor(id)!);
     },
     library: () => state.customThemes,
     preview, restore: () => apply(selected), loadFont: fonts.load,
