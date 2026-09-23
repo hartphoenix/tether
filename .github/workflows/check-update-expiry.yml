@@ -1,0 +1,27 @@
+name: Check public update expiry
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '43 */2 * * *'
+permissions:
+  contents: read
+jobs:
+  check:
+    if: vars.TETHER_UPDATES_LIVE == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.9
+      - run: bun install --frozen-lockfile
+      - uses: actions/checkout@v4
+        with:
+          ref: update-metadata
+          path: public-trust
+          persist-credentials: false
+      - name: Verify public signatures and at least six hours of validity
+        run: bun scripts/update-hosting.ts check public-trust 7c3d5f040c6c855813828a72a31a925efc7b62223c6eab8a32f8b0a40c894f74
