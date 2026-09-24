@@ -223,8 +223,8 @@ function requireResponseUuid(value: unknown, field: string): string {
 export class CmuxHostAdapter implements HostAdapter {
   private recoveryTail: Promise<unknown> = Promise.resolve();
 
-  /** One host-owned stream. No respawn loop; the next authorized attachment
-   * supplies fresh authority after the host exits. Never retain event payloads. */
+  /** One host-owned stream per call; the bridge re-watches only while the same
+   * cmux process holds its socket. Never retain event payloads. */
   async watchRecovery(onChange: () => void, signal: AbortSignal): Promise<void> {
     const child = Bun.spawn([this.cmuxPath, "events", "--category", "window", "--category", "workspace", "--category", "surface", "--category", "browser"], {
       env: cmuxEnvironment(this.env), stdin: "ignore", stdout: "pipe", stderr: "ignore",
@@ -242,7 +242,9 @@ export class CmuxHostAdapter implements HostAdapter {
         while ((boundary = pending.indexOf("\n")) >= 0) {
           const line = pending.slice(0, boundary); pending = pending.slice(boundary + 1);
           if (!line.trim()) continue;
-          const event = JSON.parse(line);
+          let event: { type?: unknown; name?: unknown };
+          // One unreadable frame must not end the stream and, with it, the bridge.
+          try { event = JSON.parse(line); } catch { continue; }
           if (event.type === "ack" || event.type === "event" && /^(window|workspace|surface|browser)\./.test(String(event.name))) onChange();
         }
       }

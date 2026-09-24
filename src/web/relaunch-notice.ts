@@ -1,6 +1,6 @@
 /** Self-contained so the standalone Folio page can embed the same renderer. */
 export function renderRelaunchNotice(element: HTMLElement, message: string): boolean {
-  const match = message.match(/Placement unavailable\. In cmux, run: `([^`]+)`/);
+  const match = message.match(/(?:run this in any cmux terminal:|Placement unavailable\. In cmux, run:) `([^`]+)`/);
   if (!match) return false;
   const doc = element.ownerDocument;
   element.textContent = "";
@@ -9,15 +9,15 @@ export function renderRelaunchNotice(element: HTMLElement, message: string): boo
   const previousFocus = doc.activeElement as HTMLElement | null;
   const dialog = doc.createElement("dialog");
   dialog.dataset.tetherRelaunch = "true";
-  dialog.setAttribute("aria-label", "Placement unavailable");
+  dialog.setAttribute("aria-label", "Reconnect Tether to cmux");
   dialog.setAttribute("aria-describedby", "tether-relaunch-instructions");
   dialog.style.cssText = "position:fixed;inset:0;margin:auto;width:min(420px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;padding:22px;border:1px solid var(--line,GrayText);border-radius:12px;background:var(--panel2,Canvas);color:var(--text,CanvasText);box-shadow:0 12px 40px #0005;font:14px system-ui;z-index:1000";
   const title = doc.createElement("h2");
-  title.textContent = "Placement unavailable";
+  title.textContent = "Reconnect Tether to cmux";
   title.style.cssText = "font-size:18px;margin:0 0 12px";
   const instructions = doc.createElement("p");
   instructions.id = "tether-relaunch-instructions";
-  instructions.textContent = "Run this command in a cmux terminal, then try opening the document again.";
+  instructions.textContent = "Tether lost its connection to cmux. Copy this command, run it in any cmux terminal, then try again.";
   const code = doc.createElement("code");
   code.textContent = match[1]!;
   code.style.cssText = "display:block;user-select:all;overflow-wrap:anywhere;white-space:pre-wrap;padding:12px 0";

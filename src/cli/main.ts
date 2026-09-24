@@ -23,7 +23,7 @@ import { installVerifiedRelease } from "../releases/verified-update";
 import { UpdateService } from "../server/updates";
 import { runtimeRoot } from "../runtime-paths";
 import type { RecoveryView } from "../hosts/recovery";
-import { enableStartup, disableStartup, startupStatus } from "./startup";
+import { enableStartup, disableStartup, refreshCmuxHook, startupStatus } from "./startup";
 
 export type CliDependencies = {
   waveLaunchers?: WaveLauncherOptions;
@@ -132,6 +132,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       if (!process.env.CMUX_SOCKET_CAPABILITY || !process.env.CMUX_SOCKET_PATH) throw new Error("Run this from a cmux terminal.");
       await ensureDaemon({ config, background: true });
       await startCmuxBridge(config, process.env);
+      await refreshCmuxHook(config).catch(() => false);
       return { response: success(command, { attached: true }), exitCode: 0 };
     }
     if (command === "resume") {

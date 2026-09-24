@@ -14,9 +14,11 @@ import {
 } from "./cmux";
 
 const LOOPBACK = "127.0.0.1";
-const relaunchPath = process.env.TETHER_INSTALL_ROOT ? resolve(process.env.TETHER_INSTALL_ROOT, "tether") : runtimeEntry("cli");
-const relaunchCommand = `'${relaunchPath.replace(/'/g, "'\\''")}' folio`;
-const RELAUNCH = `Tether isn't connected to cmux. In a cmux terminal, run \`${relaunchCommand}\` (with the Tether shell hook installed, opening a new terminal tab also works).`;
+// `current` survives updates; the release directory itself does not.
+const relaunchPath = process.env.TETHER_INSTALL_ROOT ? resolve(process.env.TETHER_INSTALL_ROOT, "../../current/tether") : runtimeEntry("cli");
+/** Pages parse this exact shape (src/web/relaunch-notice.ts) to offer a copy button. */
+export const cmuxReconnectMessage = (command: string) => `Tether lost its connection to cmux. To reconnect, run this in any cmux terminal: \`${command}\``;
+const RELAUNCH = cmuxReconnectMessage(`'${relaunchPath.replace(/'/g, "'\\''")}' cmux attach`);
 
 export type CmuxBridgeRecord = {
   pid: number;
