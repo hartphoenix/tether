@@ -26,7 +26,7 @@ The app includes Bun, the CLI, daemon and host bridges, web assets, the welcome 
 
 `check-release.ts` runs with an isolated profile and minimal PATH. It checks setup, skill installation, Folio, reader assets, private review, and backup/restore, then stops its test daemon and leaves its evidence directory available for inspection.
 
-`check-startup.ts` executes the packaged login guard in disposable directories, verifies clean shutdown and crash suppression across repeated invocations, and checks disable cleanup. It mocks launchctl and never registers a real login job.
+`check-startup.ts` runs the packaged login entry with the environment the generated job gives launchd, in disposable directories. It verifies that the job follows `current`, that a second start reuses the running daemon, that SIGTERM stops it cleanly, that a crash does not block the next start, and that disable removes the job and hook. It mocks launchctl and never registers a real login job.
 
 `check-install.ts` checks that installation rejects a wrong checksum, works repeatedly and with paths containing spaces, sets up Wave widgets, and uninstalls without removing private data or unrelated widgets. [.github/workflows/check.yml](../../.github/workflows/check.yml) runs these checks on macOS without publishing.
 
@@ -58,7 +58,7 @@ For an automated browser check, use `bun scripts/rehearse-update.ts --verify` wi
 
 ## Clean-account recovery acceptance
 
-Test the existing package now for an installation baseline. Use a rebuilt local candidate for recovery acceptance; publishing is unnecessary. The new candidate adds `lib/login.js`, opt-in startup assets, startup controls, and pane recovery. Neither installation nor setup registers a login job.
+Test the existing package now for an installation baseline. Use a rebuilt local candidate for recovery acceptance; publishing is unnecessary. The new candidate adds `lib/login.js`, opt-in login startup with a cmux shell hook, and pane recovery. Neither installation nor setup registers a login job.
 
 Run this matrix in a disposable macOS account, recording macOS and cmux versions. Keep the main account's startup disabled. Use saved documents, a persisted draft, a conflict, reading positions, and Folio in multiple cmux workspaces. Distinguish persisted changes from keystrokes never saved before termination.
 
@@ -66,13 +66,15 @@ Run this matrix in a disposable macOS account, recording macOS and cmux versions
 | --- | --- |
 | Fresh install, startup off, logout/reboot | No Tether login job; normal manual Folio/open and uninstall still work. |
 | `resume --inspect`, stopped and running | Stopped inspection starts no process; running inspection navigates nothing. |
-| Manual resume after restored layout | Eligible error panes recover with their saved state; mounted/dirty/loading/unrelated pages remain untouched; focus and layout stay fixed. Record native error pages that cannot be evaluated. |
-| Startup enabled, generated hook sourced, logout/reboot | One daemon and one cmux bridge per profile; fresh host authority, existing cookies, saved state; no duplicated panes or terminal commands. Repeat with browser-only restoration and verify the documented limitation. |
+| Manual resume after restored layout | Eligible error panes recover with their saved state; mounted/dirty/loading/unrelated pages remain untouched; focus and layout stay fixed. Browser error pages on exact Tether routes reload once. |
+| Startup enabled, generated hook sourced, logout/reboot (twice, including delayed cmux launch) | One daemon and one cmux bridge per profile; the old bridge exited; Folio document clicks work; restored panes reload with existing cookies and saved state; no duplicated panes or terminal commands. With browser-only restoration, opening one terminal tab reconnects. |
 | Fast user switch and two profiles | No access to the other account/profile; switching back does not create duplicate processes. |
 | Port occupied, missing cookies, deleted session | Only exact saved routes qualify; no new authorization from enumeration; report skipped/authorization-required cases. |
-| Stop/Quit versus restart | Stop/Quit remain stopped across shell and login; restart creates one successor and permits recovery in later daemon generations. |
-| Crash or broken/missing pinned runtime | First attempt fails; a second shell/login does not retry it. Restore the package, inspect, explicitly re-enable. Test only disposable state. |
-| Disable during startup/restart, or shutdown during initialization | No late daemon/bridge or successor; status accurately reports incomplete cleanup. |
-| Update, disable, uninstall | Update suppresses pinned startup; re-enable uses current runtime. Disable/uninstall leave no runnable login job and preserve private data and unrelated shell assets. |
+| Stop/Quit versus restart | Stop/Quit stops the daemon and both bridges; the next `tether`, hook, or login starts cleanly. Menu restart keeps a working bridge and stops a broken one. |
+| cmux quit or relaunch mid-session | The bridge exits; the next cmux terminal attaches a new one without manual steps. |
+| Wave quit or logout | The Wave bridge exits within about a minute; a widget click reconnects. |
+| Crash or missing runtime | The failed start is not retried in a loop; the next login, hook, or `tether` command starts normally once the cause is fixed. Test only disposable state. |
+| Shutdown during initialization | No late daemon, bridge, or successor. |
+| Update, disable, uninstall | After an update, login starts the new release without re-enabling. Disable/uninstall leave no login job or hook and preserve private data. |
 
 Native recovery is not established by unit tests or headless browser tests. Do not enable unattended use on a primary account until the login, error-page, shutdown, and crash cases pass. Local candidates without publisher trust material also do not establish authenticated public update behavior.

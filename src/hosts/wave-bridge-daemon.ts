@@ -83,11 +83,22 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 1
 async function shutdown(): Promise<void> {
   if (stopped) return;
   stopped = true;
+  clearInterval(liveness);
   server.stop(true);
   await removeWaveBridge(config, instanceId);
   resolveClosed();
 }
 
 await writeWaveBridge(config, { pid: process.pid, origin: `http://127.0.0.1:${server.port}`, instanceId, startedAt: new Date().toISOString() });
+// Wave's access token ends with the Wave session. Exit once Wave stops answering
+// so no helper outlives it; the next widget click starts a fresh bridge.
+let failures = 0, probing = false;
+const liveness = setInterval(async () => {
+  if (probing || stopped) return;
+  probing = true;
+  try { await host.probeConnection(); failures = 0; }
+  catch { if (++failures >= 2) await shutdown(); }
+  finally { probing = false; }
+}, 30_000);
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => void shutdown());
 await closed;

@@ -5,7 +5,6 @@ import { readDiscovery, acquireStartupLock, prepareConfig, removeStaleRuntime, r
 import { PROTOCOL_VERSION, SERVICE_ID, type DiscoveryRecord } from "../shared/contracts";
 import { runtimeEntry } from "../runtime-paths";
 import type { HostTarget } from "../hosts/host-adapter";
-import { automationTransaction, beginAttempt, completeAttempt, disableAutomation, ownsAttempt, readAutomation, type AutomationState, type Attempt } from "./automation-state";
 
 const LOOPBACK = "127.0.0.1";
 const WAIT_MS = 100;
@@ -39,8 +38,8 @@ export class ControlRequestError extends Error {
 }
 
 export type EnsureDaemonOptions = {
-  generation?: string;
-  attempt?: Attempt;
+  /** Background starts (login, cmux attachment) defer retention cleanup until an explicit launch. */
+  background?: boolean;
   signal?: AbortSignal;
   config?: TetherConfig;
   /** Used by tests and alternate launchers; defaults to this source checkout's daemon entrypoint. */
@@ -104,42 +103,12 @@ function defaultCommand(): string[] {
   return [process.execPath, "--no-env-file", runtimeEntry("daemon"), "serve"];
 }
 
-/** Login and a newly restored cmux shell may arrive together. Join the
- * existing automatic attempt without treating that normal race as a crash. */
-export async function ensureAutomaticDaemon(config: TetherConfig, runtime: NonNullable<AutomationState["runtime"]>): Promise<DiscoveryRecord> {
-  let attempt: Attempt;
-  try { attempt = await beginAttempt(config, "daemon", runtime); }
-  catch (cause) {
-    const state = await readAutomation(config);
-    if (!state.enabled || !state.daemon || state.runtime?.root !== runtime.root || state.runtime.digest !== runtime.digest) throw cause;
-    const owner = state.daemon;
-    const found = await waitForDiscovery(config, WAIT_ATTEMPTS * 2, undefined, async () => {
-      if (!ownsAttempt(await readAutomation(config), owner)) throw new Error("Automatic startup was cancelled.");
-    });
-    if (!found) throw new Error("The existing automatic startup did not become ready; inspect startup status.");
-    return found;
-  }
-  return ensureDaemon({ config, generation: attempt.generation, attempt });
-}
-
 /** Start or reuse the one daemon for this profile. The lock covers all state decisions. */
 export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<DiscoveryRecord> {
   const config = options.config ?? resolveConfig();
   await prepareConfig(config);
-  const validate = async () => {
-    options.signal?.throwIfAborted();
-    if (options.generation !== undefined || options.attempt) {
-      const state = await readAutomation(config);
-      if (options.generation !== undefined && state.generation !== options.generation || options.attempt && !ownsAttempt(state, options.attempt)) throw new Error("Startup was cancelled.");
-    }
-  };
-  const reuse = async (record: DiscoveryRecord) => {
-    await validate();
-    // A concurrent manual launcher won. Release only our unused reservation;
-    // never adopt its process as an automatic child or clear a live owner.
-    if (options.attempt && (await readAutomation(config))[options.attempt.role]?.pid !== record.pid) await completeAttempt(config, options.attempt);
-    return record;
-  };
+  const validate = async () => { options.signal?.throwIfAborted(); };
+  const reuse = async (record: DiscoveryRecord) => { await validate(); return record; };
   const existing = await discoverDaemon(config);
   if (existing) return reuse(existing);
 
@@ -148,9 +117,8 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
     await validate();
     try { lock = await acquireStartupLock(config); }
     catch (error) {
-      // A startup owner may exit without publishing (for example login yielding
-      // to an attachment's reserved attempt). Reacquire only after its kernel
-      // lock is released; never infer ownership from age or absent discovery.
+      // A startup owner may exit without publishing. Reacquire only after its
+      // kernel lock is released; never infer ownership from age or absent discovery.
       if ((error as NodeJS.ErrnoException)?.code !== "writer_busy") throw error;
       const converged = await discoverDaemon(config);
       if (converged) return reuse(converged);
@@ -176,6 +144,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
       TETHER_RUNTIME_DIR: config.runtimeDir,
       TETHER_CONFIG_DIR: config.configDir,
       TETHER_INSTALL_ROOT: inherited.TETHER_INSTALL_ROOT,
+      ...(options.background ? { TETHER_BACKGROUND: "1" } : {}),
     };
     const reportDirectory = await mkdtemp(join(config.runtimeDir, "startup-report-"));
     const report = join(reportDirectory, "failure.json");
@@ -185,15 +154,11 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
         options.signal?.throwIfAborted();
         if (options.spawn) await options.spawn(command, env);
         else {
-          child = Bun.spawn(command, { env: { ...env, TETHER_STARTUP_REPORT: report, ...(options.generation !== undefined ? { TETHER_LIFECYCLE_GENERATION: options.generation } : {}), ...(options.attempt ? { TETHER_AUTOMATION_ATTEMPT: JSON.stringify(options.attempt) } : {}) }, detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+          child = Bun.spawn(command, { env: { ...env, TETHER_STARTUP_REPORT: report }, detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
           child.unref();
         }
       };
-      if (options.generation !== undefined || options.attempt) await automationTransaction(config, async state => {
-        if (options.generation !== undefined && state.generation !== options.generation || options.attempt && !ownsAttempt(state, options.attempt)) throw new Error("Startup was cancelled by a newer lifecycle decision.");
-        await spawn();
-      });
-      else await spawn();
+      await spawn();
       const started = await waitForDiscovery(config, options.waitAttempts ?? WAIT_ATTEMPTS * 2, child ? { report, child } : undefined, validate);
       options.signal?.throwIfAborted();
       if (!started) throw new ControlRequestError("daemon_start_timeout", "Tether did not become ready before the startup deadline.", 503, { outcome: "outcome_unknown", stage: "startup" });
@@ -231,7 +196,6 @@ export async function statusDaemon(config = resolveConfig()): Promise<DaemonStat
 }
 
 export async function stopDaemon(config = resolveConfig()): Promise<{ running: boolean; stopping: boolean }> {
-  await disableAutomation(config);
   const { stopHostBridges } = await import("./stop-hosts");
   const cleanup = stopHostBridges(config);
   // Consume failure now while still stopping the service; report it afterward.

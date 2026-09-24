@@ -9,7 +9,6 @@ import { dirname, extname, join, resolve } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
 import { PrivateStore } from "../storage/private-store";
 import { ViewStore, cookieVerifier, verifiesCookie } from "./view-store";
-import { disableAutomation } from "./automation-state";
 import { stopHostBridges } from "./stop-hosts";
 import { anchorForQuote, quoteCandidates } from "./quote-anchor";
 import { AgentReads } from "../documents/agent-reads";
@@ -450,7 +449,6 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (body.action !== "restart" && body.action !== "quit") throw invalidRequest("Unknown service action.");
       if (body.action === "restart" && !options.restart) throw invalidRequest("Restart is unavailable in this embedded test service.");
       if (body.action === "restart") await prepareCmuxBridgeRestart(config, instanceId);
-      if (body.action === "quit") await disableAutomation(config);
       setTimeout(() => { void (body.action === "restart" ? options.restart!() : quit()).catch(() => {}); }, 250);
       return { restarting: body.action === "restart", quitting: body.action === "quit" };
     }
@@ -964,7 +962,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           return json(result);
         }
         if (pathname === "/control/status" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId, origin: daemon.origin, pid: process.pid, sessions: sessions.size, version: releaseVersion });
-        if (pathname === "/control/stop" && request.method === "POST") { await disableAutomation(config); setTimeout(() => { void quit().catch(() => {}); }, 50); return json({ stopping: true }); }
+        if (pathname === "/control/stop" && request.method === "POST") { setTimeout(() => { void quit().catch(() => {}); }, 50); return json({ stopping: true }); }
       } catch (cause) { return controlError(cause); }
       return error("not_found", "Control endpoint not found.", 404);
     }
@@ -995,7 +993,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     try { await stopHostBridges(config); } finally { await daemon.stop(); }
   }
   let bunServer: ReturnType<typeof Bun.serve>;
-  try { bunServer = Bun.serve({ hostname: LOOPBACK, port: options.port ?? 0, fetch: (request: Request) => {
+  // Longer than the Folio stream keepalive (20s) so idle streams are not cut.
+  try { bunServer = Bun.serve({ hostname: LOOPBACK, port: options.port ?? 0, idleTimeout: 60, fetch: (request: Request) => {
     if (request.headers.get("host") !== new URL(daemon.origin).host) return error("host_mismatch", "The request must use the Tether listener address.", 403);
     if (stopped) return error("service_stopping", "Tether is restarting.", 503);
     const pending = requestHandler(request).then(response => {

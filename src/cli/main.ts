@@ -7,7 +7,7 @@ import { readBoundedInput, writeExport } from "./io";
 import { usageText, commandSpecs, CliUsageError, parseCommand, requiredFlag, optionalFlag, readOptions, focusPreference, positiveInteger, usage } from "./commands";
 import { dirname, resolve } from "node:path";
 import { resolveConfig, type TetherConfig } from "../server/config";
-import { cancelLaunch, controlLaunch, controlRecentsLaunch, controlRequest, ControlRequestError, ensureAutomaticDaemon, ensureDaemon, statusDaemon, stopDaemon } from "../server/lifecycle";
+import { cancelLaunch, controlLaunch, controlRecentsLaunch, controlRequest, ControlRequestError, ensureDaemon, statusDaemon, stopDaemon } from "../server/lifecycle";
 import { createBrowserHost } from "../hosts/browser";
 import { createWaveHost } from "../hosts/wave";
 import { startWaveBridge } from "../hosts/wave-bridge";
@@ -23,8 +23,6 @@ import { installVerifiedRelease } from "../releases/verified-update";
 import { UpdateService } from "../server/updates";
 import { runtimeRoot } from "../runtime-paths";
 import type { RecoveryView } from "../hosts/recovery";
-import { beginAttempt, readAutomation, disableAutomation } from "../server/automation-state";
-import { runtimeFingerprint } from "../server/startup-assets";
 import { enableStartup, disableStartup, startupStatus } from "./startup";
 
 export type CliDependencies = {
@@ -130,16 +128,10 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     if (command === "startup.enable") return { response: success(command, await enableStartup(config)), exitCode: 0 };
     if (command === "startup.disable") return { response: success(command, await disableStartup(config)), exitCode: 0 };
     if (command === "cmux.attach") {
-      const state = await readAutomation(config);
-      if (!state.enabled || !state.runtime) return { response: success(command, { attached: false, reason: "startup_disabled" }), exitCode: 0 };
-      if (await realpath(runtimeRoot()) !== state.runtime.root || await realpath(process.execPath) !== await realpath(resolve(state.runtime.root, "runtime/bun"))) throw new Error("Automatic attachment must use the enabled packaged runtime.");
-      if (await runtimeFingerprint(state.runtime.root) !== state.runtime.digest) throw new Error("Startup runtime changed; attachment is blocked.");
-      if (!process.env.CMUX_SOCKET_CAPABILITY || !process.env.CMUX_SOCKET_PATH) throw new Error("Attach requires fresh cmux authority.");
-      const attempt = await beginAttempt(config, "bridge", state.runtime);
-      if (!(await statusDaemon(config)).running) {
-        await ensureAutomaticDaemon(config, state.runtime);
-      }
-      await startCmuxBridge(config, process.env, { attempt });
+      // Called by the cmux shell hook with that terminal's fresh authority.
+      if (!process.env.CMUX_SOCKET_CAPABILITY || !process.env.CMUX_SOCKET_PATH) throw new Error("Run this from a cmux terminal.");
+      await ensureDaemon({ config, background: true });
+      await startCmuxBridge(config, process.env);
       return { response: success(command, { attached: true }), exitCode: 0 };
     }
     if (command === "resume") {
@@ -161,10 +153,9 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     if (command === "restore") return { response: success(command, await restoreState(requiredFlag(parsed, "--source"), requiredFlag(parsed, "--directory"))), exitCode: 0 };
     if (command === "uninstall") {
       if (!process.env.TETHER_INSTALL_ROOT) throw new Error("This command removes a managed installation, not a source checkout.");
-      await disableAutomation(config);
       if ((await statusDaemon(config)).running) throw new Error("Save your work and quit Tether before uninstalling: tether daemon stop");
       const startup = await disableStartup(config);
-      if (!startup.unloaded || !startup.stopped || startup.preserved) throw new Error("Startup cleanup is incomplete; installation was preserved.");
+      if (!startup.unloaded) throw new Error("The login startup job could not be unloaded; installation was preserved. Retry: tether startup disable");
       const root = dirname(dirname(runtimeRoot()));
       const installation = JSON.parse(await readFile(resolve(root, "install.json"), "utf8"));
       if (typeof installation.binDirectory !== "string") throw new Error("Missing installation metadata.");
@@ -190,7 +181,6 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         return { response: success(command, checked), exitCode: 0 };
       }
       if ((await statusDaemon(config)).running) throw new Error("Save your work and quit Tether before updating: tether daemon stop");
-      await disableAutomation(config, true);
       const output = resolve(config.configDir, "..", `backup-before-update-${Date.now()}`);
       const backup = await backupState(config, output);
       completed.push({ step: "backup_created", path: backup.directory });

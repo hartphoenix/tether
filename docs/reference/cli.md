@@ -91,11 +91,11 @@ Stdout contains one protocol-v1 JSON envelope. Check `ok`, the exit code, indivi
 
 ## Workspace recovery and startup
 
-- `tether resume --inspect`: inspect existing cmux panes without starting a stopped daemon or navigating.
-- `tether resume`: start the service, attach cmux, and repair eligible existing error pages using retained cookies.
-- `tether startup status`: report enabled, loaded, blocked, attempt ownership, and emergency disable paths without starting the service.
-- `tether startup enable`: explicitly register/reset one guarded login attempt for the current packaged runtime; requires Tether stopped.
-- `tether startup disable`: persist disabled intent, unload the login job, stop processes, and report cleanup results.
-- `tether cmux attach`: guarded entry for the generated interactive-shell hook; requires enabled startup and fresh cmux authority.
+- `tether resume --inspect`: list existing cmux panes that would be reloaded, without starting a stopped daemon or navigating.
+- `tether resume`: start the service, attach cmux, and reload existing Tether panes that show an error page, using their saved cookies.
+- `tether startup status`: report whether login startup is enabled and loaded, whether the daemon is running, and whether cmux is attached. Starts nothing.
+- `tether startup enable`: start Tether at login for the current packaged installation, and write the cmux shell hook. Safe to repeat.
+- `tether startup disable`: remove the login job and the shell hook. Running processes keep running; `tether daemon stop` stops them.
+- `tether cmux attach`: entry point for the shell hook. Starts the service if needed and attaches this cmux terminal's authority.
 
-See [recovery](../guide/recovery.md) for skipped panes, crash suppression, and emergency disable. Startup controls are opt-in and never edit shell startup files.
+See [recovery](../guide/recovery.md). Tether never edits your shell startup files.

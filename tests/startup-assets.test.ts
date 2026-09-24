@@ -1,10 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { disableAutomation, readAutomation } from "../src/server/automation-state";
 import { enableStartup, disableStartup, startupStatus } from "../src/cli/startup";
 import { resolveConfig } from "../src/server/config";
-import { runtimeFingerprint, startupGuard, startupLabel } from "../src/server/startup-assets";
+import { cmuxStartupHook, startupLabel } from "../src/server/startup-assets";
 
 const directories: string[] = [];
 afterEach(async () => { for (const d of directories.splice(0)) await rm(d, { recursive: true, force: true }); });
@@ -12,65 +11,70 @@ async function fixture() {
   const directory = await realpath(await mkdtemp("/tmp/tether-startup-assets-")); directories.push(directory);
   const root = join(directory, "install/releases/one"), home = join(directory, "home");
   await mkdir(join(root, "runtime"), { recursive: true }); await mkdir(join(root, "lib"));
-  for (const file of ["runtime/bun", "mdreview", "tether", "lib/login.js", "lib/daemon.js", "lib/cli.js", "lib/cmux-bridge.js"]) await writeFile(join(root, file), "fixture\n", { mode: 0o700 });
-  await writeFile(join(root, "release.json"), JSON.stringify({ platform: "darwin", version: "0.1.1" }));
   await symlink(root, join(directory, "install/current"));
   const config = resolveConfig({ configDir: join(directory, "config"), runtimeDir: join(directory, "runtime") });
-  return { directory, root, home, config };
+  return { directory, root, home, config, plist: join(home, "Library/LaunchAgents", `${startupLabel(config)}.plist`) };
 }
 
-test("stop during registration wins and the new job is unloaded", async () => {
+test("enable writes a job that follows the current release, and a shell hook", async () => {
   const f = await fixture(), commands: string[][] = [];
-  await expect(enableStartup(f.config, { root: f.root, home: f.home, run: async args => {
-    commands.push(args);
-    if (args[0] === "print") return 1;
-    if (args[0] === "bootstrap") await disableAutomation(f.config);
-    return 0;
-  } })).rejects.toThrow("cancelled");
-  expect((await readAutomation(f.config)).enabled).toBe(false);
-  expect(commands.at(-1)?.[0]).toBe("bootout");
+  const result = await enableStartup(f.config, { root: f.root, home: f.home, run: async args => { commands.push(args); return args[0] === "print" ? 1 : 0; } });
+  const plist = await readFile(result.plist, "utf8");
+  expect(plist).toContain(join(f.directory, "install/current/lib/login.js"));
+  expect(plist).not.toContain(f.root);
+  expect(plist).not.toContain("KeepAlive");
+  expect(await readFile(result.hook, "utf8")).toContain("cmux attach");
+  expect(result.shellLine).toContain(result.hook);
+  expect(commands.at(-1)?.[0]).toBe("bootstrap");
 });
 
-test("stop during asset preparation prevents registration", async () => {
-  const f = await fixture(); let bootstraps = 0;
-  await expect(enableStartup(f.config, { root: f.root, home: f.home, run: async args => {
-    if (args[0] === "print") { await disableAutomation(f.config); return 1; }
-    if (args[0] === "bootstrap") bootstraps++;
-    return 0;
-  } })).rejects.toThrow("cancelled");
-  expect(bootstraps).toBe(0); expect((await readAutomation(f.config)).enabled).toBe(false);
+test("enabling again replaces the loaded job instead of failing", async () => {
+  const f = await fixture(), commands: string[][] = [];
+  const run = async (args: string[]) => { commands.push(args); return 0; };
+  await enableStartup(f.config, { root: f.root, home: f.home, run });
+  await enableStartup(f.config, { root: f.root, home: f.home, run });
+  expect(commands.map(args => args[0])).toEqual(["print", "bootout", "bootstrap", "print", "bootout", "bootstrap"]);
 });
 
-test("changing current invalidates pinned startup for every profile", async () => {
-  const f = await fixture(); await runtimeFingerprint(f.root);
-  const other = join(f.directory, "install/releases/two"); await mkdir(other);
-  await unlink(join(f.directory, "install/current")); await symlink(other, join(f.directory, "install/current"));
-  await expect(runtimeFingerprint(f.root)).rejects.toThrow("installation changed");
-});
-
-test("a broken executable runs once across repeated guard invocations", async () => {
-  const f = await fixture(); await mkdir(f.config.configDir, { mode: 0o700 });
-  await writeFile(join(f.config.configDir, "automation.json"), "{}");
-  const count = join(f.directory, "count");
-  await writeFile(join(f.root, "runtime/bun"), `#!/bin/sh\necho attempt >> '${count}'\nexit 1\n`, { mode: 0o700 });
-  const guard = join(f.directory, "guard.sh"); await writeFile(guard, startupGuard(f.config, f.root));
-  for (let boot = 0; boot < 3; boot++) await Bun.spawn(["/bin/sh", guard], { stdout: "ignore", stderr: "ignore" }).exited;
-  expect(await readFile(count, "utf8")).toBe("attempt\n");
-  expect((await lstat(join(f.config.configDir, "login-attempt"))).isDirectory()).toBe(true);
-});
-
-test("disable preserves modified startup assets and reports host job cleanup failure", async () => {
+test("disable unloads the job and removes the plist and hook", async () => {
   const f = await fixture();
-  const plist = join(f.home, "Library/LaunchAgents", `${startupLabel(f.config)}.plist`);
-  await mkdir(join(f.home, "Library/LaunchAgents"), { recursive: true }); await writeFile(plist, "user-owned content");
-  const result = await disableStartup(f.config, { home: f.home, run: async args => args[0] === "print" ? 0 : 1 });
-  expect(result).toMatchObject({ enabled: false, unloaded: false, preserved: true });
-  expect(await readFile(plist, "utf8")).toBe("user-owned content");
+  const enabled = await enableStartup(f.config, { root: f.root, home: f.home, run: async () => 0 });
+  const result = await disableStartup(f.config, { home: f.home, run: async () => 0 });
+  expect(result).toEqual({ enabled: false, unloaded: true });
+  expect(await Bun.file(enabled.plist).exists()).toBe(false);
+  expect(await Bun.file(enabled.hook).exists()).toBe(false);
 });
 
-test("status exposes pre-import attachment failures without starting Tether", async () => {
-  const f = await fixture(); await mkdir(f.config.configDir, { mode: 0o700 }); await mkdir(join(f.config.configDir, "attach-attempt"));
+test("disable reports a job it could not unload", async () => {
+  const f = await fixture();
+  const result = await disableStartup(f.config, { home: f.home, run: async args => args[0] === "print" ? 0 : 1 });
+  expect(result.unloaded).toBe(false);
+});
+
+test("status reads state without starting Tether", async () => {
+  const f = await fixture(); await mkdir(join(f.home, "Library/LaunchAgents"), { recursive: true }); await writeFile(f.plist, "job");
   const status = await startupStatus(f.config, { home: f.home, run: async () => 1 });
-  expect(status).toMatchObject({ blocked: true, markers: { attach: true }, daemon: { running: false } });
+  expect(status).toMatchObject({ enabled: true, loaded: false, daemon: { running: false }, cmux: { attached: false } });
   expect(await Bun.file(join(f.config.configDir, "tether.sqlite")).exists()).toBe(false);
+});
+
+test("the hook runs only in cmux shells and passes no stored credentials", async () => {
+  const f = await fixture();
+  const log = join(f.directory, "calls");
+  const mdreview = join(f.root, "mdreview");
+  await writeFile(mdreview, `#!/bin/sh\necho "$@ $CMUX_SOCKET_PATH" >> '${log}'\n`, { mode: 0o700 });
+  const hook = join(f.directory, "hook.sh");
+  await writeFile(hook, cmuxStartupHook(f.config, join(f.directory, "install")));
+  expect(await readFile(hook, "utf8")).not.toContain("CAPABILITY=");
+  await Bun.spawn(["/bin/sh", "-c", `. '${hook}'`], { env: { PATH: "/usr/bin:/bin" } }).exited;
+  await Bun.spawn(["/bin/sh", "-c", `. '${hook}'`], { env: { PATH: "/usr/bin:/bin", CMUX_SOCKET_PATH: "/sock", CMUX_SOCKET_CAPABILITY: "cap" } }).exited;
+  for (let n = 0; n < 50 && !await Bun.file(log).exists(); n++) await Bun.sleep(20);
+  expect(await readFile(log, "utf8")).toBe("cmux attach /sock\n");
+});
+
+test("status explains an enabled job that macOS did not load", async () => {
+  const f = await fixture(); await mkdir(join(f.home, "Library/LaunchAgents"), { recursive: true }); await writeFile(f.plist, "job");
+  const status = await startupStatus(f.config, { home: f.home, run: async () => 1 });
+  expect(status.issue?.code).toBe("login_job_not_loaded");
+  expect(status.issue?.message).toContain("Allow in the Background");
 });

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   isSupportedCmuxVersion,
   CmuxHostAdapter,
+  createCmuxHost,
   CmuxHostError,
   SUPPORTED_CMUX_BUILD,
   SUPPORTED_CMUX_COMMIT,
@@ -854,3 +855,13 @@ for (const failure of ["chrome", "navigation"]) {
     expect(commands.some((command) => command.includes("close-surface") && command.includes(ids.dockSurface))).toBe(false);
   });
 }
+
+test("malformed JSON names the cmux operation without leaking its capability", async () => {
+  const capability = "capability-secret-value";
+  const host = createCmuxHost({ env: { CMUX_WORKSPACE_ID: "w", CMUX_SURFACE_ID: "s", CMUX_SOCKET_PATH: "/sock", CMUX_SOCKET_CAPABILITY: capability },
+    run: async command => command.includes("ping") ? { exitCode: 0, stdout: "PONG", stderr: "" } : { exitCode: 0, stdout: `unexpected ${capability} output`, stderr: "" } });
+  const failure = await host.probeContract().then(() => null, cause => cause);
+  expect(failure).toMatchObject({ code: "invalid_response", details: { operation: "identify", exitCode: 0, stdoutShape: "text" } });
+  expect(failure.message).toContain("identify");
+  expect(JSON.stringify(failure.details)).not.toContain(capability);
+});

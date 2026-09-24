@@ -8,13 +8,11 @@ import { ensureDaemon } from "./lifecycle";
 import { writeUpdateState } from "./updates";
 import type { TetherConfig } from "./config";
 import { resolveConfig } from "./config";
-import { automationTransaction, ownsAttempt, claimAttempt, completeAttempt, disableAutomation, readAutomation, transferAttempt, type Attempt } from "./automation-state";
 import { stopHostBridges } from "./stop-hosts";
 
 export async function completeManagedUpdate(config: TetherConfig, root: string, tag: string, dependencies: {
   run?: (command: string[]) => Promise<number>;
   launch?: typeof ensureDaemon;
-  generation?: string;
   signal?: AbortSignal;
 } = {}): Promise<void> {
   let next = root;
@@ -42,19 +40,20 @@ export async function completeManagedUpdate(config: TetherConfig, root: string, 
   // The installer can switch successfully before a later bookkeeping failure.
   next = await realpath(join(dirname(dirname(root)), "current")).catch(() => root);
   // Never fall back to an old executable after a new one has opened the database.
-  await (dependencies.launch ?? ensureDaemon)({ config, generation: dependencies.generation, signal: dependencies.signal, command: [join(next, "runtime/bun"), "--no-env-file", join(next, "lib/daemon.js")], env: { ...process.env, TETHER_INSTALL_ROOT: next } });
+  await (dependencies.launch ?? ensureDaemon)({ config, signal: dependencies.signal, command: [join(next, "runtime/bun"), "--no-env-file", join(next, "lib/daemon.js")], env: { ...process.env, TETHER_INSTALL_ROOT: next } });
 }
 
-export async function runDaemon(options: { config?: TetherConfig; attempt?: Attempt; ready?: () => Promise<void> } = {}): Promise<void> {
+export async function runDaemon(options: { config?: TetherConfig; background?: boolean; ready?: () => Promise<void> } = {}): Promise<void> {
   const config = options.config ?? resolveConfig();
   let startupReport = process.env.TETHER_STARTUP_REPORT;
   delete process.env.TETHER_STARTUP_REPORT;
+  const background = options.background ?? process.env.TETHER_BACKGROUND === "1";
+  delete process.env.TETHER_BACKGROUND;
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
   let terminating = false;
-  const abort = new AbortController();
-  let restartGeneration: string | undefined;
+  let restarting = false;
   let update: string | undefined;
-  let attempt = options.attempt;
+  const abort = new AbortController();
   let deadline: ReturnType<typeof setTimeout> | undefined;
   const boundShutdown = () => { deadline ??= setTimeout(() => process.exit(1), 10_000); deadline.unref(); };
   const signal = () => {
@@ -63,30 +62,18 @@ export async function runDaemon(options: { config?: TetherConfig; attempt?: Atte
   };
   for (const name of ["SIGTERM", "SIGINT"] as const) process.on(name, signal);
   try {
-    const inherited = process.env.TETHER_AUTOMATION_ATTEMPT;
-    delete process.env.TETHER_AUTOMATION_ATTEMPT;
-    if (!attempt && inherited) attempt = JSON.parse(inherited);
-    if (attempt) attempt = await claimAttempt(config, attempt);
-    if (terminating) throw new Error("Startup interrupted.");
-    const generation = process.env.TETHER_LIFECYCLE_GENERATION;
-    delete process.env.TETHER_LIFECYCLE_GENERATION;
-    daemon = await startDaemon({ config, background: Boolean(attempt), publishStartup: async publish => {
+    daemon = await startDaemon({ config, background, publishStartup: async publish => {
       if (terminating) throw new Error("Startup interrupted.");
-      if (attempt || generation !== undefined) await automationTransaction(config, async state => {
-        if (attempt && !ownsAttempt(state, attempt) || generation !== undefined && state.generation !== generation) throw new Error("Startup was cancelled.");
-        await publish();
-      }); else await publish();
+      await publish();
     }, restart: async () => {
-      if (terminating || restartGeneration !== undefined || update) return;
-      restartGeneration = (await readAutomation(config)).generation;
+      if (terminating || restarting || update) return;
+      restarting = true;
       boundShutdown(); await daemon!.stop();
     }, quit: async () => {
       terminating = true; abort.abort(); boundShutdown();
       try { await stopHostBridges(config); } finally { await daemon!.stop(); }
     }, update: async tag => {
-      if (terminating || restartGeneration !== undefined || update) throw new Error("A lifecycle operation is already pending.");
-      await disableAutomation(config);
-      restartGeneration = (await readAutomation(config)).generation;
+      if (terminating || restarting || update) throw new Error("A lifecycle operation is already pending.");
       update = tag;
       setTimeout(() => { boundShutdown(); void daemon!.stop().catch(() => process.exit(1)); }, 500);
     } });
@@ -96,14 +83,12 @@ export async function runDaemon(options: { config?: TetherConfig; attempt?: Atte
     await daemon.closed;
     clearTimeout(deadline); deadline = undefined;
     if (!terminating && update) {
-      await completeManagedUpdate(config, runtimeRoot(), update, { generation: restartGeneration, signal: abort.signal });
-    } else if (!terminating && restartGeneration !== undefined) {
-      const successor = attempt ? await transferAttempt(config, attempt) : undefined;
-      await ensureDaemon({ config, generation: restartGeneration, attempt: successor, signal: abort.signal });
+      await completeManagedUpdate(config, runtimeRoot(), update, { signal: abort.signal });
+    } else if (!terminating && restarting) {
+      await ensureDaemon({ config, signal: abort.signal });
     } else {
       boundShutdown();
       await stopHostBridges(config);
-      if (attempt) await completeAttempt(config, attempt);
     }
   } catch (cause) {
     if (startupReport) await writeFile(startupReport, JSON.stringify(diagnostic(cause)), { flag: "wx", mode: 0o600 }).catch(() => {});

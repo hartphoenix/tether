@@ -5,17 +5,11 @@ import { fingerprintCmuxSocket, removeCmuxBridge, writeCmuxBridge } from "./cmux
 import { prepareConfig, readControlToken, readDiscovery, resolveConfig } from "../server/config";
 import { isAbsolute } from "node:path";
 import type { HostTarget, OpenViewRequest } from "./host-adapter";
-import { automationTransaction, claimAttempt, completeAttempt, readAutomation, ownsAttempt, type Attempt } from "../server/automation-state";
 import { controlRequest } from "../server/lifecycle";
 import type { RecoveryView } from "./recovery";
 
 const config = resolveConfig();
 await prepareConfig(config);
-let automation: Attempt | undefined;
-if (process.env.TETHER_AUTOMATION_ATTEMPT) {
-  automation = await claimAttempt(config, JSON.parse(process.env.TETHER_AUTOMATION_ATTEMPT));
-  delete process.env.TETHER_AUTOMATION_ATTEMPT;
-}
 const [token, currentDiscovery] = await Promise.all([readControlToken(config), readDiscovery(config)]);
 if (!token || !currentDiscovery) throw new Error("cmux bridge credentials or daemon discovery are unavailable.");
 let discovery = currentDiscovery;
@@ -47,7 +41,7 @@ async function requireSupportedCmux(): Promise<void> {
     if (!detected || !isSupportedCmuxVersion(host.detectedVersion())) {
       throw new BridgeBuildError(`Tether callbacks require cmux ${MINIMUM_CMUX_VERSION} or later; detected ${host.detectedVersion() ?? "unknown"}.`);
     }
-    await host.probeSocket();
+    await host.probeContract();
     const changed = cmuxVersion !== host.detectedVersion() || cmuxBuild !== host.detectedBuild() || cmuxCommit !== host.detectedCommit();
     cmuxVersion = host.detectedVersion()!;
     cmuxBuild = host.detectedBuild();
@@ -74,14 +68,14 @@ const attempted = new Set<string>();
 let recovering = false;
 let recoveryDirty = false;
 function scheduleRecovery(): void {
-  if (stopped || !automation) return;
+  if (stopped) return;
   recoveryDirty = true;
   if (recoveryTimer || recovering) return;
   recoveryTimer = setTimeout(() => {
     recoveryTimer = undefined;
     recovering = true; recoveryDirty = false;
     recoveryTask = (async () => {
-      if (stopped || !automation || !ownsAttempt(await readAutomation(config), automation)) return;
+      if (stopped) return;
       if (!await currentDaemon()) return;
       const inventory = await controlRequest<{ views: RecoveryView[] }>(config, "/control/recovery/views", {}, { start: false });
       const views = inventory.views.filter(view => !attempted.has(view.id));
@@ -238,7 +232,14 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
     if (body?.daemonInstanceId !== discovery.instanceId || !await currentDaemon()) {
       return json({ error: { code: "bridge_relaunch_required", message: "The Tether daemon instance changed." } }, 409);
     }
-    // Compatibility with older daemons: rebinding no longer has a deadline.
+    // Survive the restart only if placement still works; otherwise exit so the
+    // next cmux terminal attaches a fresh bridge.
+    try { await requireSupportedCmux(); }
+    catch (cause) {
+      setTimeout(() => void shutdown(), 100);
+      const error = issue(cause);
+      return json({ error: { code: error.code, message: diagnosticText(error.message) } }, 409);
+    }
     return json({ prepared: true });
   }
   if (request.method === "POST" && url.pathname === "/stop") {
@@ -272,13 +273,19 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
       return json({ opened: true, launchConsumed: result.launchConsumed });
     } catch (cause) {
       const error = issue(cause);
+      // A malformed cmux response means this bridge can no longer be trusted.
+      // Exit so the next cmux terminal (or `tether folio`) attaches a fresh one.
+      if (error.code === "invalid_response" && typeof object(object(cause)?.details)?.operation === "string") {
+        setTimeout(() => void shutdown(), 100);
+        return json({ error: { code: "bridge_relaunch_required", message: diagnosticText(error.message), ...(error.details === undefined ? {} : { details: error.details }) } }, 503);
+      }
       return json({ error: { code: error.code, message: error.message, ...(error.details === undefined ? {} : { details: error.details }) } }, error.status);
     }
   }
   return json({ error: { code: "not_found", message: "Not found." } }, 404);
 } });
 
-async function shutdown(clean = true): Promise<void> {
+async function shutdown(): Promise<void> {
   if (stopped) return;
   stopped = true;
   const deadline = setTimeout(() => process.exit(1), 10_000);
@@ -292,18 +299,29 @@ async function shutdown(clean = true): Promise<void> {
   await Promise.allSettled([...workspaceChains.values()]);
   await publication.catch(() => {});
   await removeCmuxBridge(config, instanceId);
-  if (automation && clean) await completeAttempt(config, automation);
   clearTimeout(deadline);
   resolveClosed();
 }
 
+/** The cmux process this bridge was launched from is still the one serving
+ * its socket. A relaunched cmux recreates the socket and changes its fingerprint. */
+async function sameHost(): Promise<boolean> {
+  if (fingerprintCmuxSocket(process.env.CMUX_SOCKET_PATH!) !== cmuxSocketFingerprint) return false;
+  try { await host.probeSocket(); return true; } catch { return false; }
+}
+
+let eventsActive = false;
 let checkingDaemon = false;
 const timer = setInterval(async () => {
   if (checkingDaemon || stopped) return;
   checkingDaemon = true;
   try {
+    if (fingerprintCmuxSocket(process.env.CMUX_SOCKET_PATH!) !== cmuxSocketFingerprint || !eventsActive && !await sameHost()) {
+      await shutdown();
+      return;
+    }
     await currentDaemon();
-  } catch { /* Retry later; host quit, sleep, and service gaps retain authority. */ }
+  } catch { /* Retry later; service gaps keep this cmux session's authority. */ }
   finally { checkingDaemon = false; }
 }, 10_000);
 
@@ -312,7 +330,7 @@ let publication = Promise.resolve();
 function publishRecord(): Promise<void> {
   const next = publication.catch(() => {}).then(async () => {
     if (stopped) return;
-    const publish = () => writeCmuxBridge(config, {
+    await writeCmuxBridge(config, {
     pid: process.pid,
     origin: `http://127.0.0.1:${server.port}`,
     instanceId,
@@ -323,24 +341,22 @@ function publishRecord(): Promise<void> {
     cmuxSocketFingerprint,
     startedAt: bridgeStartedAt,
   });
-    if (automation) await automationTransaction(config, async state => {
-      if (!ownsAttempt(state, automation!)) throw new Error("Automatic attachment was cancelled.");
-      await publish();
-    }); else await publish();
   });
   publication = next;
   return next;
 }
 await publishRecord();
 published = true;
-if (automation) {
-  scheduleRecovery();
-  eventTask = host.watchRecovery(scheduleRecovery, eventAbort.signal);
-  void eventTask.catch(async () => {
-    let hostGone = false;
-    try { await host.probeSocket(); } catch { hostGone = true; }
-    await shutdown(hostGone);
-  });
-}
+// The bridge lives exactly as long as this cmux process. When the event stream
+// ends (quit, logout, relaunch), exit. If cmux is still the same process, events
+// are unavailable; the timer then checks liveness. Fresh authority comes from the
+// next cmux terminal, never from retrying with this one.
+scheduleRecovery();
+eventsActive = true;
+eventTask = host.watchRecovery(scheduleRecovery, eventAbort.signal);
+void eventTask.catch(async () => {
+  eventsActive = false;
+  if (!stopped && !await sameHost()) await shutdown();
+});
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => void shutdown());
 await closed;

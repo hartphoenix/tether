@@ -1,9 +1,8 @@
-import { automationTransaction, ownsAttempt, completeAttempt, type Attempt } from "../server/automation-state";
 import { acquireFileLock } from "../documents/path-lock";
 import { errorDetails } from "../shared/diagnostics";
 import { chmod, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { readControlToken, readDiscovery, type TetherConfig } from "../server/config";
 import { runtimeEntry } from "../runtime-paths";
@@ -17,7 +16,7 @@ import {
 const LOOPBACK = "127.0.0.1";
 const relaunchPath = process.env.TETHER_INSTALL_ROOT ? resolve(process.env.TETHER_INSTALL_ROOT, "tether") : runtimeEntry("cli");
 const relaunchCommand = `'${relaunchPath.replace(/'/g, "'\\''")}' folio`;
-const RELAUNCH = `Placement unavailable. In cmux, run: \`${relaunchCommand}\``;
+const RELAUNCH = `Tether isn't connected to cmux. In a cmux terminal, run \`${relaunchCommand}\` (with the Tether shell hook installed, opening a new terminal tab also works).`;
 
 export type CmuxBridgeRecord = {
   pid: number;
@@ -69,12 +68,16 @@ async function requireSupportedCmux(env: NodeJS.ProcessEnv): Promise<Pick<CmuxBr
       400,
     );
   }
-  await host.probeSocket();
+  await host.probeContract();
   return { cmuxVersion: host.detectedVersion()!, cmuxBuild: host.detectedBuild(), cmuxCommit: host.detectedCommit() };
 }
 
+/** Identifies one cmux socket incarnation: a relaunched cmux recreates the
+ * socket, so a bridge attached to the previous process no longer matches. */
 export function fingerprintCmuxSocket(path: string): string {
-  return createHash("sha256").update(resolve(path)).digest("hex");
+  const hash = createHash("sha256").update(resolve(path));
+  try { const info = statSync(path); hash.update(`\0${info.dev}:${info.ino}:${info.birthtimeMs}`); } catch { /* socket not present */ }
+  return hash.digest("hex");
 }
 
 async function acquireBridgeLock(config: TetherConfig): Promise<{ release: () => Promise<void> } | null> {
@@ -252,14 +255,13 @@ export async function stopCmuxBridge(config: TetherConfig): Promise<void> {
   throw new CmuxBridgeError("bridge_stop_failed", "The previous cmux bridge did not stop.");
 }
 
-/** Preserve an existing signed capability across an explicit service restart. */
+/** Keep a working bridge across a service restart; stop one that fails its
+ * health check so the next cmux terminal attaches a fresh one. Never blocks restart. */
 export async function prepareCmuxBridgeRestart(config: TetherConfig, daemonInstanceId: string): Promise<void> {
   const record = await readCmuxBridge(config);
   if (!record || record.daemonInstanceId !== daemonInstanceId) return;
-  const response = await bridgeRequest(config, "/prepare-restart", { daemonInstanceId });
-  // Bridges launched before restart handoff support need one terminal relaunch.
-  if (response.status === 404) return;
-  if (!response.ok) throw await bridgeIssue(response, RELAUNCH);
+  const prepared = await bridgeRequest(config, "/prepare-restart", { daemonInstanceId }).then(response => response.ok, () => false);
+  if (!prepared) await stopCmuxBridge(config).catch(() => {});
 }
 
 export async function waitForCmuxBridge(config: TetherConfig, daemonInstanceId: string, socketFingerprint: string, attempts = 100): Promise<CmuxBridgeRecord> {
@@ -275,7 +277,7 @@ export async function waitForCmuxBridge(config: TetherConfig, daemonInstanceId: 
 export async function startCmuxBridge(
   config: TetherConfig,
   env = process.env,
-  options: { wait?: boolean; cmuxVersion?: string; cmuxBuild?: number | null; cmuxCommit?: string | null; attempt?: Attempt } = {},
+  options: { wait?: boolean; cmuxVersion?: string; cmuxBuild?: number | null; cmuxCommit?: string | null } = {},
 ): Promise<CmuxBridgeRecord | null> {
   if (!env.CMUX_SOCKET_PATH || !env.CMUX_SOCKET_CAPABILITY) {
     throw new CmuxBridgeError("bridge_bootstrap_unsupported", "cmux bridge requires the signed socket capability from a cmux terminal.");
@@ -288,11 +290,9 @@ export async function startCmuxBridge(
   if (!lock) return options.wait === false ? null : waitForCmuxBridge(config, discovery.instanceId, socketFingerprint);
   try {
     const existing = await readCmuxBridge(config);
-    if (!options.attempt && existing?.cmuxSocketFingerprint === socketFingerprint &&
-      await cmuxBridgeHealthy(config, discovery.instanceId, socketFingerprint)) {
-      if (options.attempt) await completeAttempt(config, options.attempt);
-      return await readCmuxBridge(config);
-    }
+    // Reuse only a bridge for this cmux process that passes the contract probe.
+    if (existing?.cmuxSocketFingerprint === socketFingerprint &&
+      await cmuxBridgeHealthy(config, discovery.instanceId, socketFingerprint)) return await readCmuxBridge(config);
     await stopCmuxBridge(config);
     const childEnv: NodeJS.ProcessEnv = {
       PATH: env.PATH,
@@ -314,22 +314,17 @@ export async function startCmuxBridge(
       TETHER_RUNTIME_DIR: config.runtimeDir,
       TETHER_CONFIG_DIR: config.configDir,
       TETHER_INSTALL_ROOT: env.TETHER_INSTALL_ROOT,
-      ...(options.attempt ? { TETHER_AUTOMATION_ATTEMPT: JSON.stringify(options.attempt) } : {}),
     };
     // cmux 0.64.22 signs a capability into each terminal specifically so an
     // inherited child remains authorized after detachment and reparenting.
     // Keep that broad cmux authority only in this narrow bridge's environment.
-    const spawn = () => Bun.spawn([process.execPath, "--no-env-file", runtimeEntry("cmux-bridge")], {
+    const child = Bun.spawn([process.execPath, "--no-env-file", runtimeEntry("cmux-bridge")], {
       env: childEnv,
       detached: true,
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
     });
-    const child = options.attempt ? await automationTransaction(config, async state => {
-      if (!ownsAttempt(state, options.attempt!)) throw new Error("Automatic attachment was cancelled.");
-      return spawn();
-    }) : spawn();
     try {
       // Ownership lasts until readiness; even fire-and-forget callers cannot
       // abandon a child that might publish after startup exclusion is released.

@@ -194,6 +194,19 @@ function failureMessage(code: CmuxErrorCode, result: CmuxCommandResult): string 
   return result.stderr || result.stdout || `cmux exited with status ${result.exitCode}`;
 }
 
+/** Subcommand words only: never flags, IDs, URLs or scripts. */
+function commandName(args: string[]): string {
+  const words: string[] = [];
+  for (let index = 0; index < args.length && words.length < 2; index++) {
+    const arg = args[index]!;
+    if (arg === "--id-format") { index++; continue; }
+    if (arg.startsWith("-")) { if (words.length) break; continue; }
+    if (!/^[a-z][a-z._-]*$/.test(arg)) break;
+    words.push(arg);
+  }
+  return words.join(" ") || "cmux";
+}
+
 function requireUuid(value: string | undefined, field: string): string {
   if (!value || !uuidPattern.test(value)) throw new CmuxHostError("invalid_target", `A valid cmux ${field} is required.`);
   return value;
@@ -277,6 +290,17 @@ export class CmuxHostAdapter implements HostAdapter {
           // Fail closed on unsupported CLI response formats.
           if (typeof result.value === "string") reason = result.value;
         } catch { reason = "probe_unavailable"; }
+        // A native error page (for example, connection refused while the service
+        // was down) cannot be inspected. The URL is an exact, unique Tether route
+        // and the service keeps saved drafts, so reload it. The bridge navigates
+        // each view at most once per service instance.
+        if (reason === "probe_unavailable") {
+          if (inspect) reason = "eligible";
+          else {
+            try { await this.navigateSurface(surface.surfaceId, destination, surface); reason = "navigated"; }
+            catch { reason = "probe_unavailable"; }
+          }
+        }
       }
       const known = ["eligible", "navigated", "navigation_pending", "mounted", "loading", "unknown_page", "authorization_required", "location_changed", "unknown_view", "duplicate_view", "probe_unavailable"];
       if (!known.includes(reason)) reason = "unknown_page";
@@ -346,6 +370,12 @@ export class CmuxHostAdapter implements HostAdapter {
       ...this.targetIdentity(),
       windowId, workspaceId, surfaceId,
     };
+  }
+
+  /** Exercises the JSON contract placement depends on, not just reachability. */
+  async probeContract(): Promise<void> {
+    await this.probeSocket();
+    await this.runJson(["--json", "--id-format", "uuids", "identify", "--no-caller"], undefined, true);
   }
 
   async probeSocket(): Promise<void> {
@@ -763,13 +793,26 @@ export class CmuxHostAdapter implements HostAdapter {
 
   private async runJson<T = Record<string, unknown>>(args: string[], target?: HostTarget, omitContext = false): Promise<T> {
     const result = await this.runCommand(args, target, omitContext);
-    try {
-      const parsed = JSON.parse(result.stdout) as T;
-      if (!parsed || typeof parsed !== "object") throw new Error("not an object");
-      return parsed;
-    } catch {
-      throw new CmuxHostError("invalid_response", "cmux returned an invalid structured response.");
+    let shape = "empty";
+    if (result.stdout) {
+      try {
+        const parsed = JSON.parse(result.stdout) as T;
+        if (parsed && typeof parsed === "object") return parsed;
+        shape = "json_non_object";
+      } catch { shape = "text"; }
     }
+    const operation = commandName(args);
+    throw Object.assign(new CmuxHostError("invalid_response", `cmux returned an unexpected response to \`${operation}\`.`), {
+      details: { operation, exitCode: result.exitCode, stdoutShape: shape, stdoutBytes: result.stdout.length,
+        ...(result.stdout ? { stdoutExcerpt: this.excerpt(result.stdout) } : {}), ...(result.stderr ? { stderrExcerpt: this.excerpt(result.stderr) } : {}) },
+    });
+  }
+
+  /** Bounded, redacted diagnostic text. The capability is removed explicitly. */
+  private excerpt(text: string): string {
+    const capability = this.env.CMUX_SOCKET_CAPABILITY;
+    const scrubbed = capability ? text.split(capability).join("[redacted]") : text;
+    return diagnosticText(scrubbed.slice(0, 200));
   }
 
   private async runVoid(args: string[], target?: HostTarget, omitContext = false): Promise<void> {

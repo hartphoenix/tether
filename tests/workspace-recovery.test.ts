@@ -101,3 +101,22 @@ test("host recovery reads cmux eval value and reports the exact repaired view", 
   expect(commands[1]).toContain("eval");
   expect(commands[1]).toContain(surfaceId);
 });
+
+test("host recovery reloads a unique Tether pane whose page cannot be inspected", async () => {
+  const windowId = crypto.randomUUID(), workspaceId = crypto.randomUUID(), surfaceId = crypto.randomUUID();
+  const commands: string[][] = [];
+  const host = createCmuxHost({ run: async command => {
+    commands.push(command);
+    if (command.includes("tree")) return { exitCode: 0, stderr: "", stdout: JSON.stringify({ windows: [{ id: windowId, workspaces: [{ id: workspaceId, panes: [{ surfaces: [{ id: surfaceId, type: "browser", url: "http://127.0.0.1:1234/r/folio/?instance=old#tether-chromeless" }] }] }] }] }) };
+    if (command.includes("eval")) return { exitCode: 1, stderr: "page not scriptable", stdout: "" };
+    return { exitCode: 0, stderr: "", stdout: "{}" };
+  } });
+  const views = [{ id: "folio", kind: "folio" as const, url: "http://127.0.0.1:1234/r/folio/?instance=new" }];
+  expect((await host.recoverViews(views, true)).results[0]).toMatchObject({ status: "eligible" });
+  expect(commands.some(command => command.includes("navigate"))).toBe(false);
+  const report = await host.recoverViews(views);
+  expect(report.results).toEqual([{ surfaceId, viewId: "folio", status: "navigated", reason: "navigated" }]);
+  const navigation = commands.find(command => command.includes("navigate"))!;
+  expect(navigation).toContain(surfaceId);
+  expect(navigation.at(-1)).toBe("http://127.0.0.1:1234/r/folio/?instance=new#tether-chromeless");
+});
