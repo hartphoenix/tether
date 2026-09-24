@@ -15,6 +15,7 @@ function page(withPackageButton = false) {
       requests.push({ endpoint, body: JSON.parse(String(init.body)) });
       if (endpoint.endsWith("/install")) state = { installing: true };
       if (endpoint.endsWith("/dismiss")) state = { ...(state as object), available: null };
+      if (endpoint.endsWith("/check")) return Response.json(state);
       return Response.json({ ok: true });
     }
     return Response.json(state);
@@ -221,5 +222,61 @@ test("package trigger opens update controls and hides when the update is dismiss
     await Bun.sleep(0);
     expect(trigger.hidden).toBe(true);
     expect(p.notice.hidden).toBe(true);
+  } finally { p.dom.window.close(); }
+});
+
+test("a manual check always reports progress and its result", async () => {
+  const p = page(); await Bun.sleep(0);
+  try {
+    const menu = p.dom.window.document.querySelector<HTMLButtonElement>("#menu-check")!;
+    p.state({ managed: true, available: null, version: "0.1.1" }); p.refresh(); await Bun.sleep(0);
+    menu.click();
+    expect(p.notice.textContent).toBe("Checking for updates…");
+    await Bun.sleep(0);
+    expect(p.notice.textContent).toBe("Tether 0.1.1 is up to date. OK");
+    p.state({ managed: true, available: null, unavailableReason: "This installation has no update trust root." });
+    menu.click(); await Bun.sleep(0);
+    expect(p.notice.textContent).toStartWith("Tether can't check for updates on this installation. This installation has no update trust root.");
+    p.offline(); menu.click(); await Bun.sleep(0);
+    expect(p.notice.textContent).toBe("Couldn't reach Tether to check for updates. Run tether to reconnect. Try again | Dismiss");
+  } finally { p.dom.window.close(); }
+});
+
+test("an unavailable update channel stays quiet until the user checks", async () => {
+  const p = page(); await Bun.sleep(0);
+  p.state({ managed: true, available: null, unavailableReason: "This installation has no update trust root." }); p.refresh(); await Bun.sleep(0);
+  expect(p.notice.hidden).toBe(true);
+  p.dom.window.close();
+});
+
+test("prolonged failure offers a check that replaces the notice with its result", async () => {
+  const p = page(); await Bun.sleep(0);
+  try {
+    p.state({ managed: true, available: null, checkFailed: true, prolongedFailure: true, checkError: "Tether couldn't reach the update server." });
+    p.refresh(); await Bun.sleep(0);
+    expect(p.notice.textContent).toBe("Tether hasn't been able to check for updates for two days. Tether couldn't reach the update server. Check now | Dismiss");
+    p.state({ managed: true, available: null, version: "0.1.1" });
+    [...p.notice.querySelectorAll("button")].find(button => button.textContent === "Check now")!.click();
+    expect(p.notice.textContent).toBe("Checking for updates…");
+    await Bun.sleep(0);
+    expect(p.requests).toContainEqual({ endpoint: "./api/updates/check", body: {} });
+    expect(p.notice.textContent).toBe("Tether 0.1.1 is up to date. OK");
+    p.state({ managed: true, available: null, checkFailed: true, prolongedFailure: true, checkError: "Offline." }); p.refresh(); await Bun.sleep(0);
+    [...p.notice.querySelectorAll("button")].find(button => button.textContent === "Dismiss")!.click();
+    expect(p.notice.hidden).toBe(true);
+    p.refresh(); await Bun.sleep(0);
+    expect(p.notice.hidden).toBe(true);
+  } finally { p.dom.window.close(); }
+});
+
+test("a manual check during a background check is queued, not dropped", async () => {
+  const p = page(); await Bun.sleep(0);
+  try {
+    p.state({ managed: true, available: null, version: "0.1.1" });
+    p.refresh(); p.dom.window.document.querySelector<HTMLButtonElement>("#menu-check")!.click();
+    expect(p.notice.textContent).toBe("Checking for updates…");
+    await Bun.sleep(10);
+    expect(p.requests).toContainEqual({ endpoint: "./api/updates/check", body: {} });
+    expect(p.notice.textContent).toBe("Tether 0.1.1 is up to date. OK");
   } finally { p.dom.window.close(); }
 });

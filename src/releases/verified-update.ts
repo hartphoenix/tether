@@ -3,6 +3,19 @@ import { constants } from "node:fs";
 import { chmod, copyFile, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { dirname, join, isAbsolute } from "node:path";
 import { acquireFileLock } from "../documents/path-lock";
+import { DownloadError, DownloadHTTPError, ExpiredMetadataError, RepositoryError } from "tuf-js/dist/error";
+
+/** `unavailable` means this installation can never check; other kinds may clear on retry. */
+export class UpdateCheckError extends Error {
+  constructor(readonly kind: "unavailable" | "network" | "server" | "verification", message: string) { super(message); }
+}
+function classify(cause: unknown): UpdateCheckError {
+  if (cause instanceof UpdateCheckError) return cause;
+  if (cause instanceof DownloadHTTPError) return new UpdateCheckError("server", `The update server returned an error (HTTP ${cause.statusCode}).`);
+  if (cause instanceof ExpiredMetadataError) return new UpdateCheckError("verification", "The published update information has expired.");
+  if (cause instanceof RepositoryError || cause instanceof DownloadError) return new UpdateCheckError("verification", "The published update information failed verification.");
+  return new UpdateCheckError("network", "Tether couldn't reach the update server.");
+}
 
 export type VerifiedRelease = { version: string; tag: string; notes: string; sha256: string };
 const stable = /^\d+\.\d+\.\d+$/;
@@ -23,10 +36,10 @@ function baseUrl(value: unknown): string {
  * TUF owns signature, expiry, rollback, hash/length, and root-rotation checks. */
 export async function withVerifiedRelease<T>(root: string, action: (release: VerifiedRelease | null, download: () => Promise<string>) => Promise<T>, architecture: string = process.arch): Promise<T> {
   const installation = dirname(dirname(root));
-  if (await realpath(join(installation, "current")) !== await realpath(root)) throw new Error("Run the current installed Tether release to update.");
+  if (await realpath(join(installation, "current")).catch(() => undefined) !== await realpath(root)) throw new UpdateCheckError("unavailable", "Run the current installed Tether release to update.");
   let trust: { metadataUrl?: string; targetsUrl?: string };
   try { trust = JSON.parse(await readFile(join(root, "update-trust.json"), "utf8")); }
-  catch { throw new Error("This installation has no update trust root. Install a publisher-authenticated release before updating."); }
+  catch { throw new UpdateCheckError("unavailable", "This installation has no update trust root. Install a publisher-authenticated release before updating."); }
   const metadataUrl = baseUrl(trust.metadataUrl), targetsUrl = baseUrl(trust.targetsUrl);
   const cache = join(installation, "update-metadata");
   await mkdir(cache, { recursive: true, mode: 0o700 }); await chmod(cache, 0o700);
@@ -35,9 +48,12 @@ export async function withVerifiedRelease<T>(root: string, action: (release: Ver
   try {
     await copyFile(join(root, "update-root.json"), join(cache, "root.json"), constants.COPYFILE_EXCL).catch(cause => { if (cause.code !== "EEXIST") throw cause; });
     const updater = new Updater({ metadataDir: cache, metadataBaseUrl: metadataUrl, targetBaseUrl: targetsUrl, config: { fetchTimeout: 10_000, fetchRetries: 0, rootMaxLength: 512_000, timestampMaxLength: 64_000, snapshotMaxLength: 512_000, targetsMaxLength: 1_048_576, maxDelegations: 8 } });
-    await updater.refresh();
+    let target: TargetFile | undefined;
+    try {
+      await updater.refresh();
+      target = await updater.getTargetInfo(`tether-${process.platform}-${architecture}.tar.gz`);
+    } catch (cause) { throw classify(cause); }
     const installed = JSON.parse(await readFile(join(root, "release.json"), "utf8"));
-    const target: TargetFile | undefined = await updater.getTargetInfo(`tether-${process.platform}-${architecture}.tar.gz`);
     if (!target) return await action(null, async () => { throw new Error("No compatible update."); });
     const { version, platform, architecture: targetArch } = target.custom;
     if (typeof version !== "string" || !stable.test(version) || platform !== process.platform || targetArch !== architecture || !/^[a-f0-9]{64}$/.test(target.hashes.sha256 ?? "") || target.length > 512 * 1024 * 1024) throw new Error("Signed update metadata has an invalid version, platform, architecture, or archive size.");
