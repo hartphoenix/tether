@@ -19,11 +19,13 @@ export async function waitForDaemonStop(command: string[], options: {
     const result = JSON.parse(out);
     if (code === 0 && result.ok === true && result.data?.running === false) return;
     const running = code === 0 && result.ok === true && result.data?.running === true;
-    // Shutdown closes the listener before removing discovery. Refusal during
-    // this interval is retryable, but never proves that shutdown completed.
+    // Shutdown answers health with 503 (service_stopping), then closes the
+    // listener before removing discovery. Both are retryable, but never prove
+    // that shutdown completed.
+    const details = result.error?.details;
     const closing = code === 1 && result.ok === false
       && result.error?.code === "daemon_unreachable"
-      && result.error?.details?.diagnostic?.code === "ConnectionRefused";
+      && (details?.diagnostic?.code === "ConnectionRefused" || details?.stage === "health" && details?.httpStatus === 503);
     if (!running && !closing) throw new Error(`Daemon status failed: ${lastStatus}`);
     await Bun.sleep(Math.min(100, Math.max(0, deadline - performance.now())));
   }
