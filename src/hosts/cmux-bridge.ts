@@ -1,7 +1,8 @@
+import { acquireFileLock } from "../documents/path-lock";
 import { errorDetails } from "../shared/diagnostics";
-import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { readControlToken, readDiscovery, type TetherConfig } from "../server/config";
 import { runtimeEntry } from "../runtime-paths";
@@ -15,7 +16,7 @@ import {
 const LOOPBACK = "127.0.0.1";
 const relaunchPath = process.env.TETHER_INSTALL_ROOT ? resolve(process.env.TETHER_INSTALL_ROOT, "tether") : runtimeEntry("cli");
 const relaunchCommand = `'${relaunchPath.replace(/'/g, "'\\''")}' folio`;
-const RELAUNCH = `Placement unavailable. In cmux, run: \`${relaunchCommand}\``;
+const RELAUNCH = `Tether isn't connected to cmux. In a cmux terminal, run \`${relaunchCommand}\` (with the Tether shell hook installed, opening a new terminal tab also works).`;
 
 export type CmuxBridgeRecord = {
   pid: number;
@@ -67,33 +68,21 @@ async function requireSupportedCmux(env: NodeJS.ProcessEnv): Promise<Pick<CmuxBr
       400,
     );
   }
-  await host.probeSocket();
+  await host.probeContract();
   return { cmuxVersion: host.detectedVersion()!, cmuxBuild: host.detectedBuild(), cmuxCommit: host.detectedCommit() };
 }
 
+/** Identifies one cmux socket incarnation: a relaunched cmux recreates the
+ * socket, so a bridge attached to the previous process no longer matches. */
 export function fingerprintCmuxSocket(path: string): string {
-  return createHash("sha256").update(resolve(path)).digest("hex");
+  const hash = createHash("sha256").update(resolve(path));
+  try { const info = statSync(path); hash.update(`\0${info.dev}:${info.ino}:${info.birthtimeMs}`); } catch { /* socket not present */ }
+  return hash.digest("hex");
 }
 
 async function acquireBridgeLock(config: TetherConfig): Promise<{ release: () => Promise<void> } | null> {
-  const path = `${config.cmuxBridgePath}.starting`;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      await mkdir(path, { mode: 0o700 });
-      return { release: () => rmdir(path).catch(() => {}) };
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
-      try {
-        const info = await stat(path);
-        if (Date.now() - info.mtimeMs > 15_000) {
-          await rmdir(path);
-          continue;
-        }
-      } catch { continue; }
-      return null;
-    }
-  }
-  return null;
+  try { return await acquireFileLock(`${config.cmuxBridgePath}.lock`); }
+  catch (cause) { if ((cause as { code?: string }).code === "writer_busy") return null; throw cause; }
 }
 
 function validRecord(value: Partial<CmuxBridgeRecord>): value is CmuxBridgeRecord {
@@ -266,14 +255,13 @@ export async function stopCmuxBridge(config: TetherConfig): Promise<void> {
   throw new CmuxBridgeError("bridge_stop_failed", "The previous cmux bridge did not stop.");
 }
 
-/** Preserve an existing signed capability across an explicit service restart. */
+/** Keep a working bridge across a service restart; stop one that fails its
+ * health check so the next cmux terminal attaches a fresh one. Never blocks restart. */
 export async function prepareCmuxBridgeRestart(config: TetherConfig, daemonInstanceId: string): Promise<void> {
   const record = await readCmuxBridge(config);
   if (!record || record.daemonInstanceId !== daemonInstanceId) return;
-  const response = await bridgeRequest(config, "/prepare-restart", { daemonInstanceId });
-  // Bridges launched before restart handoff support need one terminal relaunch.
-  if (response.status === 404) return;
-  if (!response.ok) throw await bridgeIssue(response, RELAUNCH);
+  const prepared = await bridgeRequest(config, "/prepare-restart", { daemonInstanceId }).then(response => response.ok, () => false);
+  if (!prepared) await stopCmuxBridge(config).catch(() => {});
 }
 
 export async function waitForCmuxBridge(config: TetherConfig, daemonInstanceId: string, socketFingerprint: string, attempts = 100): Promise<CmuxBridgeRecord> {
@@ -302,6 +290,7 @@ export async function startCmuxBridge(
   if (!lock) return options.wait === false ? null : waitForCmuxBridge(config, discovery.instanceId, socketFingerprint);
   try {
     const existing = await readCmuxBridge(config);
+    // Reuse only a bridge for this cmux process that passes the contract probe.
     if (existing?.cmuxSocketFingerprint === socketFingerprint &&
       await cmuxBridgeHealthy(config, discovery.instanceId, socketFingerprint)) return await readCmuxBridge(config);
     await stopCmuxBridge(config);
@@ -336,7 +325,16 @@ export async function startCmuxBridge(
       stdout: "ignore",
       stderr: "ignore",
     });
-    child.unref();
-    return options.wait === false ? null : waitForCmuxBridge(config, discovery.instanceId, socketFingerprint);
+    try {
+      // Ownership lasts until readiness; even fire-and-forget callers cannot
+      // abandon a child that might publish after startup exclusion is released.
+      const record = await waitForCmuxBridge(config, discovery.instanceId, socketFingerprint);
+      child.unref();
+      return record;
+    } catch (cause) {
+      if (child.exitCode === null) child.kill("SIGKILL");
+      await child.exited;
+      throw cause;
+    }
   } finally { await lock.release(); }
 }

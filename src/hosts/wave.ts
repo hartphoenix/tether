@@ -106,7 +106,7 @@ export class WaveHostAdapter implements HostAdapter {
   async probeConnection(): Promise<void> {
     if (!await this.detect() || !isSupportedWaveVersion(this.version)) throw new Error("Wave is unavailable or unsupported. Open Tether from a supported Wave terminal.");
     const result = await this.run([this.wshPath, "blocks", "list", "--json"], commandEnvironment(this.env));
-    if (result.exitCode !== 0) throw new Error("Wave connection unavailable. If Wave is open, relaunch Tether from a Wave terminal to renew access.");
+    if (result.exitCode !== 0) throw new Error("Wave connection unavailable. Click the Tether Folio widget in Wave to reconnect.");
     if (!Array.isArray(JSON.parse(result.stdout))) throw new Error("Wave returned an invalid block list.");
   }
 

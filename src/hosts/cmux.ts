@@ -1,4 +1,5 @@
 import { versionAtLeast } from "./version";
+import { recoveryRoute, recoveryScript, type RecoveryView, type RecoverySurface, type RecoveryReport } from "./recovery";
 import { diagnosticText } from "../shared/diagnostics";
 import { createBrowserHost, type BrowserHostAdapter } from "./browser";
 import type { HostAdapter, HostTarget, OpenLocalFileRequest, OpenViewRequest } from "./host-adapter";
@@ -89,12 +90,15 @@ function cmuxEnvironment(source: NodeJS.ProcessEnv, target?: HostTarget): NodeJS
 
 async function runCmuxCommand(command: string[], env: NodeJS.ProcessEnv): Promise<CmuxCommandResult> {
   const child = Bun.spawn(command, { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const timeout = setTimeout(() => child.kill("SIGKILL"), 5000);
+  try {
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
     child.stdout ? new Response(child.stdout).text() : "",
     child.stderr ? new Response(child.stderr).text() : "",
   ]);
   return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+  } finally { clearTimeout(timeout); }
 }
 
 function parseBuild(output: string): CmuxBuild | null {
@@ -190,6 +194,19 @@ function failureMessage(code: CmuxErrorCode, result: CmuxCommandResult): string 
   return result.stderr || result.stdout || `cmux exited with status ${result.exitCode}`;
 }
 
+/** Subcommand words only: never flags, IDs, URLs or scripts. */
+function commandName(args: string[]): string {
+  const words: string[] = [];
+  for (let index = 0; index < args.length && words.length < 2; index++) {
+    const arg = args[index]!;
+    if (arg === "--id-format") { index++; continue; }
+    if (arg.startsWith("-")) { if (words.length) break; continue; }
+    if (!/^[a-z][a-z._-]*$/.test(arg)) break;
+    words.push(arg);
+  }
+  return words.join(" ") || "cmux";
+}
+
 function requireUuid(value: string | undefined, field: string): string {
   if (!value || !uuidPattern.test(value)) throw new CmuxHostError("invalid_target", `A valid cmux ${field} is required.`);
   return value;
@@ -204,6 +221,93 @@ function requireResponseUuid(value: unknown, field: string): string {
 
 /** cmux adapter using only structured CLI/socket responses. */
 export class CmuxHostAdapter implements HostAdapter {
+  private recoveryTail: Promise<unknown> = Promise.resolve();
+
+  /** One host-owned stream. No respawn loop; the next authorized attachment
+   * supplies fresh authority after the host exits. Never retain event payloads. */
+  async watchRecovery(onChange: () => void, signal: AbortSignal): Promise<void> {
+    const child = Bun.spawn([this.cmuxPath, "events", "--category", "window", "--category", "workspace", "--category", "surface", "--category", "browser"], {
+      env: cmuxEnvironment(this.env), stdin: "ignore", stdout: "pipe", stderr: "ignore",
+    });
+    const stop = () => { if (child.exitCode === null) child.kill("SIGKILL"); };
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) stop();
+    let pending = "";
+    const decoder = new TextDecoder();
+    try {
+      for await (const chunk of child.stdout) {
+        pending += decoder.decode(chunk, { stream: true });
+        if (pending.length > 64 * 1024) throw new Error("Host event frame exceeded its limit.");
+        let boundary: number;
+        while ((boundary = pending.indexOf("\n")) >= 0) {
+          const line = pending.slice(0, boundary); pending = pending.slice(boundary + 1);
+          if (!line.trim()) continue;
+          const event = JSON.parse(line);
+          if (event.type === "ack" || event.type === "event" && /^(window|workspace|surface|browser)\./.test(String(event.name))) onChange();
+        }
+      }
+      if (!signal.aborted) throw new Error("Host event stream ended.");
+    } finally {
+      stop(); await child.exited;
+      signal.removeEventListener("abort", stop);
+    }
+  }
+
+  recoverViews(views: RecoveryView[], inspect = false, signal?: AbortSignal): Promise<RecoveryReport> {
+    const operation = this.recoveryTail.catch(() => {}).then(() => this.recoverExistingViews(views, inspect, signal));
+    this.recoveryTail = operation;
+    return operation;
+  }
+
+  private async recoverExistingViews(views: RecoveryView[], inspect: boolean, signal?: AbortSignal): Promise<RecoveryReport> {
+    signal?.throwIfAborted();
+    if (views.length > 500 || views.some(view => recoveryRoute(view.url)?.id !== view.id)) throw new CmuxHostError("invalid_target", "Invalid recovery inventory.");
+    const tree = await this.runJson<CmuxTree>(["--json", "--id-format", "uuids", "tree", "--all"], undefined, true);
+    const candidates: RecoverySurface[] = [];
+    for (const window of asArray<CmuxWindow>(tree.windows)) {
+      for (const workspace of asArray<CmuxWorkspace>(window.workspaces)) {
+        for (const surface of panes(workspace).flatMap(surfaces)) {
+          if (surface.type !== "browser" || typeof surface.url !== "string" || !recoveryRoute(surface.url)) continue;
+          candidates.push({ windowId: requireUuid(stringField(window, "id"), "window ID"), workspaceId: requireUuid(stringField(workspace, "id"), "workspace ID"), surfaceId: requireUuid(stringField(surface, "id"), "surface ID"), url: surface.url });
+          if (candidates.length > 500) throw new CmuxHostError("invalid_response", "Too many browser views to recover safely.");
+        }
+      }
+    }
+    const counts = new Map<string, number>();
+    for (const surface of candidates) { const id = recoveryRoute(surface.url)!.id; counts.set(id, (counts.get(id) ?? 0) + 1); }
+    const report: RecoveryReport = { inspected: candidates.length, results: [] };
+    const deadline = Date.now() + 15_000;
+    for (const surface of candidates) {
+      signal?.throwIfAborted();
+      if (Date.now() >= deadline) { report.results.push({ surfaceId: surface.surfaceId, status: "skipped", reason: "recovery_deadline" }); continue; }
+      const route = recoveryRoute(surface.url)!;
+      const view = views.find(view => view.id === route.id && view.kind === route.kind);
+      let reason = !view ? "unknown_view" : counts.get(route.id)! > 1 ? "duplicate_view" : "unknown_page";
+      if (view && counts.get(route.id) === 1) {
+        const destination = view.url + (new URL(surface.url).hash || "");
+        try {
+          const result = await this.runJson<{ value?: unknown }>(["--json", "--id-format", "uuids", "browser", "--surface", surface.surfaceId, "eval", recoveryScript(surface.url, destination, inspect)], surface);
+          // Fail closed on unsupported CLI response formats.
+          if (typeof result.value === "string") reason = result.value;
+        } catch { reason = "probe_unavailable"; }
+        // A native error page (for example, connection refused while the service
+        // was down) cannot be inspected. The URL is an exact, unique Tether route
+        // and the service keeps saved drafts, so reload it. The bridge navigates
+        // each view at most once per service instance.
+        if (reason === "probe_unavailable") {
+          if (inspect) reason = "eligible";
+          else {
+            try { await this.navigateSurface(surface.surfaceId, destination, surface); reason = "navigated"; }
+            catch { reason = "probe_unavailable"; }
+          }
+        }
+      }
+      const known = ["eligible", "navigated", "navigation_pending", "mounted", "loading", "unknown_page", "authorization_required", "location_changed", "unknown_view", "duplicate_view", "probe_unavailable"];
+      if (!known.includes(reason)) reason = "unknown_page";
+      report.results.push({ surfaceId: surface.surfaceId, viewId: view?.id, status: reason === "navigated" ? "navigated" : reason === "eligible" ? "eligible" : "skipped", reason });
+    }
+    return report;
+  }
   readonly id = "cmux" as const;
   private readonly env: NodeJS.ProcessEnv;
   private readonly run: CmuxCommandRunner;
@@ -266,6 +370,12 @@ export class CmuxHostAdapter implements HostAdapter {
       ...this.targetIdentity(),
       windowId, workspaceId, surfaceId,
     };
+  }
+
+  /** Exercises the JSON contract placement depends on, not just reachability. */
+  async probeContract(): Promise<void> {
+    await this.probeSocket();
+    await this.runJson(["--json", "--id-format", "uuids", "identify", "--no-caller"], undefined, true);
   }
 
   async probeSocket(): Promise<void> {
@@ -683,13 +793,26 @@ export class CmuxHostAdapter implements HostAdapter {
 
   private async runJson<T = Record<string, unknown>>(args: string[], target?: HostTarget, omitContext = false): Promise<T> {
     const result = await this.runCommand(args, target, omitContext);
-    try {
-      const parsed = JSON.parse(result.stdout) as T;
-      if (!parsed || typeof parsed !== "object") throw new Error("not an object");
-      return parsed;
-    } catch {
-      throw new CmuxHostError("invalid_response", "cmux returned an invalid structured response.");
+    let shape = "empty";
+    if (result.stdout) {
+      try {
+        const parsed = JSON.parse(result.stdout) as T;
+        if (parsed && typeof parsed === "object") return parsed;
+        shape = "json_non_object";
+      } catch { shape = "text"; }
     }
+    const operation = commandName(args);
+    throw Object.assign(new CmuxHostError("invalid_response", `cmux returned an unexpected response to \`${operation}\`.`), {
+      details: { operation, exitCode: result.exitCode, stdoutShape: shape, stdoutBytes: result.stdout.length,
+        ...(result.stdout ? { stdoutExcerpt: this.excerpt(result.stdout) } : {}), ...(result.stderr ? { stderrExcerpt: this.excerpt(result.stderr) } : {}) },
+    });
+  }
+
+  /** Bounded, redacted diagnostic text. The capability is removed explicitly. */
+  private excerpt(text: string): string {
+    const capability = this.env.CMUX_SOCKET_CAPABILITY;
+    const scrubbed = capability ? text.split(capability).join("[redacted]") : text;
+    return diagnosticText(scrubbed.slice(0, 200));
   }
 
   private async runVoid(args: string[], target?: HostTarget, omitContext = false): Promise<void> {

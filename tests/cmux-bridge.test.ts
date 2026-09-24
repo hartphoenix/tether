@@ -405,3 +405,15 @@ esac
   })).rejects.toMatchObject({ code: "bridge_relaunch_required" });
 
 }, 20_000);
+
+test("a relaunched cmux socket gets a new fingerprint", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-cmux-socket-"));
+  try {
+    const socket = join(directory, "cmux.sock");
+    await writeFile(socket, "");
+    const first = fingerprintCmuxSocket(socket);
+    expect(fingerprintCmuxSocket(socket)).toBe(first);
+    await rm(socket); await Bun.sleep(5); await writeFile(socket, "");
+    expect(fingerprintCmuxSocket(socket)).not.toBe(first);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

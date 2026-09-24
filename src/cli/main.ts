@@ -22,6 +22,8 @@ import { backupState, restoreState } from "./backup";
 import { installVerifiedRelease } from "../releases/verified-update";
 import { UpdateService } from "../server/updates";
 import { runtimeRoot } from "../runtime-paths";
+import type { RecoveryView } from "../hosts/recovery";
+import { enableStartup, disableStartup, startupStatus } from "./startup";
 
 export type CliDependencies = {
   waveLaunchers?: WaveLauncherOptions;
@@ -122,6 +124,24 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     command = parsed.spec.name;
     if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage, ...(command === "setup" ? { agentSetup: agentSetupGuidance } : {}), reporting: reportingGuidance }), exitCode: 0 };
     const config = dependencies.config ?? resolveConfig();
+    if (command === "startup.status") return { response: success(command, await startupStatus(config)), exitCode: 0 };
+    if (command === "startup.enable") return { response: success(command, await enableStartup(config)), exitCode: 0 };
+    if (command === "startup.disable") return { response: success(command, await disableStartup(config)), exitCode: 0 };
+    if (command === "cmux.attach") {
+      // Called by the cmux shell hook with that terminal's fresh authority.
+      if (!process.env.CMUX_SOCKET_CAPABILITY || !process.env.CMUX_SOCKET_PATH) throw new Error("Run this from a cmux terminal.");
+      await ensureDaemon({ config, background: true });
+      await startCmuxBridge(config, process.env);
+      return { response: success(command, { attached: true }), exitCode: 0 };
+    }
+    if (command === "resume") {
+      const inspect = parsed.flags.has("--inspect");
+      const host = await launchHost(dependencies, "cmux");
+      if (!host.recoverViews) throw new Error("This host does not support in-place recovery.");
+      const inventory = await controlRequest<{ views: RecoveryView[] }>(config, "/control/recovery/views", {}, { start: !inspect });
+      if (!inspect && !dependencies.host) await startCmuxBridge(config, process.env, cmuxBridgeOptions(host));
+      return { response: success(command, await host.recoverViews(inventory.views, inspect)), exitCode: 0 };
+    }
     const selectedHost = parsed.flags.has("--host") ? hostPreference(optionalFlag(parsed, "--host")!) : ["open", "recent", "recents", "folio", "setup"].includes(command) ? await readHostPreference(config) : "auto";
     if (command === "skills.list") return { response: success(command, { reviews: await listAgentSkillReviews(config) }), exitCode: 0 };
     if (command === "skills.read") return { response: success(command, await readAgentSkillReview(config, parsed.positionals[0]!)), exitCode: 0 };
@@ -134,6 +154,8 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     if (command === "uninstall") {
       if (!process.env.TETHER_INSTALL_ROOT) throw new Error("This command removes a managed installation, not a source checkout.");
       if ((await statusDaemon(config)).running) throw new Error("Save your work and quit Tether before uninstalling: tether daemon stop");
+      const startup = await disableStartup(config);
+      if (!startup.unloaded) throw new Error("The login startup job could not be unloaded; installation was preserved. Retry: tether startup disable");
       const root = dirname(dirname(runtimeRoot()));
       const installation = JSON.parse(await readFile(resolve(root, "install.json"), "utf8"));
       if (typeof installation.binDirectory !== "string") throw new Error("Missing installation metadata.");
@@ -249,7 +271,6 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     }
     if (argv[0] === "daemon" && argv[1] === "status") return { response: success(command, await statusDaemon(config)), exitCode: 0 };
     if (argv[0] === "daemon" && argv[1] === "stop") {
-      await stopCmuxBridge(config).catch(() => {});
       return { response: success(command, await stopDaemon(config)), exitCode: 0 };
     }
     if (argv[0] === "cmux" && argv[1] === "status" && argv.length === 2) {

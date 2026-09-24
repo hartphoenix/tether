@@ -88,3 +88,14 @@ The command checks that the installed and proposed instructions still match the 
 The default profile is `preview`, with `default` as an alias. Use the same `TETHER_PROFILE` value across commands when isolating work. The `TETHER_CONFIG_DIR` and `TETHER_RUNTIME_DIR` overrides name the exact private directories, not just profile names.
 
 Stdout contains one protocol-v1 JSON envelope. Check `ok`, the exit code, individual item results, and warnings. An error can arrive after some work has succeeded. See [protocol details](protocol.md) for pagination, diagnostics, mutation receipts, and durability limits.
+
+## Workspace recovery and startup
+
+- `tether resume --inspect`: list existing cmux panes that would be reloaded, without starting a stopped daemon or navigating.
+- `tether resume`: start the service, attach cmux, and reload existing Tether panes that show an error page, using their saved cookies.
+- `tether startup status`: report whether login startup is enabled and loaded, whether the daemon is running, and whether cmux is attached. Starts nothing.
+- `tether startup enable`: start Tether at login for the current packaged installation, and write the cmux shell hook. Safe to repeat.
+- `tether startup disable`: remove the login job and the shell hook. Running processes keep running; `tether daemon stop` stops them.
+- `tether cmux attach`: entry point for the shell hook. Starts the service if needed and attaches this cmux terminal's authority.
+
+See [recovery](../guide/recovery.md). Tether never edits your shell startup files.
