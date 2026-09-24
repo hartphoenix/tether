@@ -82,7 +82,7 @@ test("Folio updates require a scoped cookie and same-origin installation or dism
   const file = await fixture();
   const actions: string[] = [];
   const daemon = createDaemon({ config: file.config, updates: {
-    status: async () => ({ managed: true, agentSkillReviewNeeded: false, checkFailed: false, prolongedFailure: false, available: { version: "0.2.0", tag: "v0.2.0", notes: "https://github.com/hartphoenix/tether/releases/tag/v0.2.0" }, installing: false, failed: false }),
+    status: async () => ({ managed: true, agentSkillReviewNeeded: false, checkFailed: false, prolongedFailure: false, unavailableReason: null, checkError: null, version: "0.1.0", available: { version: "0.2.0", tag: "v0.2.0", notes: "https://github.com/hartphoenix/tether/releases/tag/v0.2.0" }, installing: false, failed: false }),
     install: async tag => { actions.push(`install:${tag}`); }, dismiss: async tag => { actions.push(`dismiss:${tag}`); },
   } });
   daemons.push(daemon); await daemon.ready;

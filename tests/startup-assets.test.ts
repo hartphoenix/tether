@@ -78,3 +78,30 @@ test("status explains an enabled job that macOS did not load", async () => {
   expect(status.issue?.code).toBe("login_job_not_loaded");
   expect(status.issue?.message).toContain("Allow in the Background");
 });
+
+test("the hook reattaches at a zsh prompt once the bridge is gone, at most every 30 seconds", async () => {
+  const f = await fixture();
+  const log = join(f.directory, "calls");
+  await writeFile(join(f.root, "mdreview"), `#!/bin/sh\necho "$@" >> '${log}'\n`, { mode: 0o700 });
+  const hook = join(f.directory, "hook.sh");
+  await writeFile(hook, cmuxStartupHook(f.config, join(f.directory, "install")));
+  await mkdir(f.config.runtimeDir, { recursive: true });
+  await writeFile(f.config.cmuxBridgePath, "{}");
+  const script = `. '${hook}'; . '${hook}'; print -r -- "$precmd_functions"; _tether_cmux_check; rm '${f.config.cmuxBridgePath}'; _tether_cmux_check; SECONDS=1000; _tether_cmux_check; sleep 0.3`;
+  const child = Bun.spawn(["/bin/zsh", "-f", "-c", script], { env: { PATH: "/usr/bin:/bin", CMUX_SOCKET_PATH: "/sock", CMUX_SOCKET_CAPABILITY: "cap" }, stdout: "pipe" });
+  expect((await new Response(child.stdout).text()).trim()).toBe("_tether_cmux_check");
+  await child.exited;
+  // Two sourced startups, then one prompt-time retry after the bridge vanished.
+  expect(await readFile(log, "utf8")).toBe("cmux attach\ncmux attach\ncmux attach\n");
+});
+
+test("attach refreshes an outdated installed hook and never creates one", async () => {
+  const f = await fixture();
+  const { refreshCmuxHook } = await import("../src/cli/startup");
+  expect(await refreshCmuxHook(f.config, f.root)).toBe(false);
+  await mkdir(f.config.configDir, { recursive: true });
+  await writeFile(join(f.config.configDir, "cmux-startup.sh"), "# old hook\n");
+  expect(await refreshCmuxHook(f.config, f.root)).toBe(true);
+  expect(await readFile(join(f.config.configDir, "cmux-startup.sh"), "utf8")).toContain("_tether_cmux_check");
+  expect(await refreshCmuxHook(f.config, f.root)).toBe(false);
+});

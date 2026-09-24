@@ -2,14 +2,17 @@ import { pendingAgentSkillReviews } from "../cli/agent-skills";
 import { readFile, writeFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import type { TetherConfig } from "./config";
-import { discoverVerifiedRelease } from "../releases/verified-update";
+import { discoverVerifiedRelease, UpdateCheckError } from "../releases/verified-update";
 export { newerVersion } from "../releases/verified-update";
 
 const interval = 6 * 60 * 60 * 1000;
-const prolonged = 24 * 60 * 60 * 1000;
+// Offline laptops are normal; only two days without one successful check is worth a notice.
+const prolonged = 48 * 60 * 60 * 1000;
 export type AvailableUpdate = { version: string; tag: string; notes: string };
 type UpdateState = { dismissed?: string | null; failed?: boolean; lastAttempt?: number; lastSuccess?: number; failureSince?: number | null };
-export type UpdateStatus = { agentSkillReviewNeeded: boolean; managed: boolean; available: AvailableUpdate | null; installing: boolean; failed: boolean; lastAttempt?: number; lastSuccess?: number; checkFailed: boolean; prolongedFailure: boolean };
+export type UpdateStatus = { agentSkillReviewNeeded: boolean; managed: boolean; available: AvailableUpdate | null; installing: boolean; failed: boolean; lastAttempt?: number; lastSuccess?: number; checkFailed: boolean; prolongedFailure: boolean;
+  /** Why this installation cannot check at all; not a failure that retrying fixes. */
+  unavailableReason: string | null; checkError: string | null; version: string | null };
 const writes = new Map<string, Promise<void>>();
 async function state(config: TetherConfig): Promise<UpdateState> {
   try { return JSON.parse(await readFile(join(config.configDir, "updates.json"), "utf8")) ?? {}; }
@@ -33,6 +36,8 @@ export class UpdateService {
   private pending?: Promise<void>;
   private available: AvailableUpdate | null = null;
   private installing = false;
+  private unavailableReason: string | null = null;
+  private checkError: string | null = null;
   constructor(private options: {
     config: TetherConfig;
     root?: string;
@@ -52,10 +57,18 @@ export class UpdateService {
       await writeUpdateState(this.options.config, { lastAttempt: now });
       try {
         this.available = await (this.options.discover ?? discoverVerifiedRelease)(this.options.root!, this.options.architecture);
+        this.unavailableReason = this.checkError = null;
         await writeUpdateState(this.options.config, { lastSuccess: now, failureSince: null });
-      } catch {
+      } catch (cause) {
         // A previously advertised target must not stay installable after failed verification.
         this.available = null;
+        if (cause instanceof UpdateCheckError && cause.kind === "unavailable") {
+          this.unavailableReason = cause.message; this.checkError = null;
+          await writeUpdateState(this.options.config, { failureSince: null });
+          return;
+        }
+        this.unavailableReason = null;
+        this.checkError = cause instanceof UpdateCheckError ? cause.message : "Tether couldn't check for updates.";
         const previous = await state(this.options.config);
         await writeUpdateState(this.options.config, { failureSince: previous.failureSince ?? now });
       }
@@ -68,7 +81,14 @@ export class UpdateService {
     const saved = await state(this.options.config);
     return { agentSkillReviewNeeded: (await pendingAgentSkillReviews(this.options.config)).length > 0, managed: Boolean(this.options.root), available: saved.dismissed === this.available?.tag ? null : this.available, installing: this.installing, failed: saved.failed === true,
       lastAttempt: saved.lastAttempt, lastSuccess: saved.lastSuccess, checkFailed: saved.failureSince != null,
-      prolongedFailure: saved.failureSince != null && (this.options.now ?? Date.now)() - saved.failureSince >= prolonged };
+      prolongedFailure: saved.failureSince != null && (this.options.now ?? Date.now)() - saved.failureSince >= prolonged,
+      unavailableReason: this.unavailableReason, checkError: saved.failureSince != null ? this.checkError ?? "Tether couldn't check for updates." : null, version: await this.version() };
+  }
+
+  private async version(): Promise<string | null> {
+    if (!this.options.root) return null;
+    try { return JSON.parse(await readFile(join(this.options.root, "release.json"), "utf8")).version ?? null; }
+    catch { return null; }
   }
 
   async dismiss(tag: unknown): Promise<void> {

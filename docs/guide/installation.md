@@ -12,7 +12,7 @@ Tether stores versioned releases in `~/.local/share/tether` and commands in `~/.
 
 ## Updates
 
-If you installed via package, choose **Check for updates** from the Folio menu, or run `tether update --check`. When an update is available, a package icon with a notification dot appears in the center of the reader and Folio topbars. Click it to open the update controls: **Release Notes** opens a new tab, **Install** applies the update, and **Dismiss** hides its notice. Source checkouts update through Git.
+If you installed via package, choose **Check for updates** from the Folio menu, or run `tether update --check`. When an update is available, a package icon with a notification dot appears in the center of the reader and Folio topbars. Click it to open the update controls: **Release Notes** opens a new tab, **Install** applies the update, and **Dismiss** hides its notice. A manual check always reports its result. If background checks keep failing for two days, a notice explains why and offers **Check now**. An installation without publisher trust material, such as a local candidate build, can't check for updates; reinstall a published release to receive them. Source checkouts update through Git.
 
 Updates back up your private state and restart the selected runtime. Save your work before quitting a host. Reader pages reconnect without reloading; Folio reloads when the update succeeds. Run `tether doctor` if a view won't reconnect.
 

@@ -30,12 +30,28 @@ export function startupPlist(config: TetherConfig, installBase: string): string 
 }
 
 /** Sourced by interactive cmux shells. It passes the shell's own cmux authority
- * to a short-lived attach command; nothing is written to disk. */
+ * to a short-lived attach command; nothing is written to disk. At each prompt it
+ * reattaches a bridge that has exited, so recovery needs no user action. */
 export function cmuxStartupHook(config: TetherConfig, installBase: string): string {
   const mdreview = join(installBase, "current", "mdreview");
   return `# Tether cmux attachment. Source from an interactive shell; stores no credentials.
 if [ -n "\${CMUX_SOCKET_CAPABILITY:-}" ] && [ -n "\${CMUX_SOCKET_PATH:-}" ] && [ -x ${quote(mdreview)} ]; then
-  (TETHER_PROFILE=${quote(config.profile)} TETHER_CONFIG_DIR=${quote(config.configDir)} TETHER_RUNTIME_DIR=${quote(config.runtimeDir)} ${quote(mdreview)} cmux attach >/dev/null 2>&1 &)
+  _tether_cmux_attach() {
+    _tether_cmux_last=\${SECONDS:-0}
+    (TETHER_PROFILE=${quote(config.profile)} TETHER_CONFIG_DIR=${quote(config.configDir)} TETHER_RUNTIME_DIR=${quote(config.runtimeDir)} ${quote(mdreview)} cmux attach >/dev/null 2>&1 &)
+  }
+  # A file test per prompt; attach at most every 30 seconds while the bridge is gone.
+  _tether_cmux_check() {
+    [ -e ${quote(config.cmuxBridgePath)} ] && return 0
+    [ $(( \${SECONDS:-0} - \${_tether_cmux_last:-0} )) -ge 30 ] || return 0
+    _tether_cmux_attach
+  }
+  _tether_cmux_attach
+  if [ -n "\${ZSH_VERSION:-}" ]; then
+    eval '(( \${precmd_functions[(Ie)_tether_cmux_check]} )) || precmd_functions+=(_tether_cmux_check)'
+  elif [ -n "\${BASH_VERSION:-}" ]; then
+    case ";\${PROMPT_COMMAND:-};" in *";_tether_cmux_check;"*) ;; *) PROMPT_COMMAND="_tether_cmux_check\${PROMPT_COMMAND:+;\$PROMPT_COMMAND}" ;; esac
+  fi
 fi
 `;
 }

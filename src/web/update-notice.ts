@@ -116,21 +116,107 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
       content.append(button("Retry", list));
     }
   };
+  let forceQueued = false;
+  let quietFailure = false;
+  let hideTimer: ReturnType<typeof setTimeout> | undefined;
+  let last: any;
+  const action = (label: string, run: () => void) => {
+    const node = document.createElement("button"); node.type = "button"; node.textContent = label; node.onclick = run; return node;
+  };
+  const show = (text: string, ...actions: HTMLElement[]) => {
+    clearTimeout(hideTimer);
+    if (packageButton) { element.removeAttribute("data-update-popover"); closePopup(); }
+    element.hidden = false;
+    element.replaceChildren(document.createTextNode(text));
+    actions.forEach((node, index) => element.append(index ? " | " : "", node));
+  };
+  const retry = (label: string) => action(label, () => void check(true));
+  const settle = () => action("Dismiss", () => { quietFailure = true; render(last, false); });
+  const syncPackage = (state: any) => {
+    if (!packageButton) return;
+    packageButton.hidden = !state.available;
+    element.toggleAttribute("data-update-popover", Boolean(state.available || state.installing));
+    if (!state.available && !state.installing) closePopup();
+  };
+  const render = (state: any, force: boolean) => {
+    clearTimeout(hideTimer);
+    if (!state) { element.hidden = true; element.replaceChildren(); return; }
+    syncPackage(state);
+    const update = state.available;
+    const skillNotice = state.agentSkillReviewNeeded ? "Agent instructions need review. " : "";
+    const addSkillReview = () => {
+      if (!state.agentSkillReviewNeeded) return;
+      const review = document.createElement("button"); review.textContent = "Review agent instructions"; review.dataset.skillReview = "";
+      review.onclick = () => void openReviews(); element.append(" ", review);
+    };
+    if (!update) {
+      const hide = () => { element.hidden = true; element.replaceChildren(); };
+      if (!state.managed && !skillNotice) { hide(); return; }
+      const failing = state.checkError && (force || (state.prolongedFailure && !quietFailure));
+      const text = state.failed ? "The last Tether update failed. Run tether doctor for details. "
+        : force && state.unavailableReason ? `Tether can't check for updates on this installation. ${state.unavailableReason} `
+        : failing ? `${force ? "Couldn't check for updates." : "Tether hasn't been able to check for updates for two days."} ${state.checkError} `
+        : force ? `Tether${state.version ? ` ${state.version}` : ""} is up to date. ` : "";
+      if (!skillNotice && !text) { hide(); return; }
+      element.hidden = false;
+      element.replaceChildren(document.createTextNode(skillNotice + text));
+      const ok = () => action("OK", () => render(last, false));
+      if (!state.failed && failing) element.append(retry(force ? "Try again" : "Check now"), " | ", settle());
+      else if (text && force) {
+        element.append(ok());
+        if (!state.unavailableReason) hideTimer = setTimeout(() => render(last, false), 8000);
+      }
+      addSkillReview();
+      return;
+    }
+    if (force && packageButton) { popupOpen = true; packageButton.setAttribute("aria-expanded", "true"); }
+    element.hidden = packageButton ? !popupOpen : false;
+    element.replaceChildren(document.createTextNode(skillNotice), document.createTextNode(state.failed ? "Update failed. " : ""), document.createTextNode(`Tether update available: version ${update.version}. `));
+    const install = document.createElement("button");
+    install.textContent = "Install";
+    install.onclick = async () => {
+      install.disabled = true;
+      installing = true;
+      started = Date.now();
+      message("Installing Tether update…");
+      try { await beforeInstall?.(); await post("install", update.tag); }
+      catch { installing = false; (reportError ?? message)("Could not start update. Try again shortly."); }
+      void check();
+    };
+    const notes = document.createElement("a");
+    notes.textContent = "Release Notes";
+    notes.href = update.notes;
+    notes.target = "_blank";
+    notes.rel = "noopener noreferrer";
+    const dismiss = document.createElement("button");
+    dismiss.textContent = "Dismiss";
+    dismiss.onclick = async () => {
+      dismiss.disabled = true;
+      try { await post("dismiss", update.tag); element.hidden = true; await check(); }
+      catch { dismiss.disabled = false; (reportError ?? message)("Could not dismiss the update notice. Try again shortly."); }
+    };
+    element.append(notes, " | ", install, " | ", dismiss);
+    addSkillReview();
+  };
   const check = async (force = false) => {
-    if (pending || document.hidden) return;
+    // A manual check always answers, even when a background check is in flight.
+    if (force) { quietFailure = false; show("Checking for updates…"); }
+    if (pending) { forceQueued ||= force; return; }
+    if (document.hidden && !force) return;
     pending = true;
     try {
       const response = await fetch(`${api}/updates${force ? "/check" : ""}`, { cache: "no-store", ...(force ? { method: "POST", headers: { "content-type": "application/json" }, body: "{}" } : {}), signal: AbortSignal.timeout(30_000) });
       if (!response.ok) throw new Error("Unavailable");
       const state = await response.json();
-      if (packageButton) {
-        packageButton.hidden = !state.available;
-        element.toggleAttribute("data-update-popover", Boolean(state.available || state.installing));
-        if (!state.available && !state.installing) closePopup();
-      }
+      last = state;
       if (!state.agentSkillReviewNeeded) finishReview?.();
       if (menuCheck) menuCheck.hidden = !state.managed;
-      if (state.installing) { installing = true; started ||= Date.now(); message("Installing Tether update…"); return; }
+      // A queued manual check renders its own, fresher answer.
+      if (forceQueued && !state.installing) return;
+      if (state.installing) {
+        syncPackage(state);
+        installing = true; started ||= Date.now(); message("Installing Tether update…"); return;
+      }
       if (installing) {
         installing = false;
         if (!state.failed && !state.available) {
@@ -139,53 +225,15 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
           if (!state.agentSkillReviewNeeded) return;
         }
       }
-      const update = state.available;
-      const skillNotice = state.agentSkillReviewNeeded ? "Agent instructions need review. " : "";
-      const addSkillReview = () => {
-        if (!state.agentSkillReviewNeeded) return;
-        const review = document.createElement("button"); review.textContent = "Review agent instructions"; review.dataset.skillReview = "";
-        review.onclick = () => void openReviews(); element.append(" ", review);
-      };
-      if (!update) {
-        if (!state.managed && !skillNotice) { element.hidden = true; element.replaceChildren(); return; }
-        const text = state.failed ? "Update failed. Run tether doctor. " : state.prolongedFailure ? "Updates have not verified for over a day. " : force ? (state.checkFailed ? "Could not verify updates. " : "No newer verified release. ") : "";
-        if (!skillNotice && !text) { element.hidden = true; element.replaceChildren(); return; }
-        element.hidden = false;
-        element.replaceChildren(document.createTextNode(skillNotice + text));
-        addSkillReview();
-        return;
-      }
-      element.hidden = packageButton ? !popupOpen : false;
-      element.replaceChildren(document.createTextNode(skillNotice), document.createTextNode(state.failed ? "Update failed. " : ""), document.createTextNode(`Tether update available: version ${update.version}. `));
-      const install = document.createElement("button");
-      install.textContent = "Install";
-      install.onclick = async () => {
-        install.disabled = true;
-        installing = true;
-        started = Date.now();
-        message("Installing Tether update…");
-        try { await beforeInstall?.(); await post("install", update.tag); }
-        catch { installing = false; (reportError ?? message)("Could not start update. Try again shortly."); }
-        void check();
-      };
-      const notes = document.createElement("a");
-      notes.textContent = "Release Notes";
-      notes.href = update.notes;
-      notes.target = "_blank";
-      notes.rel = "noopener noreferrer";
-      const dismiss = document.createElement("button");
-      dismiss.textContent = "Dismiss";
-      dismiss.onclick = async () => {
-        dismiss.disabled = true;
-        try { await post("dismiss", update.tag); element.hidden = true; await check(); }
-        catch { dismiss.disabled = false; (reportError ?? message)("Could not dismiss the update notice. Try again shortly."); }
-      };
-      element.append(notes, " | ", install, " | ", dismiss);
-      addSkillReview();
+      render(state, force);
     } catch {
       if (installing && Date.now() - started > 300_000) message("Update is taking longer. Run tether to reconnect.");
       // Failed passive checks never interrupt work or erase an existing notice.
-    } finally { pending = false; }
+      else if (force) show("Couldn't reach Tether to check for updates. Run tether to reconnect. ", retry("Try again"), settle());
+    } finally {
+      pending = false;
+      if (forceQueued) { forceQueued = false; void check(true); }
+    }
   };
   if (menuCheck) menuCheck.onclick = () => void check(true);
   void check();

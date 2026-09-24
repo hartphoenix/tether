@@ -1,4 +1,4 @@
-import { lstat, mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { cmuxHookPath, cmuxStartupHook, startupLabel, startupLogPath, startupPlist } from "../server/startup-assets";
@@ -71,4 +71,16 @@ export async function disableStartup(config: TetherConfig, options: StartupOptio
   await removeAsset(jobPath(config, options.home ?? homedir()));
   await removeAsset(cmuxHookPath(config));
   return { enabled: false, unloaded };
+}
+
+/** Brings an installed hook up to the running release's version. Only an
+ * existing hook is rewritten; removing it remains the way to opt out. */
+export async function refreshCmuxHook(config: TetherConfig, root = process.env.TETHER_INSTALL_ROOT): Promise<boolean> {
+  if (!root) return false;
+  const path = cmuxHookPath(config);
+  const current = await readFile(path, "utf8").catch(() => null);
+  const next = cmuxStartupHook(config, dirname(dirname(root)));
+  if (current === null || current === next) return false;
+  await writeAsset(path, next);
+  return true;
 }

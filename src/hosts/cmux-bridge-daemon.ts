@@ -3,7 +3,9 @@ import { PROTOCOL_VERSION, SERVICE_ID } from "../shared/contracts";
 import { createCmuxHost, isSupportedCmuxVersion, MINIMUM_CMUX_VERSION } from "./cmux";
 import { fingerprintCmuxSocket, removeCmuxBridge, writeCmuxBridge } from "./cmux-bridge";
 import { prepareConfig, readControlToken, readDiscovery, resolveConfig } from "../server/config";
-import { isAbsolute } from "node:path";
+import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import type { HostTarget, OpenViewRequest } from "./host-adapter";
 import { controlRequest } from "../server/lifecycle";
 import type { RecoveryView } from "./recovery";
@@ -236,7 +238,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
     // next cmux terminal attaches a fresh bridge.
     try { await requireSupportedCmux(); }
     catch (cause) {
-      setTimeout(() => void shutdown(), 100);
+      setTimeout(() => void shutdown("cmux failed its check before a service restart"), 100);
       const error = issue(cause);
       return json({ error: { code: error.code, message: diagnosticText(error.message) } }, 409);
     }
@@ -276,7 +278,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
       // A malformed cmux response means this bridge can no longer be trusted.
       // Exit so the next cmux terminal (or `tether folio`) attaches a fresh one.
       if (error.code === "invalid_response" && typeof object(object(cause)?.details)?.operation === "string") {
-        setTimeout(() => void shutdown(), 100);
+        setTimeout(() => void shutdown("cmux returned a malformed response"), 100);
         return json({ error: { code: "bridge_relaunch_required", message: diagnosticText(error.message), ...(error.details === undefined ? {} : { details: error.details }) } }, 503);
       }
       return json({ error: { code: error.code, message: error.message, ...(error.details === undefined ? {} : { details: error.details }) } }, error.status);
@@ -285,9 +287,18 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
   return json({ error: { code: "not_found", message: "Not found." } }, 404);
 } });
 
-async function shutdown(): Promise<void> {
+/** Why the bridge exited, for `tether doctor`-style diagnosis; bounded, no payloads. */
+async function logExit(reason: string): Promise<void> {
+  const path = join(config.runtimeDir, "cmux-bridge.log");
+  const previous = await readFile(path, "utf8").catch(() => "");
+  const lines = `${previous}${new Date().toISOString()} pid ${process.pid} exited: ${reason}\n`.split("\n").slice(-200).join("\n");
+  await writeFile(path, lines, { mode: 0o600 }).catch(() => {});
+}
+
+async function shutdown(reason = "stop requested"): Promise<void> {
   if (stopped) return;
   stopped = true;
+  await logExit(reason);
   const deadline = setTimeout(() => process.exit(1), 10_000);
   deadline.unref();
   clearInterval(timer);
@@ -310,15 +321,24 @@ async function sameHost(): Promise<boolean> {
   try { await host.probeSocket(); return true; } catch { return false; }
 }
 
+/** A different socket at the same path is a new cmux process: exit at once.
+ * Anything else (missing socket, slow ping during sleep or App Nap) must
+ * persist before the bridge gives up its authority. */
+function relaunched(): boolean {
+  return existsSync(process.env.CMUX_SOCKET_PATH!) && fingerprintCmuxSocket(process.env.CMUX_SOCKET_PATH!) !== cmuxSocketFingerprint;
+}
+const LIVENESS_FAILURES = 3;
+let failures = 0;
 let eventsActive = false;
 let checkingDaemon = false;
 const timer = setInterval(async () => {
   if (checkingDaemon || stopped) return;
   checkingDaemon = true;
   try {
-    if (fingerprintCmuxSocket(process.env.CMUX_SOCKET_PATH!) !== cmuxSocketFingerprint || !eventsActive && !await sameHost()) {
-      await shutdown();
-      return;
+    if (relaunched()) { await shutdown("cmux relaunched"); return; }
+    if (!eventsActive) {
+      if (await sameHost()) { failures = 0; watch(); }
+      else if (++failures >= LIVENESS_FAILURES) { await shutdown(`cmux unreachable for ${failures} consecutive checks`); return; }
     }
     await currentDaemon();
   } catch { /* Retry later; service gaps keep this cmux session's authority. */ }
@@ -347,16 +367,22 @@ function publishRecord(): Promise<void> {
 }
 await publishRecord();
 published = true;
-// The bridge lives exactly as long as this cmux process. When the event stream
-// ends (quit, logout, relaunch), exit. If cmux is still the same process, events
-// are unavailable; the timer then checks liveness. Fresh authority comes from the
-// next cmux terminal, never from retrying with this one.
 scheduleRecovery();
-eventsActive = true;
-eventTask = host.watchRecovery(scheduleRecovery, eventAbort.signal);
-void eventTask.catch(async () => {
-  eventsActive = false;
-  if (!stopped && !await sameHost()) await shutdown();
-});
-for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => void shutdown());
+// The bridge lives exactly as long as this cmux process. Event streams can end
+// while cmux stays up (sleep, idle); the timer re-watches once cmux answers.
+// Fresh authority after cmux exits comes from the next cmux terminal.
+function watch(): void {
+  if (stopped || eventsActive) return;
+  eventsActive = true;
+  // The stream only signals cmux exit. Recovery runs on attach and service
+  // change; probing panes on every focus or selection event competes with the
+  // user's own clicks.
+  eventTask = host.watchRecovery(() => {}, eventAbort.signal);
+  void eventTask.catch(async () => {
+    eventsActive = false;
+    if (!stopped && relaunched()) await shutdown("cmux relaunched");
+  });
+}
+watch();
+for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => void shutdown(signal));
 await closed;

@@ -30,7 +30,7 @@ From a cmux terminal, `tether resume --inspect` lists the panes that would be re
 - `tether daemon stop`, or **Quit** in Folio, stops the service and its host bridges. Nothing is disabled: the next `tether`, shell hook, or login starts it again.
 - **Restart service** in Folio restarts the service. A cmux bridge that still works stays attached; one that doesn't is stopped, and the next cmux terminal reattaches.
 
-If a cmux action reports that Tether isn't connected, run `tether folio` in a cmux terminal (or open a new tab, if the shell hook is installed). If that fails, `tether daemon stop` followed by `tether folio` resets every connection.
+The cmux bridge rides out brief outages such as sleep; it exits only when cmux relaunches or stays unreachable for about 30 seconds, and records why in `cmux-bridge.log` in the runtime directory. With the shell hook installed (`tether startup enable`), the next prompt in any cmux terminal reattaches it. Otherwise, when a cmux action reports that Tether lost its connection, copy the command it shows and run it in any cmux terminal: `tether cmux attach`. If that fails, `tether daemon stop` followed by `tether folio` resets every connection.
 
 In Wave, click the **Tether Folio** widget to reconnect.
 

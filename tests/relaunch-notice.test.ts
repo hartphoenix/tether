@@ -60,3 +60,15 @@ test("clipboard failure leaves the command selectable and never claims success",
   expect(dialog.querySelector("code")!.style.userSelect).toBe("all");
   dom.window.close();
 });
+
+test("the bridge's reconnect message renders the copy dialog with its exact command", async () => {
+  const { cmuxReconnectMessage } = await import("../src/hosts/cmux-bridge");
+  const dom = new JSDOM('<div id="notice"></div>');
+  Object.defineProperty(dom.window.HTMLDialogElement.prototype, "showModal", { value: function(this: HTMLDialogElement) { this.open = true; } });
+  const attach = "'/Users/me/.local/share/tether/current/tether' cmux attach";
+  expect(renderRelaunchNotice(dom.window.document.querySelector("div")!, "Could not open link: " + cmuxReconnectMessage(attach))).toBe(true);
+  const dialog = dom.window.document.querySelector("dialog")!;
+  expect(dialog.querySelector("h2")?.textContent).toBe("Reconnect Tether to cmux");
+  expect(dialog.querySelector("code")?.textContent).toBe(attach);
+  dom.window.close();
+});

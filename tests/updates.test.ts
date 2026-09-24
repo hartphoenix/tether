@@ -4,6 +4,7 @@ import { join, dirname } from "node:path";
 import { resolveConfig } from "../src/server/config";
 import { UpdateService, newerVersion } from "../src/server/updates";
 import { completeManagedUpdate } from "../src/server/daemon";
+import { UpdateCheckError } from "../src/releases/verified-update";
 
 const directories: string[] = [];
 afterEach(async () => { for (const dir of directories.splice(0)) await rm(dir, { recursive: true, force: true }); });
@@ -114,7 +115,9 @@ test("persists attempts separately from successful checks and surfaces prolonged
   expect(first.lastSuccess).toBe(0);
   expect(first.checkFailed).toBe(true);
   expect(first.prolongedFailure).toBe(false);
-  for (let i = 0; i < 4; i++) f.advance();
+  for (let i = 0; i < 7; i++) f.advance();
+  expect((await new UpdateService({ ...f.options, discover: async () => { throw new Error("Offline"); } }).status()).prolongedFailure).toBe(false);
+  f.advance();
   expect((await new UpdateService({ ...f.options, discover: async () => { throw new Error("Offline"); } }).status()).prolongedFailure).toBe(true);
   const recovered = await new UpdateService(f.options).status(true);
   expect(recovered.prolongedFailure).toBe(false);
@@ -144,3 +147,27 @@ test("terminating an update kills its installer group and launches no successor"
     expect(launches).toBe(0);
   } finally { abort.abort(); await settled; }
 }, 5000);
+
+test("an installation without a trust root reports why instead of accumulating failure", async () => {
+  const f = await fixture();
+  await writeFile(join(f.options.config.configDir, "updates.json"), JSON.stringify({ failureSince: -1 }));
+  const status = await new UpdateService({ ...f.options, discover: undefined }).status(true);
+  expect(status.unavailableReason).toContain("no update trust root");
+  expect(status.checkFailed).toBe(false);
+  expect(status.prolongedFailure).toBe(false);
+  expect(status.checkError).toBeNull();
+  expect(status.version).toBe("0.1.0");
+});
+
+test("transient check failures carry a reason and wait for the normal interval", async () => {
+  const f = await fixture();
+  let calls = 0, now = 0;
+  const offline = new UpdateService({ ...f.options, now: () => now, discover: async () => { calls++; throw new UpdateCheckError("network", "Tether couldn't reach the update server."); } });
+  expect((await offline.status()).checkError).toBe("Tether couldn't reach the update server.");
+  now += 5 * 60 * 60 * 1000; await offline.status();
+  expect(calls).toBe(1);
+  now += 60 * 60 * 1000;
+  const later = await offline.status();
+  expect(calls).toBe(2);
+  expect(later.prolongedFailure).toBe(false);
+});
