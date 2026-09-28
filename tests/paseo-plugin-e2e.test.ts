@@ -85,7 +85,8 @@ test("an agent's open and an agent's recents add each light only its own workspa
   try {
     const opened = await runCli(["open", join(project, "agent.md")], { config });
     expect(opened.response).toMatchObject({ ok: true, data: { notified: true, opened: false } });
-    const noticed = await until(true, batch => batch.notices["ws-agent"] !== undefined);
+    // Notices can arrive before Folio has refreshed their document titles.
+    const noticed = await until(true, batch => batch.notices["ws-agent"]?.name === "Agent draft");
     expect(noticed.notices).toEqual({ "ws-agent": { path: join(project, "agent.md"), name: "Agent draft" } });
     expect(noticed.intents).toEqual([]);
 
