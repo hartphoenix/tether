@@ -132,7 +132,7 @@ export class Hub {
       if (this.held.has(intent.id)) continue;
       if (intent.origin === "agent" || intent.kind !== "document") {
         acknowledged.push(intent.id);
-        if (intent.origin === "agent" && intent.path) await this.announce(intent.path, await this.workspaceFor(intent.target));
+        if (intent.origin === "agent" && intent.path) await this.announce(intent.path, await this.workspaceFor(intent.target), true);
         continue;
       }
       const workspaceId = await this.workspaceFor(intent.target);
@@ -163,8 +163,14 @@ export class Hub {
     }
   }
 
-  private async announce(path: string, workspaceId: string | null): Promise<void> {
+  /** An agent's own announcement names its workspace, superseding any match by path. */
+  private async announce(path: string, workspaceId: string | null, authoritative = false): Promise<void> {
     if (!workspaceId) return;
+    if (authoritative) {
+      for (const [other, notice] of this.notices) {
+        if (other !== workspaceId && notice.path === path) { this.notices.delete(other); this.changed(); }
+      }
+    }
     const name = this.folio?.find(entry => entry.path === path)?.name ?? fileName(path);
     const current = this.notices.get(workspaceId);
     if (current?.path === path && current.name === name) return;
@@ -195,8 +201,9 @@ export class Hub {
   /** Entries opened since the watermark, not by the user here, light their workspace's button. */
   private async announceAdditions(entries: FolioEntry[]): Promise<void> {
     const seenMs = this.options.seenMs ?? 120_000;
+    const announced = new Set([...this.notices.values()].map(notice => notice.path));
     const fresh = entries.filter(entry => {
-      if (entry.openedAt <= this.watermark!) return false;
+      if (entry.openedAt <= this.watermark! || announced.has(entry.path)) return false;
       const seenAt = this.seen.get(entry.path);
       return seenAt === undefined || entry.openedAt - seenAt > seenMs;
     });
@@ -256,6 +263,7 @@ export class Hub {
       intents,
       folio: this.folio,
       notices: this.options.buttons?.() === false ? {} : Object.fromEntries(this.notices),
+      buttons: this.options.buttons?.() !== false,
       status: this.status,
     };
   }

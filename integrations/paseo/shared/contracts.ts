@@ -38,6 +38,8 @@ export const pumpBatchSchema = z.object({
   intents: z.array(intentSchema),
   folio: z.array(folioEntrySchema).nullable(),
   notices: z.record(z.string(), noticeSchema),
+  /** Whether the Tether header button is shown at all. */
+  buttons: z.boolean(),
   status: statusSchema,
 });
 export type PumpBatch = z.infer<typeof pumpBatchSchema>;

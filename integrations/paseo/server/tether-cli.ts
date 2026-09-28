@@ -42,13 +42,13 @@ export function resolveTether(configured: string): string {
 // Launch context that must never leak from the Paseo daemon into Tether's host selection.
 const launchContext = ["TETHER_PASEO_WORKSPACE_ID", "TETHER_PASEO_ORIGIN", "PASEO_TERMINAL_ID", "PASEO_AGENT_ID", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "CMUX_SOCKET_PATH", "WAVETERM"];
 
-export function createTetherRunner(options: { binary: () => string; profile: () => string; timeoutMs?: number }): TetherRunner {
+export function createTetherRunner(options: { binary: () => string; profile: () => string; timeoutMs?: number; env?: Record<string, string> }): TetherRunner {
   return (args, extra = {}) => new Promise((resolve, reject) => {
     let binary: string;
     try { binary = options.binary(); } catch (cause) { reject(cause); return; }
     const env: NodeJS.ProcessEnv = { ...process.env, PATH: searchPath(), TETHER_PROFILE: options.profile() };
     for (const name of launchContext) delete env[name];
-    Object.assign(env, extra);
+    Object.assign(env, options.env, extra);
     const child = spawn(binary, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];

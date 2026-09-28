@@ -1,4 +1,4 @@
-import type { PaseoApi } from "@getpaseo/client";
+import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { realpath } from "node:fs/promises";
 import type { PaseoLookup, WorkspacePlace } from "./hub";
 
@@ -7,7 +7,7 @@ async function real(path: string): Promise<string> {
 }
 
 /** Paseo lookups through a handler's API; Tether reports real paths, so these do too. */
-export function paseoLookup(paseo: PaseoApi): PaseoLookup {
+export function paseoLookup(paseo: PluginHandlerContext["paseo"]): PaseoLookup {
   return {
     async terminalWorkspace(terminalId) {
       return (await paseo.terminals.ref(terminalId).refresh())?.workspaceId ?? null;
