@@ -271,7 +271,12 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       return { response: success(argv[0], { path: launch.path, expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" && !notified, ...(notified ? { notified: true } : {}) }), exitCode: 0 };
     }
     if (argv[0] === "recents" && argv[1] === "add") {
-      return { response: success(command, await controlRequest(config, "/control/folio/add", { paths: [resolve(parsed.positionals[0]!)] })), exitCode: 0 };
+      const added = await controlRequest<Record<string, unknown>>(config, "/control/folio/add", { paths: [resolve(parsed.positionals[0]!)] });
+      completed.push({ step: "registered", path: resolve(parsed.positionals[0]!) });
+      // Inside Paseo, an agent's addition names the document on its workspace's Tether button.
+      const announced = !dependencies.host && paseoLaunchTarget() !== undefined && await paseoConnected(config)
+        && await createPaseoHost(config).announce(await realpath(resolve(parsed.positionals[0]!)));
+      return { response: success(command, { ...added, ...(announced ? { announced: true } : {}) }), exitCode: 0 };
     }
     if (command === "recents" || command === "folio") {
       const focus = focusPreference(parsed);

@@ -14,7 +14,7 @@ import { createCanvas } from './canvas';
 import { scrollSelectionIntoView } from './scroll-geometry';
 import './canvas.css';
 import { cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
-import { localDocumentLink } from "./local-document-link";
+import { documentLinkPath, localDocumentLink, opensAsDocument } from "./local-document-link";
 import { prepareMarkdown, restoreMarkdown } from "../core/markdown-codec";
 import { createSelectionUi, reviewNoteIconSvg, type SelectionUiController } from "./selection-ui";
 import { createThemePicker } from "./themes";
@@ -598,6 +598,7 @@ async function lease(generation = documentGeneration, path = currentPath): Promi
 }
 async function start(): Promise<void> {
   const bootstrap = await api<SessionBootstrap>("api/bootstrap");
+  pageOpensLinks = bootstrap.capabilities?.pageOpensLinks === true;
   initializing = true;
   editorRoot.inert = true;
   annotationsRoot.inert = true;
@@ -670,6 +671,9 @@ cancelReviewButton.addEventListener("click", () => {
   incomingReview = null;
   showConflict("Incoming review cancelled. Reload disk to discard your version; it has not been overwritten.");
 });
+// Hosts that turn a page's new tab into their own tab let the reader open
+// documents directly, still inside the click, so no host round trip moves focus.
+let pageOpensLinks = false;
 editorRoot.addEventListener("click", (event) => {
   const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
   const href = link?.getAttribute("href") ?? "";
@@ -677,6 +681,14 @@ editorRoot.addEventListener("click", (event) => {
   if (!link || !target) return;
   event.preventDefault();
   event.stopPropagation();
+  if (pageOpensLinks && opensAsDocument(target)) {
+    const opener = document.createElement("a");
+    opener.href = documentLinkPath(target);
+    opener.target = "_blank";
+    opener.rel = "noopener";
+    opener.click();
+    return;
+  }
   void api("api/open", {
     method: "POST",
     body: JSON.stringify(target),

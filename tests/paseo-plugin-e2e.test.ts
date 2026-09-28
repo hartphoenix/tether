@@ -45,7 +45,7 @@ beforeAll(async () => {
     pumpMs: 1_500,
     waitSeconds: 1,
   });
-  hub.attach({ terminalWorkspace: async () => null, workspaces: async () => [{ id: "ws-project", directory: project, projectRoot: project }] });
+  hub.attach({ terminalWorkspace: async () => null });
   hub.start();
   await until(false, batch => batch.status.connected && batch.folio !== null);
 }, 60_000);
@@ -79,26 +79,24 @@ test("a Folio click becomes one reader tab for an executor", async () => {
   await hub.ack(linked.intents.map(intent => intent.id));
 }, 60_000);
 
-test("an agent's open and an agent's recents add each light only a button", async () => {
+test("an agent's open and an agent's recents add each light only its own workspace's button", async () => {
   process.env.TETHER_PASEO_WORKSPACE_ID = "ws-agent";
-  const opened = await runCli(["open", join(project, "agent.md")], { config });
-  delete process.env.TETHER_PASEO_WORKSPACE_ID;
-  expect(opened.response).toMatchObject({ ok: true, data: { notified: true, opened: false } });
-  const noticed = await until(true, batch => batch.notices["ws-agent"] !== undefined);
-  expect(noticed.notices["ws-agent"]).toEqual({ path: join(project, "agent.md"), name: "Agent draft" });
-  expect(noticed.intents).toEqual([]);
+  try {
+    const opened = await runCli(["open", join(project, "agent.md")], { config });
+    expect(opened.response).toMatchObject({ ok: true, data: { notified: true, opened: false } });
+    const noticed = await until(true, batch => batch.notices["ws-agent"] !== undefined);
+    expect(noticed.notices).toEqual({ "ws-agent": { path: join(project, "agent.md"), name: "Agent draft" } });
+    expect(noticed.intents).toEqual([]);
 
-  // The agent's own open registered agent.md in Folio; it must not light a second workspace.
-  expect(noticed.notices["ws-project"]).toBeUndefined();
+    process.env.TETHER_PASEO_WORKSPACE_ID = "ws-other";
+    const added = await runCli(["recents", "add", join(project, "research.md")], { config });
+    expect(added.response).toMatchObject({ ok: true, data: { announced: true } });
+    const both = await until(false, batch => batch.notices["ws-other"]?.name === "Research");
+    expect(both.notices["ws-other"]).toEqual({ path: join(project, "research.md"), name: "Research" });
+  } finally { delete process.env.TETHER_PASEO_WORKSPACE_ID; }
 
-  await runCli(["recents", "add", join(project, "research.md")], { config });
-  const added = await until(false, batch => batch.notices["ws-project"] !== undefined);
-  expect(added.notices["ws-project"]).toEqual({ path: join(project, "research.md"), name: "Research" });
-
-  // A document the user just opened here (notes.md, via the link) never lights a button.
-  await runCli(["recents", "add", join(project, "notes.md")], { config });
-  const after = await until(false, batch => batch.folio?.[0]?.path === join(project, "notes.md"));
-  expect(after.notices["ws-project"]?.path).toBe(join(project, "research.md"));
+  // A user's own opens (here, a document reached by a reader link) never announce anything.
+  expect(Object.values((await hub.pump(-1, false)).notices).map(notice => notice.path)).not.toContain(join(project, "notes.md"));
 }, 60_000);
 
 test("pinning round-trips through Folio", async () => {

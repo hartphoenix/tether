@@ -40,7 +40,8 @@ export class PaseoHostAdapter implements HostAdapter {
   launchTarget(): HostTarget | undefined { return paseoLaunchTarget(this.env); }
 
   capabilities(): HostCapabilities {
-    return { embeddedBrowser: true, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: process.platform === "darwin" };
+    // Paseo turns a page's new-tab request into a tab in the focused pane, so the reader opens links itself.
+    return { embeddedBrowser: true, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: process.platform === "darwin", pageOpensLinks: true };
   }
 
   private origin(): PullOrigin {
@@ -60,6 +61,13 @@ export class PaseoHostAdapter implements HostAdapter {
     });
     // A notification leaves its ticket unused; the plugin reopens by path when the user chooses.
     return origin === "user" ? { launchConsumed: true } : { launchConsumed: false, notified: true };
+  }
+
+  /** An agent's `recents add` names its document on the workspace's Tether button. */
+  async announce(path: string, target = this.launchTarget()): Promise<boolean> {
+    if (!target) return false;
+    await this.options.enqueue({ path, kind: "document", origin: "agent", target });
+    return true;
   }
 
   openExternal(pathOrUrl: string): Promise<void> { return this.fallback.openExternal(pathOrUrl); }

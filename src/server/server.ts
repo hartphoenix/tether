@@ -212,6 +212,11 @@ function hostTarget(value: unknown): HostTarget | undefined {
 }
 
 
+function linkErrorPage(message: string): Response {
+  const text = diagnosticText(message).replace(/[&<>"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]!);
+  return new Response(`<!doctype html><meta charset="utf-8"><title>Link unavailable · Tether</title><link rel="icon" type="image/png" href="/favicon.png"><body style="font:15px/1.5 system-ui;margin:3rem auto;max-width:36rem;padding:0 1rem"><h1 style="font-size:1.2rem">This link couldn't be opened</h1><p>${text}</p><p>Close this tab to return to your document.</p></body>`, { status: 404, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+}
+
 const fallbackHtml = `<!doctype html><meta charset="utf-8"><title>Tether</title><link rel="icon" type="image/png" href="/favicon.png"><main id="app">Tether session</main>`;
 
 /**
@@ -619,6 +624,19 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         session.lastSeen = now();
         return json({ ok: true });
       }
+      if (apiPath === "/link" && request.method === "GET") {
+        // Opened by the reader as a new tab; the tab carries this session's cookie.
+        const query = new URL(request.url).searchParams;
+        const format = query.get("format") === "markdown" ? "markdown" : "wikilink";
+        try {
+          const path = await service.resolveWikilink(session.grant.path, query.get("target") ?? "", format);
+          if (![".md", ".markdown"].includes(extname(path).toLowerCase())) throw invalidRequest("This link isn't a Markdown document.");
+          const ticket = mintTicket(await service.open(path), session.target);
+          return new Response(null, { status: 302, headers: { location: ticket.url, "cache-control": "no-store" } });
+        } catch (cause) {
+          return linkErrorPage(cause instanceof Error ? cause.message : String(cause));
+        }
+      }
       if (apiPath === "/open" && request.method === "POST") {
         const body = await requestJson(request);
         if (typeof body.target !== "string" || !body.target.trim()) throw invalidRequest("A wikilink target is required.");
@@ -877,9 +895,12 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           if (host !== PASEO_HOST) return error("not_found", "Unknown pull host.", 404);
           const body = await requestJson(request);
           if (operation === "enqueue") {
-            if (typeof body.url !== "string" || !body.url.startsWith(`${daemon.origin}/`)) throw invalidRequest("A launch URL from this daemon is required.");
+            const origin = body.origin === "user" ? "user" : "agent";
+            // Only an agent's announcement may omit the launch URL.
+            if (body.url === undefined ? origin === "user" || typeof body.path !== "string" : typeof body.url !== "string" || !body.url.startsWith(`${daemon.origin}/`)) throw invalidRequest("A launch URL from this daemon is required.");
             if (body.kind !== "document" && body.kind !== "recents") throw invalidRequest("Invalid view kind.");
-            const intent = pullQueue.enqueue(host, { url: body.url, kind: body.kind, origin: body.origin === "user" ? "user" : "agent",
+            const intent = pullQueue.enqueue(host, { kind: body.kind, origin,
+              ...(typeof body.url === "string" ? { url: body.url } : {}),
               ...(typeof body.path === "string" ? { path: body.path } : {}),
               ...(hostTarget(body.target) ? { target: hostTarget(body.target) } : {}),
               ...(typeof body.sourceUrl === "string" ? { sourceUrl: body.sourceUrl } : {}),

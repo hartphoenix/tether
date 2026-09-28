@@ -29,6 +29,8 @@ export interface HostAdapter {
   openExternal(pathOrUrl: string): Promise<void>;
   revealFile?(path: string): Promise<void>;
   recentsChanged?(entries: RecentEntry[], target?: HostTarget): Promise<boolean | void>;
+  /** Tell the user about a document without opening it; true when the host took the announcement. */
+  announce?(path: string, target?: HostTarget): Promise<boolean>;
   installLaunchers?(): Promise<InstallResult>;
   recoverViews?(views: RecoveryView[], inspect?: boolean): Promise<RecoveryReport>;
 }

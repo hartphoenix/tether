@@ -1,8 +1,9 @@
 import type { HostTarget } from "./host-adapter";
 
 export type PullOrigin = "user" | "agent";
+/** An open request; an agent's announcement carries only the document path. */
 export type PullIntentInput = {
-  url: string;
+  url?: string;
   path?: string;
   kind: "document" | "recents";
   origin: PullOrigin;

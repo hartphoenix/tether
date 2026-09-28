@@ -30,14 +30,7 @@ function fakeTether(files: Array<Record<string, unknown>> = []) {
 const settle = () => new Promise(resolve => setTimeout(resolve, 5));
 const entry = (path: string, openedAt: number) => ({ path, name: path.split("/").pop(), directory: "/w", repository: null, pinned: false, missing: false, attentionCount: 0, openedAt });
 const intent = (id: string, seq: number, extra: Record<string, unknown> = {}) => ({ id, seq, url: `http://127.0.0.1:1/launch?ticket=${id}`, path: "/w/a/doc.md", kind: "document", origin: "user", target: { host: "paseo", workspaceId: "ws-a" }, expiresAt: Date.now() + 30_000, ...extra });
-const lookup: PaseoLookup = {
-  terminalWorkspace: async id => id === "t1" ? "ws-t" : null,
-  workspaces: async () => [
-    { id: "ws-a", directory: "/w/a", projectRoot: "/w" },
-    { id: "ws-a-sub", directory: "/w/a/sub", projectRoot: "/w" },
-    { id: "ws-b", directory: "/w/b", projectRoot: "/w" },
-  ],
-};
+const lookup: PaseoLookup = { terminalWorkspace: async id => id === "t1" ? "ws-t" : null };
 
 describe("plugin hub", () => {
   test("hands a user intent to one executor at a time and re-offers it after its lease", async () => {
@@ -85,27 +78,37 @@ describe("plugin hub", () => {
     hub.stop();
   });
 
-  test("new Folio entries light the most specific workspace; the user's own opens and old entries do not", async () => {
+  test("a notice lasts until its document is opened anywhere", async () => {
     let now = 50_000;
-    const tether = fakeTether([entry("/w/a/old.md", 100)]);
+    const tether = fakeTether([entry("/w/a/doc.md", 49_000)]);
     const hub = new Hub({ run: tether.run, now: () => now, pumpMs: 20 });
-    hub.attach(lookup);
     hub.start();
-    tether.push({ cursor: 0, folio: 1, intents: [], instanceId: "d1" });
+    tether.push({ cursor: 1, folio: 1, intents: [intent("a1", 1, { origin: "agent", url: undefined, target: { host: "paseo", workspaceId: "ws-a" } })], instanceId: "d1" });
+    await settle();
+    expect((await hub.pump(0, false)).notices).toEqual({ "ws-a": { path: "/w/a/doc.md", name: "doc.md" } }); // Folio title
+
+    // A later Folio refresh that predates the notice keeps it.
+    tether.push({ cursor: 1, folio: 2, intents: [], instanceId: "d1" });
+    await settle();
+    expect(Object.keys((await hub.pump(0, false)).notices)).toEqual(["ws-a"]);
+
+    // Opening the document anywhere, e.g. from a reader link, records a newer open and clears it.
+    tether.state.files = [entry("/w/a/doc.md", 50_500)];
+    tether.push({ cursor: 1, folio: 3, intents: [], instanceId: "d1" });
     await settle();
     expect((await hub.pump(0, false)).notices).toEqual({});
+    hub.stop();
+  });
 
-    await hub.open("/w/b/mine.md", "ws-b");
-    expect(tether.envs.at(-1)).toEqual({ TETHER_PASEO_WORKSPACE_ID: "ws-b", TETHER_PASEO_ORIGIN: "user" });
-    tether.state.files = [entry("/w/a/sub/new.md", 50_500), entry("/w/b/mine.md", 50_400), entry("/w/a/old.md", 100)];
-    tether.push({ cursor: 0, folio: 2, intents: [], instanceId: "d1" });
+  test("opening an announced document through the plugin clears its notice at once", async () => {
+    const tether = fakeTether();
+    const hub = new Hub({ run: tether.run, pumpMs: 20 });
+    hub.start();
+    tether.push({ cursor: 1, folio: 0, intents: [intent("a1", 1, { origin: "agent", url: undefined })], instanceId: "d1" });
     await settle();
-    const batch = await hub.pump(0, false);
-    expect(batch.notices).toEqual({ "ws-a-sub": { path: "/w/a/sub/new.md", name: "new.md" } }); // Folio title, not the file stem
-    expect(batch.folio?.map(file => file.path)).toEqual(["/w/a/sub/new.md", "/w/b/mine.md", "/w/a/old.md"]);
-
-    // Opening the announced document clears its notice.
-    await hub.open("/w/a/sub/new.md", "ws-a-sub");
+    expect(Object.keys((await hub.pump(0, false)).notices)).toEqual(["ws-a"]);
+    await hub.open("/w/a/doc.md", "ws-a");
+    expect(tether.envs.at(-1)).toEqual({ TETHER_PASEO_WORKSPACE_ID: "ws-a", TETHER_PASEO_ORIGIN: "user" });
     expect((await hub.pump(0, false)).notices).toEqual({});
     hub.stop();
   });

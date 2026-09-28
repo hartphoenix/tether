@@ -133,7 +133,7 @@ describe("paseo host through the daemon", () => {
     expect(batch.intents).toHaveLength(1);
     const intent = batch.intents[0] as PullIntent;
     expect(intent).toMatchObject({ kind: "document", origin: "user", path: document, target: { host: "paseo", workspaceId: "w1" } });
-    expect((await fetch(intent.url, { redirect: "manual" })).status).toBe(302);
+    expect((await fetch(intent.url!, { redirect: "manual" })).status).toBe(302);
   });
 
   test("an agent open notifies without opening and releases its ticket", async () => {
@@ -143,7 +143,7 @@ describe("paseo host through the daemon", () => {
     expect(opened.response).toMatchObject({ ok: true, data: { opened: false, notified: true } });
     const intent = (await drain()).intents[0] as PullIntent;
     expect(intent).toMatchObject({ origin: "agent", path: document, target: { host: "paseo", workspaceId: "w2" } });
-    expect((await fetch(intent.url, { redirect: "manual" })).status).toBe(401);
+    expect((await fetch(intent.url!, { redirect: "manual" })).status).toBe(401);
   });
 
   test("auto selection picks a connected Paseo from a Paseo terminal", async () => {
@@ -160,7 +160,7 @@ describe("paseo host through the daemon", () => {
     process.env.TETHER_PASEO_ORIGIN = "user";
     await runCli(["open", document, "--host", "paseo"], { config });
     const launch = (await drain()).intents[0] as PullIntent;
-    const exchange = await fetch(launch.url, { redirect: "manual" });
+    const exchange = await fetch(launch.url!, { redirect: "manual" });
     const location = exchange.headers.get("location")!;
     const cookie = exchange.headers.get("set-cookie")!.split(";")[0]!;
     await wait();
@@ -172,6 +172,36 @@ describe("paseo host through the daemon", () => {
     expect(clicked.status).toBe(200);
     const linked = (await drain()).intents[0] as PullIntent;
     expect(linked).toMatchObject({ origin: "user", path: join(root, "other.md"), target: { host: "paseo", workspaceId: "w3" } });
+  });
+
+  test("a Paseo reader opens linked documents itself, through its own session", async () => {
+    await wait();
+    process.env.TETHER_PASEO_WORKSPACE_ID = "w4";
+    process.env.TETHER_PASEO_ORIGIN = "user";
+    await runCli(["open", document, "--host", "paseo"], { config });
+    const launch = (await drain()).intents[0] as PullIntent;
+    const exchange = await fetch(launch.url!, { redirect: "manual" });
+    const reader = new URL(exchange.headers.get("location")!, daemon.origin);
+    const cookie = exchange.headers.get("set-cookie")!.split(";")[0]!;
+    const bootstrap = await (await fetch(new URL("api/bootstrap", reader), { headers: { cookie } })).json() as { capabilities: { pageOpensLinks?: boolean } };
+    expect(bootstrap.capabilities.pageOpensLinks).toBe(true);
+
+    await wait();
+    const linked = await fetch(new URL("api/link?target=other&format=wikilink", reader), { headers: { cookie }, redirect: "manual" });
+    expect(linked.status).toBe(302);
+    const ticketUrl = linked.headers.get("location")!;
+    expect(ticketUrl).toContain("/launch?ticket=");
+    const opened = await fetch(ticketUrl, { redirect: "manual" });
+    expect(opened.status).toBe(302);
+    expect(opened.headers.get("location")).toMatch(/^\/s\/[^/]+\/$/);
+    // The page opened it; nothing was queued for the plugin.
+    expect((await wait()).intents).toEqual([]);
+
+    const missing = await fetch(new URL("api/link?target=absent&format=wikilink", reader), { headers: { cookie }, redirect: "manual" });
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get("content-type")).toContain("text/html");
+    expect(await missing.text()).toContain("couldn't be opened");
+    expect((await fetch(new URL("api/link?target=other", reader), { redirect: "manual" })).status).not.toBe(302);
   });
 
   test("Folio mutations wake a waiting consumer", async () => {

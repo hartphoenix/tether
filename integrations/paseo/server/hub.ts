@@ -5,7 +5,7 @@ import type { TetherRunner } from "./tether-cli";
 type TetherIntent = {
   id: string;
   seq: number;
-  url: string;
+  url?: string;
   path?: string;
   kind: "document" | "recents";
   origin: "user" | "agent";
@@ -14,14 +14,10 @@ type TetherIntent = {
 };
 type WaitBatch = { cursor: number; folio: number; intents: TetherIntent[]; instanceId: string };
 
-/** The Paseo lookups the hub needs, supplied from a handler context. */
+/** The Paseo lookup the hub needs, supplied from a handler context. */
 export type PaseoLookup = {
   terminalWorkspace(terminalId: string): Promise<string | null>;
-  /** Workspaces with real paths of their checkout and project root, for matching Folio additions. */
-  workspaces(): Promise<WorkspacePlace[]>;
 };
-
-export type WorkspacePlace = { id: string; directory: string | null; projectRoot: string };
 
 export type HubOptions = {
   run: TetherRunner;
@@ -29,29 +25,23 @@ export type HubOptions = {
   leaseMs?: number;
   pumpMs?: number;
   waitSeconds?: number;
-  /** Opens by the user within this window never light a button. */
-  seenMs?: number;
   sleep?: (ms: number) => Promise<void>;
   /** Whether header-button notices are wanted; read on every pump. */
   buttons?: () => boolean;
 };
 
 type Held = { intent: Intent; leaseUntil: number; expiresAt: number };
+type Announced = { path: string; at: number };
 
 function fileName(path: string): string {
   return path.split("/").pop()?.replace(/\.(md|markdown)$/i, "") ?? path;
 }
 
-function within(path: string, directory: string): boolean {
-  const root = directory.endsWith("/") ? directory : `${directory}/`;
-  return path.startsWith(root);
-}
-
 /**
  * The plugin's single piece of state. It pulls Tether's queue for the whole
  * installation, hands each user intent to exactly one client that can open
- * tabs (leased until acked), and turns agent announcements and new Folio
- * entries into per-workspace notices. Focus moves only on a user's action.
+ * tabs (leased until acked), and turns agents' announcements into
+ * per-workspace notices. Focus moves only on a user's action.
  */
 export class Hub {
   private readonly now: () => number;
@@ -62,10 +52,8 @@ export class Hub {
   private folioVersion = -1;
   private instanceId: string | null = null;
   private folio: FolioEntry[] | null = null;
-  private watermark: number | null = null;
   private readonly held = new Map<string, Held>();
-  private readonly notices = new Map<string, Notice>();
-  private readonly seen = new Map<string, number>();
+  private readonly notices = new Map<string, Announced>();
   private readonly waiters = new Set<() => void>();
   private lookup: PaseoLookup | null = null;
   private status: HubStatus = { connected: false, tether: null, error: null };
@@ -135,12 +123,11 @@ export class Hub {
       if (this.held.has(intent.id)) continue;
       if (intent.origin === "agent" || intent.kind !== "document") {
         acknowledged.push(intent.id);
-        if (intent.origin === "agent" && intent.path) await this.announce(intent.path, await this.workspaceFor(intent.target), true);
+        if (intent.origin === "agent" && intent.path) this.announce(intent.path, await this.workspaceFor(intent.target));
         continue;
       }
       const workspaceId = await this.workspaceFor(intent.target);
-      if (!workspaceId) { acknowledged.push(intent.id); continue; }
-      if (intent.path) this.markSeen(intent.path);
+      if (!workspaceId || !intent.url) { acknowledged.push(intent.id); continue; }
       this.held.set(intent.id, { intent: { id: intent.id, url: intent.url, workspaceId }, leaseUntil: 0, expiresAt: intent.expiresAt });
       this.changed();
     }
@@ -159,25 +146,20 @@ export class Hub {
     return null;
   }
 
-  private markSeen(path: string): void {
-    this.seen.set(path, this.now());
+  /** Named from Folio when it knows the document, so the title stays current. */
+  private notice(path: string): Notice {
+    return { path, name: this.folio?.find(entry => entry.path === path)?.name ?? fileName(path) };
+  }
+
+  private clearNotices(path: string): void {
     for (const [workspaceId, notice] of this.notices) {
       if (notice.path === path) { this.notices.delete(workspaceId); this.changed(); }
     }
   }
 
-  /** An agent's own announcement names its workspace, superseding any match by path. */
-  private async announce(path: string, workspaceId: string | null, authoritative = false): Promise<void> {
+  private announce(path: string, workspaceId: string | null): void {
     if (!workspaceId) return;
-    if (authoritative) {
-      for (const [other, notice] of this.notices) {
-        if (other !== workspaceId && notice.path === path) { this.notices.delete(other); this.changed(); }
-      }
-    }
-    const name = this.folio?.find(entry => entry.path === path)?.name ?? fileName(path);
-    const current = this.notices.get(workspaceId);
-    if (current?.path === path && current.name === name) return;
-    this.notices.set(workspaceId, { path, name });
+    this.notices.set(workspaceId, { path, at: this.now() });
     this.changed();
   }
 
@@ -193,44 +175,12 @@ export class Hub {
       attentionCount: typeof file.attentionCount === "number" ? file.attentionCount : 0,
       openedAt: typeof file.openedAt === "number" ? file.openedAt : 0,
     }));
-    const newest = entries.reduce((max, entry) => Math.max(max, entry.openedAt), 0);
     this.folio = entries;
-    if (this.watermark === null) this.watermark = newest; // Never announce what predates this session.
-    else await this.announceAdditions(entries);
-    this.watermark = Math.max(this.watermark, newest);
+    // A notice lasts until its document is opened anywhere, which records a newer open.
+    for (const [workspaceId, notice] of this.notices) {
+      if ((entries.find(entry => entry.path === notice.path)?.openedAt ?? 0) > notice.at) this.notices.delete(workspaceId);
+    }
     this.changed();
-  }
-
-  /** Entries opened since the watermark, not by the user here, light their workspace's button. */
-  private async announceAdditions(entries: FolioEntry[]): Promise<void> {
-    const seenMs = this.options.seenMs ?? 120_000;
-    const announced = new Set([...this.notices.values()].map(notice => notice.path));
-    const fresh = entries.filter(entry => {
-      if (entry.openedAt <= this.watermark! || announced.has(entry.path)) return false;
-      const seenAt = this.seen.get(entry.path);
-      return seenAt === undefined || entry.openedAt - seenAt > seenMs;
-    });
-    if (!fresh.length || !this.lookup) return;
-    const workspaces = await this.lookup.workspaces().catch(() => []);
-    for (const entry of [...fresh].sort((a, b) => a.openedAt - b.openedAt)) {
-      const workspaceId = this.matchWorkspace(entry.path, workspaces);
-      if (workspaceId) await this.announce(entry.path, workspaceId);
-    }
-  }
-
-  /**
-   * The workspace whose checkout most specifically contains the path; failing
-   * that, the project root, but only when exactly one workspace shares it.
-   */
-  private matchWorkspace(path: string, workspaces: WorkspacePlace[]): string | null {
-    let best: { id: string; length: number } | null = null;
-    for (const workspace of workspaces) {
-      const directory = workspace.directory;
-      if (directory && within(path, directory) && (!best || directory.length > best.length)) best = { id: workspace.id, length: directory.length };
-    }
-    if (best) return best.id;
-    const byRoot = workspaces.filter(workspace => within(path, workspace.projectRoot));
-    return byRoot.length === 1 ? byRoot[0]!.id : null;
   }
 
   private nextChange(ms?: number): Promise<void> {
@@ -265,7 +215,7 @@ export class Hub {
       revision: this.revision,
       intents,
       folio: this.folio,
-      notices: this.options.buttons?.() === false ? {} : Object.fromEntries(this.notices),
+      notices: this.options.buttons?.() === false ? {} : Object.fromEntries([...this.notices].map(([workspaceId, { path }]) => [workspaceId, this.notice(path)])),
       buttons: this.options.buttons?.() !== false,
       status: this.status,
     };
@@ -279,7 +229,7 @@ export class Hub {
 
   /** Open a document for the user; the tab returns through `pump` as an intent. */
   async open(path: string, workspaceId: string): Promise<void> {
-    this.markSeen(path);
+    this.clearNotices(path);
     await this.options.run(["open", path, "--host", "paseo"], { TETHER_PASEO_WORKSPACE_ID: workspaceId, TETHER_PASEO_ORIGIN: "user" });
   }
 
