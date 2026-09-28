@@ -14,6 +14,7 @@ import { startWaveBridge } from "../hosts/wave-bridge";
 import { createCmuxHost, CmuxHostAdapter, CmuxHostError, isSupportedCmuxVersion, MINIMUM_CMUX_VERSION } from "../hosts/cmux";
 import { cmuxBridgeStatus, startCmuxBridge, stopCmuxBridge, type CmuxBridgeStatus } from "../hosts/cmux-bridge";
 import type { HostAdapter } from "../hosts/host-adapter";
+import { PASEO_HOST, PaseoHostAdapter, paseoLaunchTarget } from "../hosts/paseo";
 import type { ProtocolResponse } from "../shared/contracts";
 import { RecentsRegistry } from "../recents/registry";
 import { installWaveLaunchers, uninstallWaveLaunchers, waveLauncherStatus, waveInstallationDetected, type WaveLauncherOptions } from "../hosts/wave-launchers";
@@ -35,15 +36,31 @@ export type CliDependencies = {
   readCmuxBridgeStatus?: (config: TetherConfig) => Promise<CmuxBridgeStatus>;
 };
 
-async function launchHost(dependencies: CliDependencies, preference: HostPreference = "auto"): Promise<HostAdapter> {
+function createPaseoHost(config: TetherConfig): PaseoHostAdapter {
+  return new PaseoHostAdapter({ enqueue: intent => controlRequest(config, `/control/hosts/${PASEO_HOST}/enqueue`, intent) });
+}
+
+async function paseoConnected(config: TetherConfig): Promise<boolean> {
+  try { return (await controlRequest<{ present?: unknown }>(config, `/control/hosts/${PASEO_HOST}/status`, {}, { start: false })).present === true; }
+  catch { return false; }
+}
+
+async function launchHost(dependencies: CliDependencies, preference: HostPreference = "auto", config?: TetherConfig): Promise<HostAdapter> {
   if (dependencies.host) return dependencies.host;
   if (preference === "browser") return createBrowserHost({ open: dependencies.open });
+  if (preference === "paseo") {
+    if (!config) throw new Error("Paseo launches require daemon configuration.");
+    return createPaseoHost(config);
+  }
   if (preference === "wave" || preference === "cmux") {
     const host = preference === "wave" ? createWaveHost() : dependencies.cmuxHost ?? createCmuxHost();
     if (!await host.detect()) throw new Error(`Launch from ${preference}, or explicitly select --host browser.`);
     return host;
   }
   if (!dependencies.open) {
+    // Paseo is checked first: a Paseo daemon started from another host's
+    // terminal inherits that host's environment, and the innermost host wins.
+    if (config && paseoLaunchTarget() && await paseoConnected(config)) return createPaseoHost(config);
     const wave = createWaveHost();
     if (await wave.detect()) return wave;
     const cmux = dependencies.cmuxHost ?? createCmuxHost();
@@ -102,6 +119,7 @@ function commandName(argv: string[]): string {
   if (argv[0] === "document") return `document.${argv[1] ?? ""}`;
   if (argv[0] === "wave") return `wave.${argv[1] ?? ""}`;
   if (argv[0] === "cmux") return `cmux.${argv[1] ?? ""}`;
+  if (argv[0] === "paseo") return `paseo.${argv[1] ?? ""}`;
   if (argv[0] === "recents" && argv[1] === "add") return "recents.add";
   if (["pending", "thread", "reply", "resolve", "reopen", "acknowledge"].includes(argv[0] ?? "")) return `review.${argv[0]}`;
   return argv[0] ?? "unknown";
@@ -229,7 +247,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       }
       if (!path) usage();
       const canonicalPath = await realpath(resolve(path));
-      const host = await launchHost(dependencies, selectedHost);
+      const host = await launchHost(dependencies, selectedHost, config);
       const target = host.launchTarget?.();
       const launch = await controlLaunch(config, canonicalPath, target, optionalFlag(parsed, "--resume"));
       completed.push({ step: "registered", path: canonicalPath });
@@ -241,34 +259,52 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         try { await startCmuxBridge(config, process.env, cmuxBridgeOptions(host)); }
         catch (cause) { throw await launchFailure(config, launch.url, cause); }
       }
+      let notified = false;
       if (process.env.TETHER_SUPPRESS_BROWSER !== "1") {
         try {
-          const result = await host.openView({ url: launch.url, kind: "document", focus, allowFocusedFallback: focus, target });
+          const result = await host.openView({ url: launch.url, path: canonicalPath, kind: "document", focus, allowFocusedFallback: focus, target });
           if (result?.launchConsumed === false) await cancelLaunch(config, launch.url);
+          notified = result?.notified === true;
         }
         catch (cause) { throw await launchFailure(config, launch.url, cause); }
       }
-      return { response: success(argv[0], { path: launch.path, expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" }), exitCode: 0 };
+      return { response: success(argv[0], { path: launch.path, expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" && !notified, ...(notified ? { notified: true } : {}) }), exitCode: 0 };
     }
     if (argv[0] === "recents" && argv[1] === "add") {
       return { response: success(command, await controlRequest(config, "/control/folio/add", { paths: [resolve(parsed.positionals[0]!)] })), exitCode: 0 };
     }
     if (command === "recents" || command === "folio") {
       const focus = focusPreference(parsed);
-      const host = await launchHost(dependencies, selectedHost);
+      const host = await launchHost(dependencies, selectedHost, config);
       const target = host.launchTarget?.();
       const launch = await controlRecentsLaunch(config, target);
+      let notified = false;
       try {
         if (host.id === "wave" && !dependencies.host) await startWaveBridge(config, process.env, { wait: false });
         if (host.id === "cmux" && !dependencies.host) await startCmuxBridge(config, process.env, cmuxBridgeOptions(host));
         if (process.env.TETHER_SUPPRESS_BROWSER !== "1") {
           const result = await host.openView({ url: launch.url, kind: "recents", focus, allowFocusedFallback: focus, target });
           if (result?.launchConsumed === false) await cancelLaunch(config, launch.url);
+          notified = result?.notified === true;
         }
       } catch (cause) {
         throw await launchFailure(config, launch.url, cause);
       }
-      return { response: success(command, { expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" }), exitCode: 0 };
+      return { response: success(command, { expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" && !notified, ...(notified ? { notified: true } : {}) }), exitCode: 0 };
+    }
+    if (command === "paseo.status") {
+      return { response: success(command, await controlRequest(config, `/control/hosts/${PASEO_HOST}/status`, {}, { start: false }).catch(() => ({ present: false, pending: 0, running: false }))), exitCode: 0 };
+    }
+    if (command === "paseo.wait") {
+      const seconds = Number(optionalFlag(parsed, "--timeout") ?? 20);
+      if (!Number.isFinite(seconds) || seconds < 0 || seconds > 25) usage("--timeout must be from 0 through 25 seconds.");
+      const after = Number(optionalFlag(parsed, "--after") ?? 0);
+      const folio = Number(optionalFlag(parsed, "--folio") ?? -1);
+      if (!Number.isSafeInteger(after) || !Number.isSafeInteger(folio)) usage("--after and --folio must be integers.");
+      return { response: success(command, await controlRequest(config, `/control/hosts/${PASEO_HOST}/wait`, { after, folio, timeoutMs: seconds * 1000 }, { timeoutMs: seconds * 1000 + 10_000 })), exitCode: 0 };
+    }
+    if (command === "paseo.ack") {
+      return { response: success(command, await controlRequest(config, `/control/hosts/${PASEO_HOST}/ack`, { ids: parsed.positionals })), exitCode: 0 };
     }
     if (argv[0] === "daemon" && argv[1] === "status") return { response: success(command, await statusDaemon(config)), exitCode: 0 };
     if (argv[0] === "daemon" && argv[1] === "stop") {

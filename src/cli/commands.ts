@@ -39,7 +39,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   "startup.status": { name: "startup.status", usage: "tether startup status", min: 0, max: 0 },
   "startup.enable": { name: "startup.enable", usage: "tether startup enable", min: 0, max: 0 },
   "startup.disable": { name: "startup.disable", usage: "tether startup disable", min: 0, max: 0 },
-  setup: { name: "setup", usage: "tether setup [--host auto|browser|wave|cmux] [--wave] [--agent-directory <skills-directory>] [--no-open]", min: 0, max: 0, flags: { "--host": { value: true }, "--wave": {}, "--agent-directory": { value: true }, "--no-open": {} } },
+  setup: { name: "setup", usage: "tether setup [--host auto|browser|wave|cmux|paseo] [--wave] [--agent-directory <skills-directory>] [--no-open]", min: 0, max: 0, flags: { "--host": { value: true }, "--wave": {}, "--agent-directory": { value: true }, "--no-open": {} } },
   "skills.list": { name: "skills.list", usage: "tether skills list", min: 0, max: 0 },
   "skills.read": { name: "skills.read", usage: "tether skills read <id>", min: 1, max: 1 },
   "skills.merge": { name: "skills.merge", usage: "tether skills merge <id> --expected-revision <source-revision> --body-file <file> --confirm", min: 1, max: 1, flags: { "--expected-revision": { value: true }, "--body-file": { value: true }, "--confirm": {} }, required: ["--expected-revision", "--body-file", "--confirm"] },
@@ -55,6 +55,9 @@ export const commandSpecs: Record<string, CommandSpec> = {
   "daemon.status": { name: "daemon.status", usage: "mdreview daemon status", min: 0, max: 0 },
   "daemon.stop": { name: "daemon.stop", usage: "mdreview daemon stop", min: 0, max: 0 },
   "cmux.status": { name: "cmux.status", usage: "mdreview cmux status", min: 0, max: 0 },
+  "paseo.status": { name: "paseo.status", usage: "tether paseo status", min: 0, max: 0 },
+  "paseo.wait": { name: "paseo.wait", usage: "tether paseo wait [--after <cursor>] [--folio <version>] [--timeout <seconds>]", min: 0, max: 0, flags: { "--after": { value: true }, "--folio": { value: true }, "--timeout": { value: true } } },
+  "paseo.ack": { name: "paseo.ack", usage: "tether paseo ack <intent-id>...", min: 1, max: Infinity },
   "wave.status": { name: "wave.status", usage: "mdreview wave status", min: 0, max: 0 },
   "wave.install": { name: "wave.install", usage: "mdreview wave install", min: 0, max: 0 },
   "wave.uninstall": { name: "wave.uninstall", usage: "mdreview wave uninstall", min: 0, max: 0 },
@@ -92,7 +95,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
 
 function commandPrefix(argv: string[]): { name: string; start: number } {
   const [first, second] = argv;
-  if (["daemon", "cmux", "wave", "document", "skills", "startup"].includes(first ?? "")) return { name: `${first}.${second ?? ""}`, start: 2 };
+  if (["daemon", "cmux", "wave", "paseo", "document", "skills", "startup"].includes(first ?? "")) return { name: `${first}.${second ?? ""}`, start: 2 };
   if (first === "recents" && second === "add") return { name: "recents.add", start: 2 };
   if (first === "folio" && second && commandSpecs[`folio.${second}`]) return { name: `folio.${second}`, start: 2 };
   return { name: first ?? "unknown", start: 1 };
@@ -142,7 +145,7 @@ export function parseCommand(argv: string[]): ParsedCommand {
     if (status !== undefined && status !== "open" && status !== "resolved") usage("--status must be open or resolved.");
     const view = flags.get("--view");
     const host = flags.get("--host");
-    if (host !== undefined && !["auto", "browser", "wave", "cmux"].includes(String(host))) usage("--host must be auto, browser, wave, or cmux.");
+    if (host !== undefined && !["auto", "browser", "wave", "cmux", "paseo"].includes(String(host))) usage("--host must be auto, browser, wave, cmux, or paseo.");
     if (view !== undefined && view !== "active" && view !== "archive") usage("--view must be active or archive.");
     const sort = flags.get("--sort");
     if (typeof sort === "string" && !["opened", "modified", "activity", "added", "created", "name"].includes(sort)) usage("--sort must be opened, modified, activity, added, created, or name.");

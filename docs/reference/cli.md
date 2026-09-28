@@ -99,3 +99,13 @@ Stdout contains one protocol-v1 JSON envelope. Check `ok`, the exit code, indivi
 - `tether cmux attach`: entry point for the shell hook. Starts the service if needed and attaches this cmux terminal's authority.
 
 See [recovery](../guide/recovery.md). Tether never edits your shell startup files.
+
+## Paseo plugin channel (experimental)
+
+The Tether plugin for Paseo uses these commands. Paseo can't be driven from outside, so Tether queues each open as an *intent* and the plugin pulls it. The commands and their data shapes may change between releases.
+
+- `tether paseo status`: report whether a plugin is connected (`present`) and how many intents are pending. It never starts the service.
+- `tether paseo wait [--after <cursor>] [--folio <version>] [--timeout <seconds>]`: return intents newer than `--after`. It returns early when an intent arrives or Folio changes past `--folio`. The timeout is at most 25 seconds. A wait marks the plugin connected for 30 seconds.
+- `tether paseo ack <intent-id>...`: remove intents the plugin has handled. An unacknowledged intent expires with its launch ticket.
+
+Inside Paseo, `tether open` picks the `paseo` host automatically when the plugin is connected, or explicitly with `--host paseo`. Opens that the plugin makes for the user open a reader tab. Any other open, such as an agent's, only lights the workspace's Tether button and reports `notified: true`, so Tether never moves your focus.

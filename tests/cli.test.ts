@@ -84,7 +84,7 @@ test("captures one host target per launch and propagates view kind and focus", a
   expect((await runCli(["recents", "--focus"], { config, host })).response).toMatchObject({ ok: true, command: "recents" });
   expect(captures).toBe(2);
   expect(requests).toEqual([
-    { url: expect.stringContaining("/launch?ticket="), kind: "document", focus: false, allowFocusedFallback: false, target: { host: "browser", capture: "1" } },
+    { url: expect.stringContaining("/launch?ticket="), path: await realpath(path), kind: "document", focus: false, allowFocusedFallback: false, target: { host: "browser", capture: "1" } },
     { url: expect.stringContaining("/recents/launch?ticket="), kind: "recents", focus: true, allowFocusedFallback: true, target: { host: "browser", capture: "2" } },
   ]);
 

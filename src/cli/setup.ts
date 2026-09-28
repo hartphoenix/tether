@@ -4,9 +4,9 @@ export { installAgentSkill } from "./agent-skills";
 import type { TetherConfig } from "../server/config";
 export { seedWelcome } from "../onboarding";
 
-export type HostPreference = "auto" | "browser" | "wave" | "cmux";
+export type HostPreference = "auto" | "browser" | "wave" | "cmux" | "paseo";
 export function hostPreference(value: string): HostPreference {
-  if (!["auto", "browser", "wave", "cmux"].includes(value)) throw new Error("Host must be auto, browser, wave, or cmux.");
+  if (!["auto", "browser", "wave", "cmux", "paseo"].includes(value)) throw new Error("Host must be auto, browser, wave, cmux, or paseo.");
   return value as HostPreference;
 }
 export async function readHostPreference(config: TetherConfig): Promise<HostPreference> {

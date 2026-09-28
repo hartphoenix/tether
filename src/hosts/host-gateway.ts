@@ -19,7 +19,7 @@ const unavailable: HostCapabilities = {
 export class HostGateway implements HostAdapter {
   readonly id = "browser" as const;
 
-  constructor(private readonly config: TetherConfig, private readonly fallback: HostAdapter) {}
+  constructor(private readonly config: TetherConfig, private readonly fallback: HostAdapter, private readonly paseo?: HostAdapter) {}
 
   async detect(): Promise<boolean> { return true; }
 
@@ -35,6 +35,7 @@ export class HostGateway implements HostAdapter {
       ...unavailable,
       embeddedBrowser: isSupportedCmuxVersion(target.version),
     };
+    if (target?.host === "paseo" && this.paseo) return this.paseo.capabilities(target);
     return this.fallback.capabilities(target);
   }
 
@@ -46,6 +47,7 @@ export class HostGateway implements HostAdapter {
     if (request.target?.host === "cmux") {
       return openThroughCmuxBridge(this.config, request);
     }
+    if (request.target?.host === "paseo" && this.paseo) return await this.paseo.openView(request) ?? { launchConsumed: true };
     const result = await this.fallback.openView(request);
     return result ?? { launchConsumed: true };
   }

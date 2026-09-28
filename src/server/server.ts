@@ -27,6 +27,8 @@ import {
 import type { HostAdapter, HostTarget } from "../hosts/host-adapter";
 import { createBrowserHost } from "../hosts/browser";
 import { HostGateway } from "../hosts/host-gateway";
+import { PullQueue } from "../hosts/pull-queue";
+import { PASEO_HOST, PaseoHostAdapter } from "../hosts/paseo";
 import { prepareCmuxBridgeRestart } from "../hosts/cmux-bridge";
 import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type AppendEventInput, type DocumentSession } from "../documents/document-service";
 import { chooseImportDirectory } from "./directory-picker";
@@ -232,7 +234,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const views = new ViewStore(privateStore.db);
   const trashFile = options.trashFile ?? moveToTrash;
   const pickFiles = options.pickFiles ?? (process.platform === "darwin" ? pickMarkdownFiles : undefined);
-  const hostAdapter = options.hostAdapter ?? new HostGateway(config, createBrowserHost({ open: options.opener }));
+  const pullQueue = new PullQueue({ now, ttlMs: ticketMs });
+  const browserHost = createBrowserHost({ open: options.opener });
+  const paseoHost = new PaseoHostAdapter({ origin: "user", fallback: browserHost, enqueue: async (intent) => pullQueue.enqueue(PASEO_HOST, intent) });
+  const hostAdapter = options.hostAdapter ?? new HostGateway(config, browserHost, paseoHost);
   const recents = new RecentsService(options.recents ?? new RecentsRegistry({ path: config.recentsPath, now, database: privateStore.db, deletePrivateData: async (path: string, onlyWithoutConversation?: boolean) => {
     agentReads.forget(path);
     await service.deleteConversation(path, onlyWithoutConversation);
@@ -240,6 +245,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     for (const [ticket, pending] of tickets) if (pending.grant.realPath === path) { service.close(pending.grant); tickets.delete(ticket); }
     views.forgetPath(path);
   } }), hostAdapter);
+  recents.subscribeFolio(() => pullQueue.folioChanged());
   const instanceId = crypto.randomUUID();
   const tickets = new Map<string, { grant: DocumentSession; expiresAt: number; target?: HostTarget; resumeId?: string }>();
   const recentsTickets = new Map<string, { expiresAt: number; target?: HostTarget }>();
@@ -631,7 +637,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         }
         const grant = await service.open(path);
         const ticket = mintTicket(grant, session.target);
-        try { await hostAdapter.openView({ url: ticket.url, kind: "document", focus: true, target: session.target,
+        try { await hostAdapter.openView({ url: ticket.url, path: grant.realPath, kind: "document", focus: true, target: session.target,
           ...(session.target?.host === "cmux" ? { targetPolicy: "source-pane" as const, sourceUrl } : {}),
         }); }
         catch (cause) { discardTicket(ticket.ticket); throw cause; }
@@ -782,6 +788,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           try {
             await hostAdapter.openView({
               url: launch.url,
+              path: grant.realPath,
               kind: "document",
               focus: true,
               allowFocusedFallback: true,
@@ -864,6 +871,33 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           } catch (cause) {
             return error("command_failed", cause instanceof Error ? cause.message : String(cause), 500);
           }
+        }
+        if (pathname.startsWith("/control/hosts/") && request.method === "POST") {
+          const [host, operation] = pathname.slice("/control/hosts/".length).split("/");
+          if (host !== PASEO_HOST) return error("not_found", "Unknown pull host.", 404);
+          const body = await requestJson(request);
+          if (operation === "enqueue") {
+            if (typeof body.url !== "string" || !body.url.startsWith(`${daemon.origin}/`)) throw invalidRequest("A launch URL from this daemon is required.");
+            if (body.kind !== "document" && body.kind !== "recents") throw invalidRequest("Invalid view kind.");
+            const intent = pullQueue.enqueue(host, { url: body.url, kind: body.kind, origin: body.origin === "user" ? "user" : "agent",
+              ...(typeof body.path === "string" ? { path: body.path } : {}),
+              ...(hostTarget(body.target) ? { target: hostTarget(body.target) } : {}),
+              ...(typeof body.sourceUrl === "string" ? { sourceUrl: body.sourceUrl } : {}),
+            });
+            return json({ id: intent.id, origin: intent.origin, expiresAt: intent.expiresAt });
+          }
+          if (operation === "wait") {
+            const after = Number(body.after ?? 0), folio = Number(body.folio ?? -1), timeoutMs = Math.min(Math.max(Number(body.timeoutMs ?? 0), 0), 25_000);
+            if (![after, folio, timeoutMs].every(Number.isFinite)) throw invalidRequest("Invalid wait cursor.");
+            maintenanceEnabled = true;
+            return json({ ...await pullQueue.wait(host, after, folio, timeoutMs, request.signal), instanceId });
+          }
+          if (operation === "ack") {
+            if (!Array.isArray(body.ids) || !body.ids.every(id => typeof id === "string")) throw invalidRequest("Intent ids are required.");
+            return json({ acknowledged: pullQueue.ack(host, body.ids as string[]) });
+          }
+          if (operation === "status") return json({ ...pullQueue.status(host), instanceId });
+          return error("not_found", "Unknown pull host operation.", 404);
         }
         if (pathname === "/control/cancel" && request.method === "POST") {
           const body = await requestJson(request);
@@ -1036,6 +1070,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (timer) clearInterval(timer);
       timer = undefined;
       for (const close of [...recentsStreamClosers]) close();
+      pullQueue.close();
       stopping = (async () => {
       await initialization;
       await maintenance.catch(() => {});
@@ -1104,7 +1139,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           }
         }
         for (const [ticket, pending] of recentsTickets) if (pending.expiresAt <= current) recentsTickets.delete(ticket);
-        const active = sessions.size > 0 || recentsSessions.size > 0 || tickets.size > 0 || recentsTickets.size > 0;
+        const active = sessions.size > 0 || recentsSessions.size > 0 || tickets.size > 0 || recentsTickets.size > 0 || pullQueue.anyPresent();
         if (active) { emptySince = 0; return; }
         if (emptySince === 0) emptySince = current;
         const grace = current - startedAt < startupGraceMs ? startupGraceMs : idleMs;
