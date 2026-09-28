@@ -18,6 +18,8 @@ jobs:
         with:
           bun-version: 1.3.9
       - run: bun install --frozen-lockfile
+      - run: npm ci --prefix integrations/paseo
+      - run: npm run typecheck --prefix integrations/paseo
       - run: bun run check
       - run: bun scripts/build-release.ts "$RUNNER_TEMP/tether-candidate/app"
       - run: bun scripts/check-release.ts "$RUNNER_TEMP/tether-candidate/app"
