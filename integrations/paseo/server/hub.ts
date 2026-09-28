@@ -111,7 +111,10 @@ export class Hub {
         await this.pullOnce();
         backoff = 1_000;
       } catch (cause) {
-        this.setStatus({ connected: false, tether: this.status.tether, error: cause instanceof Error ? cause.message : String(cause) });
+        // A Tether release older than the Paseo channel rejects `tether paseo` as unknown.
+        const outdated = (cause as { code?: unknown }).code === "usage";
+        const error = outdated ? "This Tether version doesn't support Paseo. Update Tether, or set a newer tether command in settings." : cause instanceof Error ? cause.message : String(cause);
+        this.setStatus({ connected: false, tether: this.status.tether, error });
         await this.sleep(backoff);
         backoff = Math.min(backoff * 2, 30_000);
       }

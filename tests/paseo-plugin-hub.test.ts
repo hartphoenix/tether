@@ -150,6 +150,14 @@ describe("plugin hub", () => {
     hub.stop();
   });
 
+  test("an outdated Tether is named plainly", async () => {
+    const hub = new Hub({ pumpMs: 20, sleep: () => new Promise(resolve => setTimeout(resolve, 1)), run: async () => { throw new TetherError("usage", "Unknown command."); } });
+    hub.start();
+    await settle();
+    expect((await hub.pump(0, false)).status.error).toContain("doesn't support Paseo");
+    hub.stop();
+  });
+
   test("a failing Tether is reported in status and retried", async () => {
     let attempts = 0;
     const hub = new Hub({

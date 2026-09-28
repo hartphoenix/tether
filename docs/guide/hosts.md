@@ -4,7 +4,7 @@
 
 "Host" here refers to your local terminal environment's embedded browser (such as cmux or wave, which Tether provides adapters for), not a cloud platform or remote server.
 
-Run `tether setup --host auto` to use the supported terminal you’re working in, or `tether setup --host browser` to use a separate browser. You can select a terminal explicitly with `--host cmux` or `--host wave`. Your local data is shared across hosts that use the same account and profile.
+Run `tether setup --host auto` to use the supported terminal you’re working in, or `tether setup --host browser` to use a separate browser. You can select a terminal explicitly with `--host cmux` or `--host wave`. Inside Paseo, the Tether plugin selects the `paseo` host itself. Your local data is shared across hosts that use the same account and profile.
 
 ## cmux
 
@@ -38,6 +38,23 @@ tether wave uninstall
 Clicking the widget opens Folio in the visible tab. Installation leaves your other widgets alone and creates a one-time `widgets.json.tether-cutover.backup`. The widget uses the `preview` profile.
 
 Tether does not replace Wave's native file navigator. Open Markdown using Folio or `tether open absolute/path/to/file.md`.
+
+## Paseo (experimental)
+
+[Paseo](https://paseo.sh) is a desktop app for coding agents. Tether runs inside it through a Paseo plugin, which lives in this repository at `integrations/paseo`. Reader tabs open only in the Paseo desktop app, so the plugin is desktop-only for now. It also requires the Paseo daemon to run on the same Mac as Tether.
+
+Paseo plugins run as trusted, unsandboxed code. Install this one only if you trust this repository. Plugins are off until `pluginsEnabled` is `true` in `~/.paseo/config.json`; run `paseo reload` after changing it. Then install the plugin:
+
+```sh
+paseo plugin add hartphoenix/tether:integrations/paseo
+```
+
+- **Folio.** Right-click the Explorer sidebar's tab rail (next to Files and Changes) and choose **Folio**. Paseo gives each workspace its own Explorer, so add Folio once in each workspace where you want it. It stays there after that. Every Folio shows the same list, filter, and pins.
+- **Opening documents.** Click a document in Folio to open its reader as a Paseo browser tab. Links to local Markdown open in another tab. To place a reader beside your work, split the pane first, then open it.
+- **The Tether button.** Each workspace header gets a Tether button, which opens Folio. When an agent runs `tether open` or `tether recents add` for a document in that workspace, the button shows the document's name. Nothing opens until you press it, so an agent never moves your focus.
+- **Settings.** Paseo **Settings → Tether** shows the connection, turns the button on or off, and sets the `tether` command and profile. By default the plugin finds `tether` on your PATH or in `~/.local/bin`, and uses the `preview` profile.
+
+`tether paseo status` reports whether the plugin is connected.
 
 ## Separate browser
 
