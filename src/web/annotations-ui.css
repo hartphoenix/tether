@@ -15,7 +15,7 @@
   border-left: 1px solid var(--wm-annotation-border);
   background: color-mix(in srgb, var(--wm-annotation-surface) 96%, transparent);
   color: #3a332c;
-  font: 13px/1.4 system-ui, sans-serif;
+  font: calc(13px * var(--wm-thread-ui-scale, 1))/1.4 system-ui, sans-serif;
 }
 
 .wm-annotation-rail[hidden] { display: none; }
@@ -45,9 +45,9 @@
 .wm-rail-button {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
-  padding: 3px;
+  width: calc(26px * var(--wm-thread-ui-scale, 1));
+  height: calc(26px * var(--wm-thread-ui-scale, 1));
+  padding: calc(3px * var(--wm-thread-ui-scale, 1));
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -63,9 +63,9 @@
 .wm-annotation-rail-controls { gap: 5px; }
 .wm-hide-threads {
   display: grid;
-  width: 22px;
-  height: 22px;
-  padding: 2px;
+  width: calc(22px * var(--wm-thread-ui-scale, 1));
+  height: calc(22px * var(--wm-thread-ui-scale, 1));
+  padding: calc(2px * var(--wm-thread-ui-scale, 1));
   place-items: center;
   border: 0;
   color: var(--wm-annotation-muted);
@@ -74,25 +74,25 @@
 }
 .wm-hide-threads:hover { color: inherit; }
 .wm-hide-threads:focus-visible { border-radius: 3px; outline: 2px solid currentColor; outline-offset: 1px; }
-.wm-hide-threads svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
-.wm-empty-comments { margin: 8px 2px; color: var(--wm-annotation-muted); font-size: 12px; }
+.wm-hide-threads svg { width: calc(16px * var(--wm-thread-ui-scale, 1)); height: calc(16px * var(--wm-thread-ui-scale, 1)); fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+.wm-empty-comments { margin: 8px 2px; color: var(--wm-annotation-muted); font-size: calc(12px * var(--wm-thread-ui-scale, 1)); }
 
 .wm-annotation-rail-header h2,
 .wm-orphan-group h3,
 .wm-annotation-composer-title {
   margin: 0;
   color: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--wm-thread-ui-scale, 1));
   font-weight: 650;
   letter-spacing: .02em;
 }
 
 .wm-pending-badge {
   border-radius: 999px;
-  padding: 2px 7px;
+  padding: calc(2px * var(--wm-thread-ui-scale, 1)) calc(7px * var(--wm-thread-ui-scale, 1));
   color: #5e3f11;
   background: #f3d486;
-  font-size: 11px;
+  font-size: calc(11px * var(--wm-thread-ui-scale, 1));
   white-space: nowrap;
 }
 
@@ -112,7 +112,7 @@
   width: 100%;
   grid-template-columns: 1fr auto;
   gap: 2px 7px;
-  padding: 9px 10px;
+  padding: calc(9px * var(--wm-thread-ui-scale, 1)) calc(10px * var(--wm-thread-ui-scale, 1));
   border: 0;
   border-radius: inherit;
   color: inherit;
@@ -129,13 +129,13 @@
 .wm-thread-identity { min-width: 0; gap: 6px; }
 .wm-thread-actor { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .wm-thread-labels { display: flex; align-items: center; gap: 5px; }
-.wm-thread-status { color: var(--wm-annotation-muted); font-size: 11px; }
+.wm-thread-status { color: var(--wm-annotation-muted); font-size: calc(11px * var(--wm-thread-ui-scale, 1)); }
 .wm-thread-location {
   padding: 1px 6px;
   border: 1px dashed var(--wm-annotation-border);
   border-radius: 999px;
   color: var(--wm-annotation-muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--wm-thread-ui-scale, 1));
 }
 .wm-thread-excerpt { grid-column: 1 / -1; overflow: hidden; color: #514940; text-overflow: ellipsis; white-space: nowrap; }
 .wm-actor-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; }
@@ -148,14 +148,14 @@
 .wm-actor-dot[data-actor-color="violet"] { background: #7964ae; }
 
 .wm-thread-details { padding: 0 10px 10px; }
-.wm-thread-time { display: block; margin-bottom: 7px; color: var(--wm-annotation-muted); font-size: 11px; }
+.wm-thread-time { display: block; margin-bottom: 7px; color: var(--wm-annotation-muted); font-size: calc(11px * var(--wm-thread-ui-scale, 1)); }
 .wm-thread-quote {
   margin: 0 0 8px;
   padding: 6px 8px;
   border-left: 3px solid #c9b39b;
   color: #514940;
   background: #f7f1e9;
-  font-size: 12px;
+  font-size: calc(12px * var(--wm-thread-ui-scale, 1));
 }
 .wm-thread-body { margin: 0 0 8px; overflow-wrap: anywhere; }
 .wm-editable-annotation { position: relative; padding-right: 38px; }
@@ -163,23 +163,23 @@
   position: absolute;
   top: -3px;
   right: 0;
-  padding: 2px 4px;
+  padding: calc(2px * var(--wm-thread-ui-scale, 1)) calc(4px * var(--wm-thread-ui-scale, 1));
   border: 0;
   color: var(--wm-annotation-muted);
   background: transparent;
   cursor: pointer;
-  font: 10px/1.2 system-ui, sans-serif;
+  font: calc(10px * var(--wm-thread-ui-scale, 1))/1.2 system-ui, sans-serif;
 }
 .wm-inline-edit:hover { color: inherit; text-decoration: underline; }
 .wm-thread-replies { display: grid; gap: 6px; }
 .wm-thread-reply { padding: 6px 7px; border-top: 1px solid #e5ddd3; }
 .wm-thread-reply p { margin: 3px 0 0; overflow-wrap: anywhere; }
-.wm-thread-reply-meta { color: var(--wm-annotation-muted); font-size: 11px; }
+.wm-thread-reply-meta { color: var(--wm-annotation-muted); font-size: calc(11px * var(--wm-thread-ui-scale, 1)); }
 
 .wm-annotation-actions { justify-content: flex-end; gap: 6px; margin-top: 8px; }
 .wm-button {
-  min-height: 29px;
-  padding: 4px 9px;
+  min-height: calc(29px * var(--wm-thread-ui-scale, 1));
+  padding: calc(4px * var(--wm-thread-ui-scale, 1)) calc(9px * var(--wm-thread-ui-scale, 1));
   border: 1px solid #c9c0b5;
   border-radius: 5px;
   color: #3a332c;
@@ -207,7 +207,7 @@
 .wm-annotation-textarea:focus { border-color: #947b62; outline: 2px solid rgb(115 91 69 / 18%); }
 .wm-annotation-composer { padding: 10px; }
 .wm-annotation-composer-title { margin-bottom: 7px; }
-.wm-annotation-error { margin: 5px 0 0; color: #a1382c; font-size: 12px; }
+.wm-annotation-error { margin: 5px 0 0; color: #a1382c; font-size: calc(12px * var(--wm-thread-ui-scale, 1)); }
 .wm-annotation-form .wm-annotation-actions { margin-top: 7px; }
 .wm-orphan-group { display: grid; gap: 7px; margin-top: 8px; }
 .wm-orphan-group h3 { color: var(--wm-annotation-muted); }

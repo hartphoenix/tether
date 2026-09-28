@@ -27,13 +27,15 @@ export function applyDesign(editorRoot: HTMLElement, base: BuiltInTheme, design?
 export function createThemePicker(
   button: HTMLButtonElement, menu: HTMLElement, editorRoot: HTMLElement,
   options: {
-    initialTheme?: ThemeId; customThemes?: CustomTheme[]; makerButton?: HTMLButtonElement;
+    initialTheme?: ThemeId; customThemes?: CustomTheme[]; makerButton?: HTMLButtonElement; inheritPaseoTheme?: boolean;
     onChange?: (theme: ThemeId) => void;
     persist?: (mutation: ThemeMutation) => Promise<ThemePreferences>;
     onError?: (message: string) => void;
   } = {},
-): { destroy(): void } {
+): { destroy(): void; update(preferences: ThemePreferences): void } {
   let state = preferencesFrom({ theme: options.initialTheme, customThemes: options.customThemes });
+  let inherited = options.inheritPaseoTheme;
+  let pending: ThemePreferences | undefined;
   let selected = state.theme;
   let busy = false;
   let destroyed = false;
@@ -49,12 +51,22 @@ export function createThemePicker(
     const design = designFor(id);
     if (design) preview(design); else applyDesign(editorRoot, id as BuiltInTheme);
     const name = builtInThemes.find(t => t.value === id)?.label ?? state.customThemes.find(t => t.id === id)?.name ?? 'Tether';
-    button.title = `Theme · ${name}`; button.setAttribute('aria-label', button.title);
+    button.title = `Theme · ${inherited ? "Inherit Paseo theme · " : ""}${name}`; button.setAttribute('aria-label', button.title);
     menu.querySelectorAll<HTMLButtonElement>('button[data-theme]').forEach(item => {
-      item.classList.toggle('is-active', item.dataset.theme === id);
-      item.setAttribute('aria-checked', String(item.dataset.theme === id));
+      item.classList.toggle('is-active', (!inherited && item.dataset.theme === id));
+      item.setAttribute('aria-checked', String((!inherited && item.dataset.theme === id)));
     });
+    const inheritButton = menu.querySelector<HTMLButtonElement>('[data-inherit-paseo]');
+    inheritButton?.classList.toggle('is-active', inherited === true);
+    inheritButton?.setAttribute('aria-checked', String(inherited === true));
   };
+  function receive(next: ThemePreferences) {
+    if (destroyed) return;
+    if (busy || maker?.isOpen()) { pending = next; return; }
+    pending = undefined;
+    inherited = next.inheritPaseoTheme;
+    state = preferencesFrom(next); renderMenu(); apply(state.theme);
+  }
   const persist = async (mutation: ThemeMutation) => {
     if (busy) throw new Error('A theme save is already in progress.');
     busy = true; button.disabled = true;
@@ -65,9 +77,11 @@ export function createThemePicker(
       if (mutation.saveTheme && next.customThemes.find(t => t.id === mutation.saveTheme!.id)?.colors.annotation !== mutation.saveTheme.colors.annotation) {
         throw new Error('The service did not save the annotation color. Relaunch Tether and try again.');
       }
+      pending = undefined;
+      inherited = next.inheritPaseoTheme;
       state = preferencesFrom(next); renderMenu(); apply(state.theme);
       options.onChange?.(state.theme);
-    } finally { busy = false; button.disabled = false; if (options.makerButton) options.makerButton.disabled = false; }
+    } finally { busy = false; if (pending && !maker?.isOpen()) receive(pending); button.disabled = false; if (options.makerButton) options.makerButton.disabled = false; }
   };
   const maker = options.makerButton ? createThemeMaker(options.makerButton, {
     selected: () => selected,
@@ -75,7 +89,7 @@ export function createThemePicker(
       return structuredClone(designFor(id)!);
     },
     library: () => state.customThemes,
-    preview, restore: () => apply(selected), loadFont: fonts.load,
+    preview, restore: () => { if (pending) receive(pending); else apply(selected); }, loadFont: fonts.load,
     save: async (theme) => persist({ theme: theme.id, saveTheme: theme }),
     remove: async (id) => persist({ deleteTheme: id }),
   }) : undefined;
@@ -97,6 +111,17 @@ export function createThemePicker(
       edit.addEventListener('click', () => { if (busy || maker.isOpen()) return; close(); maker.open(custom); });
       row.append(item, edit); return row;
     }));
+    if (inherited !== undefined) {
+      const item = document.createElement('button'); item.type = 'button'; item.dataset.inheritPaseo = 'true';
+      item.textContent = 'Inherit Paseo theme'; item.setAttribute('role', 'menuitemradio');
+      item.addEventListener('click', () => {
+        if (busy || maker?.isOpen()) return;
+        close(); void persist({ inheritPaseoTheme: true }).catch(error => options.onError?.(`Theme preference failed: ${(error as Error).message}`));
+      });
+      const separator = document.createElement('hr'); separator.setAttribute('role', 'separator');
+      separator.style.cssText = 'width:100%;margin:4px 0;border:0;border-top:1px solid var(--crepe-color-outline);opacity:.3';
+      menu.prepend(item, separator);
+    }
   }
   menu.setAttribute('role', 'menu');
   const toggle = (event: Event) => {
@@ -108,7 +133,7 @@ export function createThemePicker(
   const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
   button.addEventListener('click', toggle); document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape);
   renderMenu(); apply(selected);
-  return { destroy() {
+  return { update: receive, destroy() {
     destroyed = true; maker?.destroy(); fonts.destroy();
     button.removeEventListener('click', toggle); document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape);
   } };

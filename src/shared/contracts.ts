@@ -17,6 +17,8 @@ export type HostCapabilities = {
   widgetInstallation: boolean;
   fileNavigatorHook: boolean;
   revealFile: boolean;
+  /** The reader opens local Markdown links itself, as new tabs through `api/link`, instead of asking the host. */
+  pageOpensLinks?: boolean;
 };
 
 export type AppPreferences = import("./themes").ThemePreferences;

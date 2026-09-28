@@ -3,7 +3,7 @@ import { mountUpdateNotice } from "./update-notice";
 import { iconSvg } from "./icons";
 import { decreaseQuoteLevel } from "./editor-commands";
 import { Crepe } from "@milkdown/crepe";
-import { EditorStatus, editorViewCtx } from "@milkdown/kit/core";
+import { EditorStatus, editorStateOptionsCtx, editorViewCtx } from "@milkdown/kit/core";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose, replaceAll, callCommand } from "@milkdown/kit/utils";
 import { createCodeBlockCommand } from "@milkdown/kit/preset/commonmark";
@@ -14,7 +14,7 @@ import { createCanvas } from './canvas';
 import { scrollSelectionIntoView } from './scroll-geometry';
 import './canvas.css';
 import { cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
-import { localDocumentLink } from "./local-document-link";
+import { documentLinkPath, localDocumentLink, opensAsDocument } from "./local-document-link";
 import { prepareMarkdown, restoreMarkdown } from "../core/markdown-codec";
 import { createSelectionUi, reviewNoteIconSvg, type SelectionUiController } from "./selection-ui";
 import { createThemePicker } from "./themes";
@@ -22,6 +22,7 @@ import { documentTabTitle, filenameStem } from "./document-title";
 import { DraftPersistence, recoverDraft } from "./draft-recovery";
 import { createReconnectLoop } from "./reconnect";
 import { installCmuxFindCompatibility } from "./hosts/cmux-find";
+import { initialReaderSelection } from "./initial-selection";
 import type { SessionBootstrap } from "../shared/contracts";
 import "./annotations-ui.css";
 import "./chrome.css";
@@ -108,7 +109,8 @@ const chrome = createChromeControls({
     canvas?.setScale(zoom);
   },
 });
-let themePicker: { destroy(): void } | null = null;
+let themePicker: ReturnType<typeof createThemePicker> | null = null;
+let themeEvents: EventSource | null = null;
 
 function apiPath(pathname: string): string {
   return pathname.replace(/^\//, "").replace(/^api\//, "api/");
@@ -490,6 +492,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       onDelete: async ({ thread, targetId }) => postAnnotation("/api/annotations/delete", { threadId: thread.id, targetId }, generation, currentPath),
     });
     const annotationPlugin = $prose(() => nextAnnotationUi.plugin);
+    nextCrepe.editor.config(ctx => ctx.update(editorStateOptionsCtx, previous => options => initialReaderSelection(previous(options))));
     nextCrepe.editor.use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
     try { await nextCrepe.create(); }
     catch (error) { nextSelectionUi.destroy(); nextAnnotationUi.destroy(); throw error; }
@@ -500,7 +503,8 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     if (view) {
       canvas = createCanvas(view, updateNotice, updateButton);
       view.setProps({ handleScrollToSelection: scrollSelectionIntoView });
-      canvas.setScale(chrome.getZoom() / 100);
+      // A fresh reader starts at the top; reading-anchor preservation is for later zooms.
+      canvas.setScale(chrome.getZoom() / 100, { preserveScroll: false });
       nextAnnotationUi.attachEditorView(view);
       document.title = documentTabTitle(currentPath, view.state.doc);
     }
@@ -598,18 +602,27 @@ async function lease(generation = documentGeneration, path = currentPath): Promi
 }
 async function start(): Promise<void> {
   const bootstrap = await api<SessionBootstrap>("api/bootstrap");
+  pageOpensLinks = bootstrap.capabilities?.pageOpensLinks === true;
   initializing = true;
   editorRoot.inert = true;
   annotationsRoot.inert = true;
+  themeEvents?.close();
   themePicker?.destroy();
   try {
     themePicker = createThemePicker(themeButton, themeMenu, editorRoot, {
       initialTheme: bootstrap.preferences.theme,
+      inheritPaseoTheme: bootstrap.preferences.inheritPaseoTheme,
       customThemes: bootstrap.preferences.customThemes,
       makerButton: document.querySelector<HTMLButtonElement>("#theme-maker")!,
       persist: (mutation) => api("api/preferences", { method: "PUT", body: JSON.stringify(mutation) }),
       onError: (message) => chrome.setNotice(message),
     });
+    if (bootstrap.preferences.inheritPaseoTheme !== undefined) {
+      themeEvents = new EventSource('api/theme-events');
+      themeEvents.addEventListener('preferences', event => {
+        try { themePicker?.update(JSON.parse(event.data)); } catch { /* Preserve the current theme on malformed events. */ }
+      });
+    }
     await openDocument(false, bootstrap.document as DocumentResponse);
     const draft = bootstrap.draft;
     const recovery = recoverDraft(bootstrap.document, draft);
@@ -670,6 +683,9 @@ cancelReviewButton.addEventListener("click", () => {
   incomingReview = null;
   showConflict("Incoming review cancelled. Reload disk to discard your version; it has not been overwritten.");
 });
+// Hosts that turn a page's new tab into their own tab let the reader open
+// documents directly, still inside the click, so no host round trip moves focus.
+let pageOpensLinks = false;
 editorRoot.addEventListener("click", (event) => {
   const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
   const href = link?.getAttribute("href") ?? "";
@@ -677,6 +693,14 @@ editorRoot.addEventListener("click", (event) => {
   if (!link || !target) return;
   event.preventDefault();
   event.stopPropagation();
+  if (pageOpensLinks && opensAsDocument(target)) {
+    const opener = document.createElement("a");
+    opener.href = documentLinkPath(target);
+    opener.target = "_blank";
+    opener.rel = "noopener";
+    opener.click();
+    return;
+  }
   void api("api/open", {
     method: "POST",
     body: JSON.stringify(target),
@@ -711,6 +735,7 @@ addEventListener("pagehide", event => {
   annotationUi?.destroy();
   toolbarLabelObserver?.disconnect();
   overflowCleanup?.();
+  themeEvents?.close();
   themePicker?.destroy();
   chrome.destroy();
 });

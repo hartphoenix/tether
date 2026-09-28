@@ -1,11 +1,23 @@
 ---
 name: tether-review
-description: Use Tether to edit local Markdown documents, handle comments or review notes, and register documents in Tether Recents. Read this skill when first using Tether in a session; reuse these instructions (without rereading) for subsequent actions. Reread *only* if they are no longer available in context, including after compaction.
+description: Use Tether to prepare documents for responses with multiple independently reviewable items, edit local Markdown, handle comments or review notes, and register and open documents for review. Read this skill when first using Tether in a session; reuse these instructions (without rereading) for subsequent actions. Reread *only* if they are no longer available in context, including after compaction.
 ---
 
 Use the installed `tether` CLI with actor `assistant`, in the same user account and profile as the reader. A source checkout also provides `mdreview`. Commands return one JSON envelope; inspect `ok` and the exit code. Use focused `--help` for exact flags.
 
 Report partial success accurately; distinguish completed actions from warnings and failures.
+
+## Choosing chat or a document
+
+Prefer Tether when a response contains multiple substantive items the user may need to discuss, decide, or track independently. Use chat for brief answers, status, and isolated questions. Judge by the review work required, not a rigid word count or bullet count; a response approaching a page should prompt this assessment. Honor the user's requested response format.
+
+Reuse the relevant document in context when the response serves its existing purpose. Continue existing comment threads for passage-specific discussion. Incorporate authorized changes in the appropriate sections; keep proposals visibly distinct from accepted decisions. Create a linked companion document when the material has a separate purpose or would obscure the original document's use; link back to the original.
+
+Make new work easy to find. For substantive body changes, maintain a short “Current review” section near the top identifying changed sections and remaining decisions. Replace stale summaries rather than accumulating updates. Preserve unresolved content and active comment anchors.
+
+Register the document with `tether recents add <file>` and open it with `tether open <file>` when handing it over for review, using the reader's configured profile and host. Keep chat to a brief handoff with the document link and exact review location; don't duplicate the document. If opening fails, report that accurately and provide the path. Handle document selection and placement unless there is a material ambiguity.
+
+## Reviewing and editing
 
 For comment review, start with `tether pending <file> --actor assistant`, then fetch each relevant thread with `tether thread <file> <thread-id>`. Follow all continuation pages before acknowledging; after every event is handled or has a clear next owner, acknowledge the last fully reviewed page’s cursor. Do not fetch a fresh pending snapshot merely to obtain a newer cursor. Continuation tokens are not acknowledgement cursors.
 
@@ -13,7 +25,7 @@ Prefer `document context`, `outline`, or `diff` over a full read; after context 
 
 Reply using `reply <file> <thread-id> --actor assistant --body-file <text-file> --operation-id <unique-id>`. Use returned thread sequences with `--expected-thread-sequence` for stale-write protection. Retry an uncertain mutation with the same operation ID and identical inputs, or inspect `operation <file> --operation-id <id>`. A missing receipt does not prove nonapplication.
 
-Keep passage-specific replies in their threads and global decisions in the conversation. Resolve only when the human no longer needs to read or act on the thread. Answered questions stay open for the human to read. Orphaned threads remain replyable. Acknowledgement and resolution are independent.
+Keep passage-specific replies in their threads. Put substantive global synthesis and cross-thread decisions in the relevant document; use chat for brief handoffs, blockers, and verification. Resolve only when the human no longer needs to read or act on the thread. Answered questions stay open for the human to read. Orphaned threads remain replyable. Acknowledgement and resolution are independent.
 
 Body saves require `document save <file> --expected-body-revision <revision> --body-file <file>`. Review data lives in private SQLite; never edit it directly or add annotation footers to Markdown. Use `document move` when deliberately moving an active Tether document. After uncertain file operations, inspect current state before retrying.
 

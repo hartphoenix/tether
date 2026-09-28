@@ -3,8 +3,8 @@
   flex: 0 0 auto;
   align-items: center;
   gap: 5px;
-  min-height: 44px;
-  padding: 6px 12px 6px 4px;
+  height: 35px;
+  padding: 3px 12px 3px 4px;
   color: var(--crepe-color-on-surface);
 }
 
@@ -42,9 +42,9 @@
 .wm-theme-menu button.is-active { color: var(--crepe-color-primary); font-weight: 650; }
 
 .wm-overflow-trigger {
-  width: 32px;
-  height: 32px;
-  margin: 6px;
+  width: 28px;
+  height: 28px;
+  margin: 3px 6px;
   padding: 6px;
   display: inline-flex;
   align-items: center;
@@ -72,8 +72,8 @@
 .wm-comment-button {
   position: relative;
   display: inline-flex;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   align-items: center;
   justify-content: center;
   padding: 4px;
@@ -92,22 +92,22 @@
 
 .wm-pending-count {
   position: absolute;
-  top: -7px;
-  right: -7px;
-  min-width: 17px;
-  padding: 1px 4px;
+  top: -2px;
+  right: -3px;
+  min-width: 12px;
+  padding: 1px 3px;
   border-radius: 999px;
   background: #e4bd58;
   color: #30250d;
-  font-size: 10px;
+  font-size: 7px;
   font-weight: 700;
-  line-height: 15px;
+  line-height: 10px;
 }
 
 .wm-notice {
   position: fixed;
   z-index: 40;
-  top: 52px;
+  top: calc(var(--wm-topbar-height, 36px) + 8px);
   right: 10px;
   max-inline-size: min(420px, calc(100vw - 20px));
   padding: 5px 8px;

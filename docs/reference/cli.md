@@ -50,6 +50,8 @@ tether recents add /path/to/doc.md
 
 This adds the document to Folio and synchronizes the applicable host without opening a view. Running `tether recents` alone opens Folio. Use `tether folio list` to check which documents are registered.
 
+For local embedding, `tether folio --url` (also `tether recents --url`) returns `{url, expiresAt}` in the usual result envelope without opening a view or starting a host bridge. `--host` selects the target for subsequent document opens; focus flags have no placement effect with `--url`. The URL contains a one-use launch ticket, valid for 30 seconds: consume it immediately and do not log or persist it. Its redirect establishes a scoped browser cookie; the final Folio URL requires that cookie to work.
+
 ## Folio and file operations
 
 Conversations are identified by canonical file paths. If you move a file outside Tether, reconnect its conversation through Folio's Locate action. Tether treats annotation footers already in a Markdown file as file content; it doesn't import their comments.
@@ -99,3 +101,14 @@ Stdout contains one protocol-v1 JSON envelope. Check `ok`, the exit code, indivi
 - `tether cmux attach`: entry point for the shell hook. Starts the service if needed and attaches this cmux terminal's authority.
 
 See [recovery](../guide/recovery.md). Tether never edits your shell startup files.
+
+## Paseo plugin channel (experimental)
+
+The Tether plugin for Paseo uses these commands. Paseo can't be driven from outside, so Tether queues each open as an *intent* and the plugin pulls it. The commands and their data shapes may change between releases.
+
+- `tether paseo status`: report whether a plugin is connected (`present`) and how many intents are pending. It never starts the service.
+- `tether paseo wait [--after <cursor>] [--folio <version>] [--timeout <seconds>]`: return intents newer than `--after`. It returns early when an intent arrives or Folio changes past `--folio`. The timeout is at most 25 seconds. A wait marks the plugin connected for 30 seconds.
+- `tether paseo ack <intent-id>...`: remove intents the plugin has handled. An unacknowledged intent expires with its launch ticket.
+- `tether paseo theme <client-id> <theme-id|unknown>`: report the mounted desktop client’s palette for optional theme inheritance. The client ID is a persistent UUID, not an authorization token; unknown palettes preserve the last inherited theme.
+
+Inside Paseo, `tether open` picks the `paseo` host automatically when the plugin is connected, or explicitly with `--host paseo`. Opens that the plugin makes for the user open a reader tab. Any other open, such as an agent's, only lights the workspace's Tether button and reports `notified: true`, so Tether never moves your focus. `tether recents add` does the same inside Paseo and reports `announced: true`. Links clicked in a Paseo reader open as new tabs directly from the reader.

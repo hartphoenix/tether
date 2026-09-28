@@ -52,7 +52,7 @@ If an old tab can't connect, launch Tether again.
 
 You and your agent can edit the same Markdown file and discuss individual passages in persistent threads. **Folio**, the document organizer, keeps active work together with project filters and pins. The archive preserves finished conversations in case you need them again.
 
-The reader includes four themes: Tether Light, Tether Dark, Light Treason, and Dark Academia. You can also make your own themes, set custom colors, and link fonts from Google Fonts.
+The reader includes Tether Light, Tether Dark, Light Treason, and Dark Academia, followed by seven Paseo palettes: Light, Dark, Zinc, Midnight, Claude, Ghostty, and Pure Black. You can also make your own themes, set custom colors, and link fonts from Google Fonts.
 
 ### Your files and conversations
 

@@ -1,5 +1,5 @@
 import { chmod, copyFile, cp, mkdir, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { buildBootstrap } from "./build-bootstrap";
 import { version as packageVersion } from "../package.json";
 const version = process.argv[3] ?? packageVersion;
@@ -29,7 +29,11 @@ await copyFile("src/web/favicon.png", join(destination, "dist/favicon.png"));
 await mkdir(join(destination, "docs"));
 await copyFile("docs/getting-started.md", join(destination, "docs/getting-started.md"));
 await cp("docs/assets", join(destination, "docs/assets"), { recursive: true });
-await cp("integrations", join(destination, "integrations"), { recursive: true });
+await cp("integrations", join(destination, "integrations"), {
+  recursive: true,
+  // Plugin development dependencies contain symlinks and do not belong in the runtime archive.
+  filter: source => basename(source) !== "node_modules",
+});
 await copyFile("LICENSE", join(destination, "LICENSE"));
 await mkdir(join(destination, "licenses"));
 await copyFile("licenses/phosphor-icons-LICENSE.txt", join(destination, "licenses/phosphor-icons-LICENSE.txt"));
