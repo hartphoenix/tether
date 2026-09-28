@@ -50,7 +50,7 @@ export function createCanvas(view: EditorView, notice?: HTMLElement, updateButto
     scroller,
     scene,
     get scale() { return scale; },
-    setScale(next: number) {
+    setScale(next: number, { preserveScroll = true } = {}) {
       if (destroyed || !Number.isFinite(next)) return;
       next = Math.max(.75, Math.min(1.75, next));
       const toolbar = shell.querySelector('.milkdown-top-bar')?.getBoundingClientRect();
@@ -58,7 +58,7 @@ export function createCanvas(view: EditorView, notice?: HTMLElement, updateButto
       // A DOM range remains measurable even when a floating control covers it.
       let anchor: Range | HTMLElement | undefined;
       let fallback: HTMLElement | undefined;
-      for (const block of view.dom.children) {
+      for (const block of preserveScroll ? view.dom.children : []) {
         const box = block.getBoundingClientRect();
         if (box.bottom <= top || box.top >= win.innerHeight) continue;
         fallback ??= block as HTMLElement;
@@ -92,6 +92,7 @@ export function createCanvas(view: EditorView, notice?: HTMLElement, updateButto
       shell.style.setProperty('--wm-editor-scale', String(scale));
       measure();
       cancelFollow();
+      if (!preserveScroll) scroller.scrollTop = 0;
       if (before !== undefined && anchor) {
         // Node views (notably images and CodeMirror) finish reflow on later frames.
         // Preserve this reading anchor through that bounded settle, unless the user acts.

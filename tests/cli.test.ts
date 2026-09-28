@@ -475,3 +475,38 @@ test("bounded reads and authoring commands expose only effective options", async
   expect(() => parseCommand(["document", "outline", "doc.md", "--max-bytes", "2"])).toThrow("between 2048 and 65536");
   expect(() => parseCommand(["comment", "doc.md", "--actor", "assistant", "--quote", "quote", "--body-file", "-", "--operation-id", "op", "--candidate-id", "candidate"])).toThrow("requires --expected-body-revision");
 });
+
+test("folio and recents --url return one-use launches without placing a view", async () => {
+  const directory = await mkdtemp(join("/tmp", "tether-cli-folio-url-"));
+  directories.push(directory);
+  const config = resolveConfig({ profile: "folio-url", runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
+  const daemon = createDaemon({ config, startupGraceMs: 600_000 });
+  daemons.push(daemon);
+  await daemon.ready;
+  let captures = 0;
+  let opens = 0;
+  const host: HostAdapter = {
+    id: "paseo", detect: async () => true,
+    capabilities: () => ({ embeddedBrowser: true, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: true }),
+    launchTarget: () => { captures++; return { host: "paseo", workspaceId: "ws-embed" }; },
+    openView: async () => { opens++; }, openExternal: async () => {},
+  };
+  for (const alias of ["folio", "recents"]) {
+    const result = await runCli([alias, "--url", "--no-focus"], { config, host });
+    expect(result.response).toEqual({ protocol: 1, ok: true, command: alias, data: { url: expect.any(String), expiresAt: expect.any(Number) } });
+    if (!result.response.ok) throw new Error("launch failed");
+    const { url, expiresAt } = result.response.data as { url: string; expiresAt: number };
+    expect(expiresAt).toBeGreaterThan(Date.now());
+    const exchanged = await fetch(url, { redirect: "manual" });
+    expect(exchanged.status).toBe(302);
+    expect((await fetch(url, { redirect: "manual" })).status).toBe(401);
+    const final = new URL(exchanged.headers.get("location")!, daemon.origin);
+    expect(final.pathname).toMatch(/^\/r\/[^/]+\/$/);
+    expect((await fetch(final)).status).toBe(401);
+    const cookie = exchanged.headers.get("set-cookie")!.split(";")[0]!;
+    expect((await fetch(final, { headers: { cookie } })).status).toBe(200);
+    expect((await runCli([alias, "--help"])).response).toMatchObject({ data: { usage: expect.stringContaining("--url") } });
+  }
+  expect(captures).toBe(2);
+  expect(opens).toBe(0);
+});

@@ -200,3 +200,15 @@ printf '{"protocol":1,"ok":true,"data":{"profile":"%s","workspace":"%s","termina
     }
   });
 });
+
+test("Folio launch uses explicit workspace/user context and validates its result", async () => {
+  const calls: Array<{ args: string[]; env: Record<string, string> | undefined }> = [];
+  const launch = { url: "http://127.0.0.1:1234/recents/launch?ticket=test", expiresAt: Date.now() + 30_000 };
+  const hub = new Hub({ run: async (args, env) => { calls.push({ args, env }); return launch; } });
+  expect(await hub.folioView("workspace-a")).toEqual(launch);
+  expect(calls).toEqual([{ args: ["folio", "--url", "--host", "paseo"], env: { TETHER_PASEO_WORKSPACE_ID: "workspace-a", TETHER_PASEO_ORIGIN: "user" } }]);
+  const invalid = new Hub({ run: async () => ({ url: "invalid" }) });
+  await expect(invalid.folioView("workspace-a")).rejects.toThrow();
+  const unavailable = new Hub({ run: async () => { throw new Error("Tether unavailable"); } });
+  await expect(unavailable.folioView("workspace-a")).rejects.toThrow("Tether unavailable");
+});

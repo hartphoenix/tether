@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { contrastRatio, preferencesFrom, tetherDesign, updatePreferences, validateCustomTheme } from '../src/shared/themes';
+import { builtInDesign, builtInThemes, contrastRatio, preferencesFrom, tetherDesign, updatePreferences, validateCustomTheme } from '../src/shared/themes';
 import { googleFontCandidates } from '../src/web/theme-fonts';
 
 const custom = (id = 'custom-one', name = 'Slate') => ({ ...tetherDesign(true), id, name });
@@ -61,4 +61,27 @@ test('font imports accept names, specimen links and a single-family variable CSS
   const result = googleFontCandidates('https://fonts.googleapis.com/css2?family=Literata:ital,wght@0,200..900;1,200..900&display=swap');
   expect(result.family).toBe('Literata'); expect(result.urls).toHaveLength(1);
   expect(() => googleFontCandidates('https://example.com/font.css')).toThrow();
+});
+
+// These are reading palettes: subdued text must stay legible even on selection fills.
+test('Paseo palettes preserve readable text, accents, and controls across their surfaces', () => {
+  const themes = builtInThemes.filter(theme => theme.value.startsWith('paseo-'));
+  expect(themes).toHaveLength(7);
+  for (const { value, label } of themes) {
+    const design = builtInDesign(value)!;
+    const c = design.colors;
+    expect(preferencesFrom({ theme: value }).theme).toBe(value);
+    expect(validateCustomTheme({ ...design, id: 'custom-paseo-copy', name: 'Copy' }).colors).toEqual(c);
+    expect(contrastRatio(c['on-background'], c.background), label).toBeGreaterThanOrEqual(7);
+    for (const background of [c.background, c.surface, c['surface-low'], c.secondary, c.selected, c.hover, c['inline-area']]) {
+      for (const text of [c['on-background'], c['on-surface'], c['on-surface-variant'], c.primary, c['inline-code'], c.error]) {
+        expect(contrastRatio(text, background), `${label}: ${text} on ${background}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+    expect(contrastRatio(c['on-secondary'], c.secondary), label).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(c['on-inverse'], c.inverse), label).toBeGreaterThanOrEqual(4.5);
+    for (const background of [c.background, c.surface, c['surface-low']]) {
+      expect(contrastRatio(c.outline, background), label).toBeGreaterThanOrEqual(3);
+    }
+  }
 });

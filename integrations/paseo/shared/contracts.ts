@@ -70,6 +70,16 @@ export const pinRpc = defineRpc({
   output: z.object({ pinned: z.boolean() }),
 });
 
+export const folioViewSchema = z.object({ url: z.string().url(), expiresAt: z.number().finite() });
+export type FolioView = z.infer<typeof folioViewSchema>;
+
+/** Expected settings bind the launch to the client's cached connection, not a new executable. */
+export const folioViewRpc = defineRpc({
+  name: "tether.folio-view",
+  input: z.object({ workspaceId: z.string().trim().min(1), tetherPath: z.string(), profile: z.string().min(1) }),
+  output: folioViewSchema,
+});
+
 export const tetherSettings = defineSettings({
   id: "tether",
   scope: "host",
@@ -81,3 +91,9 @@ export const tetherSettings = defineSettings({
   }),
 });
 export type TetherSettings = z.infer<typeof tetherSettings.schema>;
+
+export const themeRpc = defineRpc({
+  name: "tether.theme",
+  input: z.object({ clientId: z.string().uuid(), theme: z.string().nullable(), tetherPath: z.string(), profile: z.string().min(1) }),
+  output: z.object({ updated: z.boolean() }),
+});

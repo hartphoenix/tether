@@ -283,6 +283,8 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const host = await launchHost(dependencies, selectedHost, config);
       const target = host.launchTarget?.();
       const launch = await controlRecentsLaunch(config, target);
+      // Embedders consume the ticket themselves; no host placement or bridge startup.
+      if (parsed.flags.has("--url")) return { response: success(command, { url: launch.url, expiresAt: launch.expiresAt }), exitCode: 0 };
       let notified = false;
       try {
         if (host.id === "wave" && !dependencies.host) await startWaveBridge(config, process.env, { wait: false });
@@ -296,6 +298,9 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         throw await launchFailure(config, launch.url, cause);
       }
       return { response: success(command, { expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" && !notified, ...(notified ? { notified: true } : {}) }), exitCode: 0 };
+    }
+    if (command === "paseo.theme") {
+      return { response: success(command, await controlRequest(config, `/control/hosts/${PASEO_HOST}/theme`, { clientId: parsed.positionals[0], theme: parsed.positionals[1] === "unknown" ? null : parsed.positionals[1] })), exitCode: 0 };
     }
     if (command === "paseo.status") {
       return { response: success(command, await controlRequest(config, `/control/hosts/${PASEO_HOST}/status`, {}, { start: false }).catch(() => ({ present: false, pending: 0, running: false }))), exitCode: 0 };

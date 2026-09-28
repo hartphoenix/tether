@@ -5,6 +5,13 @@ export const builtInThemes = [
   { value: 'tether-dark', label: 'Tether Dark' },
   { value: 'light-treason', label: 'Light Treason' },
   { value: 'dark-academia', label: 'Dark Academia' },
+  { value: 'paseo-light', label: 'Paseo Light' },
+  { value: 'paseo-dark', label: 'Paseo Dark' },
+  { value: 'paseo-zinc', label: 'Paseo Zinc' },
+  { value: 'paseo-midnight', label: 'Paseo Midnight' },
+  { value: 'paseo-claude', label: 'Paseo Claude' },
+  { value: 'paseo-ghostty', label: 'Paseo Ghostty' },
+  { value: 'paseo-pure-black', label: 'Paseo Pure Black' },
 ] as const;
 export type BuiltInTheme = typeof builtInThemes[number]['value'];
 export type ThemeId = BuiltInTheme | `custom-${string}`;
@@ -48,8 +55,8 @@ export type ThemeDesign = {
   metrics: Record<Metric, number>;
 };
 export type CustomTheme = ThemeDesign & { id: `custom-${string}`; name: string };
-export type ThemePreferences = { theme: ThemeId; customThemes: CustomTheme[] };
-export type ThemeMutation = { theme?: ThemeId; saveTheme?: CustomTheme; deleteTheme?: string };
+export type ThemePreferences = { theme: ThemeId; customThemes: CustomTheme[]; inheritPaseoTheme?: boolean };
+export type ThemeMutation = { inheritPaseoTheme?: boolean; theme?: ThemeId; saveTheme?: CustomTheme; deleteTheme?: string };
 
 // Migrate retired presets without losing custom designs based on them.
 function migrateTheme(value: unknown): unknown {

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { controlLaunch } from "../src/server/lifecycle";
 import { runCli } from "../src/cli/main";
 import { resolveConfig, type TetherConfig } from "../src/server/config";
 import { createDaemon, type TetherDaemon } from "../src/server/server";
@@ -104,3 +105,68 @@ test("pinning round-trips through Folio", async () => {
   const pinned = await until(false, batch => batch.folio?.find(entry => entry.path === join(project, "plan.md"))?.pinned === true);
   expect(pinned.folio?.[0]?.path).toBe(join(project, "plan.md"));
 }, 60_000);
+
+test("embedded Folios mint directly and route row opens to their own workspace", async () => {
+  // Folio only opens registered paths; it does not grant arbitrary filesystem access.
+  await runCli(["folio", "add", join(project, "plan.md"), join(project, "notes.md")], { config });
+  for (const workspaceId of ["ws-embed-a", "ws-embed-b"]) {
+    const launch = await hub.folioView(workspaceId);
+    expect(launch.expiresAt).toBeGreaterThan(Date.now());
+    expect((await hub.pump(-1, true)).intents).toEqual([]);
+    const exchange = await fetch(launch.url, { redirect: "manual" });
+    expect(exchange.status).toBe(302);
+    const location = new URL(exchange.headers.get("location")!, daemon.origin);
+    expect(location.pathname).toMatch(/^\/r\/[^/]+\/$/);
+    const cookie = exchange.headers.get("set-cookie")!.split(";")[0]!;
+    expect((await fetch(location)).status).toBe(401);
+    const page = await fetch(location, { headers: { cookie } });
+    expect(page.status).toBe(200);
+    const openUrl = new URL("api/open", location);
+    const options = { method: "POST", headers: { cookie, origin: daemon.origin, "content-type": "application/json" }, body: JSON.stringify({ path: join(project, "notes.md") }) };
+    expect((await fetch(openUrl, { ...options, headers: { ...options.headers, origin: "http://untrusted.invalid" } })).status).toBe(403);
+    expect((await fetch(openUrl, options)).status).toBe(200);
+    const batch = await until(true, candidate => candidate.intents.length > 0);
+    expect(batch.intents).toHaveLength(1);
+    expect(batch.intents[0]!.workspaceId).toBe(workspaceId);
+    expect(batch.notices[workspaceId]).toBeUndefined();
+    expect((await fetch(batch.intents[0]!.url, { redirect: "manual" })).status).toBe(302);
+    await hub.ack(batch.intents.map(intent => intent.id));
+  }
+}, 60_000);
+
+
+test("Paseo theme inheritance is cookie-scoped, live, and unavailable in other hosts", async () => {
+  const clientId = crypto.randomUUID();
+  await hub.theme(clientId, "paseo-midnight");
+  const launch = await controlLaunch(config, join(project, "notes.md"), { host: "paseo" });
+  const url = new URL(launch.url); url.searchParams.set("themeClient", clientId);
+  const exchange = await fetch(url, { redirect: "manual" });
+  const cookie = exchange.headers.getSetCookie().map(c => c.split(";")[0]).join("; ");
+  expect(cookie).toContain("tether_paseo_theme=");
+  const root = new URL(exchange.headers.get("location")!, daemon.origin);
+  const get = async (path: string) => (await fetch(new URL(path, root), { headers: { cookie } })).json() as Promise<any>;
+  expect((await get('api/bootstrap')).preferences.inheritPaseoTheme).toBe(false);
+  const choose = async (body: unknown) => fetch(new URL('api/preferences', root), { method: 'PUT', headers: { cookie, origin: daemon.origin, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  expect((await (await choose({ inheritPaseoTheme: true })).json()).theme).toBe('paseo-midnight');
+  const abort = new AbortController();
+  const stream = await fetch(new URL('api/theme-events', root), { headers: { cookie }, signal: abort.signal });
+  const reader = stream.body!.getReader();
+  try {
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain('paseo-midnight');
+    await hub.theme(clientId, 'paseo-ghostty');
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain('paseo-ghostty');
+  } finally { abort.abort(); await reader.cancel().catch(() => {}); }
+  await hub.theme(clientId, null);
+  expect((await get('api/bootstrap')).preferences.theme).toBe('paseo-ghostty');
+  const normal = await controlLaunch(config, join(project, 'notes.md'), { host: 'browser' });
+  const normalUrl = new URL(normal.url); normalUrl.searchParams.set('themeClient', clientId);
+  const normalExchange = await fetch(normalUrl, { redirect: 'manual' });
+  expect(normalExchange.headers.getSetCookie()).toHaveLength(1);
+  const normalRoot = new URL(normalExchange.headers.get('location')!, daemon.origin);
+  const normalCookie = normalExchange.headers.getSetCookie()[0]!.split(';')[0] + '; tether_paseo_theme=' + clientId;
+  const bootstrap = await (await fetch(new URL('api/bootstrap', normalRoot), { headers: { cookie: normalCookie } })).json() as any;
+  expect(bootstrap.preferences.inheritPaseoTheme).toBeUndefined();
+  expect(bootstrap.preferences.theme).not.toBe('paseo-ghostty');
+  const rejected = await fetch(new URL('api/preferences', normalRoot), { method: 'PUT', headers: { cookie: normalCookie, origin: daemon.origin, 'content-type': 'application/json' }, body: JSON.stringify({ inheritPaseoTheme: true }) });
+  expect(rejected.status).toBe(400);
+}, 15000);

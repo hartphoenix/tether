@@ -1,5 +1,5 @@
 import { Crepe } from '@milkdown/crepe';
-import { editorViewCtx } from '@milkdown/kit/core';
+import { editorStateOptionsCtx, editorViewCtx } from '@milkdown/kit/core';
 import { TextSelection } from '@milkdown/kit/prose/state';
 import { $prose } from '@milkdown/kit/utils';
 import type { EditorView } from '@milkdown/kit/prose/view';
@@ -9,6 +9,7 @@ import { applyDesign } from '../../src/web/themes';
 import { tetherDesign } from '../../src/shared/themes';
 import { createCanvas } from '../../src/web/canvas';
 import { scrollSelectionIntoView } from '../../src/web/scroll-geometry';
+import { initialReaderSelection } from '../../src/web/initial-selection';
 import '../../src/web/annotations-ui.css';
 import '../../src/web/selection-ui.css';
 import '../../src/web/chrome.css';
@@ -21,7 +22,9 @@ import '../../src/web/thread-layout.css';
 const root = document.querySelector<HTMLElement>('#editor')!;
 applyDesign(root, 'tether', tetherDesign(false));
 const paragraphs = Array.from({length: 40}, (_, i) => `Paragraph ${i}: Here is [target link ${i}](https://example.com/${i}) followed by ordinary words to form a paragraph.`);
-const markdown = '# Geometry fixture\n\n' + paragraphs.map((text, i) => i === 20 ? '![Geometry image](/image.svg)\n\n' + text : text).join('\n\n') + '\n\n```ts\nconst line = ' + '1234567890'.repeat(50) + ';\n```\n\n| One | Two |\n| --- | --- |\n| cell one | cell two |\n\nLast paragraph.';
+const startup = new URL(location.href).searchParams.get('startup');
+const banner = '![Geometry image](/image.svg)\n\n';
+const markdown = startup === 'image-only' ? banner : (startup === 'long-prefix' ? banner.repeat(8) : '') + '# Geometry fixture\n\n' + paragraphs.map((text, i) => i === 20 ? banner + text : text).join('\n\n') + '\n\n```ts\nconst line = ' + '1234567890'.repeat(50) + ';\n```\n\n| One | Two |\n| --- | --- |\n| cell one | cell two |\n\nLast paragraph.';
 let view: EditorView | null = null;
 const annotations = createAnnotationUi({
   root: document.querySelector<HTMLElement>('#annotations')!, editorRoot: root, getEditorView: () => view,
@@ -29,10 +32,12 @@ const annotations = createAnnotationUi({
 });
 const selection = createSelectionUi({onNotice: message => console.info(message)});
 const crepe = new Crepe({root, defaultValue: markdown, features: {[Crepe.Feature.TopBar]: true, [Crepe.Feature.BlockEdit]: false}, featureConfigs: {[Crepe.Feature.Placeholder]: {text: "..."}}});
+crepe.editor.config(ctx => ctx.update(editorStateOptionsCtx, previous => options => initialReaderSelection(previous(options))));
 crepe.editor.use(selection.plugin).use($prose(() => annotations.plugin));
 await crepe.create();
 view = crepe.editor.action(ctx => ctx.get(editorViewCtx));
 const canvas = createCanvas(view);
+canvas.setScale(Number(new URL(location.href).searchParams.get('scale') ?? 1), { preserveScroll: false });
 view.setProps({handleScrollToSelection: scrollSelectionIntoView});
 annotations.attachEditorView(view);
 (window as any).audit = {

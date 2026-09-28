@@ -1,4 +1,5 @@
 import type { FolioEntry, HubStatus, Intent, Notice, PumpBatch } from "../shared/contracts";
+import { folioViewSchema, type FolioView } from "../shared/contracts";
 import type { TetherRunner } from "./tether-cli";
 
 /** One intent as `tether paseo wait` returns it. */
@@ -233,7 +234,19 @@ export class Hub {
     await this.options.run(["open", path, "--host", "paseo"], { TETHER_PASEO_WORKSPACE_ID: workspaceId, TETHER_PASEO_ORIGIN: "user" });
   }
 
+  async theme(clientId: string, theme: string | null): Promise<{ updated: boolean }> {
+    await this.options.run(["paseo", "theme", clientId, theme ?? "unknown"]);
+    return { updated: true };
+  }
+
   async pin(path: string, pinned: boolean): Promise<void> {
     await this.options.run(["folio", "pin", path, ...(pinned ? [] : ["--off"])]);
+  }
+
+  /** Mint a one-use Folio launch for this client; never share tickets between clients. */
+  async folioView(workspaceId: string): Promise<FolioView> {
+    return folioViewSchema.parse(await this.options.run(["folio", "--url", "--host", "paseo"], {
+      TETHER_PASEO_WORKSPACE_ID: workspaceId, TETHER_PASEO_ORIGIN: "user",
+    }));
   }
 }

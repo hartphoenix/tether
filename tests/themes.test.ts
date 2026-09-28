@@ -20,7 +20,7 @@ test('older custom themes inherit yellow annotations and preserve a chosen color
   }
 });
 
-test("offers the four built-in themes and applies the selection", async () => {
+test("offers the built-in themes in order and applies each selection", async () => {
   const dom = new JSDOM("<!doctype html><button></button><div></div><main></main>", { url: "http://localhost" });
   const previousDocument = globalThis.document;
   const previousNode = globalThis.Node;
@@ -34,8 +34,9 @@ test("offers the four built-in themes and applies the selection", async () => {
     const picker = createThemePicker(button, menu, root, { onChange: (theme) => { selected = theme; } });
     expect([...menu.querySelectorAll('button')].map(item => item.textContent)).toEqual([
       'Tether Light', 'Tether Dark', 'Light Treason', 'Dark Academia',
+      'Paseo Light', 'Paseo Dark', 'Paseo Zinc', 'Paseo Midnight', 'Paseo Claude', 'Paseo Ghostty', 'Paseo Pure Black',
     ]);
-    for (const id of ['tether', 'tether-dark', 'light-treason', 'dark-academia'] as const) {
+    for (const { value: id } of builtInThemes) {
       menu.querySelector<HTMLButtonElement>(`[data-theme="${id}"]`)!.click();
       await Promise.resolve();
       const design = builtInDesign(id)!;
@@ -110,7 +111,7 @@ test('maker previews, cancels, saves, and retains draft on failed persistence', 
     expect(panel().hidden).toBe(true); expect(state.customThemes).toHaveLength(1);
     expect(state.customThemes[0].metrics.bodySize).toBe(22);
     expect(state.customThemes[0].colors.annotation).toBe('#aa44cc');
-    expect(document.querySelectorAll('#menu button[data-theme]')).toHaveLength(5);
+    expect(document.querySelectorAll('#menu button[data-theme]')).toHaveLength(builtInThemes.length + 1);
     document.querySelector<HTMLButtonElement>('[data-edit-theme]')!.click();
     expect(panel().querySelector('[aria-label="Based on"]')).toBeNull();
     const save = [...panel().querySelectorAll('button')].find(b => b.textContent === 'Save changes')!;
@@ -129,7 +130,7 @@ test('maker previews, cancels, saves, and retains draft on failed persistence', 
     open();
     const basedOn = () => panel().querySelector<HTMLSelectElement>('[aria-label="Based on"]')!;
     expect(basedOn().value).toBe(state.customThemes[0].id);
-    expect(basedOn().options).toHaveLength(5);
+    expect(basedOn().options).toHaveLength(builtInThemes.length + 1);
     const size = panel().querySelector<HTMLInputElement>('[data-metric="bodySize"]')!;
     size.value = '25'; size.dispatchEvent(new dom.window.Event('input'));
     basedOn().value = 'tether'; basedOn().dispatchEvent(new dom.window.Event('change'));
@@ -159,4 +160,28 @@ test('original presets are valid, isolated templates and reserved system names',
     expect(() => updatePreferences(preferencesFrom(null), { saveTheme: { ...design, id: 'custom-copy', name: label } })).toThrow('name is already in use');
     expect(preferencesFrom({ theme: value }).theme).toBe(value);
   }
+});
+
+test('Paseo inheritance appears first, stays selected through live updates, and manual selection leaves it', async () => {
+  const dom = new JSDOM('<button></button><div></div><main></main>', { url: 'http://localhost' });
+  const previousDocument = globalThis.document, previousNode = globalThis.Node;
+  globalThis.document = dom.window.document; globalThis.Node = dom.window.Node;
+  try {
+    const button = document.querySelector('button')!, menu = document.querySelector('div')!, root = document.querySelector('main')!;
+    const picker = createThemePicker(button, menu, root, {
+      inheritPaseoTheme: false,
+      persist: async mutation => ({ theme: mutation.inheritPaseoTheme ? 'paseo-claude' : mutation.theme!, customThemes: [], inheritPaseoTheme: mutation.inheritPaseoTheme === true }),
+    });
+    expect(menu.firstElementChild?.textContent).toBe('Inherit Paseo theme');
+    expect(menu.children[1].getAttribute('role')).toBe('separator');
+    (menu.firstElementChild as HTMLButtonElement).click(); await Promise.resolve();
+    expect(menu.firstElementChild?.getAttribute('aria-checked')).toBe('true');
+    picker.update({ theme: 'paseo-midnight', customThemes: [], inheritPaseoTheme: true });
+    expect(document.documentElement.style.getPropertyValue('--wm-color-background')).toBe(builtInDesign('paseo-midnight')!.colors.background);
+    expect(menu.querySelector('[data-theme="paseo-midnight"]')?.getAttribute('aria-checked')).toBe('false');
+    menu.querySelector<HTMLButtonElement>('[data-theme="tether"]')!.click(); await Promise.resolve();
+    expect(menu.firstElementChild?.getAttribute('aria-checked')).toBe('false');
+    expect(menu.querySelector('[data-theme="tether"]')?.getAttribute('aria-checked')).toBe('true');
+    picker.destroy();
+  } finally { globalThis.document = previousDocument; globalThis.Node = previousNode; dom.window.close(); }
 });

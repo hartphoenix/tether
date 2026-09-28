@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli } from "../src/cli/main";
@@ -78,7 +78,8 @@ describe("paseo host through the daemon", () => {
   let config: TetherConfig;
   let daemon: TetherDaemon;
   let document: string;
-  const saved = { ...process.env };
+  const environmentKeys = ["TETHER_PASEO_WORKSPACE_ID", "TETHER_PASEO_ORIGIN", "PASEO_TERMINAL_ID"] as const;
+  const saved = Object.fromEntries(environmentKeys.map(key => [key, process.env[key]]));
 
   beforeAll(async () => {
     root = await realpath(await mkdtemp("/tmp/tether-paseo-host-"));
@@ -90,8 +91,13 @@ describe("paseo host through the daemon", () => {
     await writeFile(join(root, "other.md"), "# Other\n");
   });
 
+  beforeEach(() => {
+    // The launching terminal must not supply a workspace or announce fixture mutations.
+    for (const key of environmentKeys) delete process.env[key];
+  });
+
   afterEach(() => {
-    for (const key of ["TETHER_PASEO_WORKSPACE_ID", "TETHER_PASEO_ORIGIN", "PASEO_TERMINAL_ID"]) {
+    for (const key of environmentKeys) {
       if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
     }
   });

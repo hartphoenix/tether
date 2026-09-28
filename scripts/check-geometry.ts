@@ -17,6 +17,58 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) {
 const endpointsPath = process.env.TETHER_TEST_BROWSER_ENDPOINTS;
 const endpoints = endpointsPath ? await Bun.file(endpointsPath).json() as Record<string, string> : null;
 function check(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message); }
+// Track the first readable character, not its paragraph's offscreen top.
+// Use a linear scan independently of the canvas's binary-search implementation.
+async function captureReadingAnchor(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const toolbar = document.querySelector('.milkdown-top-bar')!.getBoundingClientRect();
+    const readingTop = Math.max(toolbar.bottom, 0) + 24;
+    for (const block of document.querySelector('.ProseMirror')!.children) {
+      const box = block.getBoundingClientRect();
+      if (box.bottom <= readingTop || box.top >= innerHeight) continue;
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const text = walker.currentNode;
+        if (!text.textContent?.trim()) continue;
+        const range = document.createRange();
+        for (let offset = 0; offset < text.textContent.length; offset++) {
+          range.setStart(text, offset); range.setEnd(text, offset + 1);
+          const rect = range.getBoundingClientRect();
+          if (rect.height && rect.bottom > readingTop && rect.top < innerHeight) {
+            (window as any).readingAnchor = range;
+            return rect.top;
+          }
+        }
+      }
+    }
+    throw new Error('No visible reading anchor in fixture');
+  });
+}
+async function readerStartup(page: Page, kind: string, scale: number) {
+  await page.mouse.move(1195, 795);
+  await page.goto(new URL(`?startup=${kind}&scale=${scale}`, server.url).toString());
+  await page.waitForFunction(() => (window as any).ready && [...document.images].every(image => image.complete && image.naturalWidth > 0));
+  await page.evaluate(() => document.fonts.ready);
+  await page.waitForTimeout(200);
+  const state = await page.evaluate(() => {
+    const { view, crepe, canvas } = (window as any).audit;
+    return { focused: view.hasFocus(), selectionEmpty: view.state.selection.empty,
+      nativeRanges: document.getSelection()?.rangeCount, scrollTop: canvas.scroller.scrollTop,
+      pageScroll: window.scrollY, selectedImages: view.dom.querySelectorAll('.milkdown-image-block.selected').length,
+      visibleGap: [...view.dom.querySelectorAll('.ProseMirror-gapcursor')].some(node => getComputedStyle(node as Element).display !== 'none'),
+      headingTop: view.dom.querySelector('h1')?.getBoundingClientRect().top, markdown: crepe.getMarkdown() };
+  });
+  check(!state.focused && state.selectionEmpty && state.nativeRanges === 0 && !state.visibleGap && !state.selectedImages,
+    `startup is not neutral (${kind}, ${scale}): ${JSON.stringify(state)}`);
+  check(state.scrollTop === 0 && state.pageScroll === 0, `startup scrolled (${kind}, ${scale}): ${JSON.stringify(state)}`);
+  if (kind === 'long-prefix') check(state.headingTop > 800, 'startup fixture must put its first text below the viewport');
+  const image = page.locator('.milkdown-image-block img').first();
+  await image.click();
+  await page.waitForTimeout(50);
+  check(await page.locator('.milkdown-image-block.selected').count() === 1, 'intentional image selection failed after neutral startup');
+  check(await page.evaluate(() => (window as any).audit.crepe.getMarkdown()) === state.markdown, 'startup or image selection changed Markdown');
+  console.log(`PASS reader startup=${kind} scale=${scale}`);
+}
 async function topology(page: Page, scale: number) {
   await page.goto(server.url.toString());
   await page.waitForFunction(() => (window as any).ready);
@@ -93,19 +145,15 @@ async function topology(page: Page, scale: number) {
   await page.waitForTimeout(80);
   check(await composer.locator('textarea').inputValue() === 'Keep this draft', 'comment lost input while repositioning');
   const formBox = await composer.boundingBox();
-  check(formBox && formBox.x >= 0 && formBox.y >= 44 && formBox.x + formBox.width <= 1200 && formBox.y + formBox.height <= 800, 'comment outside canvas');
+  check(formBox && formBox.x >= 0 && formBox.y >= 36 && formBox.x + formBox.width <= 1200 && formBox.y + formBox.height <= 800, 'comment outside canvas');
   await composer.getByRole('button', { name: 'Comment', exact: true }).click();
   check(await page.locator('.wm-annotation-highlight').count() > 0, 'comment highlight missing');
   await page.locator('.ProseMirror p').nth(25).scrollIntoViewIfNeeded();
-  const readAnchor = await page.evaluate(() => {
-    const p = [...document.querySelectorAll('.ProseMirror > p')].find(p => p.getBoundingClientRect().bottom > 68)!;
-    (window as any).readingIndex = [...document.querySelectorAll('.ProseMirror > p')].indexOf(p);
-    return p.getBoundingClientRect().top;
-  });
+  const readAnchor = await captureReadingAnchor(page);
   await page.evaluate(z => (window as any).audit.setZoom(z), scale === 1 ? 1.13 : 1);
-  await page.waitForTimeout(150);
-  const afterZoom = await page.evaluate(() => document.querySelectorAll('.ProseMirror > p')[(window as any).readingIndex]!.getBoundingClientRect().top);
-  check(Math.abs(afterZoom - readAnchor) < 35, `reading anchor drift ${afterZoom - readAnchor} at ${scale}`);
+  await page.waitForTimeout(180);
+  const afterZoom = await page.evaluate(() => (window as any).readingAnchor.getBoundingClientRect().top);
+  check(Math.abs(afterZoom - readAnchor) < 3, `reading anchor drift at scale=${scale}: before=${readAnchor}, after=${afterZoom}`);
   await page.evaluate(z => (window as any).audit.setZoom(z), scale);
   await page.evaluate(() => {
     const rail = document.createElement('aside'); rail.className = 'wm-annotation-rail';
@@ -126,7 +174,7 @@ async function topology(page: Page, scale: number) {
   await languageButton.click();
   await page.waitForTimeout(100);
   const language = await page.locator('.language-picker').boundingBox();
-  check(language && language.x >= 0 && language.y >= 44 && language.x + language.width <= 1200 && language.y + language.height <= 800, 'language menu outside visible canvas');
+  check(language && language.x >= 0 && language.y >= 36 && language.x + language.width <= 1200 && language.y + language.height <= 800, 'language menu outside visible canvas');
   await languageButton.click();
   const image = page.locator('.milkdown-image-block img');
   await image.evaluate(el => el.scrollIntoView({block: 'center'}));
@@ -175,7 +223,7 @@ async function topology(page: Page, scale: number) {
   const bottom = await page.locator('.ProseMirror p').last().boundingBox();
   check(bottom && bottom.y >= 0 && bottom.y + bottom.height <= 800, `last paragraph unreachable at ${scale}`);
   const toolbar = await page.locator('.milkdown-top-bar').boundingBox();
-  check(toolbar && Math.abs(toolbar.y) < 1, `toolbar not sticky at ${scale}`);
+  check(toolbar && toolbar.height === 36 && Math.abs(toolbar.y) < 1, `toolbar not sticky at ${scale}`);
   await page.evaluate(() => {
     const {view, selection, selectLink} = (window as any).audit;
     selectLink(8); selection.openTags(view);
@@ -194,19 +242,11 @@ async function topology(page: Page, scale: number) {
   });
   await page.waitForTimeout(100);
   await page.evaluate(() => { document.querySelector('.wm-document-scroll')!.scrollTop = 500; });
-  const visibleY = await page.evaluate(() => {
-    const text = document.querySelector('.ProseMirror > p')!.firstChild!;
-    const range = document.createRange();
-    for(let offset=0;offset<text.textContent!.length;offset++) {
-      range.setStart(text,offset);range.setEnd(text,offset+1);
-      if(range.getBoundingClientRect().bottom > 68) break;
-    }
-    (window as any).visibleRange=range;
-    return range.getBoundingClientRect().top;
-  });
+  const visibleY = await captureReadingAnchor(page);
   await page.evaluate(z => (window as any).audit.setZoom(z), scale === 1 ? 1.13 : 1);
   await page.waitForTimeout(180);
-  check(Math.abs(await page.evaluate(() => (window as any).visibleRange.getBoundingClientRect().top) - visibleY) < 3, 'long passage reading anchor drift');
+  const afterY = await page.evaluate(() => (window as any).readingAnchor.getBoundingClientRect().top);
+  check(Math.abs(afterY - visibleY) < 3, `long passage reading anchor drift at scale=${scale}: before=${visibleY}, after=${afterY}`);
   console.log(`PASS canvas scale=${scale}`);
 }
 try {
@@ -219,6 +259,7 @@ try {
       page.on('pageerror', error => console.error('Fixture error:', error.message));
       page.setDefaultTimeout(10000);
       console.log(`${name} ${browser.version()}`);
+      for (const kind of ['long-prefix', 'image-only']) for (const scale of [1, 1.25]) await readerStartup(page, kind, scale);
       for (const scale of [.75, 1, 1.13, 1.25, 1.75]) await topology(page, scale);
       await context.close();
     } finally { await browser?.close(); }

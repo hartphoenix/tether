@@ -1,6 +1,7 @@
 @import "@milkdown/crepe/theme/common/style.css";
 
 :root {
+  --wm-topbar-height: 36px;
   font-family: system-ui, sans-serif;
   background: var(--wm-page-background, #17191c);
   color: var(--wm-page-color, #e7e9ec);
@@ -76,7 +77,7 @@ body {
 }
 
 .milkdown .ProseMirror {
-  min-height: calc((100vh - 44px) / var(--wm-editor-scale, 1));
+  min-height: calc((100vh - var(--wm-topbar-height)) / var(--wm-editor-scale, 1));
   max-width: 880px;
   margin: 0 auto;
   padding: 36px 44px 120px;
@@ -146,7 +147,8 @@ body {
   position: relative;
   flex-shrink: 0;
   /* Match Folio's border-inclusive height instead of growing around the controls. */
-  height: 44px;
+  height: var(--wm-topbar-height);
+  min-height: var(--wm-topbar-height);
   z-index: 18;
   top: 0;
   left: 0;
@@ -194,7 +196,9 @@ body {
   flex-wrap: nowrap;
 }
 
-.milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-heading-label { min-width: 24px; }
+.milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-heading-label { min-width: 24px; font-weight: 300; }
+.milkdown .milkdown-top-bar .top-bar-heading-option,
+.milkdown .milkdown-top-bar .top-bar-heading-option.active { font-weight: 300; }
 
 .milkdown .milkdown-top-bar .top-bar-divider { display: none; }
 
@@ -254,3 +258,10 @@ body {
   font: 13px/1.5 system-ui, sans-serif;
 }
 #update-notice button, #update-notice a { color: inherit; }
+
+/* Keep the reader controls within the same 36px chrome as Folio. */
+.milkdown .milkdown-top-bar .top-bar-heading-selector { padding: 3px 6px; }
+.milkdown .milkdown-top-bar .top-bar-heading-button { height: 28px; }
+.milkdown .milkdown-top-bar .top-bar-item { width: 28px; height: 28px; margin: 3px 6px; }
+.milkdown .milkdown-top-bar .top-bar-item svg,
+.milkdown .milkdown-top-bar .tether-icon { width: 16px; height: 16px; }

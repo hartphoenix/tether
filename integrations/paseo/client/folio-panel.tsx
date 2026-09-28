@@ -1,128 +1,80 @@
+import { matchingTheme, themeClientId, themedLaunch, reportTheme } from "./theme-sync";
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { useRpc, useWorkspace } from "@getpaseo/plugin/client";
-import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
-import { useEffect, useMemo } from "react";
-import { FlatList, Pressable, Text, TextInput, View } from "react-native";
-import { ackRpc, openRpc, pinRpc, type FolioEntry } from "../shared/contracts";
-import { lendOpener, setState, useTetherState, type FolioScope } from "./state";
+import { useRpc, useSettings } from "@getpaseo/plugin/client";
+import { useEffect, useRef, useState } from "react";
+import { Pressable, Text, View } from "react-native";
+import { ackRpc, folioViewRpc, themeRpc, tetherSettings, type TetherSettings } from "../shared/contracts";
+import { FolioList } from "./folio-list";
+import { lendOpener } from "./state";
+import { isDesktop } from "./web";
+import { folioViewKey, mountFolioWebview, type FolioViewState } from "./web-folio";
 
-function within(path: string, root: string): boolean {
-  return path.startsWith(root.endsWith("/") ? root : `${root}/`);
+function EmbeddedFolio({ settings, cacheKey, ...props }: PluginWorkspacePanelProps & { settings: TetherSettings; cacheKey: string }) {
+  const launch = useRpc(folioViewRpc);
+  const syncTheme = useRpc(themeRpc);
+  const match = matchingTheme(props.theme);
+  const [attempt, setAttempt] = useState(0);
+  const themeReady = useRef<Promise<unknown>>(Promise.resolve());
+  useEffect(() => {
+    themeReady.current = reportTheme(JSON.stringify([props.host.id, settings.tetherPath, settings.profile]), match, () => syncTheme({ clientId: themeClientId(), theme: match, tetherPath: settings.tetherPath, profile: settings.profile }));
+    void themeReady.current.catch(() => {});
+  }, [match, syncTheme, props.host.id, settings.tetherPath, settings.profile, attempt]);
+  const container = useRef<View>(null);
+  const [state, setState] = useState<FolioViewState>("loading");
+  const { workspaceId, theme } = props;
+  const { tetherPath, profile } = settings;
+  useEffect(() => {
+    let disposed = false, cleanup = () => {};
+    setState("loading");
+    const timer = setTimeout(() => { disposed = true; setState("failed"); }, 15000);
+    void themeReady.current.then(() => {
+      clearTimeout(timer);
+      if (disposed) return;
+      cleanup = mountFolioWebview(container.current, {
+        cacheKey,
+        launch: async () => {
+          await themeReady.current;
+          const result = await launch({ workspaceId, tetherPath, profile });
+          return { ...result, url: themedLaunch(result.url) };
+        },
+        onState: setState,
+      });
+    }, () => { clearTimeout(timer); if (!disposed) setState("failed"); });
+    return () => { disposed = true; clearTimeout(timer); cleanup(); };
+  }, [cacheKey, workspaceId, tetherPath, profile, launch, attempt]);
+
+  return (
+    <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
+      {state === "loading" ? <Text style={{ color: theme.colors.foregroundMuted, padding: 12 }}>Loading Folio…</Text> : null}
+      <View ref={container} style={{ flex: 1, display: state === "failed" ? "none" : "flex" }} />
+      {state === "failed" ? <>
+        <View style={{ padding: 10, gap: 6 }}>
+          <Text style={{ color: theme.colors.foregroundMuted }}>Full Folio is unavailable. Showing the document list.</Text>
+          <Pressable accessibilityRole="button" onPress={() => setAttempt(value => value + 1)}>
+            <Text style={{ color: theme.colors.accent }}>Retry full Folio</Text>
+          </Pressable>
+        </View>
+        <FolioList {...props} />
+      </> : null}
+    </View>
+  );
 }
 
-function place(entry: FolioEntry, root: string | null): string {
-  if (root && within(entry.directory + "/", root)) return entry.directory.slice(root.length).replace(/^\//, "") || ".";
-  return entry.directory.replace(/^\/Users\/[^/]+/, "~");
-}
-
-/**
- * Folio in Paseo's Explorer. Every instance renders the same shared state,
- * and while mounted it lends its `openBrowser` so reader tabs can open.
- */
-export function FolioPanel({ theme, layout, navigation, workspaceId }: PluginWorkspacePanelProps) {
-  const folio = useTetherState(state => state.folio);
-  const status = useTetherState(state => state.status);
-  const query = useTetherState(state => state.query);
-  const scope = useTetherState(state => state.scope);
-  const projectRoot = useWorkspace(workspaceId, workspace => workspace.projectRootPath);
-  const open = useRpc(openRpc);
-  const pin = useRpc(pinRpc);
+/** The executor remains mounted through web loading, recovery, and native fallback. */
+export function FolioPanel(props: PluginWorkspacePanelProps) {
   const ack = useRpc(ackRpc);
-  const toast = useToast();
-  const openBrowser = navigation?.openBrowser;
-
+  const settings = useSettings(tetherSettings);
+  const openBrowser = props.navigation?.openBrowser;
   useEffect(() => {
     if (!openBrowser) return;
     return lendOpener(
-      intent => openBrowser({ url: intent.url, workspaceId: intent.workspaceId }),
+      intent => openBrowser({ url: themedLaunch(intent.url), workspaceId: intent.workspaceId }),
       intent => { void ack({ ids: [intent.id] }).catch(() => {}); },
     );
   }, [openBrowser, ack]);
 
-  const entries = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return (folio ?? []).filter(entry =>
-      (scope === "all" || !projectRoot || within(entry.path, projectRoot))
-      && (!needle || entry.name.toLowerCase().includes(needle) || entry.path.toLowerCase().includes(needle)));
-  }, [folio, query, scope, projectRoot]);
-
-  const styles = useMemo(() => ({
-    screen: { flex: 1, backgroundColor: theme.colors.surface0 },
-    toolbar: { padding: layout.compact ? 8 : 10, gap: 8, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
-    input: { color: theme.colors.foreground, backgroundColor: theme.colors.surface1, borderColor: theme.colors.border, borderWidth: 1, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6, fontSize: 13 },
-    scopes: { flexDirection: "row" as const, gap: 6 },
-    scope: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border },
-    scopeActive: { backgroundColor: theme.colors.accent, borderColor: theme.colors.accent },
-    scopeText: { color: theme.colors.foregroundMuted, fontSize: 12 },
-    scopeTextActive: { color: theme.colors.accentForeground, fontSize: 12 },
-    row: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, paddingHorizontal: layout.compact ? 8 : 10, paddingVertical: 7 },
-    body: { flex: 1, minWidth: 0 },
-    name: { color: theme.colors.foreground, fontSize: 13 },
-    missing: { color: theme.colors.foregroundMuted, fontSize: 13, textDecorationLine: "line-through" as const },
-    detail: { color: theme.colors.foregroundMuted, fontSize: 11 },
-    badge: { minWidth: 18, paddingHorizontal: 5, borderRadius: 9, backgroundColor: theme.colors.accent, alignItems: "center" as const },
-    badgeText: { color: theme.colors.accentForeground, fontSize: 11 },
-    note: { color: theme.colors.foregroundMuted, fontSize: 12, padding: 12 },
-  }), [theme, layout.compact]);
-
-  const launch = (entry: FolioEntry) => {
-    if (entry.missing) return;
-    void open({ path: entry.path, workspaceId }).catch(cause => toast.show(`Couldn't open ${entry.name}: ${cause instanceof Error ? cause.message : String(cause)}`, { variant: "error" }));
-  };
-  const togglePin = (entry: FolioEntry) => {
-    void pin({ path: entry.path, pinned: !entry.pinned }).catch(cause => toast.show(cause instanceof Error ? cause.message : String(cause), { variant: "error" }));
-  };
-  const scopeButton = (value: FolioScope, label: string) => (
-    <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: scope === value }} onPress={() => setState({ scope: value })} style={[styles.scope, scope === value && styles.scopeActive]}>
-      <Text style={scope === value ? styles.scopeTextActive : styles.scopeText}>{label}</Text>
-    </Pressable>
-  );
-
-  return (
-    <View style={styles.screen}>
-      <View style={styles.toolbar}>
-        <TextInput
-          value={query}
-          onChangeText={text => setState({ query: text })}
-          placeholder="Filter documents"
-          placeholderTextColor={theme.colors.foregroundMuted}
-          accessibilityLabel="Filter Folio"
-          style={styles.input}
-        />
-        <View style={styles.scopes}>
-          {scopeButton("project", "This project")}
-          {scopeButton("all", "All")}
-        </View>
-      </View>
-      {!openBrowser ? <Text style={styles.note}>Reader tabs open only in Paseo desktop.</Text> : null}
-      {status.error ? <Text style={styles.note}>Tether is unavailable: {status.error}</Text> : null}
-      <FlatList
-        data={entries}
-        keyExtractor={entry => entry.path}
-        ListEmptyComponent={<Text style={styles.note}>{folio === null ? "Connecting to Tether…" : "No documents here yet."}</Text>}
-        renderItem={({ item }) => (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Open ${item.name}`}
-            disabled={item.missing || !openBrowser}
-            onPress={() => launch(item)}
-            style={styles.row}
-          >
-            <View style={styles.body}>
-              <Text numberOfLines={1} style={item.missing ? styles.missing : styles.name}>{item.name}</Text>
-              <Text numberOfLines={1} style={styles.detail}>{item.missing ? "File not found" : place(item, projectRoot)}</Text>
-            </View>
-            {item.attentionCount > 0 ? (
-              <View style={styles.badge} accessibilityLabel={`${item.attentionCount} open threads`}>
-                <Text style={styles.badgeText}>{item.attentionCount}</Text>
-              </View>
-            ) : null}
-            <Pressable accessibilityRole="button" accessibilityLabel={item.pinned ? `Unpin ${item.name}` : `Pin ${item.name}`} hitSlop={6} onPress={() => togglePin(item)}>
-              <Icon name={item.pinned ? "Pin" : "PinOff"} size={14} color={item.pinned ? theme.colors.accent : theme.colors.foregroundMuted} />
-            </Pressable>
-          </Pressable>
-        )}
-      />
-    </View>
-  );
+  if (!isDesktop() || !openBrowser || (settings.status !== "ready" && settings.status !== "loading")) return <FolioList {...props} />;
+  if (settings.status === "loading") return <Text style={{ color: props.theme.colors.foregroundMuted, padding: 12 }}>Loading Folio…</Text>;
+  const key = folioViewKey(props.host.id, settings.values.tetherPath, settings.values.profile, props.workspaceId);
+  return <EmbeddedFolio key={key} cacheKey={key} settings={settings.values} {...props} />;
 }

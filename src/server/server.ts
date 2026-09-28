@@ -1,3 +1,4 @@
+import { HostThemes, isThemeClient } from "./host-themes";
 import { version as sourceVersion } from "../../package.json";
 import { diagnosticText, diagnosticValue, errorDetails } from "../shared/diagnostics";
 import { preferencesFrom, updatePreferences } from "../shared/themes";
@@ -258,6 +259,18 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const recentsSessions = new Map<string, RecentsSession>();
   const recentsStreamClosers = new Set<() => void>();
   const themeSubscribers = new Set<(value: AppPreferences) => void>();
+  const hostThemes = new HostThemes(join(config.configDir, "host-themes.json"), () => {
+    void preferences().then(value => { for (const subscriber of themeSubscribers) subscriber(value); });
+  });
+  const themeClient = (request: Request, target?: HostTarget) => {
+    const id = cookieValue(request, "tether_paseo_theme");
+    return target?.host === PASEO_HOST && isThemeClient(id) ? id : undefined;
+  };
+  const launchCookies = (cookie: string, target?: HostTarget, client?: string | null): Headers => {
+    const headers = new Headers({ "set-cookie": cookie });
+    if (target?.host === PASEO_HOST && isThemeClient(client)) headers.append("set-cookie", viewCookie("tether_paseo_theme", client, "/"));
+    return headers;
+  };
   const startedAt = now();
   let emptySince = 0;
   let stopped = false;
@@ -310,7 +323,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     return { ticket, expiresAt, url: `${daemon.origin}/recents/launch?ticket=${encodeURIComponent(ticket)}` };
   }
 
-  function recentsEventStream(request: Request): Response {
+  function recentsEventStream(request: Request, clientId?: string): Response {
     const encoder = new TextEncoder();
     let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -333,7 +346,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       catch { cleanup(); }
     };
     let lastTheme = "";
-    const sendTheme = (value: AppPreferences) => {
+    const sendTheme = async (base: AppPreferences) => {
+      const value = await hostThemes.preferences(clientId, base);
       const theme = JSON.stringify(folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }));
       if (theme === lastTheme) return;
       lastTheme = theme;
@@ -538,9 +552,29 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     const stateChanging = request.method !== "GET" && request.method !== "HEAD";
     if (stateChanging && !sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
     try {
+      if (apiPath === "/theme-events" && request.method === "GET") {
+        const id = themeClient(request, session.target);
+        if (!id) return error("not_found", "Host theme unavailable", 404);
+        const encoder = new TextEncoder();
+        let cleanup = () => {};
+        const stream = new ReadableStream({ start(controller) {
+          let closed = false, last = "";
+          const send = async (base: AppPreferences) => {
+            const value = JSON.stringify(await hostThemes.preferences(id, base));
+            if (closed || value === last) return;
+            last = value;
+            controller.enqueue(encoder.encode(`event: preferences\ndata: ${value}\n\n`));
+          };
+          const timer = setInterval(() => { if (!closed) controller.enqueue(encoder.encode(": heartbeat\n\n")); }, 20000);
+          cleanup = () => { if (closed) return; closed = true; clearInterval(timer); themeSubscribers.delete(send); recentsStreamClosers.delete(cleanup); request.signal.removeEventListener("abort", cleanup); try { controller.close(); } catch {} };
+          themeSubscribers.add(send); recentsStreamClosers.add(cleanup); request.signal.addEventListener("abort", cleanup, { once: true });
+          void preferenceWrites.then(async () => send(await preferences()));
+        }, cancel() { cleanup(); } });
+        return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
+      }
       if (apiPath === "/bootstrap" && request.method === "GET") {
         const document = await service.read(session.grant);
-        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, draft: views.draft(session.id), scroll: views.position(session.id), document, capabilities: hostAdapter.capabilities(session.target), preferences: await preferences(), actor: options.actor ?? "assistant" });
+        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, draft: views.draft(session.id), scroll: views.position(session.id), document, capabilities: hostAdapter.capabilities(session.target), preferences: await hostThemes.preferences(themeClient(request, session.target), await preferences()), actor: options.actor ?? "assistant" });
       }
       if (apiPath === "/position" && request.method === "POST") {
         const body = await requestJson(request);
@@ -664,14 +698,20 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/preferences" && request.method === "PUT") {
         const body = await requestJson(request);
         const operation = preferenceWrites.then(async () => {
-          const value = updatePreferences(await preferences(), body);
+          const base = await preferences();
+          const clientId = themeClient(request, session.target);
+          if (body.inheritPaseoTheme !== undefined && (!clientId || typeof body.inheritPaseoTheme !== "boolean")) throw invalidRequest("Host theme unavailable");
+          const effective = await hostThemes.preferences(clientId, base);
+          const selected = updatePreferences(effective, body);
+          const value = clientId ? { ...selected, theme: base.theme === body.deleteTheme ? "tether-dark" as const : base.theme } : selected;
           const { mkdir, writeFile, rename } = await import("node:fs/promises");
           await mkdir(dirname(config.preferencesPath), { recursive: true, mode: 0o700 });
           const temp = `${config.preferencesPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
           await writeFile(temp, JSON.stringify(value), { mode: 0o600 });
           await rename(temp, config.preferencesPath);
+          if (clientId && (body.theme !== undefined || body.inheritPaseoTheme !== undefined)) await hostThemes.select(clientId, { theme: body.theme !== undefined ? selected.theme : undefined, inheritPaseoTheme: body.inheritPaseoTheme as boolean | undefined }, effective);
           for (const subscriber of themeSubscribers) subscriber(value);
-          return value;
+          return hostThemes.preferences(clientId, value);
         });
         preferenceWrites = operation.catch(() => {});
         const value = await operation;
@@ -729,12 +769,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       sessions.set(id, session);
       if (previous) service.close(previous.grant);
       const root = sessionRoutes(id).root;
-      return new Response(null, { status: 302, headers: {
-        location: root,
-        "set-cookie": viewCookie("tether_session", session.cookie, root),
-        "cache-control": "no-store",
-        "referrer-policy": "no-referrer",
-      } });
+      const headers = launchCookies(viewCookie("tether_session", session.cookie, root), session.target, url.searchParams.get("themeClient"));
+      headers.set("location", root); headers.set("cache-control", "no-store"); headers.set("referrer-policy", "no-referrer");
+      return new Response(null, { status: 302, headers });
     }
     if (pathname === "/recents/launch" && request.method === "GET") {
       const ticket = url.searchParams.get("ticket");
@@ -748,11 +785,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       recentsSessions.set(id, session);
       views.put({ id, kind: "folio", path: null, verifier: cookieVerifier(session.cookie), createdAt, target: session.target });
       const root = `/r/${encodeURIComponent(id)}/`;
-      return new Response(null, { status: 302, headers: {
-        location: `${root}?instance=${encodeURIComponent(daemon.instanceId)}`,
-        "set-cookie": viewCookie("tether_recents", session.cookie, root),
-        "cache-control": "no-store", "referrer-policy": "no-referrer",
-      } });
+      const headers = launchCookies(viewCookie("tether_recents", session.cookie, root), session.target, url.searchParams.get("themeClient"));
+      headers.set("location", `${root}?instance=${encodeURIComponent(daemon.instanceId)}`); headers.set("cache-control", "no-store"); headers.set("referrer-policy", "no-referrer");
+      return new Response(null, { status: 302, headers });
     }
     if (pathname.startsWith("/r/")) {
       const match = /^\/r\/([^/]+)\/(.*)$/.exec(pathname);
@@ -762,14 +797,14 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       session.lastSeen = now();
       const suffix = `/${match![2]}`;
       if (request.method === "GET" && suffix === "/") {
-        const prefs = await preferences();
+        const prefs = await hostThemes.preferences(themeClient(request, session.target), await preferences());
         return new Response(folioHtml({ pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
       if (request.method === "GET" && suffix === "/api/files") return json(await recents.files());
       const updateResponse = await updateRequest(request, suffix);
       if (updateResponse) return updateResponse;
       if (request.method === "GET" && suffix === "/api/snapshot") return json({ ...await recents.folioSnapshot({ view: "all" }), instanceId });
-      if (request.method === "GET" && suffix === "/api/events") return recentsEventStream(request);
+      if (request.method === "GET" && suffix === "/api/events") return recentsEventStream(request, themeClient(request, session.target));
       if (request.method === "POST" && suffix === "/api/filters") {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
         try {
@@ -916,6 +951,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           if (operation === "ack") {
             if (!Array.isArray(body.ids) || !body.ids.every(id => typeof id === "string")) throw invalidRequest("Intent ids are required.");
             return json({ acknowledged: pullQueue.ack(host, body.ids as string[]) });
+          }
+          if (operation === "theme") {
+            if (!isThemeClient(body.clientId)) throw invalidRequest("Invalid theme client");
+            await hostThemes.observe(body.clientId, body.theme);
+            return json({ updated: true });
           }
           if (operation === "status") return json({ ...pullQueue.status(host), instanceId });
           return error("not_found", "Unknown pull host operation.", 404);

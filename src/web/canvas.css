@@ -20,7 +20,7 @@
   transform-origin: top left;
 }
 .wm-canvas-scene .ProseMirror {
-  min-height: calc((100vh - 44px) / var(--wm-editor-scale, 1));
+  min-height: calc((100vh - var(--wm-topbar-height, 36px)) / var(--wm-editor-scale, 1));
 }
 /* Hidden free controls must not contribute their static position to page overflow. */
 .milkdown > [data-show="false"] { display: none; }

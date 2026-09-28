@@ -3,7 +3,7 @@ import { mountUpdateNotice } from "./update-notice";
 import { iconSvg } from "./icons";
 import { decreaseQuoteLevel } from "./editor-commands";
 import { Crepe } from "@milkdown/crepe";
-import { EditorStatus, editorViewCtx } from "@milkdown/kit/core";
+import { EditorStatus, editorStateOptionsCtx, editorViewCtx } from "@milkdown/kit/core";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose, replaceAll, callCommand } from "@milkdown/kit/utils";
 import { createCodeBlockCommand } from "@milkdown/kit/preset/commonmark";
@@ -22,6 +22,7 @@ import { documentTabTitle, filenameStem } from "./document-title";
 import { DraftPersistence, recoverDraft } from "./draft-recovery";
 import { createReconnectLoop } from "./reconnect";
 import { installCmuxFindCompatibility } from "./hosts/cmux-find";
+import { initialReaderSelection } from "./initial-selection";
 import type { SessionBootstrap } from "../shared/contracts";
 import "./annotations-ui.css";
 import "./chrome.css";
@@ -108,7 +109,8 @@ const chrome = createChromeControls({
     canvas?.setScale(zoom);
   },
 });
-let themePicker: { destroy(): void } | null = null;
+let themePicker: ReturnType<typeof createThemePicker> | null = null;
+let themeEvents: EventSource | null = null;
 
 function apiPath(pathname: string): string {
   return pathname.replace(/^\//, "").replace(/^api\//, "api/");
@@ -490,6 +492,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       onDelete: async ({ thread, targetId }) => postAnnotation("/api/annotations/delete", { threadId: thread.id, targetId }, generation, currentPath),
     });
     const annotationPlugin = $prose(() => nextAnnotationUi.plugin);
+    nextCrepe.editor.config(ctx => ctx.update(editorStateOptionsCtx, previous => options => initialReaderSelection(previous(options))));
     nextCrepe.editor.use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
     try { await nextCrepe.create(); }
     catch (error) { nextSelectionUi.destroy(); nextAnnotationUi.destroy(); throw error; }
@@ -500,7 +503,8 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     if (view) {
       canvas = createCanvas(view, updateNotice, updateButton);
       view.setProps({ handleScrollToSelection: scrollSelectionIntoView });
-      canvas.setScale(chrome.getZoom() / 100);
+      // A fresh reader starts at the top; reading-anchor preservation is for later zooms.
+      canvas.setScale(chrome.getZoom() / 100, { preserveScroll: false });
       nextAnnotationUi.attachEditorView(view);
       document.title = documentTabTitle(currentPath, view.state.doc);
     }
@@ -602,15 +606,23 @@ async function start(): Promise<void> {
   initializing = true;
   editorRoot.inert = true;
   annotationsRoot.inert = true;
+  themeEvents?.close();
   themePicker?.destroy();
   try {
     themePicker = createThemePicker(themeButton, themeMenu, editorRoot, {
       initialTheme: bootstrap.preferences.theme,
+      inheritPaseoTheme: bootstrap.preferences.inheritPaseoTheme,
       customThemes: bootstrap.preferences.customThemes,
       makerButton: document.querySelector<HTMLButtonElement>("#theme-maker")!,
       persist: (mutation) => api("api/preferences", { method: "PUT", body: JSON.stringify(mutation) }),
       onError: (message) => chrome.setNotice(message),
     });
+    if (bootstrap.preferences.inheritPaseoTheme !== undefined) {
+      themeEvents = new EventSource('api/theme-events');
+      themeEvents.addEventListener('preferences', event => {
+        try { themePicker?.update(JSON.parse(event.data)); } catch { /* Preserve the current theme on malformed events. */ }
+      });
+    }
     await openDocument(false, bootstrap.document as DocumentResponse);
     const draft = bootstrap.draft;
     const recovery = recoverDraft(bootstrap.document, draft);
@@ -723,6 +735,7 @@ addEventListener("pagehide", event => {
   annotationUi?.destroy();
   toolbarLabelObserver?.disconnect();
   overflowCleanup?.();
+  themeEvents?.close();
   themePicker?.destroy();
   chrome.destroy();
 });
