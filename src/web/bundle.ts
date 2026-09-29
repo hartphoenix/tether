@@ -20,8 +20,10 @@ export async function createWebBundleResponder(): Promise<WebResponder> {
     success: true, logs: [],
     outputs: (await readdir(join(runtimeRoot(), "dist"))).map(name => Bun.file(join(runtimeRoot(), "dist", name))),
   } : await Bun.build({
-    entrypoints: [fileURLToPath(new URL("./index.html", import.meta.url))],
+    // Bun 1.3 needs the script entry first to link split HTML bundles correctly.
+    entrypoints: ["./app.ts", "./index.html"].map(path => fileURLToPath(new URL(path, import.meta.url))),
     minify: true,
+    splitting: true,
     naming: "[name]-[hash].[ext]",
     target: "browser",
   });

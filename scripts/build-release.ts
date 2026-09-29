@@ -23,7 +23,7 @@ for (const [name, entry] of Object.entries(entries)) {
   const result = await Bun.build({ entrypoints: [entry], target: "bun", outdir: join(destination, "lib"), naming: `${name}.js` });
   if (!result.success) throw new Error(result.logs.map(String).join("\n"));
 }
-const web = await Bun.build({ entrypoints: ["src/web/index.html"], target: "browser", minify: true, outdir: join(destination, "dist") });
+const web = await Bun.build({ entrypoints: ["src/web/app.ts", "src/web/index.html"], target: "browser", minify: true, splitting: true, outdir: join(destination, "dist") });
 if (!web.success) throw new Error(web.logs.map(String).join("\n"));
 await copyFile("src/web/favicon.png", join(destination, "dist/favicon.png"));
 await mkdir(join(destination, "docs"));

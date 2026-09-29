@@ -1,0 +1,88 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index cc0e78d930944dc4bbf9a6a0a8230cda66fcbfff..1334ad004cdd90df8a2e9a13eef5d4d5b98ccfe5 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -48,12 +48,16 @@ function createVirtualCursor(options) {
+         observer.observe(view.dom);
+       }
+       doc.addEventListener("selectionchange", update);
++      doc.addEventListener("scroll", update, true);
++      doc.addEventListener("wm-layout", update);
+       return {
+         update: () => {
+           update();
+         },
+         destroy: () => {
+           doc.removeEventListener("selectionchange", update);
++          doc.removeEventListener("scroll", update, true);
++          doc.removeEventListener("wm-layout", update);
+           if (observer) {
+             observer.unobserve(view.dom);
+           }
+@@ -146,6 +150,9 @@ function updateCursor(view, cursor) {
+   if (!cursorRect)
+     return cursor;
+   const editorRect = dom.getBoundingClientRect();
++  // Selection ranges are viewport pixels; the absolute caret uses local pixels.
++  const scaleX = editorRect.width / dom.offsetWidth || 1;
++  const scaleY = editorRect.height / dom.offsetHeight || 1;
+   let className = "prosemirror-virtual-cursor";
+   const $pos = state.selection.$head;
+   const [marksBefore, marksAfter] = getMarksAround($pos);
+@@ -158,9 +165,9 @@ function updateCursor(view, cursor) {
+   }
+   cursor.className = className;
+   restartAnimation(cursor, "prosemirror-virtual-cursor-animation");
+-  cursor.style.height = `${cursorRect.bottom - cursorRect.top}px`;
+-  cursor.style.left = `${cursorRect.left - editorRect.left}px`;
+-  cursor.style.top = `${cursorRect.top - editorRect.top}px`;
++  cursor.style.height = `${(cursorRect.bottom - cursorRect.top) / scaleY}px`;
++  cursor.style.left = `${(cursorRect.left - editorRect.left) / scaleX}px`;
++  cursor.style.top = `${(cursorRect.top - editorRect.top) / scaleY}px`;
+ }
+ function restartAnimation(element, className) {
+   element.classList.remove(className);
+diff --git a/dist/index.js b/dist/index.js
+index ed6886dc84ffed004bbfac43fa99ff7a744ad09a..287b7e608d6bbf5dda111704e8ffc7b0c8fb084e 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -24,12 +24,16 @@ function createVirtualCursor(options) {
+         observer.observe(view.dom);
+       }
+       doc.addEventListener("selectionchange", update);
++      doc.addEventListener("scroll", update, true);
++      doc.addEventListener("wm-layout", update);
+       return {
+         update: () => {
+           update();
+         },
+         destroy: () => {
+           doc.removeEventListener("selectionchange", update);
++          doc.removeEventListener("scroll", update, true);
++          doc.removeEventListener("wm-layout", update);
+           if (observer) {
+             observer.unobserve(view.dom);
+           }
+@@ -122,6 +126,9 @@ function updateCursor(view, cursor) {
+   if (!cursorRect)
+     return cursor;
+   const editorRect = dom.getBoundingClientRect();
++  // Selection ranges are viewport pixels; the absolute caret uses local pixels.
++  const scaleX = editorRect.width / dom.offsetWidth || 1;
++  const scaleY = editorRect.height / dom.offsetHeight || 1;
+   let className = "prosemirror-virtual-cursor";
+   const $pos = state.selection.$head;
+   const [marksBefore, marksAfter] = getMarksAround($pos);
+@@ -134,9 +141,9 @@ function updateCursor(view, cursor) {
+   }
+   cursor.className = className;
+   restartAnimation(cursor, "prosemirror-virtual-cursor-animation");
+-  cursor.style.height = `${cursorRect.bottom - cursorRect.top}px`;
+-  cursor.style.left = `${cursorRect.left - editorRect.left}px`;
+-  cursor.style.top = `${cursorRect.top - editorRect.top}px`;
++  cursor.style.height = `${(cursorRect.bottom - cursorRect.top) / scaleY}px`;
++  cursor.style.left = `${(cursorRect.left - editorRect.left) / scaleX}px`;
++  cursor.style.top = `${(cursorRect.top - editorRect.top) / scaleY}px`;
+ }
+ function restartAnimation(element, className) {
+   element.classList.remove(className);

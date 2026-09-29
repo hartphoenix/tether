@@ -1,4 +1,4 @@
-import { builtInThemes, colorKeys, fontSlots, metrics, preferencesFrom, updatePreferences, builtInDesign, type BuiltInTheme, type CustomTheme, type Metric, type ThemeDesign, type ThemeId, type ThemeMutation, type ThemePreferences } from '../shared/themes';
+import { chipRing, builtInThemes, colorKeys, fontSlots, metrics, preferencesFrom, updatePreferences, builtInDesign, type BuiltInTheme, type CustomTheme, type Metric, type ThemeDesign, type ThemeId, type ThemeMutation, type ThemePreferences } from '../shared/themes';
 import { createThemeMaker } from './theme-maker';
 import { iconSvg } from './icons';
 import { createFontLoader } from './theme-fonts';
@@ -14,6 +14,7 @@ export function applyDesign(editorRoot: HTMLElement, base: BuiltInTheme, design?
   html.style.removeProperty('--wm-page-background'); html.style.removeProperty('--wm-page-color');
   html.style.colorScheme = base.endsWith('-dark') ? 'dark' : 'light';
   if (!design) return;
+  for (const key of ['annotation', 'selected'] as const) html.style.setProperty(`--wm-${key}-ring`, chipRing(design.colors, design.colors[key]));
   for (const key of colorKeys) html.style.setProperty(`--wm-color-${key}`, design.colors[key]);
   for (const slot of fontSlots) html.style.setProperty(`--wm-font-${slot}`, `"${design.fonts[slot].family}", ${design.fonts[slot].fallback}`);
   for (const key of Object.keys(metrics) as Metric[]) {
@@ -39,12 +40,23 @@ export function createThemePicker(
   let selected = state.theme;
   let busy = false;
   let destroyed = false;
+  let diagramTheme = '';
   const fonts = createFontLoader();
   const designFor = (id: ThemeId) => builtInDesign(id) ?? state.customThemes.find(t => t.id === id);
   const close = () => { menu.hidden = true; button.setAttribute('aria-expanded', 'false'); };
   const preview = (design: ThemeDesign) => {
     applyDesign(editorRoot, design.base, design);
     for (const font of Object.values(design.fonts)) void fonts.load(font).catch(error => options.onError?.((error as Error).message));
+    const signature = JSON.stringify([design.base, design.colors, design.fonts.code]);
+    if (signature === diagramTheme) return;
+    diagramTheme = signature;
+    // Refresh previews after the code font can be measured, including diagrams still loading.
+    void fonts.load(design.fonts.code).catch(() => {}).then(() => {
+      if (destroyed || diagramTheme !== signature) return;
+      for (const block of editorRoot.querySelectorAll('.milkdown-code-block .cm-editor')) {
+        block.dispatchEvent(new editorRoot.ownerDocument.defaultView!.Event('milkdown:refresh-preview'));
+      }
+    });
   };
   const apply = (id: ThemeId) => {
     selected = id;

@@ -111,6 +111,11 @@ test("embedded Folios mint directly and route row opens to their own workspace",
   // Folio only opens registered paths; it does not grant arbitrary filesystem access.
   await runCli(["folio", "add", join(project, "plan.md"), join(project, "notes.md")], { config });
   for (const workspaceId of ["ws-embed-a", "ws-embed-b"]) {
+    process.env.TETHER_PASEO_WORKSPACE_ID = workspaceId;
+    try {
+      await runCli(["recents", "add", join(project, "notes.md")], { config });
+      await until(false, batch => batch.notices[workspaceId]?.path === join(project, "notes.md"));
+    } finally { delete process.env.TETHER_PASEO_WORKSPACE_ID; }
     const launch = await hub.folioView(workspaceId);
     expect(launch.expiresAt).toBeGreaterThan(Date.now());
     expect((await hub.pump(-1, true)).intents).toEqual([]);
@@ -129,9 +134,10 @@ test("embedded Folios mint directly and route row opens to their own workspace",
     const batch = await until(true, candidate => candidate.intents.length > 0);
     expect(batch.intents).toHaveLength(1);
     expect(batch.intents[0]!.workspaceId).toBe(workspaceId);
-    expect(batch.notices[workspaceId]).toBeUndefined();
+    expect(batch.notices[workspaceId]?.path).toBe(join(project, "notes.md"));
     expect((await fetch(batch.intents[0]!.url, { redirect: "manual" })).status).toBe(302);
     await hub.ack(batch.intents.map(intent => intent.id));
+    await until(false, candidate => candidate.notices[workspaceId] === undefined);
   }
 }, 60_000);
 
@@ -149,14 +155,12 @@ test("Paseo theme inheritance is cookie-scoped, live, and unavailable in other h
   expect((await get('api/bootstrap')).preferences.inheritPaseoTheme).toBe(false);
   const choose = async (body: unknown) => fetch(new URL('api/preferences', root), { method: 'PUT', headers: { cookie, origin: daemon.origin, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   expect((await (await choose({ inheritPaseoTheme: true })).json()).theme).toBe('paseo-midnight');
-  const abort = new AbortController();
-  const stream = await fetch(new URL('api/theme-events', root), { headers: { cookie }, signal: abort.signal });
-  const reader = stream.body!.getReader();
-  try {
-    expect(new TextDecoder().decode((await reader.read()).value)).toContain('paseo-midnight');
-    await hub.theme(clientId, 'paseo-ghostty');
-    expect(new TextDecoder().decode((await reader.read()).value)).toContain('paseo-ghostty');
-  } finally { abort.abort(); await reader.cancel().catch(() => {}); }
+  expect((await get('api/preferences')).theme).toBe('paseo-midnight');
+  const resized = await (await choose({ railWidth: 500, uiScale: 1.25 })).json() as any;
+  expect(resized).toMatchObject({ theme: 'paseo-midnight', inheritPaseoTheme: true, railWidth: 500, uiScale: 1.25 });
+  expect(await get('api/preferences')).toMatchObject({ theme: 'paseo-midnight', inheritPaseoTheme: true, uiScale: 1.25 });
+  await hub.theme(clientId, 'paseo-ghostty');
+  expect((await get('api/preferences')).theme).toBe('paseo-ghostty');
   await hub.theme(clientId, null);
   expect((await get('api/bootstrap')).preferences.theme).toBe('paseo-ghostty');
   const normal = await controlLaunch(config, join(project, 'notes.md'), { host: 'browser' });

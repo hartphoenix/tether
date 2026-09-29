@@ -1,7 +1,8 @@
 @import "@milkdown/crepe/theme/common/style.css";
 
 :root {
-  --wm-topbar-height: 36px;
+  --wm-ui-scale: 1;
+  --wm-topbar-height: calc(36px * max(1, var(--wm-ui-scale)));
   font-family: system-ui, sans-serif;
   background: var(--wm-page-background, #17191c);
   color: var(--wm-page-color, #e7e9ec);
@@ -47,12 +48,12 @@ body {
 #conflict span { flex: 1; }
 
 #editor { min-width: 0; min-height: 0; height: 100%; }
-#workspace { flex: 1; min-height: 0; --wm-rail-width: 0px; }
+#workspace { flex: 1; min-height: 0; --wm-rail-width: 0px; display: grid; grid-template-columns: minmax(0, 1fr) var(--wm-rail-width); transition: grid-template-columns 200ms ease-out; }
 
-#workspace:has(.wm-annotation-rail:not([hidden])) {
-  --wm-rail-width: 300px;
+#workspace:has(.wm-annotation-rail[data-open="true"]) {
+  --wm-rail-width: var(--wm-saved-rail-width, 300px);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(228px, 300px);
+  grid-template-columns: minmax(0, 1fr) var(--wm-rail-width);
 }
 
 #annotations { min-width: 0; }
@@ -60,7 +61,7 @@ body {
 #workspace .wm-annotation-rail {
   position: fixed;
   inset: 0 0 0 auto;
-  width: var(--wm-rail-width);
+  width: var(--wm-saved-rail-width, 300px);
   height: 100vh;
   max-height: 100vh;
 }
@@ -78,19 +79,19 @@ body {
 
 .milkdown .ProseMirror {
   min-height: calc((100vh - var(--wm-topbar-height)) / var(--wm-editor-scale, 1));
-  max-width: 880px;
+  max-width: 704px;
   margin: 0 auto;
-  padding: 36px 44px 120px;
+  padding: 28.8px 35.2px 96px;
 }
 
 /* Overlay scrollbars must sit below the final code line, including a new empty
    line. Keep clearance inside CodeMirror's measured content at every zoom. */
 .milkdown .milkdown-code-block .cm-content {
-  padding-bottom: max(20px, calc(20px / var(--wm-editor-scale, 1)));
+  padding-bottom: max(16px, calc(20px / var(--wm-editor-scale, 1)));
 }
 
 /* Milkdown swaps offscreen CodeMirror views for <pre> placeholders. Match
-   their line metrics, non-wrapping layout, 30px tools row, and content padding
+   their line metrics, non-wrapping layout, 24px tools row, and content padding
    so the swap cannot move the rest of the document. Theme rules override the
    typography of both representations together. */
 .milkdown .milkdown-code-block :is(.cm-content, .milkdown-code-block-placeholder) {
@@ -100,7 +101,7 @@ body {
 }
 
 .milkdown .milkdown-code-block .milkdown-code-block-placeholder {
-  padding: 34px 2px max(20px, calc(20px / var(--wm-editor-scale, 1))) 6px;
+  padding: 27.2px 1.6px max(16px, calc(20px / var(--wm-editor-scale, 1))) 4.8px;
   white-space: pre;
   word-break: normal;
   overflow-wrap: normal;
@@ -135,7 +136,7 @@ body {
   border: 1px solid var(--crepe-color-inverse);
   border-radius: 4px;
   background: var(--crepe-color-on-inverse);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 40%);
+  box-shadow: var(--wm-shadow);
   pointer-events: none;
 }
 
@@ -181,6 +182,23 @@ body {
   width: max-content;
   max-width: calc(100vw - 16px);
   flex-wrap: wrap;
+  border-radius: calc(6px * var(--wm-ui-scale));
+}
+.milkdown .milkdown-toolbar .toolbar-item {
+  width: calc(26px * var(--wm-ui-scale));
+  height: calc(26px * var(--wm-ui-scale));
+  margin: calc(4px * var(--wm-ui-scale));
+  padding: calc(3px * var(--wm-ui-scale));
+  border-radius: calc(3px * var(--wm-ui-scale));
+}
+.milkdown .milkdown-toolbar .toolbar-item svg {
+  width: calc(20px * var(--wm-ui-scale));
+  height: calc(20px * var(--wm-ui-scale));
+}
+.milkdown .milkdown-toolbar .divider {
+  width: calc(1px * var(--wm-ui-scale));
+  height: calc(20px * var(--wm-ui-scale));
+  margin: calc(7px * var(--wm-ui-scale));
 }
 
 /* Crepe hides selection actions during link hover; keep active selections visible.
@@ -228,9 +246,9 @@ body {
 
 @media (max-width: 640px) {
   #conflict { align-items: flex-start; flex-wrap: wrap; padding-inline: 9px; }
-  .milkdown .ProseMirror { padding: 24px 20px 100px; }
+  .milkdown .ProseMirror { padding: 19.2px 16px 80px; }
 
-  #workspace:has(.wm-annotation-rail:not([hidden])) {
+  #workspace:has(.wm-annotation-rail[data-open="true"]) {
     --wm-rail-width: 0px;
     display: block;
   }
@@ -259,9 +277,118 @@ body {
 }
 #update-notice button, #update-notice a { color: inherit; }
 
-/* Keep the reader controls within the same 36px chrome as Folio. */
-.milkdown .milkdown-top-bar .top-bar-heading-selector { padding: 3px 6px; }
-.milkdown .milkdown-top-bar .top-bar-heading-button { height: 28px; }
-.milkdown .milkdown-top-bar .top-bar-item { width: 28px; height: 28px; margin: 3px 6px; }
+/* Reader and Folio share a 36px baseline and the same interface scale. */
+.milkdown .milkdown-top-bar .top-bar-heading-selector { padding: calc(3px * var(--wm-ui-scale)) calc(6px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-heading-button { height: calc(28px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-item { width: calc(28px * var(--wm-ui-scale)); height: calc(28px * var(--wm-ui-scale)); margin: calc(3px * var(--wm-ui-scale)) calc(6px * var(--wm-ui-scale)); }
 .milkdown .milkdown-top-bar .top-bar-item svg,
-.milkdown .milkdown-top-bar .tether-icon { width: 16px; height: 16px; }
+.milkdown .milkdown-top-bar .tether-icon { width: calc(16px * var(--wm-ui-scale)); height: calc(16px * var(--wm-ui-scale)); }
+
+:root[data-wm-designed] #conflict { background: color-mix(in srgb, var(--wm-color-annotation) 18%, var(--wm-color-background)); border-color: var(--wm-color-annotation); color: var(--wm-color-on-background); }
+:root[data-wm-designed] #conflict button { background: var(--wm-color-surface); color: var(--wm-color-on-surface); border-color: var(--wm-color-outline); }
+:root[data-wm-designed] #conflict button:hover { background: var(--wm-color-hover); }
+#save-review { font-weight: 600; }
+.wm-rail-resizer { position: absolute; z-index: 5; inset: 0 auto 0 0; width: 6px; cursor: col-resize; touch-action: none; }
+.wm-rail-resizer:focus-visible { outline: 2px solid var(--wm-color-primary); outline-offset: -2px; }
+@media (max-width: 640px) { .wm-rail-resizer { display: none; } }
+
+.milkdown .milkdown-top-bar .top-bar-heading-button { font-size: calc(14px * var(--wm-ui-scale)); padding: calc(2px * var(--wm-ui-scale)) calc(8px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-heading-label { min-width: calc(24px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-heading-button svg { width: calc(20px * var(--wm-ui-scale)); height: calc(20px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-inner { padding: 0; }
+.milkdown .milkdown-top-bar { padding-inline: calc(12px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-heading-label,
+.milkdown .milkdown-top-bar .top-bar-heading-option { font-size: calc(14px * var(--wm-ui-scale)); line-height: calc(20px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-chevron { width: calc(24px * var(--wm-ui-scale)); height: calc(24px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-heading-dropdown { min-width: calc(160px * var(--wm-ui-scale)); padding: calc(8px * var(--wm-ui-scale)) calc(4px * var(--wm-ui-scale)) calc(4px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-heading-option { padding: calc(8px * var(--wm-ui-scale)) calc(12px * var(--wm-ui-scale)); }
+
+.wm-thread-card { box-sizing: border-box; overflow: clip; flex-shrink: 0; }
+.wm-annotation-rail-scroll { overflow-anchor: none; }
+@media (prefers-reduced-motion: reduce) { #workspace { transition: none; } }
+
+/* Absolute document dimensions use the same 80% baseline as theme fonts.
+   Menus and editor controls keep their interface dimensions. */
+.milkdown .ProseMirror { --wm-media-scale: 0.8; }
+.milkdown .ProseMirror blockquote::before { top: 3.2px; bottom: 3.2px; }
+.milkdown .ProseMirror hr { padding: 4.8px 0; height: 10.4px; }
+.milkdown .milkdown-list-item-block li { gap: 8px; }
+.milkdown .milkdown-list-item-block li .label-wrapper,
+.milkdown .milkdown-list-item-block li .label-wrapper .label { width: 19.2px; }
+.milkdown .milkdown-code-block { padding: 6.4px 16px 16px; }
+.milkdown .milkdown-code-block .tools { height: 24px; }
+.milkdown .milkdown-code-block .cm-content { padding-top: 3.2px; }
+.milkdown .milkdown-code-block .cm-line { padding: 0 1.6px 0 4.8px; }
+.milkdown .milkdown-table-block,
+.milkdown .milkdown-image-block { margin: 3.2px 0; }
+.milkdown .milkdown-table-block :is(th, td) { padding: 3.2px 12.8px; border-width: 0.8px; }
+.milkdown .milkdown-image-block > .image-wrapper { min-width: 80px; }
+.milkdown .milkdown-image-block > .image-wrapper img { min-height: 80px; }
+
+/* Browser table defaults use 16px rather than inheriting the body font size. */
+.milkdown .ProseMirror table { font-size: 12.8px; }
+/* Linked footnote handles share link color, without extra emphasis. */
+#editor .milkdown .ProseMirror sup[data-type="footnote_reference"] {
+  color: var(--crepe-color-primary);
+  font-weight: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+.wm-footnote-composer .wm-annotation-actions { justify-content: space-between; }
+.wm-mermaid { overflow-x: auto; text-align: center; }
+.wm-mermaid svg { max-width: 100%; height: auto; }
+#editor dl[data-type="footnote_definition"] > dt { cursor: pointer; }
+
+.wm-mermaid-error { padding: 12px; color: var(--wm-color-on-surface-variant, inherit); }
+
+.wm-diagram-expand svg { width: 1em; height: 1em; margin-right: .35em; }
+.wm-diagram-viewer[open] {
+  position: fixed; inset: 0; box-sizing: border-box; margin: 0; padding: 0; border: 0;
+  width: 100vw; height: 100dvh; max-width: none; max-height: none;
+  display: flex; flex-direction: column;
+  background: var(--wm-page-background, #fff); color: var(--wm-page-color, #222);
+}
+.wm-diagram-controls { display: flex; align-items: center; gap: 8px; padding: 12px; flex: 0 0 auto; }
+.wm-diagram-controls button:last-child { margin-left: auto; }
+.wm-diagram-viewport { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.wm-diagram-stage { display: grid; place-items: center; }
+.wm-diagram-stage svg { display: block; flex-shrink: 0; }
+
+.wm-diagram-controls {
+  --crepe-color-outline: var(--wm-color-outline, currentColor);
+  --crepe-color-hover: var(--wm-color-hover, rgb(128 128 128 / 15%));
+  --crepe-color-primary: var(--wm-color-primary, currentColor);
+  font-family: var(--wm-font-code, monospace);
+}
+
+.wm-footnote-composer .wm-annotation-form { display: flex; flex-direction: column; gap: calc(12px * var(--wm-ui-scale, 1)); }
+.wm-footnote-composer .wm-annotation-form > *,
+.wm-footnote-composer .wm-annotation-composer-title { margin: 0; }
+
+.wm-footnote-actions {
+  display: flex; justify-content: flex-end; margin-top: calc(8px * var(--wm-ui-scale, 1));
+  --crepe-color-outline: var(--wm-color-primary, currentColor);
+  --crepe-color-hover: var(--wm-color-hover, rgb(128 128 128 / 15%));
+  --crepe-color-primary: var(--wm-color-primary, currentColor);
+}
+
+.wm-insert-menu {
+  min-width: calc(170px * var(--wm-ui-scale, 1));
+  padding: calc(6px * var(--wm-ui-scale, 1));
+  border-radius: calc(12px * var(--wm-ui-scale, 1));
+  box-shadow: var(--wm-shadow);
+  font: calc(13px * var(--wm-ui-scale, 1))/1.5 var(--wm-review-ui-font, 'Hanken Grotesk', system-ui, sans-serif);
+}
+:root[data-wm-designed] .wm-context-menu.wm-insert-menu { border-color: color-mix(in srgb, var(--wm-color-outline), transparent 65%); }
+.wm-insert-menu .wm-menu-item {
+  display: grid;
+  grid-template-columns: calc(24px * var(--wm-ui-scale, 1)) 1fr;
+  gap: calc(10px * var(--wm-ui-scale, 1));
+  align-items: center;
+  min-height: calc(34px * var(--wm-ui-scale, 1));
+  padding: calc(7px * var(--wm-ui-scale, 1)) calc(10px * var(--wm-ui-scale, 1));
+  border-radius: calc(5px * var(--wm-ui-scale, 1));
+}
+.wm-insert-icon { display: flex; align-items: center; justify-content: center; }
+.wm-insert-icon svg { width: calc(16px * var(--wm-ui-scale, 1)); height: calc(16px * var(--wm-ui-scale, 1)); fill: currentColor; }
+.wm-insert-menu .wm-menu-item:hover, .wm-insert-menu .wm-menu-item:focus-visible { background: var(--wm-color-hover, #f0e9df); }

@@ -4,6 +4,7 @@ Try your first comment exchange with the [getting-started guide](getting-started
 
 ## Using Tether
 
+- [Markdown rendering](guide/markdown-support.md): supported syntax and current rendering limitations.
 - [Folio and sharing](guide/folio.md): organize documents, preserve conversations, and share reviews.
 - [Host setup](guide/hosts.md): choose cmux, Wave, or a separate browser.
 - [Agent setup](guide/agent-setup.md): install and maintain the optional review skill.

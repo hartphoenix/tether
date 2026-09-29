@@ -1,3 +1,4 @@
+import { useThemeReport } from "./use-theme-report";
 import { useSettings, type PluginSurfaceProps, type SettingsState } from "@getpaseo/plugin/client";
 import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSwitch } from "@getpaseo/plugin/client/ui";
 import { useMemo, useState } from "react";
@@ -27,7 +28,7 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
         <Connection theme={theme} />
         <SettingsSwitch
           label="Header button"
-          hint="Show the Tether button, which opens Folio and names documents your agents add."
+          hint="Opens Folio and shows documents added by agents. Also keeps inherited themes in sync when Folio and these settings are closed."
           value={settings.values.buttons}
           disabled={settings.saving}
           onValueChange={buttons => { void settings.save({ ...settings.values, buttons }, settings.revision); }}
@@ -62,7 +63,9 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
   );
 }
 
-export function SettingsScreen({ theme }: PluginSurfaceProps) {
+export function SettingsScreen(props: PluginSurfaceProps) {
+  useThemeReport(props);
+  const { theme } = props;
   const settings = useSettings(tetherSettings);
   const style = useMemo(() => ({ color: theme.colors.foreground }), [theme]);
   if (settings.status === "loading") return <Text style={style}>Loading settings…</Text>;

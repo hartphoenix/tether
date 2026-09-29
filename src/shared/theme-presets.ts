@@ -39,16 +39,16 @@ export const themePresets = {
       }
     },
     "metrics": {
-      "headingSize": 40,
+      "headingSize": 32,
       "headingWeight": 500,
       "headingSpacing": -0.014,
-      "bodySize": 20,
+      "bodySize": 16,
       "bodyWeight": 300,
       "bodySpacing": 0,
       "lineHeight": 1.65,
       "paragraphGap": 0.75,
       "lineWidth": 64,
-      "codeSize": 15,
+      "codeSize": 12,
       "codeWeight": 400,
       "codeLineHeight": 1.6
     }
@@ -90,16 +90,16 @@ export const themePresets = {
       }
     },
     "metrics": {
-      "headingSize": 40,
+      "headingSize": 32,
       "headingWeight": 500,
       "headingSpacing": -0.014,
-      "bodySize": 20,
+      "bodySize": 16,
       "bodyWeight": 300,
       "bodySpacing": 0,
       "lineHeight": 1.65,
       "paragraphGap": 0.75,
       "lineWidth": 64,
-      "codeSize": 15,
+      "codeSize": 12,
       "codeWeight": 400,
       "codeLineHeight": 1.6
     }
@@ -141,16 +141,16 @@ export const themePresets = {
       }
     },
     "metrics": {
-      "headingSize": 38,
+      "headingSize": 30.4,
       "headingWeight": 460,
       "headingSpacing": -0.012,
-      "bodySize": 19,
+      "bodySize": 15.2,
       "bodyWeight": 300,
       "bodySpacing": 0.01,
       "lineHeight": 1.65,
       "paragraphGap": 0.65,
       "lineWidth": 68,
-      "codeSize": 15.5,
+      "codeSize": 12.4,
       "codeWeight": 300,
       "codeLineHeight": 1.6
     }
@@ -192,16 +192,16 @@ export const themePresets = {
       }
     },
     "metrics": {
-      "headingSize": 42,
+      "headingSize": 33.6,
       "headingWeight": 630,
       "headingSpacing": 0.05,
-      "bodySize": 20,
+      "bodySize": 16,
       "bodyWeight": 300,
       "bodySpacing": 0,
       "lineHeight": 1.65,
       "paragraphGap": 0.65,
       "lineWidth": 68,
-      "codeSize": 16,
+      "codeSize": 12.8,
       "codeWeight": 400,
       "codeLineHeight": 1.6
     }
@@ -244,16 +244,16 @@ export const themePresets = {
       }
     },
     "metrics": {
-      "headingSize": 40,
+      "headingSize": 32,
       "headingWeight": 500,
       "headingSpacing": -0.014,
-      "bodySize": 20,
+      "bodySize": 16,
       "bodyWeight": 300,
       "bodySpacing": 0,
       "lineHeight": 1.65,
       "paragraphGap": 0.75,
       "lineWidth": 64,
-      "codeSize": 15,
+      "codeSize": 12,
       "codeWeight": 400,
       "codeLineHeight": 1.6
     }
@@ -295,16 +295,16 @@ export const themePresets = {
       }
     },
     "metrics": {
-      "headingSize": 40,
+      "headingSize": 32,
       "headingWeight": 500,
       "headingSpacing": -0.014,
-      "bodySize": 20,
+      "bodySize": 16,
       "bodyWeight": 300,
       "bodySpacing": 0,
       "lineHeight": 1.65,
       "paragraphGap": 0.75,
       "lineWidth": 64,
-      "codeSize": 15,
+      "codeSize": 12,
       "codeWeight": 400,
       "codeLineHeight": 1.6
     }
@@ -346,16 +346,16 @@ export const themePresets = {
       }
     },
     "metrics": {
-      "headingSize": 40,
+      "headingSize": 32,
       "headingWeight": 500,
       "headingSpacing": -0.014,
-      "bodySize": 20,
+      "bodySize": 16,
       "bodyWeight": 300,
       "bodySpacing": 0,
       "lineHeight": 1.65,
       "paragraphGap": 0.75,
       "lineWidth": 64,
-      "codeSize": 15,
+      "codeSize": 12,
       "codeWeight": 400,
       "codeLineHeight": 1.6
     }
@@ -397,16 +397,16 @@ export const themePresets = {
       }
     },
     "metrics": {
-      "headingSize": 40,
+      "headingSize": 32,
       "headingWeight": 500,
       "headingSpacing": -0.014,
-      "bodySize": 20,
+      "bodySize": 16,
       "bodyWeight": 300,
       "bodySpacing": 0,
       "lineHeight": 1.65,
       "paragraphGap": 0.75,
       "lineWidth": 64,
-      "codeSize": 15,
+      "codeSize": 12,
       "codeWeight": 400,
       "codeLineHeight": 1.6
     }
@@ -448,16 +448,16 @@ export const themePresets = {
       }
     },
     "metrics": {
-      "headingSize": 40,
+      "headingSize": 32,
       "headingWeight": 500,
       "headingSpacing": -0.014,
-      "bodySize": 20,
+      "bodySize": 16,
       "bodyWeight": 300,
       "bodySpacing": 0,
       "lineHeight": 1.65,
       "paragraphGap": 0.75,
       "lineWidth": 64,
-      "codeSize": 15,
+      "codeSize": 12,
       "codeWeight": 400,
       "codeLineHeight": 1.6
     }
@@ -499,16 +499,16 @@ export const themePresets = {
       }
     },
     "metrics": {
-      "headingSize": 40,
+      "headingSize": 32,
       "headingWeight": 500,
       "headingSpacing": -0.014,
-      "bodySize": 20,
+      "bodySize": 16,
       "bodyWeight": 300,
       "bodySpacing": 0,
       "lineHeight": 1.65,
       "paragraphGap": 0.75,
       "lineWidth": 64,
-      "codeSize": 15,
+      "codeSize": 12,
       "codeWeight": 400,
       "codeLineHeight": 1.6
     }
@@ -550,16 +550,16 @@ export const themePresets = {
       }
     },
     "metrics": {
-      "headingSize": 40,
+      "headingSize": 32,
       "headingWeight": 500,
       "headingSpacing": -0.014,
-      "bodySize": 20,
+      "bodySize": 16,
       "bodyWeight": 300,
       "bodySpacing": 0,
       "lineHeight": 1.65,
       "paragraphGap": 0.75,
       "lineWidth": 64,
-      "codeSize": 15,
+      "codeSize": 12,
       "codeWeight": 400,
       "codeLineHeight": 1.6
     }

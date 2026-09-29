@@ -39,14 +39,14 @@ export function themedLaunch(value: string): string {
   return url.href;
 }
 
-const reports = new Map<string, { theme: string | null; promise: Promise<unknown> }>();
-export function reportTheme(connection: string, theme: string | null, send: () => Promise<unknown>): Promise<unknown> {
+const reports = new Map<string, { theme: string | null; promise: Promise<unknown>; settled: boolean }>();
+export function reportTheme(connection: string, theme: string | null, send: () => Promise<unknown>, refresh = false): Promise<unknown> {
   const previous = reports.get(connection);
-  if (previous?.theme === theme) return previous.promise;
+  if (previous?.theme === theme && (!refresh || !previous.settled)) return previous.promise;
   const promise = (previous?.promise.catch(() => {}) ?? Promise.resolve()).then(send);
-  const report = { theme, promise };
+  const report = { theme, promise, settled: false };
   reports.set(connection, report);
-  void promise.catch(() => { if (reports.get(connection) === report) reports.delete(connection); });
+  void promise.then(() => { report.settled = true; }, () => { if (reports.get(connection) === report) reports.delete(connection); });
   return promise;
 }
 export function clearThemeReports(): void { reports.clear(); }

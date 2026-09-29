@@ -380,16 +380,39 @@ test("ordinary footnote references open a read-only popover", () => {
   const nextWindow = installDom();
   const mount = document.createElement("div");
   const editorRoot = document.createElement("div");
-  editorRoot.innerHTML = '<sup data-type="footnote_reference" data-label="one">[1]</sup><div data-type="footnote_definition" data-label="one">A plain footnote.</div>';
+  editorRoot.innerHTML = '<sup data-type="footnote_reference" data-label="calibration">calibration</sup><dl data-type="footnote_definition" data-label="calibration"><dt>calibration</dt><dd><p>calibration belongs in this note.<button class="wm-annotation-count">6</button></p></dd></dl>';
   document.body.append(mount, editorRoot);
   const ui = createAnnotationUi({ root: mount, editorRoot });
   const reference = editorRoot.querySelector<HTMLElement>("sup")!;
   reference.getBoundingClientRect = () => ({ left: 40, right: 60, top: 50, bottom: 70, width: 20, height: 20 } as DOMRect);
   reference.dispatchEvent(new nextWindow.MouseEvent("click", { bubbles: true, cancelable: true }));
-  expect(document.querySelector(".wm-footnote-popover")?.textContent).toContain("A plain footnote.");
+  expect(document.querySelector(".wm-footnote-label")?.textContent).toBe("Footnote calibration");
+  expect(document.querySelector(".wm-footnote-body")?.textContent).toBe("calibration belongs in this note.");
   ui.closeFootnotePopover();
   expect(document.querySelector(".wm-footnote-popover")).toBeNull();
   ui.destroy();
+});
+
+test('footnote handles return to their first matching reference by click or Enter', () => {
+  const win = installDom();
+  const mount = document.createElement('div');
+  const editorRoot = document.createElement('div');
+  editorRoot.innerHTML = '<sup data-type="footnote_reference" data-label="other">1</sup><sup data-type="footnote_reference" data-label="NOTE">2</sup><sup data-type="footnote_reference" data-label="note">2</sup><dl data-type="footnote_definition" data-label="note"><dt>2</dt><dd>Body</dd></dl>';
+  document.body.append(mount, editorRoot);
+  const calls: ScrollIntoViewOptions[] = [];
+  editorRoot.querySelectorAll<HTMLElement>('sup').forEach((node, i) => {
+    node.scrollIntoView = options => { expect(i).toBe(1); calls.push(options as ScrollIntoViewOptions); };
+  });
+  const ui = createAnnotationUi({ root: mount, editorRoot });
+  const handle = editorRoot.querySelector<HTMLElement>('dt')!;
+  editorRoot.querySelector<HTMLElement>('dd')!.click();
+  expect(calls).toHaveLength(0);
+  handle.click();
+  handle.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  expect(calls).toEqual([{ behavior: 'smooth', block: 'center' }, { behavior: 'smooth', block: 'center' }]);
+  ui.destroy();
+  handle.click();
+  expect(calls).toHaveLength(2);
 });
 
 test('conversation headers identify the original author and replies without repeating full dates', () => {

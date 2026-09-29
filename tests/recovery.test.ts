@@ -19,7 +19,9 @@ test('restart retains scoped reader and Folio access, draft, position, and priva
  expect(s.setCookie).toContain('HttpOnly; SameSite=Strict');
  await daemon.service.appendComment({session:s.grant,actor:'hart',body:'Private note',anchor:anchorForQuote(doc.body,'Target',doc.bodyRevision),expectedBodyRevision:doc.bodyRevision});
  expect((await post(daemon,s.location,s.cookie,'api/draft',{body:'Recovered body',baseRevision:doc.bodyRevision,scroll:123})).status).toBe(200);
+ expect((await post(daemon,s.location,s.cookie,'api/position',{scroll:123,zoom:175})).status).toBe(200);
  expect((await post(daemon,s.location,s.cookie,'api/position',{scroll:456})).status).toBe(200);
+ expect((await post(daemon,s.location,s.cookie,'api/position',{scroll:999,zoom:176})).status).toBe(400);
  const folio=await controlRecentsLaunch(f.config);const exchange=await fetch(folio.url,{redirect:'manual'});const fl=exchange.headers.get('location')!,fc=exchange.headers.get('set-cookie')!.split(';')[0];
  expect(exchange.headers.get('set-cookie')).toContain('Max-Age=34560000');
  const beforeOrigin=daemon.origin;
@@ -31,7 +33,7 @@ test('restart retains scoped reader and Folio access, draft, position, and priva
  expect(response.headers.get('set-cookie')).toContain(s.cookie+';');
  expect(response.headers.get('set-cookie')).toContain('Max-Age=34560000');
  const data=await response.json() as any;
- expect(data.draft.body).toBe('Recovered body');expect(data.scroll).toBe(456);expect(data.document.annotations.threads[0].comment.body).toBe('Private note');
+ expect(data.draft.body).toBe('Recovered body');expect(data.scroll).toBe(456);expect(data.zoom).toBe(175);expect(data.document.annotations.threads[0].comment.body).toBe('Private note');
  expect((await fetch(new URL('api/bootstrap',daemon.origin+s.location))).status).toBe(401);
  const folioRestored=await fetch(new URL('api/snapshot',daemon.origin+fl),{headers:{cookie:fc}});
  expect(folioRestored.status).toBe(200);
@@ -109,4 +111,22 @@ test('restored viewer grants reject file symlinks and parent-directory replaceme
     const response = await fetch(new URL('api/bootstrap', daemon.origin + view.location), {headers: {cookie: view.cookie}});
     expect(response.status).toBe(401);
   }
+});
+
+test('default document zoom is captured once and leaves saved reader zoom unchanged', async () => {
+ const f=await fixture();const daemon=await startDaemon({config:f.config,web:()=>new Response('reader')});daemons.push(daemon);
+ const first=await launch(daemon,f.path);
+ const bootstrap=async (s:typeof first)=>(await fetch(new URL('api/bootstrap',daemon.origin+s.location),{headers:{cookie:s.cookie}})).json() as Promise<{zoom:number}>;
+ const setDefault=async (zoom:number)=>fetch(new URL('api/preferences',daemon.origin+first.location),{method:'PUT',headers:{cookie:first.cookie,origin:daemon.origin,'content-type':'application/json'},body:JSON.stringify({defaultDocumentZoom:zoom})});
+ expect((await bootstrap(first)).zoom).toBe(100);
+ expect((await setDefault(150)).status).toBe(200);
+ expect((await bootstrap(first)).zoom).toBe(100);
+ const second=await launch(daemon,f.path);
+ expect((await bootstrap(second)).zoom).toBe(150);
+ expect((await post(daemon,second.location,second.cookie,'api/position',{scroll:0,zoom:125})).status).toBe(200);
+ expect((await setDefault(75)).status).toBe(200);
+ expect((await bootstrap(first)).zoom).toBe(100);
+ expect((await bootstrap(second)).zoom).toBe(125);
+ expect((await bootstrap(await launch(daemon,f.path))).zoom).toBe(75);
+ expect((await setDefault(176)).status).toBe(400);
 });

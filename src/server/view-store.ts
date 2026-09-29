@@ -36,6 +36,8 @@ export class ViewStore {
       body TEXT NOT NULL, base_revision TEXT NOT NULL, scroll REAL NOT NULL, updated_at INTEGER NOT NULL
     ); CREATE TABLE IF NOT EXISTS reader_positions (
       view_id TEXT PRIMARY KEY REFERENCES reader_views(id) ON DELETE CASCADE, scroll REAL NOT NULL
+    ); CREATE TABLE IF NOT EXISTS reader_zoom (
+      view_id TEXT PRIMARY KEY REFERENCES reader_views(id) ON DELETE CASCADE, zoom REAL NOT NULL
     );`);
     const columns = db.query("PRAGMA table_info(reader_views)").all() as { name: string }[];
     if (!columns.some(column => column.name === "parent_dev")) db.exec("ALTER TABLE reader_views ADD COLUMN parent_dev INTEGER; ALTER TABLE reader_views ADD COLUMN parent_ino INTEGER;");
@@ -68,7 +70,16 @@ export class ViewStore {
   clearDraft(id: string): void { this.db.query("DELETE FROM reader_drafts WHERE view_id=?").run(id); }
   clearDraftsForPath(path: string): void { this.db.query("DELETE FROM reader_drafts WHERE view_id IN (SELECT id FROM reader_views WHERE path=?)").run(path); }
   position(id: string): number { return (this.db.query("SELECT scroll FROM reader_positions WHERE view_id=?").get(id) as { scroll: number } | null)?.scroll ?? 0; }
-  savePosition(id: string, scroll: number): void { this.db.query("INSERT OR REPLACE INTO reader_positions VALUES (?,?)").run(id, scroll); }
+  zoom(id: string, defaultZoom = 100): number {
+    this.db.query("INSERT OR IGNORE INTO reader_zoom (view_id,zoom) VALUES (?,?)").run(id, defaultZoom);
+    return (this.db.query("SELECT zoom FROM reader_zoom WHERE view_id=?").get(id) as { zoom: number }).zoom;
+  }
+  savePosition(id: string, scroll: number, zoom?: number): void {
+    this.db.transaction(() => {
+      this.db.query("INSERT OR REPLACE INTO reader_positions VALUES (?,?)").run(id, scroll);
+      if (zoom !== undefined) this.db.query("INSERT OR REPLACE INTO reader_zoom VALUES (?,?)").run(id, zoom);
+    })();
+  }
   forgetPath(path: string): void {
     this.db.query("DELETE FROM reader_drafts WHERE view_id IN (SELECT id FROM reader_views WHERE path=?)").run(path);
     this.db.query("DELETE FROM reader_views WHERE path=?").run(path);

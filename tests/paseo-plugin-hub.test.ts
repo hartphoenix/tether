@@ -100,7 +100,7 @@ describe("plugin hub", () => {
     hub.stop();
   });
 
-  test("opening an announced document through the plugin clears its notice at once", async () => {
+  test("opening an announced document clears its notice only after the tab acknowledgement", async () => {
     const tether = fakeTether();
     const hub = new Hub({ run: tether.run, pumpMs: 20 });
     hub.start();
@@ -109,7 +109,47 @@ describe("plugin hub", () => {
     expect(Object.keys((await hub.pump(0, false)).notices)).toEqual(["ws-a"]);
     await hub.open("/w/a/doc.md", "ws-a");
     expect(tether.envs.at(-1)).toEqual({ TETHER_PASEO_WORKSPACE_ID: "ws-a", TETHER_PASEO_ORIGIN: "user" });
+    expect(Object.keys((await hub.pump(0, false)).notices)).toEqual(["ws-a"]);
+    tether.push({ cursor: 2, folio: 0, intents: [intent("u1", 2)], instanceId: "d1" });
+    await settle();
+    await hub.ack(["u1"]);
     expect((await hub.pump(0, false)).notices).toEqual({});
+    hub.stop();
+  });
+
+  test("a Folio launch acknowledgement clears matching notices without a Folio refresh", async () => {
+    const tether = fakeTether();
+    const hub = new Hub({ run: tether.run, pumpMs: 20 });
+    hub.start();
+    tether.push({ cursor: 3, folio: 0, intents: [
+      intent("a1", 1, { origin: "agent" }),
+      intent("a2", 2, { origin: "agent", target: { workspaceId: "ws-b" } }),
+      intent("a3", 3, { origin: "agent", path: "/other.md", target: { workspaceId: "ws-c" } }),
+    ], instanceId: "d1" });
+    await settle();
+    tether.push({ cursor: 4, folio: 0, intents: [intent("u1", 4)], instanceId: "d1" });
+    await settle();
+    const offered = await hub.pump(-1, true);
+    expect(Object.keys(offered.notices)).toHaveLength(3);
+    const updates = hub.pump(offered.revision, false);
+    const reads = tether.calls.filter(call => call[0] === "folio").length;
+    await hub.ack(["u1"]);
+    expect((await updates).notices).toEqual({ "ws-c": { path: "/other.md", name: "other" } });
+    expect(tether.calls.filter(call => call[0] === "folio")).toHaveLength(reads);
+    expect(await hub.ack(["u1"])).toBe(0);
+    hub.stop();
+  });
+
+  test("a delayed launch acknowledgement preserves a newer announcement of the same document", async () => {
+    const tether = fakeTether();
+    const hub = new Hub({ run: tether.run, pumpMs: 20 });
+    hub.start();
+    tether.push({ cursor: 2, folio: 0, intents: [intent("a1", 1, { origin: "agent" }), intent("u1", 2)], instanceId: "d1" });
+    await settle();
+    tether.push({ cursor: 3, folio: 0, intents: [intent("a2", 3, { origin: "agent" })], instanceId: "d1" });
+    await settle();
+    await hub.ack(["u1"]);
+    expect((await hub.pump(-1, false)).notices["ws-a"]?.path).toBe("/w/a/doc.md");
     hub.stop();
   });
 
@@ -193,7 +233,7 @@ printf '{"protocol":1,"ok":true,"data":{"profile":"%s","workspace":"%s","termina
       expect(await run(["status"])).toEqual({ profile: "paseo-dev", workspace: "", terminal: "" });
       expect(await run(["open"], { TETHER_PASEO_WORKSPACE_ID: "w1" })).toEqual({ profile: "paseo-dev", workspace: "w1", terminal: "" });
       await expect(run(["fail"])).rejects.toMatchObject({ code: "host_not_connected" });
-      await expect(run(["garbage"])).rejects.toMatchObject({ code: "tether_output_invalid", message: expect.stringContaining("boom") });
+      await expect(run(["garbage"])).rejects.toMatchObject({ code: "tether_output_invalid", message: expect.not.stringContaining("boom") });
     } finally {
       delete process.env.PASEO_TERMINAL_ID;
       await rm(root, { recursive: true, force: true });
@@ -211,4 +251,63 @@ test("Folio launch uses explicit workspace/user context and validates its result
   await expect(invalid.folioView("workspace-a")).rejects.toThrow();
   const unavailable = new Hub({ run: async () => { throw new Error("Tether unavailable"); } });
   await expect(unavailable.folioView("workspace-a")).rejects.toThrow("Tether unavailable");
+});
+
+test("daemon identity changes clear held launches and notices even with equal Folio versions", async () => {
+  const tether = fakeTether([entry("/old.md", 1)]);
+  const hub = new Hub({ run: tether.run });
+  tether.push({ cursor: 2, folio: 1, intents: [intent("old-user", 1), intent("old-agent", 2, { origin: "agent" })], instanceId: "old" });
+  await hub.pullOnce();
+  expect((await hub.pump(-1, true)).intents).toHaveLength(1);
+  tether.state.files = [entry("/new.md", 1)];
+  tether.push({ cursor: 0, folio: 1, intents: [], instanceId: "new" });
+  await hub.pullOnce();
+  expect(await hub.pump(-1, true)).toMatchObject({ folio: [{ path: "/new.md" }], notices: {}, intents: [], status: { tether: "new" } });
+  hub.stop();
+});
+
+test("failed Folio refresh is retried at the same version", async () => {
+  const tether = fakeTether([entry("/new.md", 1)]);
+  let fails = true;
+  const hub = new Hub({ run: (args, env) => {
+    if (args[0] === "folio" && fails) { fails = false; throw new Error("temporary failure"); }
+    return tether.run(args, env);
+  } });
+  tether.push({ cursor: 0, folio: 1, intents: [], instanceId: "daemon" });
+  await expect(hub.pullOnce()).rejects.toThrow("temporary failure");
+  tether.push({ cursor: 0, folio: 1, intents: [], instanceId: "daemon" });
+  await hub.pullOnce();
+  expect((await hub.pump(-1, false)).folio?.[0]?.path).toBe("/new.md");
+  hub.stop();
+});
+
+test("failed acknowledgement retains the intent for deduplicated redelivery", async () => {
+  const tether = fakeTether();
+  let fails = true;
+  const hub = new Hub({ run: (args, env) => {
+    if (args[1] === "ack" && fails) { fails = false; throw new Error("temporary failure"); }
+    return tether.run(args, env);
+  } });
+  tether.push({ cursor: 1, folio: 1, intents: [intent("retry", 1)], instanceId: "daemon" });
+  await hub.pullOnce();
+  await expect(hub.ack(["retry"])).rejects.toThrow("temporary failure");
+  expect((await hub.pump(-1, true)).intents.map(item => item.id)).toEqual(["retry"]);
+  expect(await hub.ack(["retry"])).toBe(1);
+  expect((await hub.pump(-1, true)).intents).toEqual([]);
+  hub.stop();
+});
+
+test("stop during workspace lookup prevents late intents and follow-up CLI calls", async () => {
+  const tether = fakeTether();
+  let release!: (value: string) => void;
+  const hub = new Hub({ run: tether.run });
+  hub.attach({ terminalWorkspace: () => new Promise(resolve => { release = resolve; }) });
+  tether.push({ cursor: 1, folio: 1, intents: [intent("late", 1, { target: { terminalId: "t" } })], instanceId: "daemon" });
+  const pending = hub.pullOnce();
+  await settle();
+  hub.stop();
+  release("ws");
+  await expect(pending).rejects.toThrow("connection changed");
+  expect(tether.calls).toHaveLength(1);
+  expect((await hub.pump(-1, true)).intents).toEqual([]);
 });

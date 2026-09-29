@@ -101,7 +101,7 @@
   border: 1px solid var(--wm-annotation-border);
   border-radius: 7px;
   background: var(--wm-annotation-surface);
-  box-shadow: 0 2px 7px rgb(42 32 20 / 7%);
+  box-shadow: var(--wm-shadow);
 }
 
 .wm-thread-card.is-active { border-color: #947b62; box-shadow: 0 0 0 2px rgb(148 123 98 / 19%); }
@@ -242,7 +242,7 @@
   border: 1px solid var(--wm-annotation-border, #d3c8bc);
   border-radius: 8px;
   background: var(--wm-annotation-surface, #fffdf9);
-  box-shadow: 0 12px 36px rgb(25 20 15 / 28%);
+  box-shadow: var(--wm-shadow);
   color: #3a332c;
 }
 
@@ -257,7 +257,7 @@
   border: 1px solid var(--wm-annotation-border, #d3c8bc);
   border-radius: 7px;
   background: var(--wm-annotation-surface, #fffdf9);
-  box-shadow: 0 8px 26px rgb(42 32 20 / 18%);
+  box-shadow: var(--wm-shadow);
   color: #3a332c;
   font: 13px/1.45 system-ui, sans-serif;
 }

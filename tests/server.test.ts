@@ -669,6 +669,30 @@ test('custom theme writes serialize across views, survive reload, and reject inv
   expect(bootstrap.preferences.theme).toBe('custom-one'); expect(bootstrap.preferences.customThemes).toHaveLength(2);
 });
 
+test('legacy theme preferences migrate at disk boundary and persist once without changing zoom', async () => {
+  const { tetherDesign } = await import('../src/shared/themes');
+  const file = await fixture();
+  const legacy = { ...tetherDesign(false), id: 'custom-legacy', name: 'Legacy' };
+  legacy.metrics = { ...legacy.metrics, headingSize: 40, bodySize: 20, codeSize: 15 };
+  await mkdir(file.config.configDir, { recursive: true });
+  await writeFile(file.config.preferencesPath, JSON.stringify({ theme: legacy.id, customThemes: [legacy], defaultDocumentZoom: 115 }));
+  const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000 });
+  daemons.push(daemon); await daemon.ready;
+  const session = await exchange(daemon, file.path);
+  const get = async () => (await sessionFetch(daemon, session.location, session.cookie, 'api/preferences')).json();
+  const loaded = await get();
+  expect(loaded.customThemes[0].metrics.bodySize).toBe(16);
+  expect(loaded.defaultDocumentZoom).toBe(115);
+  await sessionFetch(daemon, session.location, session.cookie, 'api/preferences', {
+    method: 'PUT', headers: { origin: daemon.origin }, body: JSON.stringify({ saveTheme: loaded.customThemes[0] }),
+  });
+  const stored = JSON.parse(await readFile(file.config.preferencesPath, 'utf8'));
+  expect(stored.fontSizingVersion).toBe(1);
+  expect(stored.customThemes).toEqual(loaded.customThemes);
+  expect((await get()).customThemes).toEqual(loaded.customThemes);
+  expect((await get()).defaultDocumentZoom).toBe(115);
+});
+
 test('reader tab icons load without webview cookies while document resources remain protected', async () => {
   const { createWebBundleResponder } = await import('../src/web/bundle');
   const respond = await createWebBundleResponder();
@@ -823,19 +847,19 @@ test("Folio theme events follow committed saves and reconnect with the current p
     method: "PUT", headers: { origin: daemon.origin }, body: JSON.stringify(body),
   });
   const events = await connect();
-  expect(await events.next()).toEqual(folioTheme());
+  expect(await events.next()).toMatchObject(folioTheme());
   expect((await put({ theme: "tether" })).status).toBe(200);
-  expect(await events.next()).toEqual(folioTheme({ theme: "tether" }));
+  expect(await events.next()).toMatchObject(folioTheme({ theme: "tether" }));
   const theme = { ...tetherDesign(true), id: "custom-live", name: "Live" };
   expect((await put({ theme: theme.id, saveTheme: theme })).status).toBe(200);
-  expect(await events.next()).toEqual(folioTheme({ design: theme }));
+  expect(await events.next()).toMatchObject(folioTheme({ design: theme }));
   const edited = { ...theme, colors: { ...theme.colors, background: "#123456" } };
   expect((await put({ saveTheme: edited })).status).toBe(200);
-  expect(await events.next()).toEqual(folioTheme({ design: edited }));
+  expect(await events.next()).toMatchObject(folioTheme({ design: edited }));
   expect((await put({ saveTheme: { ...theme, metrics: { bodySize: 500 } } })).status).toBe(400);
   await events.cancel();
   const reconnected = await connect();
-  expect(await reconnected.next()).toEqual(folioTheme({ design: edited }));
+  expect(await reconnected.next()).toMatchObject(folioTheme({ design: edited }));
   await reconnected.cancel();
 });
 
@@ -870,4 +894,32 @@ test("reader and Folio skill reviews require scoped access and same-origin decis
   expect(response.status).toBe(200);
   expect(await readFile(installed.path, "utf8")).toBe("Updated bundle");
   expect(await listAgentSkillReviews(file.config)).toEqual([]);
+});
+
+test('appearance preview reaches ordinary readers without persistence and cancel restores the latest commit', async () => {
+  const file = await fixture();
+  const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000 });
+  daemons.push(daemon); await daemon.ready;
+  const reader = await exchange(daemon, file.path), folio = await exchangeRecents(daemon, file.config);
+  const post = (endpoint: string, body: unknown, origin = daemon.origin) => fetch(recentsUrl(daemon, folio.location, `api/${endpoint}`), {
+    method: 'POST', headers: { cookie: folio.cookie, origin, 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const readPreferences = async () => (await sessionFetch(daemon, reader.location, reader.cookie, 'api/preferences')).json() as Promise<any>;
+  {
+    expect((await readPreferences()).committedUiScale).toBe(1);
+    expect((await post('preferences', { uiScale: 1.1, railWidth: 410 })).status).toBe(200);
+    expect(await readPreferences()).toMatchObject({ uiScale: 1.1, railWidth: 410, committedUiScale: 1.1 });
+    const saved = await readFile(file.config.preferencesPath, 'utf8');
+    expect((await post('preferences-preview', { owner: 'one', uiScale: 1.5 })).status).toBe(200);
+    expect(await readPreferences()).toMatchObject({ uiScale: 1.5, committedUiScale: 1.1 });
+    expect(await readFile(file.config.preferencesPath, 'utf8')).toBe(saved);
+    expect((await post('preferences', { uiScale: 1.2, owner: 'two' })).status).toBe(200);
+    expect(await readPreferences()).toMatchObject({ uiScale: 1.5, committedUiScale: 1.2 });
+    expect((await post('preferences-preview', { owner: 'one', uiScale: null })).status).toBe(200);
+    expect(await readPreferences()).toMatchObject({ uiScale: 1.2, railWidth: 410, committedUiScale: 1.2 });
+    expect((await post('preferences-preview', { owner: 'one', uiScale: 9 })).status).toBe(400);
+    expect((await post('preferences', { railWidth: 900 })).status).toBe(400);
+    expect((await post('preferences-preview', { owner: 'one', uiScale: 1 }, 'https://other.invalid')).status).toBe(403);
+    expect((await fetch(recentsUrl(daemon, folio.location, 'api/preferences'), { method: 'POST', headers: { origin: daemon.origin }, body: '{}' })).status).toBe(401);
+  }
 });

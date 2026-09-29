@@ -12,12 +12,13 @@
     "test": "bun test",
     "check": "bun test && bunx tsc --noEmit && bun run build:web",
     "check:geometry": "bun scripts/check-geometry.ts",
-    "build:web": "bun build ./src/web/index.html --outdir ./dist --minify",
+    "build:web": "bun build ./src/web/app.ts ./src/web/index.html --outdir ./dist --minify --splitting",
     "build:release": "bun scripts/build-release.ts"
   },
   "dependencies": {
     "@milkdown/crepe": "7.22.1",
     "@milkdown/kit": "7.22.1",
+    "mermaid": "12.0.0",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "tuf-js": "6.0.0",
@@ -30,12 +31,14 @@
     "@types/retry": "0.12.5",
     "jsdom": "^29.1.1",
     "playwright": "1.62.1",
+    "type-fest": "5.10.0",
     "typescript": "^5.9.2"
   },
   "patchedDependencies": {
     "@milkdown/plugin-tooltip@7.22.1": "patches/@milkdown%2Fplugin-tooltip@7.22.1.patch",
     "@milkdown/plugin-block@7.22.1": "patches/@milkdown%2Fplugin-block@7.22.1.patch",
     "@milkdown/plugin-slash@7.22.1": "patches/@milkdown%2Fplugin-slash@7.22.1.patch",
-    "@milkdown/components@7.22.1": "patches/@milkdown%2Fcomponents@7.22.1.patch"
+    "@milkdown/components@7.22.1": "patches/@milkdown%2Fcomponents@7.22.1.patch",
+    "prosemirror-virtual-cursor@0.4.2": "patches/prosemirror-virtual-cursor@0.4.2.patch"
   }
 }

@@ -1,6 +1,6 @@
 import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 import { openRpc, type Notice } from "../shared/contracts";
-import { TetherMark } from "./mark";
+import { ThemeMark } from "./theme-mark";
 import { FOLIO_PANEL } from "./pump";
 import { getState, subscribeState } from "./state";
 
@@ -15,27 +15,27 @@ export function startHeaderButtons(client: PluginClientContext): () => void {
   const buttons = new Map<string, PluginButtonRegistration>();
   const shown = new Map<string, string>();
 
-  const present = (workspaceId: string, notice: Notice | undefined, visible: boolean) => ({
+  const present = (workspaceId: string, notice: Notice | undefined, visible: boolean, generation: string | undefined) => ({
     title: notice ? `Open ${notice.name} in Tether` : "Tether Folio",
-    icon: TetherMark,
+    icon: ThemeMark,
     label: notice?.name,
     visible,
     behavior: {
       kind: "action" as const,
       onPress: () => {
         if (!notice) { client.openPanel(FOLIO_PANEL, { workspaceId, location: "explorer" }); return; }
-        void client.rpc(openRpc, { path: notice.path, workspaceId });
+        void client.rpc(openRpc, { path: notice.path, workspaceId, generation }).catch(() => {});
       },
     },
   });
 
   const render = (workspaceId: string) => {
-    const { notices, buttons: enabled } = getState();
+    const { notices, buttons: enabled, connection } = getState();
     const notice = notices[workspaceId];
-    const key = `${enabled}:${notice?.path ?? ""}:${notice?.name ?? ""}`;
+    const key = `${connection?.generation}:${enabled}:${notice?.path ?? ""}:${notice?.name ?? ""}`;
     if (shown.get(workspaceId) === key) return;
     shown.set(workspaceId, key);
-    const button = present(workspaceId, notice, enabled);
+    const button = present(workspaceId, notice, enabled, connection?.generation);
     const existing = buttons.get(workspaceId);
     if (existing) existing.update(button);
     else buttons.set(workspaceId, client.addHeaderButton({ id: "tether", workspaceId, button }));

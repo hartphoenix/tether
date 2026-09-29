@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test';
-import { builtInDesign, builtInThemes, contrastRatio, preferencesFrom, tetherDesign, updatePreferences, validateCustomTheme } from '../src/shared/themes';
+import { chipRing, builtInDesign, builtInThemes, contrastRatio, preferencesFrom, storedPreferencesFrom, tetherDesign, updatePreferences, validateCustomTheme } from '../src/shared/themes';
 import { googleFontCandidates } from '../src/web/theme-fonts';
 
-const custom = (id = 'custom-one', name = 'Slate') => ({ ...tetherDesign(true), id, name });
+const custom = (id: `custom-${string}` = 'custom-one', name = 'Slate') => ({ ...tetherDesign(true), id, name });
 test('retired presets migrate while preserving custom designs and cannot be selected again', () => {
   for (const family of ['crepe', 'frame', 'nord']) for (const dark of [false, true]) {
     const retired = family + (dark ? '-dark' : '');
@@ -27,7 +27,7 @@ test('Tether pairs share fonts and text, link, and inline code contrast exceeds 
   }
 });
 test('preferences migrate without replacing valid existing choices and recover corrupt entries', () => {
-  expect(preferencesFrom(null)).toEqual({ theme: 'tether-dark', customThemes: [] });
+  expect(preferencesFrom(null)).toEqual({ fontSizingVersion: 1, theme: 'tether-dark', customThemes: [] });
   expect(preferencesFrom({ theme: 'tether' }).theme).toBe('tether');
   const p = preferencesFrom({ theme: 'custom-one', customThemes: [{ nonsense: true }, custom()] });
   expect(p.theme).toBe('custom-one'); expect(p.customThemes).toHaveLength(1);
@@ -84,4 +84,35 @@ test('Paseo palettes preserve readable text, accents, and controls across their 
       expect(contrastRatio(c.outline, background), label).toBeGreaterThanOrEqual(3);
     }
   }
+});
+
+test('appearance preferences survive theme edits and reject invalid mutations', () => {
+  const value = preferencesFrom({ uiScale: 1.25, railWidth: 450 });
+  expect(updatePreferences(value, { theme: 'tether' })).toMatchObject({ uiScale: 1.25, railWidth: 450 });
+  expect(preferencesFrom({ uiScale: 8, railWidth: '300' })).toEqual(preferencesFrom(null));
+  for (const uiScale of [0.69, 1.51, NaN, '1']) expect(() => updatePreferences(value, { uiScale })).toThrow();
+  for (const railWidth of [227, 641, Infinity]) expect(() => updatePreferences(value, { railWidth })).toThrow();
+});
+
+test('chip rings and incoming banner maintain preset contrast', () => {
+  const mix = (a: string, b: string, weight: number) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * weight + parseInt(b.slice(i, i + 2), 16) * (1 - weight)).toString(16).padStart(2, '0')).join('');
+  for (const { value: id } of builtInThemes) {
+    const c = builtInDesign(id)!.colors;
+    for (const dot of [c.annotation, c.selected]) expect(contrastRatio(chipRing(c, dot), dot)).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio(c['on-background'], mix(c.annotation, c.background, .18))).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
+
+test('stored legacy font sizes convert once before validation; new selections remain exact', () => {
+  const legacy = custom();
+  legacy.metrics = { ...legacy.metrics, headingSize: 22, bodySize: 14, codeSize: 11 };
+  const migrated = storedPreferencesFrom({ theme: legacy.id, customThemes: [legacy], defaultDocumentZoom: 115, uiScale: 1.2 });
+  expect(migrated).toMatchObject({ fontSizingVersion: 1, theme: legacy.id, defaultDocumentZoom: 115, uiScale: 1.2 });
+  expect(migrated.customThemes[0]).toEqual({ ...legacy, metrics: { ...legacy.metrics, headingSize: 17.6, bodySize: 11.2, codeSize: 8.8 } });
+  expect(storedPreferencesFrom(JSON.parse(JSON.stringify(migrated)))).toEqual(migrated);
+  const edited = { ...migrated.customThemes[0], metrics: { ...migrated.customThemes[0].metrics, bodySize: 14 * 4 / 3 } };
+  const saved = updatePreferences(migrated, { saveTheme: edited });
+  expect(storedPreferencesFrom(JSON.parse(JSON.stringify(saved)))).toEqual(saved);
+  expect(saved.customThemes[0].metrics.bodySize).toBe(18 + 2 / 3);
 });

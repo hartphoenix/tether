@@ -16,6 +16,7 @@ function place(entry: FolioEntry, root: string | null): string {
 }
 
 export function FolioList({ theme, layout, navigation, workspaceId }: PluginWorkspacePanelProps) {
+  const generation = useTetherState(state => state.connection?.generation);
   const folio = useTetherState(state => state.folio);
   const status = useTetherState(state => state.status);
   const query = useTetherState(state => state.query);
@@ -54,10 +55,10 @@ export function FolioList({ theme, layout, navigation, workspaceId }: PluginWork
 
   const launch = (entry: FolioEntry) => {
     if (entry.missing) return;
-    void open({ path: entry.path, workspaceId }).catch(cause => toast.show(`Couldn't open ${entry.name}: ${cause instanceof Error ? cause.message : String(cause)}`, { variant: "error" }));
+    void open({ path: entry.path, workspaceId, generation }).catch(cause => toast.show(`Couldn't open ${entry.name}: ${cause instanceof Error ? cause.message : String(cause)}`, { variant: "error" }));
   };
   const togglePin = (entry: FolioEntry) => {
-    void pin({ path: entry.path, pinned: !entry.pinned }).catch(cause => toast.show(cause instanceof Error ? cause.message : String(cause), { variant: "error" }));
+    void pin({ path: entry.path, pinned: !entry.pinned, generation }).catch(cause => toast.show(cause instanceof Error ? cause.message : String(cause), { variant: "error" }));
   };
   const scopeButton = (value: FolioScope, label: string) => (
     <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: scope === value }} onPress={() => setState({ scope: value })} style={[styles.scope, scope === value && styles.scopeActive]}>

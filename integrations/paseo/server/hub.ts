@@ -1,4 +1,4 @@
-import type { FolioEntry, HubStatus, Intent, Notice, PumpBatch } from "../shared/contracts";
+import type { Connection, FolioEntry, HubStatus, Intent, Notice, PumpBatch } from "../shared/contracts";
 import { folioViewSchema, type FolioView } from "../shared/contracts";
 import type { TetherRunner } from "./tether-cli";
 
@@ -22,6 +22,7 @@ export type PaseoLookup = {
 
 export type HubOptions = {
   run: TetherRunner;
+  connection?: Connection;
   now?: () => number;
   leaseMs?: number;
   pumpMs?: number;
@@ -31,7 +32,7 @@ export type HubOptions = {
   buttons?: () => boolean;
 };
 
-type Held = { intent: Intent; leaseUntil: number; expiresAt: number };
+type Held = { intent: Intent; leaseUntil: number; expiresAt: number; notices: Map<string, Announced> };
 type Announced = { path: string; at: number };
 
 function fileName(path: string): string {
@@ -48,6 +49,7 @@ export class Hub {
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private running = false;
+  private stopped = false;
   private revision = 0;
   private cursor = 0;
   private folioVersion = -1;
@@ -68,14 +70,21 @@ export class Hub {
   attach(lookup: PaseoLookup): void { this.lookup = lookup; }
 
   start(): void {
-    if (this.running) return;
+    if (this.running || this.stopped) return;
     this.running = true;
     void this.loop();
   }
 
   stop(): void {
     this.running = false;
+    this.stopped = true;
     this.wake();
+  }
+
+  presentationChanged(): void { this.changed(); }
+
+  private assertActive(): void {
+    if (this.stopped) throw new Error("Tether connection changed. Retry from the current view.");
   }
 
   private changed(): void {
@@ -100,6 +109,7 @@ export class Hub {
         await this.pullOnce();
         backoff = 1_000;
       } catch (cause) {
+        if (this.stopped) break;
         // A Tether release older than the Paseo channel rejects `tether paseo` as unknown.
         const outdated = (cause as { code?: unknown }).code === "usage";
         const error = outdated ? "This Tether version doesn't support Paseo. Update Tether, or set a newer tether command in settings." : cause instanceof Error ? cause.message : String(cause);
@@ -112,11 +122,18 @@ export class Hub {
 
   /** One `tether paseo wait` round: absorb intents, then refresh Folio if it changed. */
   async pullOnce(): Promise<void> {
+    this.assertActive();
     const batch = await this.options.run(["paseo", "wait", "--after", String(this.cursor), "--folio", String(this.folioVersion), "--timeout", String(this.options.waitSeconds ?? 20)]) as WaitBatch;
+    this.assertActive();
     if (batch.instanceId !== this.instanceId) {
       // A restarted daemon numbers intents and Folio versions from scratch.
       this.instanceId = batch.instanceId;
-      if (batch.cursor < this.cursor) this.cursor = 0;
+      this.cursor = 0;
+      this.folioVersion = -1;
+      this.folio = null;
+      this.held.clear();
+      this.notices.clear();
+      this.status = { connected: false, tether: batch.instanceId, error: null };
     }
     const acknowledged: string[] = [];
     for (const intent of batch.intents) {
@@ -124,19 +141,30 @@ export class Hub {
       if (this.held.has(intent.id)) continue;
       if (intent.origin === "agent" || intent.kind !== "document") {
         acknowledged.push(intent.id);
-        if (intent.origin === "agent" && intent.path) this.announce(intent.path, await this.workspaceFor(intent.target));
+        if (intent.origin === "agent" && intent.path) {
+          const workspace = await this.workspaceFor(intent.target);
+          this.assertActive();
+          this.announce(intent.path, workspace);
+        }
         continue;
       }
       const workspaceId = await this.workspaceFor(intent.target);
+      this.assertActive();
       if (!workspaceId || !intent.url) { acknowledged.push(intent.id); continue; }
-      this.held.set(intent.id, { intent: { id: intent.id, url: intent.url, workspaceId }, leaseUntil: 0, expiresAt: intent.expiresAt });
+      this.held.set(intent.id, { intent: { id: intent.id, url: intent.url, workspaceId }, leaseUntil: 0, expiresAt: intent.expiresAt,
+        notices: new Map([...this.notices].filter(([, notice]) => notice.path === intent.path)),
+      });
       this.changed();
     }
     this.cursor = Math.max(this.cursor, batch.cursor);
-    if (acknowledged.length) await this.options.run(["paseo", "ack", ...acknowledged]);
+    for (let index = 0; index < acknowledged.length; index += 256) {
+      await this.options.run(["paseo", "ack", ...acknowledged.slice(index, index + 256)]);
+      this.assertActive();
+    }
     if (batch.folio !== this.folioVersion) {
-      this.folioVersion = batch.folio;
       await this.refreshFolio();
+      this.assertActive();
+      this.folioVersion = batch.folio;
     }
     this.setStatus({ connected: true, tether: batch.instanceId, error: null });
   }
@@ -152,12 +180,6 @@ export class Hub {
     return { path, name: this.folio?.find(entry => entry.path === path)?.name ?? fileName(path) };
   }
 
-  private clearNotices(path: string): void {
-    for (const [workspaceId, notice] of this.notices) {
-      if (notice.path === path) { this.notices.delete(workspaceId); this.changed(); }
-    }
-  }
-
   private announce(path: string, workspaceId: string | null): void {
     if (!workspaceId) return;
     this.notices.set(workspaceId, { path, at: this.now() });
@@ -166,6 +188,7 @@ export class Hub {
 
   private async refreshFolio(): Promise<void> {
     const data = await this.options.run(["folio", "list", "--view", "active", "--sort", "opened"]) as { files: Array<Record<string, unknown>> };
+    this.assertActive();
     const entries: FolioEntry[] = data.files.map(file => ({
       path: String(file.path),
       name: String(file.name ?? fileName(String(file.path))),
@@ -213,6 +236,7 @@ export class Hub {
     const leaseUntil = this.now() + (this.options.leaseMs ?? 10_000);
     const intents = executor ? this.offerable().map(held => { held.leaseUntil = leaseUntil; return held.intent; }) : [];
     return {
+      connection: this.options.connection ?? null,
       revision: this.revision,
       intents,
       folio: this.folio,
@@ -223,28 +247,48 @@ export class Hub {
   }
 
   async ack(ids: string[]): Promise<number> {
-    const done = ids.filter(id => this.held.delete(id));
-    if (done.length) await this.options.run(["paseo", "ack", ...done]);
+    this.assertActive();
+    const done = ids.filter(id => this.held.has(id));
+    for (let index = 0; index < done.length; index += 256) {
+      const chunk = done.slice(index, index + 256);
+      await this.options.run(["paseo", "ack", ...chunk]);
+      this.assertActive();
+      for (const id of chunk) {
+        const held = this.held.get(id);
+        // The client opened the tab. Retire only announcements that this launch
+        // consumed; a newer announcement, even for the same path, stays pending.
+        for (const [workspaceId, notice] of held?.notices ?? []) {
+          if (this.notices.get(workspaceId) === notice) {
+            this.notices.delete(workspaceId);
+            this.changed();
+          }
+        }
+        this.held.delete(id);
+      }
+    }
     return done.length;
   }
 
   /** Open a document for the user; the tab returns through `pump` as an intent. */
   async open(path: string, workspaceId: string): Promise<void> {
-    this.clearNotices(path);
+    this.assertActive();
     await this.options.run(["open", path, "--host", "paseo"], { TETHER_PASEO_WORKSPACE_ID: workspaceId, TETHER_PASEO_ORIGIN: "user" });
   }
 
   async theme(clientId: string, theme: string | null): Promise<{ updated: boolean }> {
+    this.assertActive();
     await this.options.run(["paseo", "theme", clientId, theme ?? "unknown"]);
     return { updated: true };
   }
 
   async pin(path: string, pinned: boolean): Promise<void> {
+    this.assertActive();
     await this.options.run(["folio", "pin", path, ...(pinned ? [] : ["--off"])]);
   }
 
   /** Mint a one-use Folio launch for this client; never share tickets between clients. */
   async folioView(workspaceId: string): Promise<FolioView> {
+    this.assertActive();
     return folioViewSchema.parse(await this.options.run(["folio", "--url", "--host", "paseo"], {
       TETHER_PASEO_WORKSPACE_ID: workspaceId, TETHER_PASEO_ORIGIN: "user",
     }));

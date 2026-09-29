@@ -1,24 +1,19 @@
-import { matchingTheme, themeClientId, themedLaunch, reportTheme } from "./theme-sync";
+import { useThemeReport } from "./use-theme-report";
+import { themedLaunch } from "./theme-sync";
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { useRpc, useSettings } from "@getpaseo/plugin/client";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { ackRpc, folioViewRpc, themeRpc, tetherSettings, type TetherSettings } from "../shared/contracts";
+import { ackRpc, folioViewRpc, tetherSettings, type TetherSettings } from "../shared/contracts";
 import { FolioList } from "./folio-list";
-import { lendOpener } from "./state";
+import { lendOpener, useTetherState } from "./state";
 import { isDesktop } from "./web";
 import { folioViewKey, mountFolioWebview, type FolioViewState } from "./web-folio";
 
-function EmbeddedFolio({ settings, cacheKey, ...props }: PluginWorkspacePanelProps & { settings: TetherSettings; cacheKey: string }) {
+function EmbeddedFolio({ settings, cacheKey, generation, ...props }: PluginWorkspacePanelProps & { settings: TetherSettings; cacheKey: string; generation: string }) {
   const launch = useRpc(folioViewRpc);
-  const syncTheme = useRpc(themeRpc);
-  const match = matchingTheme(props.theme);
   const [attempt, setAttempt] = useState(0);
-  const themeReady = useRef<Promise<unknown>>(Promise.resolve());
-  useEffect(() => {
-    themeReady.current = reportTheme(JSON.stringify([props.host.id, settings.tetherPath, settings.profile]), match, () => syncTheme({ clientId: themeClientId(), theme: match, tetherPath: settings.tetherPath, profile: settings.profile }));
-    void themeReady.current.catch(() => {});
-  }, [match, syncTheme, props.host.id, settings.tetherPath, settings.profile, attempt]);
+  const themeReady = useThemeReport(props);
   const container = useRef<View>(null);
   const [state, setState] = useState<FolioViewState>("loading");
   const { workspaceId, theme } = props;
@@ -34,14 +29,14 @@ function EmbeddedFolio({ settings, cacheKey, ...props }: PluginWorkspacePanelPro
         cacheKey,
         launch: async () => {
           await themeReady.current;
-          const result = await launch({ workspaceId, tetherPath, profile });
+          const result = await launch({ workspaceId, tetherPath, profile, generation });
           return { ...result, url: themedLaunch(result.url) };
         },
         onState: setState,
       });
     }, () => { clearTimeout(timer); if (!disposed) setState("failed"); });
     return () => { disposed = true; clearTimeout(timer); cleanup(); };
-  }, [cacheKey, workspaceId, tetherPath, profile, launch, attempt]);
+  }, [cacheKey, workspaceId, tetherPath, profile, launch, attempt, generation]);
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
@@ -62,6 +57,7 @@ function EmbeddedFolio({ settings, cacheKey, ...props }: PluginWorkspacePanelPro
 
 /** The executor remains mounted through web loading, recovery, and native fallback. */
 export function FolioPanel(props: PluginWorkspacePanelProps) {
+  const connection = useTetherState(state => state.connection);
   const ack = useRpc(ackRpc);
   const settings = useSettings(tetherSettings);
   const openBrowser = props.navigation?.openBrowser;
@@ -69,12 +65,14 @@ export function FolioPanel(props: PluginWorkspacePanelProps) {
     if (!openBrowser) return;
     return lendOpener(
       intent => openBrowser({ url: themedLaunch(intent.url), workspaceId: intent.workspaceId }),
-      intent => { void ack({ ids: [intent.id] }).catch(() => {}); },
+      intent => { void ack({ ids: [intent.id], generation: intent.generation }).catch(() => {}); },
     );
   }, [openBrowser, ack]);
 
+  if (!connection) return <FolioList {...props} />;
   if (!isDesktop() || !openBrowser || (settings.status !== "ready" && settings.status !== "loading")) return <FolioList {...props} />;
   if (settings.status === "loading") return <Text style={{ color: props.theme.colors.foregroundMuted, padding: 12 }}>Loading Folio…</Text>;
+  if (connection.tetherPath !== settings.values.tetherPath || connection.profile !== settings.values.profile) return <Text style={{ color: props.theme.colors.foregroundMuted, padding: 12 }}>Connecting to Tether…</Text>;
   const key = folioViewKey(props.host.id, settings.values.tetherPath, settings.values.profile, props.workspaceId);
-  return <EmbeddedFolio key={key} cacheKey={key} settings={settings.values} {...props} />;
+  return <EmbeddedFolio key={`${key}:${connection.generation}`} cacheKey={key} generation={connection.generation} settings={settings.values} {...props} />;
 }

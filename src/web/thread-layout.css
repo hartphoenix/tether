@@ -28,49 +28,49 @@
 .wm-annotation-rail,
 :root[data-wm-designed] .wm-annotation-rail {
   background: color-mix(in srgb, var(--wm-annotation-surface) 70%, transparent);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(calc(12px * var(--wm-ui-scale, 1)));
+  backdrop-filter: blur(calc(12px * var(--wm-ui-scale, 1)));
 }
 .wm-annotation-rail-scroll {
   min-height: 0;
   flex: 1;
   overflow: auto;
   overscroll-behavior: contain;
-  margin-top: calc(-1 * var(--wm-scroll-header-height, 0px));
-  padding: calc(var(--wm-scroll-header-height, 0px) + 12px) 12px 28px;
-  scroll-padding-top: calc(var(--wm-scroll-header-height, 0px) + 12px);
+  margin-top: calc(-1 * var(--wm-scroll-header-height, calc(0px * var(--wm-ui-scale, 1))));
+  padding: calc(var(--wm-scroll-header-height, calc(0px * var(--wm-ui-scale, 1))) + calc(12px * var(--wm-ui-scale, 1))) calc(12px * var(--wm-ui-scale, 1)) calc(28px * var(--wm-ui-scale, 1));
+  scroll-padding-top: calc(var(--wm-scroll-header-height, calc(0px * var(--wm-ui-scale, 1))) + calc(12px * var(--wm-ui-scale, 1)));
 }
-.wm-annotation-rail-content { gap: 12px; }
+.wm-annotation-rail-content { gap: calc(12px * var(--wm-ui-scale, 1)); }
 .wm-annotation-rail-header {
   position: relative;
   flex-shrink: 0;
   z-index: 2;
-  gap: 8px;
+  gap: calc(8px * var(--wm-ui-scale, 1));
   margin: 0;
-  padding: 16px 16px 8px;
+  padding: calc(16px * var(--wm-ui-scale, 1)) calc(16px * var(--wm-ui-scale, 1)) calc(8px * var(--wm-ui-scale, 1));
   --wm-rail-header-background: color-mix(in srgb, var(--wm-annotation-surface) 70%, transparent);
   background: var(--wm-rail-header-background);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(calc(12px * var(--wm-ui-scale, 1)));
+  backdrop-filter: blur(calc(12px * var(--wm-ui-scale, 1)));
 }
 .wm-annotation-rail-header::after {
   content: "";
   position: absolute;
   inset: 100% 0 auto;
-  height: 12px;
+  height: calc(12px * var(--wm-ui-scale, 1));
   background: var(--wm-rail-header-background);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(calc(12px * var(--wm-ui-scale, 1)));
+  backdrop-filter: blur(calc(12px * var(--wm-ui-scale, 1)));
   -webkit-mask-image: linear-gradient(to bottom, black, transparent);
   mask-image: linear-gradient(to bottom, black, transparent);
   pointer-events: none;
 }
 .wm-annotation-rail-header h2 { font-size: calc(15px * var(--wm-thread-ui-scale, 1)); font-weight: 600; letter-spacing: 0; }
-.wm-annotation-rail-controls { gap: 10px; }
-.wm-thread-card { border-radius: 10px; box-shadow: none; }
+.wm-annotation-rail-controls { gap: calc(10px * var(--wm-ui-scale, 1)); }
+.wm-thread-card { border-radius: calc(10px * var(--wm-ui-scale, 1)); box-shadow: none; }
 :root[data-wm-designed] .wm-thread-card.is-active { border-color: var(--wm-color-primary); box-shadow: none; }
-.wm-thread-summary { padding: calc(12px * var(--wm-thread-ui-scale, 1)); gap: 5px 8px; }
-.wm-thread-labels { gap: 8px; color: var(--wm-annotation-muted); font-size: calc(11px * var(--wm-thread-ui-scale, 1)); }
+.wm-thread-summary { padding: calc(12px * var(--wm-thread-ui-scale, 1)); gap: calc(5px * var(--wm-ui-scale, 1)) calc(8px * var(--wm-ui-scale, 1)); }
+.wm-thread-labels { gap: calc(8px * var(--wm-ui-scale, 1)); color: var(--wm-annotation-muted); font-size: calc(11px * var(--wm-thread-ui-scale, 1)); }
 .wm-thread-count { white-space: nowrap; }
 .wm-thread-status { font-size: inherit; }
 .wm-thread-card:not(:has(.wm-thread-summary[aria-expanded="true"])) .wm-thread-excerpt {
@@ -82,20 +82,20 @@
 .wm-thread-summary[aria-expanded="true"] :is(.wm-thread-identity, .wm-thread-excerpt) { display: none; }
 /* Open is the normal state; reserve a visible status label for resolved threads. */
 .wm-thread-card:not(.is-resolved) .wm-thread-status { display: none; }
-.wm-thread-details { padding: 0 14px 14px; }
-.wm-thread-popover { padding: 36px 16px 16px; border-radius: 12px; }
+.wm-thread-details { padding: 0 calc(14px * var(--wm-ui-scale, 1)) calc(14px * var(--wm-ui-scale, 1)); }
+.wm-thread-popover { padding: calc(36px * var(--wm-ui-scale, 1)) calc(16px * var(--wm-ui-scale, 1)) calc(16px * var(--wm-ui-scale, 1)); border-radius: calc(12px * var(--wm-ui-scale, 1)); }
 .wm-thread-popover .wm-thread-details { padding: 0; }
-.wm-thread-popover .wm-footnote-close { top: 7px; right: 9px; }
+.wm-thread-popover .wm-footnote-close { top: calc(7px * var(--wm-ui-scale, 1)); right: calc(9px * var(--wm-ui-scale, 1)); }
 .wm-thread-quote, .wm-thread-context {
-  margin: 0 0 16px; border-left: 2px solid var(--wm-annotation-border);
-  padding: 7px 10px; font: calc(12px * var(--wm-thread-ui-scale, 1))/1.5 var(--wm-review-body-font);
+  margin: 0 0 calc(16px * var(--wm-ui-scale, 1)); border-left: calc(2px * var(--wm-ui-scale, 1)) solid var(--wm-annotation-border);
+  padding: calc(7px * var(--wm-ui-scale, 1)) calc(10px * var(--wm-ui-scale, 1)); font: calc(12px * var(--wm-thread-ui-scale, 1))/1.5 var(--wm-review-body-font);
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
 :root[data-wm-designed] .wm-thread-quote { background: var(--wm-color-hover); border-color: var(--wm-color-primary); }
 .wm-thread-context summary { cursor: pointer; color: var(--wm-annotation-muted); }
-.wm-thread-context[open] summary { margin-bottom: 8px; }
+.wm-thread-context[open] summary { margin-bottom: calc(8px * var(--wm-ui-scale, 1)); }
 .wm-thread-context .wm-thread-quote { padding: 0; margin: 0; border: 0; background: transparent; }
-.wm-message-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin-bottom: 6px; font-family: var(--wm-review-ui-font); }
+.wm-message-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: calc(4px * var(--wm-ui-scale, 1)) calc(8px * var(--wm-ui-scale, 1)); margin-bottom: calc(6px * var(--wm-ui-scale, 1)); font-family: var(--wm-review-ui-font); }
 .wm-message-author { font-size: calc(12px * var(--wm-thread-ui-scale, 1)); font-weight: 650; overflow-wrap: anywhere; }
 .wm-message-header .wm-thread-time { display: inline; margin: 0; font-size: calc(10px * var(--wm-thread-ui-scale, 1)); color: var(--wm-annotation-muted); }
 .wm-editable-annotation { padding: 0; min-width: 0; }
@@ -105,27 +105,27 @@
 .wm-editable-annotation.is-assistant::before {
   content: "";
   position: absolute;
-  inset: -6px -8px;
+  inset: calc(-6px * var(--wm-ui-scale, 1)) calc(-8px * var(--wm-ui-scale, 1));
   z-index: -1;
   pointer-events: none;
-  border-left: 2px solid var(--wm-color-primary, var(--wm-annotation-muted));
-  border-radius: 0 5px 5px 0;
+  border-left: calc(2px * var(--wm-ui-scale, 1)) solid var(--wm-color-primary, var(--wm-annotation-muted));
+  border-radius: 0 calc(5px * var(--wm-ui-scale, 1)) calc(5px * var(--wm-ui-scale, 1)) 0;
   background: color-mix(in srgb, var(--wm-color-primary, var(--wm-annotation-muted)) 8%, var(--wm-annotation-surface));
 }
 .wm-message-header .wm-inline-edit { position: static; margin-left: auto; padding: calc(2px * var(--wm-thread-ui-scale, 1)) 0 calc(2px * var(--wm-thread-ui-scale, 1)) calc(6px * var(--wm-thread-ui-scale, 1)); font: calc(10px * var(--wm-thread-ui-scale, 1))/1.5 var(--wm-review-ui-font); }
 .wm-thread-body { margin: 0; font: calc(14px * var(--wm-thread-ui-scale, 1))/1.6 var(--wm-review-body-font); white-space: pre-wrap; tab-size: 4; overflow-wrap: anywhere; }
 .wm-thread-replies { gap: 0; }
-.wm-thread-reply { padding: 14px 0 0; margin-top: 14px; border-top: 1px solid var(--wm-annotation-border); }
+.wm-thread-reply { padding: calc(14px * var(--wm-ui-scale, 1)) 0 0; margin-top: calc(14px * var(--wm-ui-scale, 1)); border-top: calc(1px * var(--wm-ui-scale, 1)) solid var(--wm-annotation-border); }
 :root[data-wm-designed] .wm-thread-reply { border-color: var(--wm-annotation-border); }
-.wm-annotation-reply-form { margin-top: 18px; }
-.wm-annotation-textarea { min-height: 64px; padding: 9px 10px; border-radius: 7px; font: calc(14px * var(--wm-thread-ui-scale, 1))/1.6 var(--wm-review-body-font); tab-size: 4; }
+.wm-annotation-reply-form { margin-top: calc(18px * var(--wm-ui-scale, 1)); }
+.wm-annotation-textarea { min-height: calc(64px * var(--wm-ui-scale, 1)); padding: calc(9px * var(--wm-ui-scale, 1)) calc(10px * var(--wm-ui-scale, 1)); border-radius: calc(7px * var(--wm-ui-scale, 1)); font: calc(14px * var(--wm-thread-ui-scale, 1))/1.6 var(--wm-review-body-font); tab-size: 4; }
 .wm-annotation-textarea::placeholder { color: var(--wm-annotation-muted); opacity: .85; }
-.wm-annotation-actions { gap: 8px; margin-top: 8px; }
+.wm-annotation-actions { gap: calc(8px * var(--wm-ui-scale, 1)); margin-top: calc(8px * var(--wm-ui-scale, 1)); }
 .wm-annotation-reply-form .wm-button-secondary { margin-right: auto; border-color: transparent; background: transparent; }
 :root[data-wm-designed] .wm-annotation-reply-form .wm-button-secondary { border-color: transparent; background: transparent; }
-.wm-annotation-actions .wm-button { min-height: calc(30px * var(--wm-thread-ui-scale, 1)); padding: calc(4px * var(--wm-thread-ui-scale, 1)) calc(10px * var(--wm-thread-ui-scale, 1)); font: calc(12px * var(--wm-thread-ui-scale, 1))/1.5 var(--wm-review-ui-font); border-radius: 6px; }
+.wm-annotation-actions .wm-button { min-height: calc(30px * var(--wm-thread-ui-scale, 1)); padding: calc(4px * var(--wm-thread-ui-scale, 1)) calc(10px * var(--wm-thread-ui-scale, 1)); font: calc(12px * var(--wm-thread-ui-scale, 1))/1.5 var(--wm-review-ui-font); border-radius: calc(6px * var(--wm-ui-scale, 1)); }
 :root[data-wm-designed] .wm-annotation-actions .wm-button-primary { color: var(--wm-color-on-secondary); background: var(--wm-color-secondary); border-color: transparent; }
-.wm-thread-popover :focus-visible, .wm-annotation-rail :focus-visible { outline: 2px solid var(--wm-color-primary, #947b62); outline-offset: 2px; }
+.wm-thread-popover :focus-visible, .wm-annotation-rail :focus-visible { outline: calc(2px * var(--wm-ui-scale, 1)) solid var(--wm-color-primary, #947b62); outline-offset: calc(2px * var(--wm-ui-scale, 1)); }
 .wm-thread-body { white-space: normal; }
 .wm-thread-body :is(p, blockquote, li, th, td) { white-space: pre-wrap; }
 .wm-thread-body p, .wm-thread-reply .wm-thread-body p { margin: 0 0 .65em; }
@@ -135,22 +135,34 @@
 .wm-thread-body :is(ul,ol) { padding-left: 1.3em; margin: .5em 0; }
 .wm-thread-body li { margin: .15em 0; }
 .wm-thread-body li > p { margin: 0; }
-.wm-thread-body blockquote { margin: .6em 0; padding-left: .8em; border-left: 2px solid var(--wm-annotation-border); }
+.wm-thread-body blockquote { margin: .6em 0; padding-left: .8em; border-left: calc(2px * var(--wm-ui-scale, 1)) solid var(--wm-annotation-border); }
 .wm-thread-body :is(code,pre) { font: .85em/1.55 var(--wm-review-code-font); tab-size: 4; }
-.wm-thread-body code { color: var(--wm-color-inline-code, inherit); background: var(--wm-color-inline-area, transparent); border-radius: 3px; padding: .08em .2em; }
-.wm-thread-body pre { overflow-x: auto; white-space: pre; padding: 9px; background: var(--wm-color-surface-low, transparent); border-radius: 6px; margin: .6em 0; }
+.wm-thread-body code { color: var(--wm-color-inline-code, inherit); background: var(--wm-color-inline-area, transparent); border-radius: calc(3px * var(--wm-ui-scale, 1)); padding: .08em .2em; }
+.wm-thread-body pre { overflow-x: auto; white-space: pre; padding: calc(9px * var(--wm-ui-scale, 1)); background: var(--wm-color-surface-low, transparent); border-radius: calc(6px * var(--wm-ui-scale, 1)); margin: .6em 0; }
 .wm-thread-body pre code { font: inherit; padding: 0; color: inherit; background: transparent; }
 .wm-thread-body a { color: var(--wm-color-primary, inherit); text-underline-offset: .15em; }
 .wm-comment-table { overflow-x: auto; margin-block: .6em; }
 .wm-comment-table table { border-collapse: collapse; width: 100%; font-size: .9em; }
-.wm-comment-table :is(th,td) { padding: 5px 7px; border: 1px solid var(--wm-annotation-border); text-align: start; }
+.wm-comment-table :is(th,td) { padding: calc(5px * var(--wm-ui-scale, 1)) calc(7px * var(--wm-ui-scale, 1)); border: calc(1px * var(--wm-ui-scale, 1)) solid var(--wm-annotation-border); text-align: start; }
 .wm-comment-task { list-style: none; position: relative; }
 .wm-comment-task > input { position: absolute; left: -1.4em; top: .25em; }
-.wm-thread-body hr { margin: .8em 0; border: 0; border-top: 1px solid var(--wm-annotation-border); }
+.wm-thread-body hr { margin: .8em 0; border: 0; border-top: calc(1px * var(--wm-ui-scale, 1)) solid var(--wm-annotation-border); }
 
 /* Match the 36/44 chrome reduction without changing document or popover scale. */
-.wm-annotation-rail { --wm-thread-ui-scale: calc(9 / 11); }
+.wm-annotation-rail { --wm-thread-ui-scale: calc(9 / 11 * var(--wm-ui-scale, 1)); }
 .wm-annotation-rail .wm-rail-button .tether-icon {
   width: calc(20px * var(--wm-thread-ui-scale));
   height: calc(20px * var(--wm-thread-ui-scale));
 }
+
+.wm-thread-popover, .wm-comment-popover { --wm-thread-ui-scale: var(--wm-ui-scale, 1); }
+.wm-thread-replies { grid-template-columns: minmax(0, 1fr); }
+.wm-thread-reply, .wm-editable-annotation, .wm-thread-body { min-width: 0; }
+.wm-thread-body img { max-width: 100%; }
+:root[data-wm-designed] .wm-thread-card { --wm-chip-color: var(--wm-color-surface); background: var(--wm-chip-color); }
+:root[data-wm-designed] .wm-thread-summary:hover { background: color-mix(in srgb, var(--wm-color-hover) 40%, var(--wm-chip-color)); }
+:root[data-wm-designed] .wm-actor-dot { background: var(--wm-color-selected); box-shadow: 0 0 0 calc(1px * var(--wm-ui-scale, 1)) var(--wm-selected-ring); }
+:root[data-wm-designed] [data-last-assistant="true"] .wm-actor-dot { background: var(--wm-color-annotation); box-shadow: 0 0 0 calc(1px * var(--wm-ui-scale, 1)) var(--wm-annotation-ring); }
+
+.wm-actor-dot { background: var(--wm-color-selected, #4678b7); }
+[data-last-assistant="true"] .wm-actor-dot { background: var(--wm-color-annotation, #bf7b18); }
