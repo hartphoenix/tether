@@ -1,4 +1,5 @@
 diff --git a/lib/code-block/index.js b/lib/code-block/index.js
+index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..07a86564744f0cf823bcc06a590758c3b2605c7b 100644
 --- a/lib/code-block/index.js
 +++ b/lib/code-block/index.js
 @@ -1,3 +1,4 @@
@@ -6,7 +7,7 @@ diff --git a/lib/code-block/index.js b/lib/code-block/index.js
  import { $ctx, $view } from '@milkdown/utils';
  import { codeBlockSchema } from '@milkdown/preset-commonmark';
  import { Compartment, EditorState } from '@codemirror/state';
-@@ -8,7 +9,7 @@
+@@ -8,7 +9,7 @@ import { TextSelection } from '@milkdown/prose/state';
  import { h, Fragment, defineComponent, ref, watch, computed, onMounted, onUnmounted, watchEffect, createApp } from 'vue';
  import clsx from 'clsx';
  import DOMPurify from 'dompurify';
@@ -15,7 +16,7 @@ diff --git a/lib/code-block/index.js b/lib/code-block/index.js
  import { customAlphabet } from 'nanoid';
  
  var __defProp = Object.defineProperty;
-@@ -233,19 +234,28 @@
+@@ -233,19 +234,28 @@ const LanguagePicker = defineComponent({
      const searchId = inputId("milkdown-code-language-search");
      const pickerRef = ref();
      const filter = ref("");
@@ -46,7 +47,7 @@ diff --git a/lib/code-block/index.js b/lib/code-block/index.js
      });
      const onTogglePicker = (e) => {
        e.preventDefault();
-@@ -297,6 +307,8 @@
+@@ -297,6 +307,8 @@ const LanguagePicker = defineComponent({
        window.addEventListener("click", clickHandler);
      });
      onUnmounted(() => {
@@ -55,7 +56,39 @@ diff --git a/lib/code-block/index.js b/lib/code-block/index.js
        window.removeEventListener("click", clickHandler);
      });
      return () => {
+@@ -482,6 +494,14 @@ const CodeBlock = defineComponent({
+     const previewOnlyMode = ref(previewOnlyByDefault);
+     const codemirrorHostRef = ref();
+     const preview = ref(null);
++    let previewVersion = 0;
++    const previewRevision = ref(0);
++    const refreshPreview = () => { previewRevision.value++ };
++    onMounted(() => props.codemirror.dom.addEventListener("milkdown:refresh-preview", refreshPreview));
++    onUnmounted(() => {
++      previewVersion++;
++      props.codemirror.dom.removeEventListener("milkdown:refresh-preview", refreshPreview);
++    });
+     onMounted(() => {
+       var _a2;
+       while ((_a2 = codemirrorHostRef.value) == null ? void 0 : _a2.firstChild) {
+@@ -492,12 +512,13 @@ const CodeBlock = defineComponent({
+       }
+     });
+     watch(
+-      () => [props.text.value, props.language.value],
++      () => [props.text.value, props.language.value, previewRevision.value],
+       () => {
++        const version = ++previewVersion;
+         const result = props.config.renderPreview(
+           props.language.value,
+           props.text.value,
+-          (value) => preview.value = value
++          (value) => { if (version === previewVersion) preview.value = value; }
+         );
+         if (result) {
+           preview.value = result;
 diff --git a/lib/image-block/index.js b/lib/image-block/index.js
+index ba6e478ff5d685224be694969d139901109f68c2..601a0579d869ef8ce245608290cf2ebbf384bf02 100644
 --- a/lib/image-block/index.js
 +++ b/lib/image-block/index.js
 @@ -1,8 +1,9 @@
@@ -69,7 +102,7 @@ diff --git a/lib/image-block/index.js b/lib/image-block/index.js
  import clsx from 'clsx';
  import { customAlphabet } from 'nanoid';
  
-@@ -378,7 +379,7 @@
+@@ -378,12 +379,13 @@ const ImageViewer = defineComponent({
        if (!image) return;
        const host = image.closest(".milkdown-image-block");
        if (!host) return;
@@ -78,7 +111,15 @@ diff --git a/lib/image-block/index.js b/lib/image-block/index.js
        if (!maxWidth) return;
        if (config.maxWidth && config.maxWidth < maxWidth)
          maxWidth = config.maxWidth;
-@@ -393,6 +394,30 @@
+-      const height = image.naturalHeight;
+-      const width = image.naturalWidth;
++      const mediaScale = parseFloat(getComputedStyle(host).getPropertyValue('--wm-media-scale')) || 1;
++      const height = image.naturalHeight * mediaScale;
++      const width = image.naturalWidth * mediaScale;
+       let transformedHeight = width < maxWidth ? height : maxWidth * (height / width);
+       if (config.maxHeight && transformedHeight > config.maxHeight)
+         transformedHeight = config.maxHeight;
+@@ -393,6 +395,30 @@ const ImageViewer = defineComponent({
        image.style.height = `${h2}px`;
        if (config.maxWidth) image.style.maxWidth = `${config.maxWidth}px`;
      };
@@ -109,35 +150,39 @@ diff --git a/lib/image-block/index.js b/lib/image-block/index.js
      const onToggleCaption = (e) => {
        e.preventDefault();
        e.stopPropagation();
-@@ -421,7 +446,7 @@
+@@ -421,8 +447,9 @@ const ImageViewer = defineComponent({
        const image = imageRef.value;
        if (!image) return;
        const top = image.getBoundingClientRect().top;
 -      let height = e.clientY - top;
+-      if (height < 100) height = 100;
 +      let height = (e.clientY - top) / geometryScale(image).y;
-       if (height < 100) height = 100;
++      const minimum = 100 * (parseFloat(getComputedStyle(image).getPropertyValue('--wm-media-scale')) || 1);
++      if (height < minimum) height = minimum;
        if (config.maxHeight && height > config.maxHeight)
          height = config.maxHeight;
-@@ -432,6 +457,7 @@
+       const h2 = Number(height).toFixed(2);
+@@ -430,6 +457,7 @@ const ImageViewer = defineComponent({
+       image.style.height = `${h2}px`;
+     };
      const onResizeHandlePointerUp = () => {
++      window.removeEventListener("pointercancel", onResizeHandlePointerUp);
        window.removeEventListener("pointermove", onResizeHandlePointerMove);
        window.removeEventListener("pointerup", onResizeHandlePointerUp);
-+      window.removeEventListener("pointercancel", onResizeHandlePointerUp);
        const image = imageRef.value;
-       if (!image) return;
-       const originHeight = Number(image.dataset.origin);
-@@ -448,6 +474,7 @@
+@@ -446,6 +474,7 @@ const ImageViewer = defineComponent({
+       if (readonly.value) return;
+       e.preventDefault();
        e.stopPropagation();
++      window.addEventListener("pointercancel", onResizeHandlePointerUp);
        window.addEventListener("pointermove", onResizeHandlePointerMove);
        window.addEventListener("pointerup", onResizeHandlePointerUp);
-+      window.addEventListener("pointercancel", onResizeHandlePointerUp);
      };
-     return () => {
-       return /* @__PURE__ */ h(Fragment, null, /* @__PURE__ */ h("div", { class: "image-wrapper" }, /* @__PURE__ */ h("div", { class: "operation" }, /* @__PURE__ */ h("div", { class: "operation-item", onPointerdown: onToggleCaption }, /* @__PURE__ */ h(Icon, { icon: config.captionIcon }))), /* @__PURE__ */ h(
 diff --git a/lib/link-tooltip/index.js b/lib/link-tooltip/index.js
+index beb0075e791ec3ab70ea3372fd126b452d820581..f91e0d7c4c429cfac7f97efab26ee5b0a915266f 100644
 --- a/lib/link-tooltip/index.js
 +++ b/lib/link-tooltip/index.js
-@@ -463,7 +463,8 @@
+@@ -463,7 +463,8 @@ function findMarkPosition(mark, node, doc, from, to) {
    return markPos;
  }
  function shouldShowPreviewWhenHover(ctx, view, event) {
@@ -147,7 +192,7 @@ diff --git a/lib/link-tooltip/index.js b/lib/link-tooltip/index.js
    if (!$pos) return;
    const { pos } = $pos;
    const node = view.state.doc.nodeAt(pos);
-@@ -587,6 +588,7 @@
+@@ -587,6 +588,7 @@ class LinkPreviewTooltip {
        __privateSet(this, _hovering, false);
      });
      __privateAdd(this, _hide, () => {
@@ -155,7 +200,7 @@ diff --git a/lib/link-tooltip/index.js b/lib/link-tooltip/index.js
        __privateGet(this, _provider).hide();
        __privateGet(this, _provider).element.removeEventListener("mouseenter", __privateGet(this, _onMouseEnter));
        __privateGet(this, _provider).element.removeEventListener("mouseleave", __privateGet(this, _onMouseLeave));
-@@ -601,15 +603,16 @@
+@@ -601,15 +603,16 @@ class LinkPreviewTooltip {
          this.ctx.get(linkTooltipAPI.key).removeLink(from, to);
          __privateGet(this, _hide).call(this);
        };
@@ -176,7 +221,7 @@ diff --git a/lib/link-tooltip/index.js b/lib/link-tooltip/index.js
      };
      this.destroy = () => {
        __privateGet(this, _app).unmount();
-@@ -677,7 +680,7 @@
+@@ -677,7 +680,7 @@ function configureLinkPreviewTooltip(ctx) {
          result.mark,
          from,
          to,
@@ -185,7 +230,7 @@ diff --git a/lib/link-tooltip/index.js b/lib/link-tooltip/index.js
        );
        return;
      }
-@@ -718,3 +721,17 @@
+@@ -718,3 +721,17 @@ const linkTooltipPlugin = [
  
  export { configureLinkTooltip, linkEditTooltip, linkPreviewTooltip, linkTooltipAPI, linkTooltipConfig, linkTooltipPlugin, linkTooltipState, toggleLinkCommand };
  //# sourceMappingURL=index.js.map
@@ -204,9 +249,10 @@ diff --git a/lib/link-tooltip/index.js b/lib/link-tooltip/index.js
 +  }
 +}
 diff --git a/lib/link-tooltip/preview/preview-view.d.ts b/lib/link-tooltip/preview/preview-view.d.ts
+index 84a91cd1e565b6c0a9b0cf07be36d56d3dd441e3..c26e46fd985279a1dbe1f800a0c6b6f32a1f9314 100644
 --- a/lib/link-tooltip/preview/preview-view.d.ts
 +++ b/lib/link-tooltip/preview/preview-view.d.ts
-@@ -6,7 +6,7 @@
+@@ -6,7 +6,7 @@ export declare class LinkPreviewTooltip implements PluginView {
      #private;
      readonly ctx: Ctx;
      constructor(ctx: Ctx, view: EditorView);
@@ -216,6 +262,7 @@ diff --git a/lib/link-tooltip/preview/preview-view.d.ts b/lib/link-tooltip/previ
      update: () => void;
      destroy: () => void;
 diff --git a/lib/table-block/index.js b/lib/table-block/index.js
+index 5ecaaae6c915e01d78b343aa64bbd32c626eb27c..dcdad6899378102ba022d4333f30402887147d57 100644
 --- a/lib/table-block/index.js
 +++ b/lib/table-block/index.js
 @@ -1,3 +1,4 @@
@@ -223,7 +270,7 @@ diff --git a/lib/table-block/index.js b/lib/table-block/index.js
  import { $ctx, $view } from '@milkdown/utils';
  import { selectColCommand, moveColCommand, selectRowCommand, moveRowCommand, setAlignCommand, deleteSelectedCellsCommand, addColAfterCommand, addColBeforeCommand, addRowAfterCommand, addRowBeforeCommand, tableSchema } from '@milkdown/preset-gfm';
  import { findParent } from '@milkdown/prose';
-@@ -159,13 +160,13 @@
+@@ -159,13 +160,13 @@ function clearPreview(previewRoot) {
    while (previewRoot.firstChild) previewRoot.removeChild(previewRoot.firstChild);
  }
  function renderPreview(axis, preview, previewRoot, tableContent, index) {
@@ -239,7 +286,7 @@ diff --git a/lib/table-block/index.js b/lib/table-block/index.js
      Object.assign(preview.style, {
        width: `${tableWidth}px`,
        height: `${height}px`
-@@ -179,7 +180,7 @@
+@@ -179,7 +180,7 @@ function renderPreview(axis, preview, previewRoot, tableContent, index) {
      Array.from(rows).forEach((row) => {
        const col = row.children[index];
        if (!col) return;
@@ -248,7 +295,7 @@ diff --git a/lib/table-block/index.js b/lib/table-block/index.js
        const tr = col.parentElement.cloneNode(false);
        const clone = col.cloneNode(true);
        tr.appendChild(clone);
-@@ -362,13 +363,13 @@
+@@ -362,13 +363,13 @@ function computeColHandlePositionByIndex({
    const { headerCol: col } = dom;
    colHandle.dataset.show = "true";
    if (before) before(colHandle);
@@ -264,7 +311,7 @@ diff --git a/lib/table-block/index.js b/lib/table-block/index.js
  }
  function computeRowHandlePositionByIndex({
    refs,
-@@ -385,13 +386,13 @@
+@@ -385,13 +386,13 @@ function computeRowHandlePositionByIndex({
    const { row } = dom;
    rowHandle.dataset.show = "true";
    if (before) before(rowHandle);
@@ -280,7 +327,7 @@ diff --git a/lib/table-block/index.js b/lib/table-block/index.js
  }
  
  function findDragOverElement(elements, pointer, axis) {
-@@ -434,14 +435,17 @@
+@@ -434,14 +435,17 @@ function createDragOverHandler(refs) {
      if (!firstRow) return;
      const info = dragInfo.value;
      if (!info) return;
@@ -305,7 +352,7 @@ diff --git a/lib/table-block/index.js b/lib/table-block/index.js
        const [startX] = info.startCoords;
        const direction = startX < e.clientX ? "right" : "left";
        preview.style.top = `${wrapperOffsetTop}px`;
-@@ -450,26 +454,26 @@
+@@ -450,26 +454,26 @@ function createDragOverHandler(refs) {
        const dragOverColumn = getDragOverColumn(contentRoot, e.clientX);
        if (dragOverColumn) {
          const [col, index] = dragOverColumn;
@@ -342,7 +389,7 @@ diff --git a/lib/table-block/index.js b/lib/table-block/index.js
        const [_, startY] = info.startCoords;
        const direction = startY < e.clientY ? "down" : "up";
        const previewTopOffset = previewTop < top + topGap - 20 ? top + topGap - 20 : previewTop > top + fullHeight + topGap - height + 20 ? top + fullHeight + topGap - height + 20 : previewTop;
-@@ -478,19 +482,19 @@
+@@ -478,19 +482,19 @@ function createDragOverHandler(refs) {
        const dragOverRow = getDragOverRow(contentRoot, e.clientY);
        if (dragOverRow) {
          const [row, index] = dragOverRow;
@@ -368,7 +415,7 @@ diff --git a/lib/table-block/index.js b/lib/table-block/index.js
        }
      }
    }, 20);
-@@ -724,40 +728,40 @@
+@@ -724,40 +728,40 @@ function createPointerMoveHandler(refs, view) {
      if (rowButtonGroup) rowButtonGroup.dataset.show = "false";
      if (colButtonGroup) colButtonGroup.dataset.show = "false";
      if (closeToBoundary) {
@@ -420,7 +467,7 @@ diff --git a/lib/table-block/index.js b/lib/table-block/index.js
        } else {
          xHandle.dataset.show = "false";
        }
-@@ -1102,3 +1106,39 @@
+@@ -1102,3 +1106,39 @@ const tableBlock = [tableBlockConfig, tableBlockView];
  
  export { TableNodeView, tableBlock, tableBlockConfig, tableBlockView };
  //# sourceMappingURL=index.js.map
@@ -460,7 +507,51 @@ diff --git a/lib/table-block/index.js b/lib/table-block/index.js
 +    }).catch(console.error);
 +  });
 +}
+diff --git a/src/code-block/view/components/code-block.tsx b/src/code-block/view/components/code-block.tsx
+index 3b1d2ab6d9d48f1ff106053608375284d8a36892..28d7fc5cc2ad1d4fa560980fcb8a85a89bbf9b30 100644
+--- a/src/code-block/view/components/code-block.tsx
++++ b/src/code-block/view/components/code-block.tsx
+@@ -9,6 +9,7 @@ import {
+   h,
+   Fragment,
+   onMounted,
++  onUnmounted,
+   watch,
+ } from 'vue'
+ 
+@@ -75,6 +76,14 @@ export const CodeBlock = defineComponent<CodeBlockProps>({
+     const previewOnlyMode = ref(previewOnlyByDefault)
+     const codemirrorHostRef = ref<HTMLDivElement>()
+     const preview = ref<null | string | HTMLElement>(null)
++    let previewVersion = 0
++    const previewRevision = ref(0)
++    const refreshPreview = () => { previewRevision.value++ }
++    onMounted(() => props.codemirror.dom.addEventListener("milkdown:refresh-preview", refreshPreview))
++    onUnmounted(() => {
++      previewVersion++
++      props.codemirror.dom.removeEventListener("milkdown:refresh-preview", refreshPreview)
++    })
+ 
+     onMounted(() => {
+       while (codemirrorHostRef.value?.firstChild) {
+@@ -87,12 +96,13 @@ export const CodeBlock = defineComponent<CodeBlockProps>({
+     })
+ 
+     watch(
+-      () => [props.text.value, props.language.value],
++      () => [props.text.value, props.language.value, previewRevision.value],
+       () => {
++        const version = ++previewVersion
+         const result = props.config.renderPreview(
+           props.language.value,
+           props.text.value,
+-          (value) => (preview.value = value)
++          (value) => { if (version === previewVersion) preview.value = value }
+         )
+         if (result) {
+           preview.value = result
 diff --git a/src/code-block/view/components/language-picker.tsx b/src/code-block/view/components/language-picker.tsx
+index 640fc7f8f73ba8693fd75a24d0d30cdb34387929..158ab9e457d56c7a3c458c1709528e876f9e73e3 100644
 --- a/src/code-block/view/components/language-picker.tsx
 +++ b/src/code-block/view/components/language-picker.tsx
 @@ -1,4 +1,5 @@
@@ -470,7 +561,7 @@ diff --git a/src/code-block/view/components/language-picker.tsx b/src/code-block
  import clsx from 'clsx'
  import {
    computed,
-@@ -55,22 +56,31 @@
+@@ -55,22 +56,31 @@ export const LanguagePicker = defineComponent<LanguagePickerProps>({
      const pickerRef = ref<HTMLDivElement>()
      const filter = ref('')
  
@@ -483,9 +574,8 @@ diff --git a/src/code-block/view/components/language-picker.tsx b/src/code-block
        const picker = triggerRef.value
        const languageList = pickerRef.value
 -      if (!picker || !languageList) return
--
 +      if (!showPicker.value || !picker || !languageList) return
-+
+ 
 +      cleanupPosition = observeFloating(picker, languageList, () => {
 +        const version = ++positionVersion;
        computePosition(picker, languageList, {
@@ -505,7 +595,7 @@ diff --git a/src/code-block/view/components/language-picker.tsx b/src/code-block
      })
  
      const onTogglePicker = (e: Event) => {
-@@ -142,6 +152,8 @@
+@@ -142,6 +152,8 @@ export const LanguagePicker = defineComponent<LanguagePickerProps>({
      })
  
      onUnmounted(() => {
@@ -515,6 +605,7 @@ diff --git a/src/code-block/view/components/language-picker.tsx b/src/code-block
      })
  
 diff --git a/src/image-block/view/components/image-viewer.tsx b/src/image-block/view/components/image-viewer.tsx
+index b982b11339a2d0f7c7a27a78c414417d36af6980..e54a912d16cf5d7461433e3bc04767dc9b2d4eda 100644
 --- a/src/image-block/view/components/image-viewer.tsx
 +++ b/src/image-block/view/components/image-viewer.tsx
 @@ -1,4 +1,5 @@
@@ -524,7 +615,7 @@ diff --git a/src/image-block/view/components/image-viewer.tsx b/src/image-block/
  
  import type { MilkdownImageBlockProps } from './image-block'
  
-@@ -53,7 +54,7 @@
+@@ -53,7 +54,7 @@ export const ImageViewer = defineComponent<MilkdownImageBlockProps>({
        const host = image.closest('.milkdown-image-block')
        if (!host) return
  
@@ -533,11 +624,10 @@ diff --git a/src/image-block/view/components/image-viewer.tsx b/src/image-block/
        if (!maxWidth) return
  
        if (config.maxWidth && config.maxWidth < maxWidth)
-@@ -74,6 +75,30 @@
- 
+@@ -75,6 +76,30 @@ export const ImageViewer = defineComponent<MilkdownImageBlockProps>({
        if (config.maxWidth) image.style.maxWidth = `${config.maxWidth}px`
      }
-+
+ 
 +    let widthFrame = 0
 +    let widthObserver: ResizeObserver | undefined
 +    onMounted(() => {
@@ -561,10 +651,11 @@ diff --git a/src/image-block/view/components/image-viewer.tsx b/src/image-block/
 +      window.removeEventListener('pointerup', onResizeHandlePointerUp)
 +      window.removeEventListener('pointercancel', onResizeHandlePointerUp)
 +    })
- 
++
      const onToggleCaption = (e: PointerEvent) => {
        e.preventDefault()
-@@ -108,7 +133,7 @@
+       e.stopPropagation()
+@@ -108,7 +133,7 @@ export const ImageViewer = defineComponent<MilkdownImageBlockProps>({
        const image = imageRef.value
        if (!image) return
        const top = image.getBoundingClientRect().top
@@ -573,7 +664,7 @@ diff --git a/src/image-block/view/components/image-viewer.tsx b/src/image-block/
        if (height < 100) height = 100
        if (config.maxHeight && height > config.maxHeight)
          height = config.maxHeight
-@@ -120,6 +145,7 @@
+@@ -120,6 +145,7 @@ export const ImageViewer = defineComponent<MilkdownImageBlockProps>({
      const onResizeHandlePointerUp = () => {
        window.removeEventListener('pointermove', onResizeHandlePointerMove)
        window.removeEventListener('pointerup', onResizeHandlePointerUp)
@@ -581,7 +672,7 @@ diff --git a/src/image-block/view/components/image-viewer.tsx b/src/image-block/
  
        const image = imageRef.value
        if (!image) return
-@@ -140,6 +166,7 @@
+@@ -140,6 +166,7 @@ export const ImageViewer = defineComponent<MilkdownImageBlockProps>({
        e.stopPropagation()
        window.addEventListener('pointermove', onResizeHandlePointerMove)
        window.addEventListener('pointerup', onResizeHandlePointerUp)
@@ -590,9 +681,10 @@ diff --git a/src/image-block/view/components/image-viewer.tsx b/src/image-block/
  
      return () => {
 diff --git a/src/link-tooltip/preview/preview-configure.ts b/src/link-tooltip/preview/preview-configure.ts
+index 97d2e2b0ef5b35479ef0f683285574aa9c41c098..d6a7784ab49c3f3fd5d3dc753e52242be1f665b9 100644
 --- a/src/link-tooltip/preview/preview-configure.ts
 +++ b/src/link-tooltip/preview/preview-configure.ts
-@@ -6,7 +6,7 @@
+@@ -6,7 +6,7 @@ import { debounce } from 'lodash-es'
  
  import { linkTooltipState } from '../slices'
  import { linkPreviewTooltip } from '../tooltips'
@@ -601,7 +693,7 @@ diff --git a/src/link-tooltip/preview/preview-configure.ts b/src/link-tooltip/pr
  import { LinkPreviewTooltip } from './preview-view'
  
  export function configureLinkPreviewTooltip(ctx: Ctx) {
-@@ -36,7 +36,7 @@
+@@ -36,7 +36,7 @@ export function configureLinkPreviewTooltip(ctx: Ctx) {
          result.mark,
          from,
          to,
@@ -611,6 +703,7 @@ diff --git a/src/link-tooltip/preview/preview-configure.ts b/src/link-tooltip/pr
        return
      }
 diff --git a/src/link-tooltip/preview/preview-view.ts b/src/link-tooltip/preview/preview-view.ts
+index f71fb4cbd719adba4529d0e3c1c9c9fe8a320605..27975354ba663ecb4c72f713326484730aeda79a 100644
 --- a/src/link-tooltip/preview/preview-view.ts
 +++ b/src/link-tooltip/preview/preview-view.ts
 @@ -1,3 +1,5 @@
@@ -619,7 +712,7 @@ diff --git a/src/link-tooltip/preview/preview-view.ts b/src/link-tooltip/preview
  import type { Ctx, Slice } from '@milkdown/ctx'
  import type { Mark } from '@milkdown/prose/model'
  import type { PluginView } from '@milkdown/prose/state'
-@@ -63,12 +65,13 @@
+@@ -63,12 +65,13 @@ export class LinkPreviewTooltip implements PluginView {
    }
  
    #hide = () => {
@@ -634,7 +727,7 @@ diff --git a/src/link-tooltip/preview/preview-view.ts b/src/link-tooltip/preview
      this.#config.value = this.ctx.get(linkTooltipConfig.key)
      this.#src.value = mark.attrs.href
      this.#onEdit.value = () => {
-@@ -79,18 +82,18 @@
+@@ -79,18 +82,18 @@ export class LinkPreviewTooltip implements PluginView {
        this.#hide()
      }
  
@@ -658,6 +751,7 @@ diff --git a/src/link-tooltip/preview/preview-view.ts b/src/link-tooltip/preview
    destroy = () => {
      this.#app.unmount()
 diff --git a/src/link-tooltip/utils.ts b/src/link-tooltip/utils.ts
+index cfae788b7207a88a02381875041789ca7ed68e32..6fdd04fa44a5e42d10dcd9aefb7e09e7a668b915 100644
 --- a/src/link-tooltip/utils.ts
 +++ b/src/link-tooltip/utils.ts
 @@ -1,3 +1,4 @@
@@ -665,7 +759,7 @@ diff --git a/src/link-tooltip/utils.ts b/src/link-tooltip/utils.ts
  import type { Ctx } from '@milkdown/ctx'
  import type { Mark, Node } from '@milkdown/prose/model'
  import type { EditorView } from '@milkdown/prose/view'
-@@ -36,7 +37,8 @@
+@@ -36,7 +37,8 @@ export function shouldShowPreviewWhenHover(
    view: EditorView,
    event: MouseEvent
  ) {
@@ -675,7 +769,7 @@ diff --git a/src/link-tooltip/utils.ts b/src/link-tooltip/utils.ts
    if (!$pos) return
  
    const { pos } = $pos
-@@ -54,3 +56,17 @@
+@@ -54,3 +56,17 @@ export function shouldShowPreviewWhenHover(
  
    return { show: true, pos, node, mark }
  }
@@ -694,6 +788,7 @@ diff --git a/src/link-tooltip/utils.ts b/src/link-tooltip/utils.ts
 +  }
 +}
 diff --git a/src/table-block/dnd/drag-over-handler.ts b/src/table-block/dnd/drag-over-handler.ts
+index c5f187f514c52cef483401fe12683a6982c9a60d..51786fdfc69c8867a652dc842a01366aee94c38e 100644
 --- a/src/table-block/dnd/drag-over-handler.ts
 +++ b/src/table-block/dnd/drag-over-handler.ts
 @@ -1,4 +1,6 @@
@@ -704,7 +799,7 @@ diff --git a/src/table-block/dnd/drag-over-handler.ts b/src/table-block/dnd/drag
  import { throttle } from 'lodash-es'
  
  import type { Refs } from '../view/types'
-@@ -22,17 +24,18 @@
+@@ -22,17 +24,18 @@ export function createDragOverHandler(refs: Refs): (e: DragEvent) => void {
      const info = dragInfo.value
      if (!info) return
  
@@ -732,7 +827,7 @@ diff --git a/src/table-block/dnd/drag-over-handler.ts b/src/table-block/dnd/drag
  
        const [startX] = info.startCoords
        const direction = startX < e.clientX ? 'right' : 'left'
-@@ -50,30 +53,28 @@
+@@ -50,30 +53,28 @@ export function createDragOverHandler(refs: Refs): (e: DragEvent) => void {
        const dragOverColumn = getDragOverColumn(contentRoot, e.clientX)
        if (dragOverColumn) {
          const [col, index] = dragOverColumn
@@ -772,7 +867,7 @@ diff --git a/src/table-block/dnd/drag-over-handler.ts b/src/table-block/dnd/drag
  
        const [_, startY] = info.startCoords
        const direction = startY < e.clientY ? 'down' : 'up'
-@@ -91,22 +92,20 @@
+@@ -91,22 +92,20 @@ export function createDragOverHandler(refs: Refs): (e: DragEvent) => void {
        const dragOverRow = getDragOverRow(contentRoot, e.clientY)
        if (dragOverRow) {
          const [row, index] = dragOverRow
@@ -801,6 +896,7 @@ diff --git a/src/table-block/dnd/drag-over-handler.ts b/src/table-block/dnd/drag
      }
    }, 20)
 diff --git a/src/table-block/dnd/preview.ts b/src/table-block/dnd/preview.ts
+index 41cf94e38d9870eaf0cedfaf930adf51a5cf72c9..041515361e01d526bdf1d641c43264d540f6e587 100644
 --- a/src/table-block/dnd/preview.ts
 +++ b/src/table-block/dnd/preview.ts
 @@ -1,3 +1,4 @@
@@ -808,7 +904,7 @@ diff --git a/src/table-block/dnd/preview.ts b/src/table-block/dnd/preview.ts
  export function clearPreview(previewRoot: HTMLElement) {
    while (previewRoot.firstChild) previewRoot.removeChild(previewRoot.firstChild)
  }
-@@ -9,16 +10,14 @@
+@@ -9,16 +10,14 @@ export function renderPreview(
    tableContent: HTMLElement,
    index: number
  ) {
@@ -827,7 +923,7 @@ diff --git a/src/table-block/dnd/preview.ts b/src/table-block/dnd/preview.ts
  
      Object.assign(preview.style, {
        width: `${tableWidth}px`,
-@@ -38,7 +37,7 @@
+@@ -38,7 +37,7 @@ export function renderPreview(
        const col = row.children[index]
        if (!col) return
  
@@ -837,6 +933,7 @@ diff --git a/src/table-block/dnd/preview.ts b/src/table-block/dnd/preview.ts
        const tr = col.parentElement!.cloneNode(false)
        const clone = col.cloneNode(true)
 diff --git a/src/table-block/view/pointer.ts b/src/table-block/view/pointer.ts
+index 88202ccbf5f96370c772b5e60b5dcac3ecf5e6b7..6584852c48f4c44c99db7a76e2c88ec235d1650b 100644
 --- a/src/table-block/view/pointer.ts
 +++ b/src/table-block/view/pointer.ts
 @@ -1,6 +1,8 @@
@@ -849,7 +946,7 @@ diff --git a/src/table-block/view/pointer.ts b/src/table-block/view/pointer.ts
  import { throttle } from 'lodash-es'
  
  import type { Refs } from './types'
-@@ -63,30 +65,28 @@
+@@ -63,30 +65,28 @@ function createPointerMoveHandler(
      if (colButtonGroup) colButtonGroup.dataset.show = 'false'
  
      if (closeToBoundary) {
@@ -886,7 +983,7 @@ diff --git a/src/table-block/view/pointer.ts b/src/table-block/view/pointer.ts
        } else {
          yHandle.dataset.show = 'false'
        }
-@@ -95,18 +95,16 @@
+@@ -95,18 +95,16 @@ function createPointerMoveHandler(
        // won't display if the row is the header row
        if (index[0] !== 0 && (closeToBoundaryTop || closeToBoundaryBottom)) {
          lineHoverIndex.value![0] = closeToBoundaryTop ? rowIndex : rowIndex + 1
@@ -909,6 +1006,7 @@ diff --git a/src/table-block/view/pointer.ts b/src/table-block/view/pointer.ts
          xHandle.dataset.show = 'false'
        }
 diff --git a/src/table-block/view/utils.ts b/src/table-block/view/utils.ts
+index 15392ef589fc41fb3d92d575ed152d15b3acf9fe..ad08653dbf5ebbb6adfbacac6d83df0af0750a89 100644
 --- a/src/table-block/view/utils.ts
 +++ b/src/table-block/view/utils.ts
 @@ -1,8 +1,41 @@
@@ -954,7 +1052,7 @@ diff --git a/src/table-block/view/utils.ts b/src/table-block/view/utils.ts
  import { findParent } from '@milkdown/prose'
  import { CellSelection, findTable } from '@milkdown/prose/tables'
  
-@@ -153,15 +186,13 @@
+@@ -153,15 +186,13 @@ export function computeColHandlePositionByIndex({
    const { headerCol: col } = dom
    colHandle.dataset.show = 'true'
    if (before) before(colHandle)
@@ -971,7 +1069,7 @@ diff --git a/src/table-block/view/utils.ts b/src/table-block/view/utils.ts
  }
  
  export function computeRowHandlePositionByIndex({
-@@ -180,13 +211,11 @@
+@@ -180,13 +211,11 @@ export function computeRowHandlePositionByIndex({
    const { row } = dom
    rowHandle.dataset.show = 'true'
    if (before) before(rowHandle)
@@ -985,5 +1083,4 @@ diff --git a/src/table-block/view/utils.ts b/src/table-block/view/utils.ts
        if (after) after(rowHandle)
      })
 -    .catch(console.error)
--}
-+}
+ }

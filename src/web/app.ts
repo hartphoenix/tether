@@ -1,4 +1,8 @@
+import { diagramViewer } from "./diagram-viewer";
+import { configureFootnotes, footnoteIcon, footnoteOrdering } from "./footnotes";
 import { pollPreferences } from "./preferences-poll";
+import { imageDisplayUrl } from "./image-url";
+import { renderMermaidPreview } from "./mermaid-preview";
 import { installReaderFind } from "./reader-find";
 import { installMenuMotion } from "./motion";
 import { createRailResize } from "./rail-resize";
@@ -234,7 +238,7 @@ function integrateToolbarControls(): void {
   compactTopBar();
 }
 
-const topBarLabels = ["Bold", "Italic", "Strikethrough", "Inline code", "Bulleted list", "Numbered list", "Task list", "Link", "Image", "Table", "Increase quote level", "Horizontal rule"];
+const topBarLabels = ["Bold", "Italic", "Strikethrough", "Footnote", "Inline code", "Bulleted list", "Numbered list", "Task list", "Link", "Image", "Table", "Increase quote level", "Horizontal rule"];
 function labelIconButton(button: HTMLButtonElement, label: string): void {
   button.setAttribute("aria-label", label);
   button.title = label;
@@ -436,7 +440,9 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     document.title = filenameStem(currentPath);
     const prepared = prepareMarkdown(documentResponse.body);
     currentFrontmatter = prepared.frontmatter;
+    let insertItems: import("./selection-ui").InsertMenuItem[] = [];
     const nextSelectionUi = createSelectionUi({
+      insertItems: () => insertItems,
       onNotice: (message) => chrome.setNotice(message),
       onCodeComment: (view) => {
         const anchor = captureAnchor(view, currentBodyRevision);
@@ -449,6 +455,8 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       defaultValue: prepared.editorMarkdown,
       features: { [Crepe.Feature.TopBar]: true, [Crepe.Feature.BlockEdit]: false },
       featureConfigs: {
+        [Crepe.Feature.CodeMirror]: { renderPreview: renderMermaidPreview, previewOnlyByDefault: true, previewLoading: "Rendering diagram…" },
+        [Crepe.Feature.ImageBlock]: { proxyDomURL: imageDisplayUrl },
         [Crepe.Feature.Placeholder]: { text: "..." },
         [Crepe.Feature.TopBar]: {
           headingOptions: [
@@ -460,7 +468,23 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
             { label: "H5", level: 5 },
             { label: "H6", level: 6 },
           ],
-          buildTopBar: (builder) => { builder.getGroup("block").clear(); },
+          buildTopBar: (builder) => {
+            const names: Record<string, string> = {
+              "bullet-list": "Bulleted list", "ordered-list": "Numbered list", "task-list": "Task list",
+              image: "Image", table: "Table", "code-block": "Code block", math: "Math block", quote: "Blockquote", hr: "Horizontal rule",
+            };
+            insertItems = builder.build().flatMap(group => group.items).flatMap(item => {
+              const label = names[item.key];
+              if (!label || !item.onRun || !item.icon) return [];
+              return [{ label, icon: item.icon, run: () => nextCrepe.editor.action(ctx => item.onRun!(ctx)) }];
+            });
+            insertItems.push({ label: "Footnote", icon: footnoteIcon, run: () => nextSelectionUi.openFootnote(nextCrepe.editor.ctx.get(editorViewCtx)) });
+            builder.getGroup("block").clear();
+            const group = builder.getGroup("formatting");
+            group.addItem("footnote", { icon: footnoteIcon, active: () => false, onRun: ctx => nextSelectionUi.openFootnote(ctx.get(editorViewCtx)) });
+            const item = group.group.items.pop()!;
+            group.group.items.splice(group.group.items.findIndex(item => item.key === "strikethrough") + 1, 0, item);
+          },
         },
         [Crepe.Feature.Toolbar]: {
           buildToolbar: (builder) => {
@@ -522,13 +546,14 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       error => chrome.setNotice(`Could not save threads width: ${String(error)}`));
     railResize.update(appearance.railWidth);
     const annotationPlugin = $prose(() => nextAnnotationUi.plugin);
+    nextCrepe.editor.config(configureFootnotes);
     nextCrepe.editor.config(ctx => ctx.update(editorStateOptionsCtx, previous => options => initialReaderSelection(previous(options))));
     const completionPlugin = $prose(() => new Plugin({ view: () => ({ update() {
       if (incomingReview && !reviewSaving && !incomingDiffActive(nextCrepe.editor)) {
         queueMicrotask(() => { if (crepe === nextCrepe) void saveReviewed(); });
       }
     } }) }));
-    nextCrepe.editor.use(completionPlugin).use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
+    nextCrepe.editor.use(diagramViewer).use(footnoteOrdering).use(completionPlugin).use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
     try { await nextCrepe.create(); }
     catch (error) { nextSelectionUi.destroy(); nextAnnotationUi.destroy(); throw error; }
     crepe = nextCrepe;

@@ -20,6 +20,34 @@ test('older custom themes inherit yellow annotations and preserve a chosen color
   }
 });
 
+test('theme changes refresh code previews once without rebuilding editor content', async () => {
+  const dom = new JSDOM('<button></button><div></div><main><section class="milkdown-code-block"><div class="cm-editor"></div></section></main>');
+  const previousDocument = globalThis.document, previousNode = globalThis.Node;
+  globalThis.document = dom.window.document; globalThis.Node = dom.window.Node;
+  try {
+    const root = document.querySelector('main')!;
+    const block = root.querySelector('.cm-editor')!;
+    let refreshes = 0;
+    block.addEventListener('milkdown:refresh-preview', () => refreshes++);
+    const picker = createThemePicker(document.querySelector('button')!, document.querySelector('div')!, root, { initialTheme: 'tether' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const initial = refreshes;
+    picker.update(preferencesFrom({ theme: 'tether-dark' }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(refreshes).toBe(initial + 1);
+    picker.update(preferencesFrom({ theme: 'tether-dark' }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(refreshes).toBe(initial + 1);
+    expect(root.querySelector('.cm-editor')).toBe(block);
+    picker.update(preferencesFrom({ theme: 'tether' }));
+    picker.destroy();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(refreshes).toBe(initial + 1);
+  } finally {
+    globalThis.document = previousDocument; globalThis.Node = previousNode;
+  }
+});
+
 test("offers the built-in themes in order and applies each selection", async () => {
   const dom = new JSDOM("<!doctype html><button></button><div></div><main></main>", { url: "http://localhost" });
   const previousDocument = globalThis.document;
@@ -87,13 +115,13 @@ test('maker previews, cancels, saves, and retains draft on failed persistence', 
     const click = (text: string) => [...panel().querySelectorAll('button')].find(b => b.textContent === text)!.click();
     const change = () => {
       const size = panel().querySelector<HTMLInputElement>('[data-metric="bodySize"]')!;
-      size.value = '22'; size.dispatchEvent(new dom.window.Event('input'));
+      size.value = '14'; size.dispatchEvent(new dom.window.Event('input'));
     };
     open(); change();
-    expect(document.documentElement.style.getPropertyValue('--wm-bodySize')).toBe('22px');
+    expect(document.documentElement.style.getPropertyValue('--wm-bodySize')).toBe(`${14 * 4 / 3}px`);
     click('Cancel');
     expect(panel().hidden).toBe(false); click('Discard');
-    expect(document.documentElement.style.getPropertyValue('--wm-bodySize')).toBe('20px');
+    expect(document.documentElement.style.getPropertyValue('--wm-bodySize')).toBe('16px');
     expect(state.customThemes).toHaveLength(0);
     open(); change();
     const annotation = panel().querySelector<HTMLInputElement>('[data-color="annotation"]')!;
@@ -109,7 +137,7 @@ test('maker previews, cancels, saves, and retains draft on failed persistence', 
     click('Save theme');
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(panel().hidden).toBe(true); expect(state.customThemes).toHaveLength(1);
-    expect(state.customThemes[0].metrics.bodySize).toBe(22);
+    expect(state.customThemes[0].metrics.bodySize).toBe(14 * 4 / 3);
     expect(state.customThemes[0].colors.annotation).toBe('#aa44cc');
     expect(document.querySelectorAll('#menu button[data-theme]')).toHaveLength(builtInThemes.length + 1);
     document.querySelector<HTMLButtonElement>('[data-edit-theme]')!.click();
@@ -127,19 +155,20 @@ test('maker previews, cancels, saves, and retains draft on failed persistence', 
     click('Cancel'); click('Keep editing'); expect(panel().hidden).toBe(false);
     fail = false; click('Save changes'); await new Promise(resolve => setTimeout(resolve, 0));
     expect(state.customThemes).toHaveLength(1); expect(state.customThemes[0].name).toBe('Renamed');
+    expect(state.customThemes[0].metrics.bodySize).toBe(14 * 4 / 3);
     open();
     const basedOn = () => panel().querySelector<HTMLSelectElement>('[aria-label="Based on"]')!;
     expect(basedOn().value).toBe(state.customThemes[0].id);
     expect(basedOn().options).toHaveLength(builtInThemes.length + 1);
     const size = panel().querySelector<HTMLInputElement>('[data-metric="bodySize"]')!;
-    size.value = '25'; size.dispatchEvent(new dom.window.Event('input'));
+    size.value = '15'; size.dispatchEvent(new dom.window.Event('input'));
     basedOn().value = 'tether'; basedOn().dispatchEvent(new dom.window.Event('change'));
     click('Keep editing'); expect(basedOn().value).toBe(state.customThemes[0].id);
-    expect(document.documentElement.style.getPropertyValue('--wm-bodySize')).toBe('25px');
+    expect(document.documentElement.style.getPropertyValue('--wm-bodySize')).toBe('20px');
     basedOn().value = 'tether'; basedOn().dispatchEvent(new dom.window.Event('change'));
     click('Discard'); expect(basedOn().value).toBe('tether');
     expect(document.documentElement.dataset.wmTheme).toBe('tether');
-    expect(panel().querySelector<HTMLInputElement>('[data-metric="bodySize"]')!.value).toBe('20');
+    expect(panel().querySelector<HTMLInputElement>('[data-metric="bodySize"]')!.value).toBe('12');
     click('Cancel'); expect(panel().hidden).toBe(true);
     expect(document.documentElement.dataset.wmTheme).toBe(state.customThemes[0].base);
     document.querySelector<HTMLButtonElement>('[data-edit-theme]')!.click();
@@ -184,4 +213,26 @@ test('Paseo inheritance appears first, stays selected through live updates, and 
     expect(menu.querySelector('[data-theme="tether"]')?.getAttribute('aria-checked')).toBe('true');
     picker.destroy();
   } finally { globalThis.document = previousDocument; globalThis.Node = previousNode; dom.window.close(); }
+});
+
+test('opening and saving unrelated theme edits preserves fractional pixel sizes', async () => {
+  const { createThemeMaker } = await import('../src/web/theme-maker');
+  const dom = new JSDOM('<!doctype html><button></button>');
+  const previous = globalThis.document;
+  globalThis.document = dom.window.document;
+  const theme = { ...tetherDesign(false), id: 'custom-fractional' as const, name: 'Fractional' };
+  theme.metrics = { ...theme.metrics, headingSize: 31.123456789, bodySize: 17.123456789, codeSize: 12.123456789 };
+  let saved: import('../src/shared/themes').CustomTheme | undefined;
+  const maker = createThemeMaker(document.querySelector('button')!, {
+    selected: () => theme.id, template: () => structuredClone(theme), library: () => [theme],
+    preview: () => {}, restore: () => {}, save: async value => { saved = value; }, remove: async () => {}, loadFont: async () => {},
+  });
+  try {
+    maker.open(theme);
+    const name = document.querySelector<HTMLInputElement>('[aria-label="Theme name"]')!;
+    name.value = 'Renamed'; name.dispatchEvent(new dom.window.Event('input'));
+    [...document.querySelectorAll('button')].find(button => button.textContent === 'Save changes')!.click();
+    await Promise.resolve();
+    expect(saved!.metrics).toEqual(theme.metrics);
+  } finally { maker.destroy(); globalThis.document = previous; }
 });

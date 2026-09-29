@@ -29,7 +29,7 @@
   letter-spacing: var(--wm-bodySpacing);
   line-height: var(--wm-lineHeight);
   /* ch measures the chosen font's zero, so this is a measure, not an exact character count. */
-  max-width: calc(var(--wm-lineWidth) + 88px);
+  max-width: calc(var(--wm-lineWidth) + 70.4px);
   text-align: start;
   overflow-wrap: break-word;
 }
@@ -56,9 +56,9 @@
 /* Cursor updates replace the widget class; neither form is document content. */
 #editor[data-wm-designed] .ProseMirror > :nth-child(1 of :not(.ProseMirror-widget, .prosemirror-virtual-cursor)) { margin-top: 0; }
 #editor[data-wm-designed] .ProseMirror strong { font-weight: bolder; }
-#editor[data-wm-designed] .ProseMirror a { text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
+#editor[data-wm-designed] .ProseMirror a { text-underline-offset: 0.18em; text-decoration-thickness: 0.8px; }
 #editor[data-wm-designed] .ProseMirror blockquote { padding-inline-start: 1.2em; margin-block: 1em; }
-#editor[data-wm-designed] .ProseMirror blockquote::before { width: 2px; }
+#editor[data-wm-designed] .ProseMirror blockquote::before { width: 1.6px; }
 #editor[data-wm-designed] .ProseMirror :is(code, pre),
 #editor[data-wm-designed] .milkdown .cm-editor,
 #editor[data-wm-designed] .milkdown .cm-content {
@@ -82,10 +82,14 @@
   background: var(--wm-color-surface);
   border-color: var(--wm-color-outline);
 }
-:root[data-wm-designed] :is(.wm-thread-excerpt, .wm-thread-quote, .wm-context, .wm-tag-summary, .wm-field-label) { color: var(--wm-color-on-surface-variant); }
+:root[data-wm-designed] .wm-context-menu.wm-insert-menu {
+  color: var(--wm-color-outline);
+  background: var(--wm-color-surface);
+}
+:root[data-wm-designed] :is(.wm-thread-excerpt, .wm-thread-quote, .wm-context, .wm-field-label) { color: var(--wm-color-on-surface-variant); }
 :root[data-wm-designed] :is(.wm-thread-quote, .wm-thread-summary:hover, .wm-thread-summary:focus-visible, .wm-button-secondary, .wm-menu-item:hover) { background: var(--wm-color-hover); }
-:root[data-wm-designed] :is(.wm-thread-reply, .wm-reference) { border-color: var(--wm-color-outline); }
-:root[data-wm-designed] :is(.wm-annotation-textarea, .wm-input, .wm-select, .wm-textarea, .wm-button) { color: var(--wm-color-on-background); background: var(--wm-color-surface-low); border-color: var(--wm-color-outline); }
+:root[data-wm-designed] :is(.wm-thread-reply) { border-color: var(--wm-color-outline); }
+:root[data-wm-designed] :is(.wm-annotation-textarea, .wm-input, .wm-textarea, .wm-button) { color: var(--wm-color-on-background); background: var(--wm-color-surface-low); border-color: var(--wm-color-outline); }
 :root[data-wm-designed] .wm-dialog-title { color: var(--wm-color-on-background); }
 :root[data-wm-designed] .wm-annotation-count { background: var(--wm-color-surface); color: var(--wm-color-primary); }
 
@@ -97,7 +101,7 @@
   padding: 20px; border-left: 1px solid color-mix(in srgb, currentColor, transparent 80%);
   color: var(--wm-page-color); background: var(--wm-page-background);
   font: 13px/1.5 'Hanken Grotesk', system-ui, sans-serif;
-  box-shadow: -8px 0 32px rgb(0 0 0 / 8%);
+  box-shadow: var(--wm-shadow);
 }
 .wm-theme-maker[hidden] { display: none; }
 .wm-theme-maker header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -126,13 +130,13 @@
 .wm-maker-contrast { font-variant-numeric: tabular-nums; }
 @media (max-width: 900px) {
   .wm-making-theme #workspace { margin-right: 0; }
-  .wm-theme-maker { width: min(360px, 86vw); box-shadow: -8px 0 32px rgb(0 0 0 / 25%); }
+  .wm-theme-maker { width: min(360px, 86vw); box-shadow: var(--wm-shadow); }
 }
 @media (max-width: 640px) {
-  #editor[data-wm-designed] .ProseMirror { max-width: calc(var(--wm-lineWidth) + 40px); }
+  #editor[data-wm-designed] .ProseMirror { max-width: calc(var(--wm-lineWidth) + 32px); }
 }
 
-#editor[data-wm-designed] .ProseMirror { padding: 48px 44px 120px; }
+#editor[data-wm-designed] .ProseMirror { padding: 38.4px 35.2px 96px; }
 #editor[data-wm-designed] .ProseMirror .list-item > .children > .content-dom > p:first-child { margin-top: 0; }
 #editor[data-wm-designed] .ProseMirror .list-item > .children > .content-dom > p:last-child { margin-bottom: 0; }
 #editor[data-wm-designed] .ProseMirror .milkdown-list-item-block { margin-block: 0.25em; }
@@ -147,7 +151,7 @@
 #editor[data-wm-designed] :is(.cm-activeLine, .cm-activeLineGutter) { background: var(--wm-color-hover); }
 #editor[data-wm-designed] .cm-selectionBackground { background: var(--wm-color-selected); }
 @media (max-width: 640px) {
-  #editor[data-wm-designed] .ProseMirror { padding: 28px 20px 100px; }
+  #editor[data-wm-designed] .ProseMirror { padding: 22.4px 16px 80px; }
 }
 
 :root[data-wm-designed] .wm-annotation-rail {
@@ -169,7 +173,7 @@
   position: absolute; z-index: 1; bottom: calc(100% + 8px); inset-inline: 0;
   padding: 12px; border: 1px solid color-mix(in srgb, currentColor, transparent 70%);
   border-radius: 8px; background: var(--wm-page-background); color: var(--wm-page-color);
-  box-shadow: 0 4px 20px rgb(0 0 0 / 18%);
+  box-shadow: var(--wm-shadow);
 }
 .wm-theme-maker label .wm-maker-confirm { bottom: auto; top: 100%; }
 .wm-theme-maker .wm-maker-confirm p { margin: 0 0 10px; opacity: 1; }

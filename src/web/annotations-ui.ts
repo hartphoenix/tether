@@ -3,7 +3,7 @@ import { placeOverlay } from './overlay';
 import { iconSvg } from "./icons";
 import { renderCommentBody } from "./comment-body";
 import { keepContentEndVisible, overlayScrollHeader } from "./scroll-geometry";
-import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
+import { Plugin, PluginKey, Selection } from "@milkdown/kit/prose/state";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
 import {
@@ -316,6 +316,9 @@ function readFootnoteLabel(reference: FootnoteReference): string {
 }
 
 function findFootnoteDefinition(root: HTMLElement, label: string): HTMLElement | null {
+  const definition = [...root.querySelectorAll<HTMLElement>('[data-type="footnote_definition"][data-label]')]
+    .find(node => node.dataset.label?.toUpperCase() === label.toUpperCase());
+  if (definition) return definition;
   const escaped = typeof CSS !== "undefined" && typeof CSS.escape === "function"
     ? CSS.escape(label)
     : label.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
@@ -327,24 +330,50 @@ function findFootnoteDefinition(root: HTMLElement, label: string): HTMLElement |
   ].join(", "));
 }
 
-function showFootnotePopover(root: HTMLElement, reference: FootnoteReference): HTMLElement | null {
+function showFootnotePopover(root: HTMLElement, reference: FootnoteReference, view: EditorView | null): HTMLElement | null {
   const label = readFootnoteLabel(reference);
   const definition = findFootnoteDefinition(root, label);
   if (!definition) return null;
   root.ownerDocument.querySelector(".wm-footnote-popover")?.remove();
   const popover = createElement("aside", "wm-footnote-popover");
   popover.setAttribute("role", "dialog");
-  popover.setAttribute("aria-label", `Footnote ${label || "reference"}`);
+  popover.setAttribute("aria-label", `Footnote ${reference.textContent?.trim() || "reference"}`);
   const heading = createElement("strong", "wm-footnote-label");
-  heading.textContent = label ? `Footnote ${label}` : "Footnote";
+  heading.textContent = label ? `Footnote ${reference.textContent?.trim() || label}` : "Footnote";
   const body = createElement("div", "wm-footnote-body");
-  body.textContent = definition.textContent?.trim() || "(Empty footnote)";
+  const content = definition.querySelector(":scope > dd") ?? definition;
+  const note = content.cloneNode(true) as HTMLElement;
+  note.querySelectorAll(".wm-annotation-count, .ProseMirror-widget").forEach(element => element.remove());
+  body.textContent = note.textContent?.trim() || "(Empty footnote)";
   const close = createElement("button", "wm-footnote-close");
   close.type = "button";
   close.setAttribute("aria-label", "Close footnote");
   close.textContent = "×";
   close.addEventListener("click", () => popover.remove());
   popover.append(heading, close, body);
+  if (view?.editable) {
+    const actions = createElement("div", "wm-footnote-actions");
+    const edit = createElement("button", "wm-comment-button");
+    edit.type = "button";
+    edit.title = "Edit footnote";
+    edit.setAttribute("aria-label", "Edit footnote");
+    edit.innerHTML = iconSvg("pencil-simple-line");
+    edit.addEventListener("click", () => {
+      if (!view.editable) return;
+      let position: number | undefined;
+      view.state.doc.descendants((node, pos) => {
+        if (position === undefined && node.type.name === "footnote_definition" && String(node.attrs.label).toUpperCase() === label.toUpperCase()) position = pos;
+      });
+      if (position === undefined) return;
+      const selection = Selection.findFrom(view.state.doc.resolve(position + 1), 1, true);
+      if (!selection) return;
+      popover.remove();
+      view.dispatch(view.state.tr.setSelection(selection).scrollIntoView());
+      view.focus();
+    });
+    actions.append(edit);
+    popover.append(actions);
+  }
   root.ownerDocument.body.append(popover);
   placeOverlay(popover, { root, policy: 'follow', reference: () => reference.isConnected ? reference.getBoundingClientRect() : null });
   return popover;
@@ -461,6 +490,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       stopEndRecovery();
       stopHeaderOverlay();
       editorRoot?.removeEventListener("click", handleEditorClick);
+      editorRoot?.removeEventListener("keydown", handleFootnoteKeydown);
       editorRoot?.ownerDocument.querySelector(".wm-footnote-popover")?.remove();
       composer?.remove();
       composer = null;
@@ -967,6 +997,17 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
 
   function handleEditorClick(event: Event): void {
     if (!(event.target instanceof Element)) return;
+    const handle = event.target.closest<HTMLElement>('dl[data-type="footnote_definition"] > dt');
+    if (handle && editorRoot) {
+      const label = handle.parentElement?.dataset.label?.toUpperCase();
+      const reference = [...editorRoot.querySelectorAll<HTMLElement>('sup[data-type="footnote_reference"]')]
+        .find(node => node.dataset.label?.toUpperCase() === label);
+      if (reference) {
+        event.preventDefault();
+        reference.scrollIntoView({ behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'center' });
+      }
+      return;
+    }
     const reference = event.target.closest<HTMLElement>([
       'sup[data-type="footnote_reference"]',
       "[data-footnote-reference]",
@@ -974,10 +1015,16 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     ].join(", "));
     if (!reference || !editorRoot) return;
     event.preventDefault();
-    showFootnotePopover(editorRoot, reference);
+    showFootnotePopover(editorRoot, reference, currentView());
+  }
+
+  function handleFootnoteKeydown(event: KeyboardEvent): void {
+    if (event.key !== "Enter" || !(event.target instanceof Element) || !event.target.matches('dl[data-type="footnote_definition"] > dt')) return;
+    handleEditorClick(event);
   }
 
   editorRoot?.addEventListener("click", handleEditorClick);
+  editorRoot?.addEventListener("keydown", handleFootnoteKeydown);
   renderRail();
   onPendingCountChange(0);
   return controller;

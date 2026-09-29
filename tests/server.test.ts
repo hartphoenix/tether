@@ -669,6 +669,30 @@ test('custom theme writes serialize across views, survive reload, and reject inv
   expect(bootstrap.preferences.theme).toBe('custom-one'); expect(bootstrap.preferences.customThemes).toHaveLength(2);
 });
 
+test('legacy theme preferences migrate at disk boundary and persist once without changing zoom', async () => {
+  const { tetherDesign } = await import('../src/shared/themes');
+  const file = await fixture();
+  const legacy = { ...tetherDesign(false), id: 'custom-legacy', name: 'Legacy' };
+  legacy.metrics = { ...legacy.metrics, headingSize: 40, bodySize: 20, codeSize: 15 };
+  await mkdir(file.config.configDir, { recursive: true });
+  await writeFile(file.config.preferencesPath, JSON.stringify({ theme: legacy.id, customThemes: [legacy], defaultDocumentZoom: 115 }));
+  const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000 });
+  daemons.push(daemon); await daemon.ready;
+  const session = await exchange(daemon, file.path);
+  const get = async () => (await sessionFetch(daemon, session.location, session.cookie, 'api/preferences')).json();
+  const loaded = await get();
+  expect(loaded.customThemes[0].metrics.bodySize).toBe(16);
+  expect(loaded.defaultDocumentZoom).toBe(115);
+  await sessionFetch(daemon, session.location, session.cookie, 'api/preferences', {
+    method: 'PUT', headers: { origin: daemon.origin }, body: JSON.stringify({ saveTheme: loaded.customThemes[0] }),
+  });
+  const stored = JSON.parse(await readFile(file.config.preferencesPath, 'utf8'));
+  expect(stored.fontSizingVersion).toBe(1);
+  expect(stored.customThemes).toEqual(loaded.customThemes);
+  expect((await get()).customThemes).toEqual(loaded.customThemes);
+  expect((await get()).defaultDocumentZoom).toBe(115);
+});
+
 test('reader tab icons load without webview cookies while document resources remain protected', async () => {
   const { createWebBundleResponder } = await import('../src/web/bundle');
   const respond = await createWebBundleResponder();

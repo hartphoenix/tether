@@ -32,7 +32,7 @@ export type HubOptions = {
   buttons?: () => boolean;
 };
 
-type Held = { intent: Intent; leaseUntil: number; expiresAt: number };
+type Held = { intent: Intent; leaseUntil: number; expiresAt: number; notices: Map<string, Announced> };
 type Announced = { path: string; at: number };
 
 function fileName(path: string): string {
@@ -151,7 +151,9 @@ export class Hub {
       const workspaceId = await this.workspaceFor(intent.target);
       this.assertActive();
       if (!workspaceId || !intent.url) { acknowledged.push(intent.id); continue; }
-      this.held.set(intent.id, { intent: { id: intent.id, url: intent.url, workspaceId }, leaseUntil: 0, expiresAt: intent.expiresAt });
+      this.held.set(intent.id, { intent: { id: intent.id, url: intent.url, workspaceId }, leaseUntil: 0, expiresAt: intent.expiresAt,
+        notices: new Map([...this.notices].filter(([, notice]) => notice.path === intent.path)),
+      });
       this.changed();
     }
     this.cursor = Math.max(this.cursor, batch.cursor);
@@ -176,12 +178,6 @@ export class Hub {
   /** Named from Folio when it knows the document, so the title stays current. */
   private notice(path: string): Notice {
     return { path, name: this.folio?.find(entry => entry.path === path)?.name ?? fileName(path) };
-  }
-
-  private clearNotices(path: string): void {
-    for (const [workspaceId, notice] of this.notices) {
-      if (notice.path === path) { this.notices.delete(workspaceId); this.changed(); }
-    }
   }
 
   private announce(path: string, workspaceId: string | null): void {
@@ -257,7 +253,18 @@ export class Hub {
       const chunk = done.slice(index, index + 256);
       await this.options.run(["paseo", "ack", ...chunk]);
       this.assertActive();
-      for (const id of chunk) this.held.delete(id);
+      for (const id of chunk) {
+        const held = this.held.get(id);
+        // The client opened the tab. Retire only announcements that this launch
+        // consumed; a newer announcement, even for the same path, stays pending.
+        for (const [workspaceId, notice] of held?.notices ?? []) {
+          if (this.notices.get(workspaceId) === notice) {
+            this.notices.delete(workspaceId);
+            this.changed();
+          }
+        }
+        this.held.delete(id);
+      }
     }
     return done.length;
   }
@@ -265,7 +272,6 @@ export class Hub {
   /** Open a document for the user; the tab returns through `pump` as an intent. */
   async open(path: string, workspaceId: string): Promise<void> {
     this.assertActive();
-    this.clearNotices(path);
     await this.options.run(["open", path, "--host", "paseo"], { TETHER_PASEO_WORKSPACE_ID: workspaceId, TETHER_PASEO_ORIGIN: "user" });
   }
 

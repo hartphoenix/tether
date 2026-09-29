@@ -15,7 +15,9 @@ Reuse the relevant document in context when the response serves its existing pur
 
 Make new work easy to find. For substantive body changes, maintain a short “Current review” section near the top identifying changed sections and remaining decisions. Replace stale summaries rather than accumulating updates. Preserve unresolved content and active comment anchors.
 
-Register the document with `tether recents add <file>` and open it with `tether open <file>` when handing it over for review, using the reader's configured profile and host. Keep chat to a brief handoff with the document link and exact review location; don't duplicate the document. If opening fails, report that accurately and provide the path. Handle document selection and placement unless there is a material ambiguity.
+Never steal UI focus or interrupt the user’s work. Register documents and provide links; open or refresh views only when doing so preserves focus or the user explicitly requests a focus change. Never bypass agent-origin safeguards.
+
+Use the reader’s configured profile and host. Keep chat to a brief handoff with the document link and exact review location; don't duplicate the document.
 
 ## Reviewing and editing
 

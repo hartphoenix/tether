@@ -104,11 +104,14 @@ export function createThemeMaker(trigger: HTMLButtonElement, options: {
   }
   const addSlider = (parent: HTMLElement, key: Metric) => {
     const spec = metrics[key], input = element('input'), output = element('output');
-    input.type = 'range'; input.min = String(spec.min); input.max = String(spec.max); input.step = String(spec.step); input.value = String(draft.metrics[key]);
+    const points = spec.unit === 'px';
+    const display = (value: number) => points ? value * 3 / 4 : value;
+    input.type = 'range'; input.min = String(display(spec.min)); input.max = String(display(spec.max));
+    input.step = points ? '0.1' : String(spec.step); input.value = String(display(draft.metrics[key]));
     input.dataset.metric = key;
     const row = label(spec.label, input); row.append(output); parent.append(row); sliders.set(key, input);
-    const sync = () => { output.value = `${Number(input.value)}${spec.unit}`; };
-    input.addEventListener('input', () => { draft.metrics[key] = Number(input.value); sync(); preview(); }); sync();
+    const sync = () => { output.value = `${Number(display(draft.metrics[key]).toFixed(3))}${points ? 'pt' : spec.unit}`; };
+    input.addEventListener('input', () => { draft.metrics[key] = points ? Number(input.value) * 4 / 3 : Number(input.value); sync(); preview(); }); sync();
   };
   const availableFonts = () => {
     const result = [...bundledFonts];

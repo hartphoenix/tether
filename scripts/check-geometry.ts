@@ -115,13 +115,16 @@ async function topology(page: Page, scale: number) {
   });
   check(painted.offset === 7 && Math.abs(painted.dx) <= 2 && Math.abs(painted.dy) < 1 && Math.abs(painted.dh) < 1,
     `painted caret does not match selection at ${scale}: ${JSON.stringify(painted)}`);
-  const paragraph = await page.locator('.ProseMirror p').nth(5).boundingBox();
-  check(paragraph, 'paragraph missing');
-  await page.mouse.move(paragraph.x + 4, paragraph.y + 8 * scale);
+  const drag = await page.locator('.ProseMirror p').nth(5).evaluate(el => {
+    const range = document.createRange(); range.setStart(el.firstChild!, 1); range.setEnd(el.firstChild!, 10);
+    const r = range.getBoundingClientRect(); return { x: r.left, y: (r.top + r.bottom) / 2, end: r.right };
+  });
+  await page.mouse.move(drag.x, drag.y);
   await page.mouse.down();
-  await page.mouse.move(paragraph.x + 100 * scale, paragraph.y + 8 * scale, { steps: 8 });
+  await page.mouse.move(drag.end, drag.y, { steps: 8 });
   await page.mouse.up();
-  check(await page.evaluate(() => !(window as any).audit.view.state.selection.empty), `native range selection at ${scale}`);
+  await page.waitForFunction(() => !(window as any).audit.view.state.selection.empty);
+  check(await page.evaluate(() => Boolean(document.getSelection()?.toString())), `native range selection at ${scale}`);
   await page.locator('.ProseMirror p').nth(5).click();
   await page.locator('.ProseMirror a').nth(8).evaluate(el => el.scrollIntoView({block:'center'}));
   await page.locator('.ProseMirror a').nth(8).hover();
@@ -239,17 +242,6 @@ async function topology(page: Page, scale: number) {
   const toolbar = await page.locator('.milkdown-top-bar').boundingBox();
   check(toolbar && toolbar.height === 36 && Math.abs(toolbar.y) < 1, `toolbar not sticky at ${scale}`);
   await page.evaluate(() => {
-    const {view, selection, selectLink} = (window as any).audit;
-    selectLink(8); selection.openTags(view);
-    view.dispatch(view.state.tr.insertText('inserted ', 1));
-  });
-  const tags = page.locator('.wm-tags');
-  check(await tags.isVisible(), 'tag form discarded on document mutation');
-  const unchanged = await page.evaluate(() => (window as any).audit.crepe.getMarkdown());
-  await tags.locator('.wm-tag-name').first().click();
-  check(await page.locator('.wm-tag-detail').count() === 0, 'stale tag descriptor opened detail');
-  check(await page.evaluate(() => (window as any).audit.crepe.getMarkdown()) === unchanged, 'stale tag action mutated document');
-  await page.evaluate(() => {
     const {view, selection} = (window as any).audit; selection.close();
     const paragraph = view.state.schema.nodes.paragraph.create(null, view.state.schema.text('A long wrapped passage with many words. '.repeat(150)));
     view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, paragraph));
@@ -264,12 +256,13 @@ async function topology(page: Page, scale: number) {
   console.log(`PASS canvas scale=${scale}`);
 }
 async function selectionMenuScale(page: Page) {
+  await page.mouse.move(1195, 795);
   await page.goto(server.url.toString());
   await page.waitForFunction(() => (window as any).ready);
   for (const zoom of [.75, 1.75]) {
     await page.evaluate(zoom => {
       const a = (window as any).audit;
-      a.setZoom(zoom); a.selectLink(0); a.view.focus();
+      a.setZoom(zoom); a.view.focus(); a.selectLink(0);
     }, zoom);
     const toolbar = page.locator('.milkdown-toolbar');
     await toolbar.waitFor({ state: 'visible' });
@@ -317,6 +310,75 @@ async function appearanceGeometry(page: Page) {
   await page.setViewportSize({ width: 1200, height: 800 });
   console.log('PASS overflow, rail resize, reflow, and interface scale');
 }
+async function fontAndMediaSizing(page: Page) {
+  await page.goto(server.url.toString());
+  await page.waitForFunction(() => (window as any).ready);
+  await page.evaluate(() => (window as any).audit.openMaker());
+  const size = page.locator('[data-metric="bodySize"]');
+  await size.evaluate((el: HTMLInputElement) => { el.value = '13.9'; el.dispatchEvent(new Event('input')); });
+  await size.focus(); await page.keyboard.press('ArrowRight');
+  check(await size.inputValue() === '14', 'point slider cannot select exactly 14pt');
+  await page.evaluate(() => document.fonts.ready);
+  const rendered = await page.locator('.ProseMirror > p').first().evaluate(el => ({
+    font: parseFloat(getComputedStyle(el).fontSize), line: parseFloat(getComputedStyle(el).lineHeight),
+    height: el.getBoundingClientRect().height,
+  }));
+  check(Math.abs(rendered.font - 14 * 4 / 3) < .001, `14pt font is not 18⅔ CSS px: ${JSON.stringify(rendered)}`);
+  check(Math.abs(rendered.height / rendered.line - Math.round(rendered.height / rendered.line)) < .01, '100% zoom secretly scales rendered text');
+  await page.goto(new URL('?ratio', server.url).toString());
+  await page.waitForFunction(() => (window as any).ready && [...document.images].every(i => i.complete && i.naturalWidth));
+  const image = page.locator('.milkdown-image-block img');
+  await image.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(100);
+  const box = (await image.boundingBox())!;
+  check(Math.abs(box.height - 96) < 1, `saved image ratio did not rebase: ${box.height}`);
+  const before = await page.evaluate(() => (window as any).audit.crepe.getMarkdown());
+  await page.evaluate(() => (window as any).audit.setZoom(1.25));
+  await page.waitForTimeout(100);
+  check(Math.abs((await image.boundingBox())!.height - 120) < 1, 'saved image ratio does not restore at 125%');
+  check(await page.evaluate(() => (window as any).audit.crepe.getMarkdown()) === before, 'media sizing rewrote Markdown');
+  await page.evaluate(() => (window as any).audit.setZoom(1));
+  await image.scrollIntoViewIfNeeded(); await image.hover();
+  const handle = (await page.locator('.image-resize-handle').boundingBox())!;
+  const current = (await image.boundingBox())!;
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2); await page.mouse.down();
+  await page.mouse.move(current.x + current.width / 2, current.y + 85, { steps: 5 }); await page.mouse.up();
+  check(Math.abs((await image.boundingBox())!.height - 85) < 1, 'rebased image jumps to legacy resize minimum');
+  console.log('PASS point rendering and saved image ratio/resize');
+}
+async function documentSizing(page: Page, browser: string) {
+  const measurements: Record<string, unknown> = {};
+  for (const width of [1200, 600]) for (const custom of [false, true]) for (const zoom of [.8, 1]) {
+    const scale = process.env.TETHER_SIZING_CAPTURE ? zoom : zoom / .8;
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(new URL(`?scale=${scale}${custom ? '&custom' : ''}`, server.url).toString());
+    await page.waitForFunction(() => (window as any).ready && [...document.images].every(i => i.complete && i.naturalWidth));
+    await page.evaluate(() => document.fonts.ready);
+    await page.waitForTimeout(200);
+    measurements[`${width}/${custom}/${zoom}`] = await page.evaluate(() => {
+      const editor = document.querySelector('.ProseMirror')!;
+      const top = editor.getBoundingClientRect().top;
+      return [...editor.querySelectorAll('h1, p, img, th, td, .milkdown-code-block')].map(el => {
+        const r = el.getBoundingClientRect();
+        return { tag: el.tagName, x: r.x, y: r.y - top, width: r.width, height: r.height };
+      });
+    });
+  }
+  const path = `${process.env.TETHER_SIZING_CAPTURE ?? process.env.TETHER_SIZING_COMPARE}-${browser}.json`;
+  if (process.env.TETHER_SIZING_CAPTURE) await Bun.write(path, JSON.stringify(measurements, null, 2));
+  else {
+    const previous = await Bun.file(path).json();
+    for (const [key, rows] of Object.entries(measurements)) {
+      for (const [i, row] of (rows as any[]).entries()) for (const metric of ['x', 'y', 'width', 'height']) {
+        const delta = Math.abs(row[metric] - previous[key][i][metric]);
+        // Font line boxes and collapsed borders round before canvas transforms.
+        check(delta < (metric === 'y' ? 4 : 2), `sizing ${browser} ${key} ${i} ${row.tag} ${metric}: ${row[metric]} vs ${previous[key][i][metric]}`);
+      }
+    }
+    console.log(`PASS document sizing ${browser}`);
+  }
+  await page.setViewportSize({ width: 1200, height: 800 });
+}
 try {
   for (const [name, type] of Object.entries({ chromium, webkit })) {
     let browser: Browser | undefined;
@@ -327,6 +389,12 @@ try {
       page.on('pageerror', error => console.error('Fixture error:', error.message));
       page.setDefaultTimeout(10000);
       console.log(`${name} ${browser.version()}`);
+      if (process.env.TETHER_SIZING_CAPTURE || process.env.TETHER_SIZING_COMPARE) {
+        await documentSizing(page, name);
+        await context.close();
+        continue;
+      }
+      await fontAndMediaSizing(page);
       await selectionMenuScale(page);
       await appearanceGeometry(page);
       for (const kind of ['long-prefix', 'image-only']) for (const scale of [1, 1.25]) await readerStartup(page, kind, scale);

@@ -100,7 +100,7 @@ describe("plugin hub", () => {
     hub.stop();
   });
 
-  test("opening an announced document through the plugin clears its notice at once", async () => {
+  test("opening an announced document clears its notice only after the tab acknowledgement", async () => {
     const tether = fakeTether();
     const hub = new Hub({ run: tether.run, pumpMs: 20 });
     hub.start();
@@ -109,7 +109,47 @@ describe("plugin hub", () => {
     expect(Object.keys((await hub.pump(0, false)).notices)).toEqual(["ws-a"]);
     await hub.open("/w/a/doc.md", "ws-a");
     expect(tether.envs.at(-1)).toEqual({ TETHER_PASEO_WORKSPACE_ID: "ws-a", TETHER_PASEO_ORIGIN: "user" });
+    expect(Object.keys((await hub.pump(0, false)).notices)).toEqual(["ws-a"]);
+    tether.push({ cursor: 2, folio: 0, intents: [intent("u1", 2)], instanceId: "d1" });
+    await settle();
+    await hub.ack(["u1"]);
     expect((await hub.pump(0, false)).notices).toEqual({});
+    hub.stop();
+  });
+
+  test("a Folio launch acknowledgement clears matching notices without a Folio refresh", async () => {
+    const tether = fakeTether();
+    const hub = new Hub({ run: tether.run, pumpMs: 20 });
+    hub.start();
+    tether.push({ cursor: 3, folio: 0, intents: [
+      intent("a1", 1, { origin: "agent" }),
+      intent("a2", 2, { origin: "agent", target: { workspaceId: "ws-b" } }),
+      intent("a3", 3, { origin: "agent", path: "/other.md", target: { workspaceId: "ws-c" } }),
+    ], instanceId: "d1" });
+    await settle();
+    tether.push({ cursor: 4, folio: 0, intents: [intent("u1", 4)], instanceId: "d1" });
+    await settle();
+    const offered = await hub.pump(-1, true);
+    expect(Object.keys(offered.notices)).toHaveLength(3);
+    const updates = hub.pump(offered.revision, false);
+    const reads = tether.calls.filter(call => call[0] === "folio").length;
+    await hub.ack(["u1"]);
+    expect((await updates).notices).toEqual({ "ws-c": { path: "/other.md", name: "other" } });
+    expect(tether.calls.filter(call => call[0] === "folio")).toHaveLength(reads);
+    expect(await hub.ack(["u1"])).toBe(0);
+    hub.stop();
+  });
+
+  test("a delayed launch acknowledgement preserves a newer announcement of the same document", async () => {
+    const tether = fakeTether();
+    const hub = new Hub({ run: tether.run, pumpMs: 20 });
+    hub.start();
+    tether.push({ cursor: 2, folio: 0, intents: [intent("a1", 1, { origin: "agent" }), intent("u1", 2)], instanceId: "d1" });
+    await settle();
+    tether.push({ cursor: 3, folio: 0, intents: [intent("a2", 3, { origin: "agent" })], instanceId: "d1" });
+    await settle();
+    await hub.ack(["u1"]);
+    expect((await hub.pump(-1, false)).notices["ws-a"]?.path).toBe("/w/a/doc.md");
     hub.stop();
   });
 

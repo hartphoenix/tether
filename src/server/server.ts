@@ -1,7 +1,8 @@
 import { HostThemes, isThemeClient } from "./host-themes";
+import { ImageAssets } from "../documents/image-assets";
 import { version as sourceVersion } from "../../package.json";
 import { diagnosticText, diagnosticValue, errorDetails } from "../shared/diagnostics";
-import { preferencesFrom, updatePreferences } from "../shared/themes";
+import { preferencesFrom, storedPreferencesFrom, updatePreferences } from "../shared/themes";
 import { runtimeRoot } from "../runtime-paths";
 import { seedWelcome } from "../onboarding";
 import { UpdateService } from "./updates";
@@ -253,6 +254,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   } }), hostAdapter);
   recents.subscribeFolio(() => pullQueue.folioChanged());
   const instanceId = crypto.randomUUID();
+  const imageAssets = new ImageAssets();
   const tickets = new Map<string, { grant: DocumentSession; expiresAt: number; target?: HostTarget; resumeId?: string }>();
   const recentsTickets = new Map<string, { expiresAt: number; target?: HostTarget }>();
   const sessions = new Map<string, Session>();
@@ -572,7 +574,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   let preferenceWrites: Promise<unknown> = Promise.resolve();
 
   async function preferences(): Promise<AppPreferences> {
-    try { return preferencesFrom(JSON.parse(await readFile(config.preferencesPath, "utf8"))); } catch { return preferencesFrom(null); }
+    try { return storedPreferencesFrom(JSON.parse(await readFile(config.preferencesPath, "utf8"))); } catch { return preferencesFrom(null); }
   }
 
   async function withControlDocument<T>(body: Record<string, unknown>, operation: (grant: DocumentSession) => Promise<T>): Promise<T> {
@@ -646,6 +648,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/draft" && request.method === "DELETE") { views.clearDraft(session.id); return json({ cleared: true }); }
       if (apiPath === "/export" && request.method === "POST") return json(await service.exportReviews([session.grant]));
       if (apiPath === "/file" && request.method === "GET") return json(await service.read(session.grant));
+      if (apiPath === "/image" && request.method === "GET") return await imageAssets.response(request, session.grant, await service.read(session.grant));
       if (apiPath === "/file" && request.method === "PUT") {
         const body = await requestJson(request);
         const content = typeof body.content === "string" ? body.content : typeof body.body === "string" ? body.body : undefined;

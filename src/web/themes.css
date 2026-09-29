@@ -1,5 +1,9 @@
+:root {
+  --wm-shadow: 0 2px 8px rgb(0 0 0 / 24%);
+}
+
 #editor .milkdown {
   --crepe-base-font-size: 16px;
-  --crepe-shadow-1: 0 1px 3px rgb(0 0 0 / 18%);
-  --crepe-shadow-2: 0 2px 8px rgb(0 0 0 / 24%);
+  --crepe-shadow-1: var(--wm-shadow);
+  --crepe-shadow-2: var(--wm-shadow);
 }
