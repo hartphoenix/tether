@@ -314,6 +314,19 @@ async function fontAndMediaSizing(page: Page) {
   await page.goto(server.url.toString());
   await page.waitForFunction(() => (window as any).ready);
   await page.evaluate(() => (window as any).audit.openMaker());
+  for (const scale of [.7, 1, 1.5]) {
+    await page.evaluate(scale => document.documentElement.style.setProperty('--wm-ui-scale', String(scale)), scale);
+    const maker = await page.locator('.wm-theme-maker').evaluate(el => ({
+      width: el.getBoundingClientRect().width,
+      font: parseFloat(getComputedStyle(el).fontSize),
+      padding: parseFloat(getComputedStyle(el).paddingLeft),
+      overflow: el.scrollWidth > el.clientWidth,
+    }));
+    check(Math.abs(maker.width - 360 * scale) < 1 && Math.abs(maker.font - 15 * 9 / 11 * scale) < .01 && Math.abs(maker.padding - 20 * scale) < .01,
+      `theme maker does not follow interface scale: ${scale}: ${JSON.stringify(maker)}`);
+    check(!maker.overflow, `theme maker has horizontal overflow at ${scale}`);
+  }
+  await page.evaluate(() => document.documentElement.style.setProperty('--wm-ui-scale', '1'));
   const size = page.locator('[data-metric="bodySize"]');
   await size.evaluate((el: HTMLInputElement) => { el.value = '13.9'; el.dispatchEvent(new Event('input')); });
   await size.focus(); await page.keyboard.press('ArrowRight');
