@@ -263,6 +263,27 @@ async function topology(page: Page, scale: number) {
   check(Math.abs(afterY - visibleY) < 3, `long passage reading anchor drift at scale=${scale}: before=${visibleY}, after=${afterY}`);
   console.log(`PASS canvas scale=${scale}`);
 }
+async function selectionMenuScale(page: Page) {
+  await page.goto(server.url.toString());
+  await page.waitForFunction(() => (window as any).ready);
+  for (const zoom of [.75, 1.75]) {
+    await page.evaluate(zoom => {
+      const a = (window as any).audit;
+      a.setZoom(zoom); a.selectLink(0); a.view.focus();
+    }, zoom);
+    const toolbar = page.locator('.milkdown-toolbar');
+    await toolbar.waitFor({ state: 'visible' });
+    for (const scale of [.7, 1, 1.5]) {
+      await page.evaluate(scale => document.documentElement.style.setProperty('--wm-ui-scale', String(scale)), scale);
+      const size = await toolbar.locator('.toolbar-item').first().boundingBox();
+      check(size && Math.abs(size.width - 26 * scale) < 1 && Math.abs(size.height - 26 * scale) < 1,
+        `selection menu ignores interface scale or inherits document zoom: ${zoom}/${scale}: ${JSON.stringify(size)}`);
+      const bounds = await toolbar.boundingBox();
+      check(bounds && bounds.x >= -1 && bounds.x + bounds.width <= 1201, 'selection menu escapes viewport');
+    }
+  }
+  console.log('PASS selection menu scale independent of document zoom');
+}
 async function appearanceGeometry(page: Page) {
   await page.goto(server.url.toString());
   await page.waitForFunction(() => (window as any).ready);
@@ -306,6 +327,7 @@ try {
       page.on('pageerror', error => console.error('Fixture error:', error.message));
       page.setDefaultTimeout(10000);
       console.log(`${name} ${browser.version()}`);
+      await selectionMenuScale(page);
       await appearanceGeometry(page);
       for (const kind of ['long-prefix', 'image-only']) for (const scale of [1, 1.25]) await readerStartup(page, kind, scale);
       for (const scale of [.75, 1, 1.13, 1.25, 1.75]) await topology(page, scale);

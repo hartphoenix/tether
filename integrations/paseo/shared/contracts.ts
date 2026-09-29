@@ -1,6 +1,13 @@
 import { defineRpc, defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 
+const pathSchema = z.string().min(1).max(32768);
+const idSchema = z.string().min(1).max(256);
+// Missing generations are accepted by validation only to return a useful reload error.
+const generationInput = { generation: z.string().max(128).optional() };
+export const connectionSchema = z.object({ generation: z.string(), tetherPath: z.string(), profile: z.string() });
+export type Connection = z.infer<typeof connectionSchema>;
+
 /** The subset of a Tether Folio entry the plugin renders. */
 export const folioEntrySchema = z.object({
   path: z.string(),
@@ -34,6 +41,7 @@ export const statusSchema = z.object({
 export type HubStatus = z.infer<typeof statusSchema>;
 
 export const pumpBatchSchema = z.object({
+  connection: connectionSchema.nullable(),
   revision: z.number(),
   intents: z.array(intentSchema),
   folio: z.array(folioEntrySchema).nullable(),
@@ -47,26 +55,26 @@ export type PumpBatch = z.infer<typeof pumpBatchSchema>;
 /** Resolves when the hub changes past `revision`, or with executor work, or after at most 25 s. */
 export const pumpRpc = defineRpc({
   name: "tether.pump",
-  input: z.object({ revision: z.number(), executor: z.boolean() }),
+  input: z.object({ revision: z.number().int().min(-1).max(Number.MAX_SAFE_INTEGER), executor: z.boolean(), generation: z.string().max(128).nullable().optional() }),
   output: pumpBatchSchema,
 });
 
 export const ackRpc = defineRpc({
   name: "tether.ack",
-  input: z.object({ ids: z.array(z.string()) }),
+  input: z.object({ ...generationInput, ids: z.array(idSchema).max(256) }),
   output: z.object({ acknowledged: z.number() }),
 });
 
 /** Ask Tether to open a document for the user in a workspace; the tab arrives as an intent. */
 export const openRpc = defineRpc({
   name: "tether.open",
-  input: z.object({ path: z.string(), workspaceId: z.string() }),
+  input: z.object({ ...generationInput, path: pathSchema, workspaceId: idSchema }),
   output: z.object({ queued: z.boolean() }),
 });
 
 export const pinRpc = defineRpc({
   name: "tether.pin",
-  input: z.object({ path: z.string(), pinned: z.boolean() }),
+  input: z.object({ ...generationInput, path: pathSchema, pinned: z.boolean() }),
   output: z.object({ pinned: z.boolean() }),
 });
 
@@ -76,7 +84,7 @@ export type FolioView = z.infer<typeof folioViewSchema>;
 /** Expected settings bind the launch to the client's cached connection, not a new executable. */
 export const folioViewRpc = defineRpc({
   name: "tether.folio-view",
-  input: z.object({ workspaceId: z.string().trim().min(1), tetherPath: z.string(), profile: z.string().min(1) }),
+  input: z.object({ ...generationInput, workspaceId: idSchema, tetherPath: z.string().max(32768), profile: idSchema }),
   output: folioViewSchema,
 });
 
@@ -85,8 +93,8 @@ export const tetherSettings = defineSettings({
   scope: "host",
   version: 1,
   schema: z.object({
-    tetherPath: z.string().trim().default(""),
-    profile: z.string().trim().min(1, "Enter a profile").default("preview"),
+    tetherPath: z.string().trim().max(32768).default(""),
+    profile: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/, "Use 1–64 letters, numbers, underscores or hyphens").default("preview"),
     buttons: z.boolean().default(true),
   }),
 });
@@ -94,6 +102,6 @@ export type TetherSettings = z.infer<typeof tetherSettings.schema>;
 
 export const themeRpc = defineRpc({
   name: "tether.theme",
-  input: z.object({ clientId: z.string().uuid(), theme: z.string().nullable(), tetherPath: z.string(), profile: z.string().min(1) }),
+  input: z.object({ ...generationInput, clientId: z.string().uuid(), theme: z.string().max(128).nullable(), tetherPath: z.string().max(32768), profile: idSchema }),
   output: z.object({ updated: z.boolean() }),
 });

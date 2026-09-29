@@ -10,7 +10,7 @@ import { disposeFolioViews } from "./client/web-folio";
 export default function contribute(client: PluginClientContext) {
   const removeThemes = tetherThemes.map(theme => client.addTheme(theme));
   client.addWorkspacePanel({ id: FOLIO_PANEL, title: "Folio", icon: "BookOpen", context: "workspace", locations: ["explorer"], Component: FolioPanel });
-  client.addSettingsScreen({ id: "tether", title: "Tether", icon: "BookOpen", Component: SettingsScreen });
+  client.addSettingsScreen({ id: "tether", title: "Settings", icon: "BookOpen", Component: SettingsScreen });
   const stopPump = startPump(client);
   const stopButtons = startHeaderButtons(client);
   return () => {

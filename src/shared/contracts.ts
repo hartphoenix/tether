@@ -55,6 +55,7 @@ export type SessionBootstrap = {
   actor: string;
   draft?: { body: string; baseRevision: string; scroll: number; updatedAt: number } | null;
   scroll?: number;
+  zoom?: number;
 };
 
 export type ProtocolSuccess<T = unknown> = {

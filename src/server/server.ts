@@ -271,7 +271,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     return operation;
   };
   function validateAppearance(base: AppPreferences, body: Record<string, unknown>) {
-    try { return updatePreferences(base, { uiScale: body.uiScale, railWidth: body.railWidth }); }
+    try { return updatePreferences(base, { uiScale: body.uiScale, railWidth: body.railWidth, defaultDocumentZoom: body.defaultDocumentZoom }); }
     catch (cause) { throw invalidRequest((cause as Error).message); }
   }
   function previewScale(body: Record<string, unknown>) {
@@ -396,7 +396,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     let lastTheme = "";
     const sendTheme = async (base: AppPreferences) => {
       const value = displayPreferences(await hostThemes.preferences(clientId, base));
-      const theme = JSON.stringify({ ...folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }), uiScale: value.uiScale ?? 1, committedUiScale: value.committedUiScale });
+      const theme = JSON.stringify({ ...folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }), uiScale: value.uiScale ?? 1, committedUiScale: value.committedUiScale, defaultDocumentZoom: value.defaultDocumentZoom ?? 100 });
       if (theme === lastTheme) return;
       lastTheme = theme;
       send(`event: theme\ndata: ${theme}\n\n`);
@@ -627,12 +627,14 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       if (apiPath === "/bootstrap" && request.method === "GET") {
         const document = await service.read(session.grant);
-        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, draft: views.draft(session.id), scroll: views.position(session.id), document, capabilities: hostAdapter.capabilities(session.target), preferences: displayPreferences(await hostThemes.preferences(themeClient(request, session.target), await preferences())), actor: options.actor ?? "assistant" });
+        const basePreferences = await preferences();
+        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, draft: views.draft(session.id), scroll: views.position(session.id), zoom: views.zoom(session.id, basePreferences.defaultDocumentZoom ?? 100), document, capabilities: hostAdapter.capabilities(session.target), preferences: displayPreferences(await hostThemes.preferences(themeClient(request, session.target), basePreferences)), actor: options.actor ?? "assistant" });
       }
       if (apiPath === "/position" && request.method === "POST") {
         const body = await requestJson(request);
         if (typeof body.scroll !== "number" || !Number.isFinite(body.scroll) || body.scroll < 0) throw invalidRequest("Invalid reader position.");
-        views.savePosition(session.id, body.scroll);
+        if (body.zoom !== undefined && (typeof body.zoom !== "number" || !Number.isFinite(body.zoom) || body.zoom < 75 || body.zoom > 175)) throw invalidRequest("Invalid reader zoom.");
+        views.savePosition(session.id, body.scroll, body.zoom as number | undefined);
         return json({ saved: true });
       }
       if (apiPath === "/draft" && request.method === "POST") {
@@ -854,11 +856,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const suffix = `/${match![2]}`;
       if (request.method === "GET" && suffix === "/") {
         const prefs = await hostThemes.preferences(themeClient(request, session.target), await preferences());
-        return new Response(folioHtml({ pageFind: hostAdapter.capabilities(session.target).pageFind, pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), uiScale: prefs.uiScale, theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+        return new Response(folioHtml({ pageFind: hostAdapter.capabilities(session.target).pageFind, pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), uiScale: prefs.uiScale, defaultDocumentZoom: prefs.defaultDocumentZoom, theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
       if (request.method === 'GET' && suffix === '/api/preferences') {
         const value = displayPreferences(await hostThemes.preferences(themeClient(request, session.target), await preferences()));
-        return json({ ...folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }), uiScale: value.uiScale ?? 1, committedUiScale: value.committedUiScale });
+        return json({ ...folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }), uiScale: value.uiScale ?? 1, committedUiScale: value.committedUiScale, defaultDocumentZoom: value.defaultDocumentZoom ?? 100 });
       }
       if (request.method === 'POST' && (suffix === '/api/preferences' || suffix === '/api/preferences-preview')) {
         if (!sameOrigin(request, daemon.origin)) return error('origin_mismatch', 'State-changing requests must use the daemon origin.', 403);

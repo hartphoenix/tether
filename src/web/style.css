@@ -182,6 +182,23 @@ body {
   width: max-content;
   max-width: calc(100vw - 16px);
   flex-wrap: wrap;
+  border-radius: calc(6px * var(--wm-ui-scale));
+}
+.milkdown .milkdown-toolbar .toolbar-item {
+  width: calc(26px * var(--wm-ui-scale));
+  height: calc(26px * var(--wm-ui-scale));
+  margin: calc(4px * var(--wm-ui-scale));
+  padding: calc(3px * var(--wm-ui-scale));
+  border-radius: calc(3px * var(--wm-ui-scale));
+}
+.milkdown .milkdown-toolbar .toolbar-item svg {
+  width: calc(20px * var(--wm-ui-scale));
+  height: calc(20px * var(--wm-ui-scale));
+}
+.milkdown .milkdown-toolbar .divider {
+  width: calc(1px * var(--wm-ui-scale));
+  height: calc(20px * var(--wm-ui-scale));
+  margin: calc(7px * var(--wm-ui-scale));
 }
 
 /* Crepe hides selection actions during link hover; keep active selections visible.

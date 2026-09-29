@@ -119,6 +119,7 @@ const chrome = createChromeControls({
   onZoomChange: (scale) => {
     const zoom = scale / 100;
     canvas?.setScale(zoom);
+    persistPosition();
   },
 });
 let themePicker: ReturnType<typeof createThemePicker> | null = null;
@@ -663,6 +664,7 @@ async function start(): Promise<void> {
       onError: (message) => chrome.setNotice(message),
     });
     applyAppearance(bootstrap.preferences);
+    chrome.setZoom(bootstrap.zoom ?? 100);
     stopPreferences = pollPreferences('api/preferences', value => { themePicker?.update(value); applyAppearance(value); });
     await openDocument(false, bootstrap.document as DocumentResponse);
     const draft = bootstrap.draft;
@@ -691,7 +693,7 @@ let positionTimer: number | undefined;
 function persistPosition(keepalive = false): void {
   clearTimeout(positionTimer);
   if (!initialized || initializing) return;
-  void api("api/position", { method: "POST", body: JSON.stringify({ scroll: canvas?.scroller.scrollTop ?? 0 }), keepalive }).catch(() => {});
+  void api("api/position", { method: "POST", body: JSON.stringify({ scroll: canvas?.scroller.scrollTop ?? 0, zoom: chrome.getZoom() }), keepalive }).catch(() => {});
 }
 addEventListener("scroll", (event) => {
   if (event.target !== canvas?.scroller) return;

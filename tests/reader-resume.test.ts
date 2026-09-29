@@ -19,7 +19,7 @@ test("the actual reader recovers its draft before post-mount requests, and prese
       const route = String(input);
       if (route === "api/bootstrap") {
         if (++bootstraps === 1) return Response.json({ error: { message: "starting" } }, { status: 503 });
-        return Response.json({ preferences: { theme: "tether" }, scroll: 900,
+        return Response.json({ preferences: { theme: "tether" }, scroll: 900, zoom: 150,
           document: { path: "/tmp/reader.md", body: "# Disk changed\n", bodyRevision: "disk", ledgerRevision: "ledger", annotations: { threads: [] } },
           draft: { body: "# My unsaved draft\n", baseRevision: "original", scroll: 900 },
         });
@@ -48,6 +48,7 @@ test("the actual reader recovers its draft before post-mount requests, and prese
     const scroller = doc.querySelector<HTMLElement>(".wm-document-scroll")!;
     expect(scroller.scrollTop).toBe(900);
     expect(win.scrollY).toBe(0);
+    expect(doc.querySelector<HTMLInputElement>("#zoom-slider")!.value).toBe("150");
     scroller.scrollTop = 1100;
     scroller.dispatchEvent(new win.Event("scroll"));
     await until(() => writes.some(write => write.route === "api/position" && write.body.scroll === 1100));

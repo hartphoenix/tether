@@ -381,3 +381,34 @@ test("live theme colors preserve Folio controls and document elements", async ()
   expect(doc.querySelector("#app-menu")!.classList.contains("open")).toBe(true);
   dom.window.close();
 });
+
+test("default document zoom is saved explicitly without previewing", async () => {
+ const {dom,requests,refresh}=runPage({sequence:1,files:[]});
+ await refresh();
+ const doc=dom.window.document;
+ doc.querySelector<HTMLButtonElement>('[data-app-action="settings"]')!.click();
+ const slider=doc.querySelector<HTMLInputElement>('#default-document-zoom')!;
+ expect([slider.min,slider.max,slider.step]).toEqual(['75','175','5']);
+ expect(doc.querySelector('#document-zoom-ticks option')?.getAttribute('value')).toBe('100');
+ expect(doc.querySelector('#scale-reset')).toBeNull();
+ slider.value='150';slider.dispatchEvent(new dom.window.Event('input'));
+ await Bun.sleep(0);
+ expect(doc.querySelector('#default-document-zoom-value')?.textContent).toBe('150%');
+ expect(requests).toHaveLength(0);
+ doc.querySelector<HTMLButtonElement>('#settings-cancel')!.click();
+ await Bun.sleep(0);
+ doc.querySelector<HTMLButtonElement>('[data-app-action="settings"]')!.click();
+ expect(slider.value).toBe('100');
+ const writes:Record<string,unknown>[]=[];
+ Object.defineProperty(dom.window,'fetch',{value:async(input:string,init?:RequestInit)=>{
+   if(String(input).endsWith('/preferences')&&init?.body){const body=JSON.parse(String(init.body));writes.push(body);return Response.json(body)}
+   return Response.json({sequence:1,files:[]});
+ }});
+ slider.value='125';slider.dispatchEvent(new dom.window.Event('input'));
+ doc.querySelector<HTMLButtonElement>('#settings-save')!.click();
+ await Bun.sleep(10);
+ expect(writes).toHaveLength(1);expect(writes[0]!.defaultDocumentZoom).toBe(125);
+ doc.querySelector<HTMLButtonElement>('[data-app-action="settings"]')!.click();
+ expect(slider.value).toBe('125');
+ dom.window.close();
+});

@@ -28,7 +28,7 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
         <Connection theme={theme} />
         <SettingsSwitch
           label="Header button"
-          hint="Show the Tether button, which opens Folio and names documents your agents add."
+          hint="Opens Folio and shows documents added by agents. Also keeps inherited themes in sync when Folio and these settings are closed."
           value={settings.values.buttons}
           disabled={settings.saving}
           onValueChange={buttons => { void settings.save({ ...settings.values, buttons }, settings.revision); }}
