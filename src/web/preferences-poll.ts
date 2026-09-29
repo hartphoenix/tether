@@ -1,6 +1,6 @@
 /** Short requests cannot exhaust the browser's per-origin HTTP/1 connection pool.
  * Self-contained for embedding in Folio's standalone HTML. */
-export function pollPreferences(url: string, apply: (value: any) => void): () => void {
+export function pollPreferences(url: string, apply: (value: any) => void, transport: (input: string, init?: RequestInit) => Promise<Response> = fetch): () => void {
   let disposed = false, paused = false, running = false, last = '', delay = 500;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let request: AbortController | undefined;
@@ -10,7 +10,7 @@ export function pollPreferences(url: string, apply: (value: any) => void): () =>
     request = new AbortController();
     const timeout = setTimeout(() => request?.abort(), 5000);
     try {
-      const response = await fetch(url, { signal: request.signal, cache: 'no-store' });
+      const response = await transport(url, { signal: request.signal, cache: 'no-store' });
       if (!response.ok) throw Object.assign(new Error('Preferences unavailable'), { status: response.status });
       const value = await response.json(), serialized = JSON.stringify(value);
       if (!disposed && !paused && serialized !== last) { apply(value); last = serialized; }
