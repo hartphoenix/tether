@@ -101,6 +101,20 @@ async function topology(page: Page, scale: number) {
     return { focus: view.hasFocus(), text: view.state.selection.$from.parent.textContent, native: document.getSelection()?.anchorNode?.textContent };
   });
   check(caret.focus && caret.text.startsWith('Paragraph 5:'), `native caret hit test at ${scale}: ${JSON.stringify(caret)}`);
+  const exactPoint = await page.locator('.ProseMirror p').nth(5).evaluate(el => {
+    const range = document.createRange(); range.setStart(el.firstChild!, 7); range.setEnd(el.firstChild!, 8);
+    const rect = range.getBoundingClientRect(); return { x: rect.left + .1, y: (rect.top + rect.bottom) / 2 };
+  });
+  await page.mouse.click(exactPoint.x, exactPoint.y);
+  await page.waitForTimeout(40);
+  const painted = await page.evaluate(() => {
+    const selection = document.getSelection()!;
+    const range = selection.getRangeAt(0).getBoundingClientRect();
+    const cursor = document.querySelector('.prosemirror-virtual-cursor')!.getBoundingClientRect();
+    return { offset: selection.focusOffset, dx: cursor.left - range.left, dy: cursor.top - range.top, dh: cursor.height - range.height };
+  });
+  check(painted.offset === 7 && Math.abs(painted.dx) <= 2 && Math.abs(painted.dy) < 1 && Math.abs(painted.dh) < 1,
+    `painted caret does not match selection at ${scale}: ${JSON.stringify(painted)}`);
   const paragraph = await page.locator('.ProseMirror p').nth(5).boundingBox();
   check(paragraph, 'paragraph missing');
   await page.mouse.move(paragraph.x + 4, paragraph.y + 8 * scale);
@@ -156,7 +170,7 @@ async function topology(page: Page, scale: number) {
   check(Math.abs(afterZoom - readAnchor) < 3, `reading anchor drift at scale=${scale}: before=${readAnchor}, after=${afterZoom}`);
   await page.evaluate(z => (window as any).audit.setZoom(z), scale);
   await page.evaluate(() => {
-    const rail = document.createElement('aside'); rail.className = 'wm-annotation-rail';
+    const rail = document.createElement('aside'); rail.className = 'wm-annotation-rail'; rail.dataset.open = 'true';
     document.querySelector('#annotations')!.append(rail);
   });
   await page.waitForTimeout(150);
@@ -253,6 +267,7 @@ async function appearanceGeometry(page: Page) {
   await page.goto(server.url.toString());
   await page.waitForFunction(() => (window as any).ready);
   await page.evaluate(() => (window as any).audit.overflowThread());
+  await page.waitForTimeout(250);
   const assertOverflow = async (selector: string) => check(await page.locator(selector).evaluate(el => el.scrollWidth <= el.clientWidth), `reply overflow in ${selector}`);
   await assertOverflow('.wm-annotation-rail-scroll');
   const handle = page.getByRole('separator', { name: 'Threads width' });

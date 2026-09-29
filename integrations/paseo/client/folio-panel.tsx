@@ -1,9 +1,10 @@
-import { matchingTheme, themeClientId, themedLaunch, reportTheme } from "./theme-sync";
+import { useThemeReport } from "./use-theme-report";
+import { themedLaunch } from "./theme-sync";
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { useRpc, useSettings } from "@getpaseo/plugin/client";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { ackRpc, folioViewRpc, themeRpc, tetherSettings, type TetherSettings } from "../shared/contracts";
+import { ackRpc, folioViewRpc, tetherSettings, type TetherSettings } from "../shared/contracts";
 import { FolioList } from "./folio-list";
 import { lendOpener } from "./state";
 import { isDesktop } from "./web";
@@ -11,14 +12,8 @@ import { folioViewKey, mountFolioWebview, type FolioViewState } from "./web-foli
 
 function EmbeddedFolio({ settings, cacheKey, ...props }: PluginWorkspacePanelProps & { settings: TetherSettings; cacheKey: string }) {
   const launch = useRpc(folioViewRpc);
-  const syncTheme = useRpc(themeRpc);
-  const match = matchingTheme(props.theme);
   const [attempt, setAttempt] = useState(0);
-  const themeReady = useRef<Promise<unknown>>(Promise.resolve());
-  useEffect(() => {
-    themeReady.current = reportTheme(JSON.stringify([props.host.id, settings.tetherPath, settings.profile]), match, () => syncTheme({ clientId: themeClientId(), theme: match, tetherPath: settings.tetherPath, profile: settings.profile }));
-    void themeReady.current.catch(() => {});
-  }, [match, syncTheme, props.host.id, settings.tetherPath, settings.profile, attempt]);
+  const themeReady = useThemeReport(props);
   const container = useRef<View>(null);
   const [state, setState] = useState<FolioViewState>("loading");
   const { workspaceId, theme } = props;

@@ -1,3 +1,4 @@
+import { useThemeReport } from "./use-theme-report";
 import { useSettings, type PluginSurfaceProps, type SettingsState } from "@getpaseo/plugin/client";
 import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSwitch } from "@getpaseo/plugin/client/ui";
 import { useMemo, useState } from "react";
@@ -62,7 +63,9 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
   );
 }
 
-export function SettingsScreen({ theme }: PluginSurfaceProps) {
+export function SettingsScreen(props: PluginSurfaceProps) {
+  useThemeReport(props);
+  const { theme } = props;
   const settings = useSettings(tetherSettings);
   const style = useMemo(() => ({ color: theme.colors.foreground }), [theme]);
   if (settings.status === "loading") return <Text style={style}>Loading settings…</Text>;

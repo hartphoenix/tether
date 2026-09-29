@@ -25,9 +25,10 @@
   },
   "patchedDependencies": {
     "@milkdown/plugin-block@7.22.1": "patches/@milkdown%2Fplugin-block@7.22.1.patch",
+    "@milkdown/plugin-tooltip@7.22.1": "patches/@milkdown%2Fplugin-tooltip@7.22.1.patch",
     "@milkdown/components@7.22.1": "patches/@milkdown%2Fcomponents@7.22.1.patch",
     "@milkdown/plugin-slash@7.22.1": "patches/@milkdown%2Fplugin-slash@7.22.1.patch",
-    "@milkdown/plugin-tooltip@7.22.1": "patches/@milkdown%2Fplugin-tooltip@7.22.1.patch",
+    "prosemirror-virtual-cursor@0.4.2": "patches/prosemirror-virtual-cursor@0.4.2.patch",
   },
   "packages": {
     "@asamuzakjp/css-color": ["@asamuzakjp/css-color@5.1.11", "", { "dependencies": { "@asamuzakjp/generational-cache": "^1.0.1", "@csstools/css-calc": "^3.2.0", "@csstools/css-color-parser": "^4.1.0", "@csstools/css-parser-algorithms": "^4.0.0", "@csstools/css-tokenizer": "^4.0.0" } }, "sha512-KVw6qIiCTUQhByfTd78h2yD1/00waTmm9uy/R7Ck/ctUyAPj+AEDLkQIdJW0T8+qGgj3j5bpNKK7Q3G+LedJWg=="],

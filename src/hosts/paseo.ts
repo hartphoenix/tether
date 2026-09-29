@@ -41,7 +41,7 @@ export class PaseoHostAdapter implements HostAdapter {
 
   capabilities(): HostCapabilities {
     // Paseo turns a page's new-tab request into a tab in the focused pane, so the reader opens links itself.
-    return { embeddedBrowser: true, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: process.platform === "darwin", pageOpensLinks: true };
+    return { embeddedBrowser: true, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: process.platform === "darwin", pageOpensLinks: true, pageFind: true };
   }
 
   private origin(): PullOrigin {

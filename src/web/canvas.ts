@@ -96,7 +96,7 @@ export function createCanvas(view: EditorView, notice?: HTMLElement, updateButto
       if (before !== undefined && anchor) {
         // Node views (notably images and CodeMirror) finish reflow on later frames.
         // Preserve this reading anchor through that bounded settle, unless the user acts.
-        let remaining = 8;
+        let remaining = 16;
         const follow = () => {
           if (destroyed) return;
           const connected = anchor instanceof HTMLElement ? anchor.isConnected : anchor.startContainer.isConnected;

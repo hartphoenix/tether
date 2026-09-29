@@ -10,21 +10,12 @@ function runPage(snapshot: Record<string, unknown>, savedView?: string) {
   if (savedView !== undefined) dom.window.localStorage.setItem("tether.folio.view.v1", savedView);
   let currentSnapshot = { ...snapshot };
   const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
-  class FakeEventSource {
-    static instance: FakeEventSource;
-    closed = false;
-    listeners = new Map<string, (event: { data: string }) => void>();
-    constructor() { FakeEventSource.instance = this; }
-    addEventListener(name: string, listener: (event: { data: string }) => void) { this.listeners.set(name, listener); }
-    emit(value: Record<string, unknown>) { this.listeners.get("snapshot")?.({ data: JSON.stringify(value) }); }
-    onerror: (() => void) | null = null;
-    close() { this.closed = true; }
-  }
-  Object.defineProperty(dom.window, "EventSource", { value: FakeEventSource });
+  let currentTheme: Record<string, unknown> = {};
   Object.defineProperty(dom.window, "setInterval", { value: () => 0 });
   Object.defineProperty(dom.window, "fetch", { configurable: true, value: async (input: string | URL, init?: RequestInit) => {
     const endpoint = String(input).split("/api/")[1] ?? "";
     if (endpoint === "snapshot") return Response.json(currentSnapshot);
+    if (endpoint === "preferences") return Response.json(currentTheme);
     if (init?.body) requests.push({ endpoint, body: JSON.parse(String(init.body)) });
     if (endpoint === "filters") {
       const body = JSON.parse(String(init?.body));
@@ -41,7 +32,12 @@ function runPage(snapshot: Record<string, unknown>, savedView?: string) {
   const script = dom.window.document.querySelector("script")?.textContent;
   if (!script) throw new Error("Folio script missing");
   dom.window.eval(script);
-  return { dom, html, requests, events: () => FakeEventSource.instance };
+  const refresh = async (value?: Record<string, unknown>) => {
+    if (value) currentSnapshot = value;
+    dom.window.dispatchEvent(new dom.window.Event('online'));
+    await Bun.sleep(0);
+  };
+  return { dom, html, requests, refresh, theme: async (value: Record<string, unknown>) => { currentTheme = value; await refresh(); } };
 }
 
 test("Folio retains the original recovery dialog if refreshing after an action failure disconnects", async () => {
@@ -59,15 +55,14 @@ test("Folio retains the original recovery dialog if refreshing after an action f
   dom.window.close();
 });
 
-test("Folio stops its stream and disables actions on a lease-only authorization failure", async () => {
+test("Folio stops polling and disables actions on a lease-only authorization failure", async () => {
   const snapshot = { sequence: 1, files: [] };
-  const { dom, events } = runPage(snapshot);
+  const { dom, refresh } = runPage(snapshot);
   await Bun.sleep(0);
   Object.defineProperty(dom.window, "fetch", { value: async (input: string) =>
     String(input).endsWith("lease") ? new Response(null, { status: 401 }) : Response.json(snapshot) });
-  events().onerror?.();
+  await refresh();
   await Bun.sleep(0);
-  expect(events().closed).toBe(true);
   expect(dom.window.document.querySelector("#freshness")?.textContent).toContain("no longer has access");
   expect(dom.window.document.querySelector<HTMLButtonElement>("#add")!.disabled).toBe(true);
   dom.window.close();
@@ -115,9 +110,9 @@ test("renders Folio Active and Archive views with organization controls", async 
 test("accepts a lower snapshot sequence after the daemon instance changes", async () => {
   const active = { id: "one", path: "/tmp/one.md", name: "one.md", directory: "/tmp", repository: null, view: "active", pinned: false, missing: false, needsAttention: false, addedAt: 1, openedAt: 2, modifiedAt: 2, activityAt: null, fileCreatedAt: 1, archivedAt: null, expiresAt: null, createdAt: 2 };
   const archived = { ...active, id: "two", path: "/tmp/two.md", name: "two.md", view: "archive", archivedAt: 3 };
-  const { dom, events } = runPage({ instanceId: "old", sequence: 100, files: [active], retention: { mode: "days", days: 30 } });
+  const { dom, refresh } = runPage({ instanceId: "old", sequence: 100, files: [active], retention: { mode: "days", days: 30 } });
   await Bun.sleep(0);
-  events().emit({ instanceId: "new", sequence: 1, files: [archived], retention: { mode: "days", days: 30 } });
+  await refresh({ instanceId: "new", sequence: 1, files: [archived], retention: { mode: "days", days: 30 } });
   dom.window.document.querySelector<HTMLButtonElement>('[data-view="archive"]')!.click();
   expect(dom.window.document.querySelector(".name")?.textContent).toBe("two.md");
 });
@@ -268,11 +263,11 @@ test("restores filter bank from daemon snapshots and retains text when saving fa
   const snapshot = { instanceId: "new", sequence: 1, filters: [{ text: "red", active: true }, { text: "notes", active: false }], files: [
     { path: "/red.md", name: "Red", view: "active" }, { path: "/blue.md", name: "Blue", view: "active" },
   ] };
-  const { dom, events } = runPage(snapshot);
+  const { dom, refresh } = runPage(snapshot);
   await Bun.sleep(0);
   const doc = dom.window.document;
   expect(doc.querySelectorAll(".file")).toHaveLength(1);
-  events().emit({ ...snapshot, sequence: 2, filters: [{ text: "red", active: false }] });
+  await refresh({ ...snapshot, sequence: 2, filters: [{ text: "red", active: false }] });
   expect(doc.querySelectorAll(".file")).toHaveLength(2);
   Object.defineProperty(dom.window, "fetch", { value: async () => Response.json({ error: { message: "Disk full" } }, { status: 500 }) });
   const input = doc.querySelector<HTMLInputElement>("#filter")!;
@@ -369,7 +364,7 @@ test("ordinary Folio errors stay in a viewport popup until Close or Escape", asy
 
 test("live theme colors preserve Folio controls and document elements", async () => {
   const { folioTheme } = await import("../src/web/folio-page");
-  const { dom, events } = runPage({ sequence: 1, files: [{ path: "/notes.md", name: "Notes", view: "active" }] });
+  const { dom, theme: receiveTheme } = runPage({ sequence: 1, files: [{ path: "/notes.md", name: "Notes", view: "active" }] });
   await Bun.sleep(0);
   const doc = dom.window.document;
   doc.querySelector<HTMLButtonElement>("#select")!.click();
@@ -377,7 +372,7 @@ test("live theme colors preserve Folio controls and document elements", async ()
   doc.querySelector<HTMLButtonElement>("#more")!.click();
   const row = doc.querySelector(".file");
   const theme = folioTheme({ theme: "tether" });
-  events().listeners.get("theme")!({ data: JSON.stringify(theme) });
+  await receiveTheme(theme);
   expect(doc.documentElement.style.getPropertyValue("--bg")).toBe(theme.palette.background);
   expect(doc.documentElement.style.getPropertyValue("--accent")).toBe(theme.palette.primary);
   expect(doc.documentElement.style.colorScheme).toBe("light");

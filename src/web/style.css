@@ -48,9 +48,9 @@ body {
 #conflict span { flex: 1; }
 
 #editor { min-width: 0; min-height: 0; height: 100%; }
-#workspace { flex: 1; min-height: 0; --wm-rail-width: 0px; }
+#workspace { flex: 1; min-height: 0; --wm-rail-width: 0px; display: grid; grid-template-columns: minmax(0, 1fr) var(--wm-rail-width); transition: grid-template-columns 200ms ease-out; }
 
-#workspace:has(.wm-annotation-rail:not([hidden])) {
+#workspace:has(.wm-annotation-rail[data-open="true"]) {
   --wm-rail-width: var(--wm-saved-rail-width, 300px);
   display: grid;
   grid-template-columns: minmax(0, 1fr) var(--wm-rail-width);
@@ -61,7 +61,7 @@ body {
 #workspace .wm-annotation-rail {
   position: fixed;
   inset: 0 0 0 auto;
-  width: var(--wm-rail-width);
+  width: var(--wm-saved-rail-width, 300px);
   height: 100vh;
   max-height: 100vh;
 }
@@ -231,7 +231,7 @@ body {
   #conflict { align-items: flex-start; flex-wrap: wrap; padding-inline: 9px; }
   .milkdown .ProseMirror { padding: 24px 20px 100px; }
 
-  #workspace:has(.wm-annotation-rail:not([hidden])) {
+  #workspace:has(.wm-annotation-rail[data-open="true"]) {
     --wm-rail-width: 0px;
     display: block;
   }
@@ -285,3 +285,7 @@ body {
 .milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-chevron { width: calc(24px * var(--wm-ui-scale)); height: calc(24px * var(--wm-ui-scale)); }
 .milkdown .milkdown-top-bar .top-bar-heading-dropdown { min-width: calc(160px * var(--wm-ui-scale)); padding: calc(8px * var(--wm-ui-scale)) calc(4px * var(--wm-ui-scale)) calc(4px * var(--wm-ui-scale)); }
 .milkdown .milkdown-top-bar .top-bar-heading-option { padding: calc(8px * var(--wm-ui-scale)) calc(12px * var(--wm-ui-scale)); }
+
+.wm-thread-card { box-sizing: border-box; overflow: clip; flex-shrink: 0; }
+.wm-annotation-rail-scroll { overflow-anchor: none; }
+@media (prefers-reduced-motion: reduce) { #workspace { transition: none; } }

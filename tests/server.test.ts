@@ -880,22 +880,22 @@ test('appearance preview reaches ordinary readers without persistence and cancel
   const post = (endpoint: string, body: unknown, origin = daemon.origin) => fetch(recentsUrl(daemon, folio.location, `api/${endpoint}`), {
     method: 'POST', headers: { cookie: folio.cookie, origin, 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
-  const events = sseSnapshots<{ uiScale?: number; railWidth?: number; committedUiScale: number }>(await sessionFetch(daemon, reader.location, reader.cookie, 'api/theme-events'), 'preferences');
-  try {
-    expect((await events.next()).committedUiScale).toBe(1);
+  const readPreferences = async () => (await sessionFetch(daemon, reader.location, reader.cookie, 'api/preferences')).json() as Promise<any>;
+  {
+    expect((await readPreferences()).committedUiScale).toBe(1);
     expect((await post('preferences', { uiScale: 1.1, railWidth: 410 })).status).toBe(200);
-    expect(await events.next()).toMatchObject({ uiScale: 1.1, railWidth: 410, committedUiScale: 1.1 });
+    expect(await readPreferences()).toMatchObject({ uiScale: 1.1, railWidth: 410, committedUiScale: 1.1 });
     const saved = await readFile(file.config.preferencesPath, 'utf8');
     expect((await post('preferences-preview', { owner: 'one', uiScale: 1.5 })).status).toBe(200);
-    expect(await events.next()).toMatchObject({ uiScale: 1.5, committedUiScale: 1.1 });
+    expect(await readPreferences()).toMatchObject({ uiScale: 1.5, committedUiScale: 1.1 });
     expect(await readFile(file.config.preferencesPath, 'utf8')).toBe(saved);
     expect((await post('preferences', { uiScale: 1.2, owner: 'two' })).status).toBe(200);
-    expect(await events.next()).toMatchObject({ uiScale: 1.5, committedUiScale: 1.2 });
+    expect(await readPreferences()).toMatchObject({ uiScale: 1.5, committedUiScale: 1.2 });
     expect((await post('preferences-preview', { owner: 'one', uiScale: null })).status).toBe(200);
-    expect(await events.next()).toMatchObject({ uiScale: 1.2, railWidth: 410, committedUiScale: 1.2 });
+    expect(await readPreferences()).toMatchObject({ uiScale: 1.2, railWidth: 410, committedUiScale: 1.2 });
     expect((await post('preferences-preview', { owner: 'one', uiScale: 9 })).status).toBe(400);
     expect((await post('preferences', { railWidth: 900 })).status).toBe(400);
     expect((await post('preferences-preview', { owner: 'one', uiScale: 1 }, 'https://other.invalid')).status).toBe(403);
     expect((await fetch(recentsUrl(daemon, folio.location, 'api/preferences'), { method: 'POST', headers: { origin: daemon.origin }, body: '{}' })).status).toBe(401);
-  } finally { await events.cancel(); }
+  }
 });

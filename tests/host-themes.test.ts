@@ -52,3 +52,15 @@ test('theme reports deduplicate mounts, serialize changes, and retry failures', 
   await reportTheme('b', null, send); expect(calls).toBe(3);
   clearThemeReports();
 });
+
+
+test('a fresh reporting mount reasserts a delivered theme but shares in-flight work', async () => {
+  clearThemeReports();
+  const sent: string[] = [];
+  await reportTheme('client-host-profile', 'tether', async () => { sent.push('first'); });
+  const refresh = () => reportTheme('client-host-profile', 'tether', async () => { sent.push('remount'); }, true);
+  await Promise.all([refresh(), refresh()]);
+  expect(sent).toEqual(['first', 'remount']);
+  await reportTheme('other-client', 'tether', async () => { sent.push('other'); }, true);
+  expect(sent).toEqual(['first', 'remount', 'other']);
+});

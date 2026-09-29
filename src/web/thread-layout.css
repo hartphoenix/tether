@@ -160,10 +160,9 @@
 .wm-thread-reply, .wm-editable-annotation, .wm-thread-body { min-width: 0; }
 .wm-thread-body img { max-width: 100%; }
 :root[data-wm-designed] .wm-thread-card { --wm-chip-color: var(--wm-color-surface); background: var(--wm-chip-color); }
-:root[data-wm-designed] .wm-thread-card[data-last-assistant="true"]:not(:has(.wm-thread-summary[aria-expanded="true"])) { --wm-chip-color: color-mix(in srgb, var(--wm-color-selected) 30%, var(--wm-color-surface)); }
 :root[data-wm-designed] .wm-thread-summary:hover { background: color-mix(in srgb, var(--wm-color-hover) 40%, var(--wm-chip-color)); }
-:root[data-wm-designed] .wm-actor-dot { background: var(--wm-color-annotation); box-shadow: 0 0 0 calc(1px * var(--wm-ui-scale, 1)) var(--wm-annotation-ring); }
-:root[data-wm-designed] [data-last-assistant="true"] .wm-actor-dot { background: var(--wm-color-selected); box-shadow: 0 0 0 calc(1px * var(--wm-ui-scale, 1)) var(--wm-selected-ring); }
+:root[data-wm-designed] .wm-actor-dot { background: var(--wm-color-selected); box-shadow: 0 0 0 calc(1px * var(--wm-ui-scale, 1)) var(--wm-selected-ring); }
+:root[data-wm-designed] [data-last-assistant="true"] .wm-actor-dot { background: var(--wm-color-annotation); box-shadow: 0 0 0 calc(1px * var(--wm-ui-scale, 1)) var(--wm-annotation-ring); }
 
-.wm-actor-dot { background: var(--wm-color-annotation, #bf7b18); }
-[data-last-assistant="true"] .wm-actor-dot { background: var(--wm-color-selected, #4678b7); }
+.wm-actor-dot { background: var(--wm-color-selected, #4678b7); }
+[data-last-assistant="true"] .wm-actor-dot { background: var(--wm-color-annotation, #bf7b18); }

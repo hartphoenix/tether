@@ -1,3 +1,4 @@
+import { smoothScroll } from "./motion";
 import { placeOverlay } from './overlay';
 import { iconSvg } from "./icons";
 import { renderCommentBody } from "./comment-body";
@@ -376,6 +377,12 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   let threadPopover: HTMLElement | null = null;
   let railOpen = false;
   let showResolved = false;
+  const messageBodies = new WeakMap<HTMLElement, string>();
+  const submittingMessages = new WeakMap<HTMLElement, string>();
+  const cards = new Map<string, { card: HTMLElement; signature: string }>();
+  let stopThreadScroll = () => {};
+  let drawerAnimation: Animation | undefined;
+  const threadAnimations = new Map<HTMLElement, Animation>();
   const rail = createElement("aside", "wm-annotation-rail");
   rail.setAttribute("aria-label", "Threads");
   root.append(rail);
@@ -390,8 +397,11 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     plugin: undefined as unknown as ReturnType<typeof createAnnotationPlugin>,
     setState(nextState) {
       if (destroyed) return;
+      const focused = rail.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
       state = { threads: [...nextState.threads] };
       renderRail();
+      if (focused?.isConnected && !focused.closest('[hidden],[inert]')) focused.focus({ preventScroll: true });
+      if (threadAnimations.size) updateExpansion(activeThreadId ?? undefined);
       onPendingCountChange(attentionCount());
       syncDecorations();
       const active = activeThreadId && state.threads.find((thread) => thread.id === activeThreadId && !thread.deleted);
@@ -422,16 +432,18 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       activeThreadId = threadId;
       threadPopover?.remove();
       threadPopover = null;
-      renderRail();
+      updateExpansion(threadId);
       navigateToThread(thread, trigger);
       if (!railOpen) showThreadPopover(thread, trigger);
       onSelectThread(thread);
     },
     setRailOpen(open) {
+      if (railOpen === open) return;
+      rail.ownerDocument.dispatchEvent(new rail.ownerDocument.defaultView!.Event("wm-before-rail-layout"));
       railOpen = open;
       threadPopover?.remove();
       threadPopover = null;
-      renderRail();
+      renderRailVisibility(true);
       onRailOpenChange(open);
     },
     isRailOpen() {
@@ -443,6 +455,9 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      stopThreadScroll();
+      drawerAnimation?.cancel();
+      for (const animation of threadAnimations.values()) animation.cancel();
       stopEndRecovery();
       stopHeaderOverlay();
       editorRoot?.removeEventListener("click", handleEditorClick);
@@ -594,7 +609,10 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       }
       error.hidden = true;
       setBusy(submit, true);
-      Promise.resolve(onReply({ body, thread })).catch((reason: unknown) => {
+      Promise.resolve(onReply({ body, thread })).then(() => {
+        if (textarea.value === body) textarea.value = "";
+        setBusy(submit, false);
+      }).catch((reason: unknown) => {
         setBusy(submit, false);
         error.textContent = reason instanceof Error ? reason.message : "Reply could not be sent.";
         error.hidden = false;
@@ -605,6 +623,8 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
 
   function editableAnnotation(thread: AnnotationThread, targetId: string, value: string, className: string, actor: string, createdAt: string, includeDate: boolean): HTMLElement {
     const container = createElement("div", "wm-editable-annotation");
+    container.dataset.messageId = targetId;
+    messageBodies.set(container, value);
     container.classList.toggle("is-assistant", actorMatches(actor, "assistant"));
     const header = createElement("header", "wm-message-header");
     const author = createElement("span", "wm-message-author");
@@ -650,7 +670,9 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
         const next = textarea.value;
         if (!next.trim()) { textarea.focus(); return; }
         setBusy(save, true);
+        submittingMessages.set(container, next);
         Promise.resolve(onEdit({ thread, targetId, body: next })).catch((reason: unknown) => {
+          submittingMessages.delete(container);
           setBusy(save, false);
           onNotice(reason instanceof Error ? reason.message : "Comment could not be edited.");
         });
@@ -731,6 +753,9 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   }
 
   function renderThread(thread: AnnotationThread, orphaned: boolean): HTMLElement {
+    const signature = JSON.stringify([thread, orphaned]);
+    const cached = cards.get(thread.id);
+    if (cached?.signature === signature) return cached.card;
     const latest = latestMessage(thread);
     const card = createElement("article", "wm-thread-card");
     card.dataset.threadId = thread.id;
@@ -776,18 +801,87 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
         threadPopover?.remove();
         threadPopover = null;
         activeThreadId = null;
-        renderRail();
+        updateExpansion();
       } else controller.openThread(thread.id);
     });
+    if (cached) {
+      // Preserve the live reply form and active edit controls across remote updates.
+      const form = cached.card.querySelector('.wm-annotation-reply-form');
+      if (form) {
+        const nextForm = card.querySelector('.wm-annotation-reply-form');
+        const stateButton = nextForm?.querySelector('.wm-button-secondary');
+        if (stateButton) form.querySelector('.wm-button-secondary')?.replaceWith(stateButton);
+        nextForm?.replaceWith(form);
+      }
+      for (const editor of cached.card.querySelectorAll<HTMLElement>('[data-message-id]')) {
+        const replacement = [...card.querySelectorAll<HTMLElement>('[data-message-id]')].find(node => node.dataset.messageId === editor.dataset.messageId);
+        if (!replacement) continue;
+        const nextBody = messageBodies.get(replacement);
+        if (submittingMessages.has(editor) && submittingMessages.get(editor) === nextBody) continue;
+        if (editor.querySelector('textarea') || messageBodies.get(editor) === nextBody) replacement.replaceWith(editor);
+      }
+      cached.card.className = card.className;
+      cached.card.dataset.lastAssistant = card.dataset.lastAssistant;
+      cached.card.replaceChildren(...card.childNodes);
+      cards.set(thread.id, { card: cached.card, signature });
+      return cached.card;
+    }
+    cards.set(thread.id, { card, signature });
     return card;
   }
 
-  function renderRailVisibility(): void {
-    rail.hidden = !railOpen;
+  function updateExpansion(alignId?: string): void {
+    stopThreadScroll();
+    const before = new Map([...cards.values()].map(({ card }) => [card, card.getBoundingClientRect().height]));
+    for (const animation of threadAnimations.values()) animation.cancel();
+    threadAnimations.clear();
+    for (const [id, { card }] of cards) {
+      const expanded = id === activeThreadId;
+      card.classList.toggle('is-active', expanded);
+      card.querySelector('.wm-thread-summary')?.setAttribute('aria-expanded', String(expanded));
+      const details = card.querySelector<HTMLElement>('.wm-thread-details')!;
+      if (!expanded && details.contains(document.activeElement)) card.querySelector<HTMLButtonElement>('.wm-thread-summary')?.focus({ preventScroll: true });
+      details.inert = !expanded;
+      details.hidden = !expanded;
+    }
+    // A trailing runway permits even the last card to align below the header.
+    // Retain it while that card stays anchored, including after collapse.
+    scroller.style.paddingBottom = `${Math.max(28, scroller.clientHeight - 80)}px`;
+    const alignedCard = alignId ? cards.get(alignId)?.card : undefined;
+    const viewportTop = Math.max(scroller.getBoundingClientRect().top, rail.querySelector('.wm-annotation-rail-header')?.getBoundingClientRect().bottom ?? 0) + 12;
+    const destination = alignedCard ? scroller.scrollTop + alignedCard.getBoundingClientRect().top - viewportTop : undefined;
+    if (!(rail.ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? true)) {
+      for (const { card } of cards.values()) {
+        const from = before.get(card) ?? 0, to = card.getBoundingClientRect().height;
+        if (!card.isConnected || Math.abs(from - to) < 1 || !card.animate) continue;
+        const details = card.querySelector<HTMLElement>('.wm-thread-details')!;
+        const collapsed = card.dataset.threadId !== activeThreadId;
+        // Keep exiting content painted while the measured card clips it away.
+        if (collapsed) details.hidden = false;
+        const animation = card.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 200, easing: 'ease-out' });
+        threadAnimations.set(card, animation);
+        animation.onfinish = () => { if (threadAnimations.get(card) !== animation) return; threadAnimations.delete(card); details.hidden = collapsed; };
+      }
+    }
+    if (destination !== undefined && railOpen && scroller.getClientRects().length) stopThreadScroll = smoothScroll(scroller, destination);
+  }
+
+  function renderRailVisibility(animate = false): void {
+    const wasHidden = rail.hidden;
+    const fromTransform = wasHidden ? 'translateX(100%)' : getComputedStyle(rail).transform;
+    const fromOpacity = wasHidden ? '0' : getComputedStyle(rail).opacity;
+    drawerAnimation?.cancel();
+    rail.dataset.open = String(railOpen);
+    rail.inert = !railOpen;
+    if (!railOpen && rail.contains(document.activeElement)) document.querySelector<HTMLButtonElement>('#comment')?.focus({ preventScroll: true });
+    if (!animate || (rail.ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? true) || !rail.animate) { rail.hidden = !railOpen; return; }
+    rail.hidden = false;
+    drawerAnimation = rail.animate([{ transform: fromTransform, opacity: fromOpacity }, { transform: railOpen ? 'translateX(0)' : 'translateX(100%)', opacity: railOpen ? 1 : 0 }], { duration: 200, easing: 'ease-out' });
+    drawerAnimation.onfinish = () => { rail.hidden = !railOpen; drawerAnimation = undefined; };
   }
 
   function renderRail(): void {
-    content.replaceChildren();
+    const nextContent: HTMLElement[] = [];
     const allThreads = state.threads.filter((thread) => !thread.deleted);
     const threads = visibleThreads().sort(threadSort);
     const view = currentView();
@@ -854,17 +948,20 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     if (threads.length === 0) {
       const empty = createElement("p", "wm-empty-comments");
       empty.textContent = allThreads.length ? "No open threads." : "No threads.";
-      content.append(empty);
+      nextContent.push(empty);
     }
-    for (const thread of validThreads) content.append(renderThread(thread, false));
+    for (const thread of validThreads) nextContent.push(renderThread(thread, false));
     if (orphanedThreads.length > 0) {
       const group = createElement("section", "wm-orphan-group");
       const heading = createElement("h3");
       heading.textContent = "Orphaned threads";
       group.append(heading);
       for (const thread of orphanedThreads) group.append(renderThread(thread, true));
-      content.append(group);
+      nextContent.push(group);
     }
+    for (const child of [...content.children]) if (!nextContent.includes(child as HTMLElement)) child.remove();
+    nextContent.forEach((child, index) => { if (content.children[index] !== child) content.insertBefore(child, content.children[index] ?? null); });
+    for (const id of cards.keys()) if (!threads.some(thread => thread.id === id)) cards.delete(id);
     renderRailVisibility();
   }
 

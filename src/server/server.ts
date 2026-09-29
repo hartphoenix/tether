@@ -373,6 +373,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     const encoder = new TextEncoder();
     let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
+    let expiry: ReturnType<typeof setTimeout> | undefined;
     let unsubscribe = () => {};
     let closed = false;
     const cleanup = () => {
@@ -382,6 +383,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       themeSubscribers.delete(sendTheme);
       if (heartbeat) clearInterval(heartbeat);
       heartbeat = undefined;
+      clearTimeout(expiry);
       request.signal.removeEventListener("abort", cleanup);
       recentsStreamClosers.delete(cleanup);
       try { controller?.close(); } catch { /* the stream may already be cancelled or errored */ }
@@ -414,6 +416,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         }).catch(() => {});
         recentsStreamClosers.add(cleanup);
         request.signal.addEventListener("abort", cleanup, { once: true });
+        // Legacy readers can still reconnect after an upgrade. Bound their
+        // streams so they cannot reserve every browser connection indefinitely.
+        send("retry: 5000\n\n");
+        expiry = setTimeout(cleanup, 2000);
         heartbeat = setInterval(() => send(": keepalive\n\n"), 20_000);
         void recents.folioSnapshot({ view: "all" }).then(sendSnapshot).catch((cause) => {
           if (!closed) {
@@ -611,7 +617,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
             controller.enqueue(encoder.encode(`event: preferences\ndata: ${value}\n\n`));
           };
           const timer = setInterval(() => { if (!closed) controller.enqueue(encoder.encode(": heartbeat\n\n")); }, 20000);
-          cleanup = () => { if (closed) return; closed = true; clearInterval(timer); themeSubscribers.delete(send); recentsStreamClosers.delete(cleanup); request.signal.removeEventListener("abort", cleanup); try { controller.close(); } catch {} };
+          cleanup = () => { if (closed) return; closed = true; clearInterval(timer); clearTimeout(expiry); themeSubscribers.delete(send); recentsStreamClosers.delete(cleanup); request.signal.removeEventListener("abort", cleanup); try { controller.close(); } catch {} };
+          controller.enqueue(encoder.encode("retry: 5000\n\n"));
+          const expiry = setTimeout(() => cleanup(), 2000);
           themeSubscribers.add(send); recentsStreamClosers.add(cleanup); request.signal.addEventListener("abort", cleanup, { once: true });
           void preferenceWrites.then(async () => send(await preferences()));
         }, cancel() { cleanup(); } });
@@ -740,6 +748,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         catch (cause) { discardTicket(ticket.ticket); throw cause; }
         return json({ path: grant.path, resolvedPath: grant.realPath, opened: true });
       }
+      if (apiPath === "/preferences" && request.method === "GET") {
+        return json(displayPreferences(await hostThemes.preferences(themeClient(request, session.target), await preferences())));
+      }
       if (apiPath === "/preferences" && request.method === "PUT") {
         const body = await requestJson(request);
         const operation = preferenceWrites.then(async () => {
@@ -843,7 +854,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const suffix = `/${match![2]}`;
       if (request.method === "GET" && suffix === "/") {
         const prefs = await hostThemes.preferences(themeClient(request, session.target), await preferences());
-        return new Response(folioHtml({ pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), uiScale: prefs.uiScale, theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+        return new Response(folioHtml({ pageFind: hostAdapter.capabilities(session.target).pageFind, pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), uiScale: prefs.uiScale, theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+      }
+      if (request.method === 'GET' && suffix === '/api/preferences') {
+        const value = displayPreferences(await hostThemes.preferences(themeClient(request, session.target), await preferences()));
+        return json({ ...folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }), uiScale: value.uiScale ?? 1, committedUiScale: value.committedUiScale });
       }
       if (request.method === 'POST' && (suffix === '/api/preferences' || suffix === '/api/preferences-preview')) {
         if (!sameOrigin(request, daemon.origin)) return error('origin_mismatch', 'State-changing requests must use the daemon origin.', 403);

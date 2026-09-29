@@ -19,6 +19,8 @@ export type HostCapabilities = {
   revealFile: boolean;
   /** The reader opens local Markdown links itself, as new tabs through `api/link`, instead of asking the host. */
   pageOpensLinks?: boolean;
+  /** Host delegates its Find shortcut to the page. */
+  pageFind?: boolean;
 };
 
 export type AppPreferences = import("./themes").ThemePreferences;

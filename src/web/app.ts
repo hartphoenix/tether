@@ -1,3 +1,6 @@
+import { pollPreferences } from "./preferences-poll";
+import { installReaderFind } from "./reader-find";
+import { installMenuMotion } from "./motion";
 import { createRailResize } from "./rail-resize";
 import { updateControlStyles } from "./update-controls";
 import { mountUpdateNotice } from "./update-notice";
@@ -15,7 +18,7 @@ import { createChromeControls } from "./chrome-controls";
 import { createCanvas } from './canvas';
 import { scrollSelectionIntoView } from './scroll-geometry';
 import './canvas.css';
-import { acceptIncomingDiff, cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
+import { createIncomingNavigator, acceptIncomingDiff, cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
 import { documentLinkPath, localDocumentLink, opensAsDocument } from "./local-document-link";
 import { prepareMarkdown, restoreMarkdown } from "../core/markdown-codec";
 import { createSelectionUi, reviewNoteIconSvg, type SelectionUiController } from "./selection-ui";
@@ -59,6 +62,7 @@ for (const slot of document.querySelectorAll<HTMLElement>("[data-icon]")) {
 
 const clientId = crypto.randomUUID();
 installCmuxFindCompatibility(window);
+installMenuMotion(document);
 const localActor = "human";
 const targetActor = "assistant";
 
@@ -78,10 +82,16 @@ const conflictBar = document.querySelector<HTMLElement>("#conflict")!;
 const conflictMessage = document.querySelector<HTMLElement>("#conflict-message")!;
 const reloadButton = document.querySelector<HTMLButtonElement>("#reload")!;
 const saveReviewButton = document.querySelector<HTMLButtonElement>("#save-review")!;
+const reviewNavigation = createIncomingNavigator(getEditorView);
+const nextChangeButton = document.querySelector<HTMLButtonElement>("#next-change")!;
+const previousChangeButton = document.querySelector<HTMLButtonElement>("#previous-change")!;
+nextChangeButton.addEventListener("click", () => reviewNavigation.move(1));
+previousChangeButton.addEventListener("click", () => reviewNavigation.move(-1));
 const cancelReviewButton = document.querySelector<HTMLButtonElement>("#cancel-review")!;
 
 let crepe: Crepe | null = null;
 let canvas: ReturnType<typeof createCanvas> | null = null;
+document.addEventListener("wm-before-rail-layout", () => canvas?.setScale(canvas.scale));
 let selectionUi: SelectionUiController | null = null;
 let annotationUi: AnnotationUiController | null = null;
 let toolbarLabelObserver: MutationObserver | null = null;
@@ -112,7 +122,8 @@ const chrome = createChromeControls({
   },
 });
 let themePicker: ReturnType<typeof createThemePicker> | null = null;
-let themeEvents: EventSource | null = null;
+let stopPreferences: (() => void) | undefined;
+let stopFind: (() => void) | undefined;
 let railResize: ReturnType<typeof createRailResize> | null = null;
 let appearance: { uiScale?: number; railWidth?: number } = {};
 function applyAppearance(value: typeof appearance) {
@@ -285,6 +296,8 @@ function currentMarkdown(): string {
   catch { return savedEditorMarkdown; }
 }
 function setReviewControls(reviewing: boolean): void {
+  nextChangeButton.hidden = previousChangeButton.hidden = !reviewing;
+  if (!reviewing) reviewNavigation.reset();
   saveReviewButton.hidden = !reviewing;
   cancelReviewButton.hidden = !reviewing;
   reloadButton.hidden = reviewing;
@@ -633,10 +646,12 @@ async function lease(generation = documentGeneration, path = currentPath): Promi
 async function start(): Promise<void> {
   const bootstrap = await api<SessionBootstrap>("api/bootstrap");
   pageOpensLinks = bootstrap.capabilities?.pageOpensLinks === true;
+  stopFind?.();
+  stopFind = bootstrap.capabilities?.pageFind ? installReaderFind(getEditorView) : undefined;
   initializing = true;
   editorRoot.inert = true;
   annotationsRoot.inert = true;
-  themeEvents?.close();
+  stopPreferences?.();
   themePicker?.destroy();
   try {
     themePicker = createThemePicker(themeButton, themeMenu, editorRoot, {
@@ -648,12 +663,7 @@ async function start(): Promise<void> {
       onError: (message) => chrome.setNotice(message),
     });
     applyAppearance(bootstrap.preferences);
-    if (typeof EventSource !== "undefined") {
-      themeEvents = new EventSource('api/theme-events');
-      themeEvents.addEventListener('preferences', event => {
-        try { const value = JSON.parse(event.data); themePicker?.update(value); applyAppearance(value); } catch { /* Preserve the current theme on malformed events. */ }
-      });
-    }
+    stopPreferences = pollPreferences('api/preferences', value => { themePicker?.update(value); applyAppearance(value); });
     await openDocument(false, bootstrap.document as DocumentResponse);
     const draft = bootstrap.draft;
     const recovery = recoverDraft(bootstrap.document, draft);
@@ -765,7 +775,7 @@ addEventListener("pagehide", event => {
   railResize?.destroy();
   toolbarLabelObserver?.disconnect();
   overflowCleanup?.();
-  themeEvents?.close();
+  stopPreferences?.();
   themePicker?.destroy();
   chrome.destroy();
 });

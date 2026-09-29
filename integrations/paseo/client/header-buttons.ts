@@ -1,6 +1,6 @@
 import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 import { openRpc, type Notice } from "../shared/contracts";
-import { TetherMark } from "./mark";
+import { ThemeMark } from "./theme-mark";
 import { FOLIO_PANEL } from "./pump";
 import { getState, subscribeState } from "./state";
 
@@ -17,7 +17,7 @@ export function startHeaderButtons(client: PluginClientContext): () => void {
 
   const present = (workspaceId: string, notice: Notice | undefined, visible: boolean) => ({
     title: notice ? `Open ${notice.name} in Tether` : "Tether Folio",
-    icon: TetherMark,
+    icon: ThemeMark,
     label: notice?.name,
     visible,
     behavior: {
