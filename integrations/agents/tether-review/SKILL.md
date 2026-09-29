@@ -35,6 +35,7 @@ Use `[[../path/file.md|Label]]` for Tether wikilinks; verify paths relative to t
 
 Keep formatting readable in Tether:
 
+- Math is not currently supported in Tether. Write every literal dollar sign as `\$` in document bodies and replies (`\$20`, not `$20`); an unescaped pair of dollar signs garbles the text between them.
 - Do not use Mermaid code blocks for diagrams; Milkdown renders them as plain text.
 - Do not use tables or code blocks in thread replies; use prose, lists, or inline code instead.
 - Use at most four columns in tables in document bodies to keep them readable.

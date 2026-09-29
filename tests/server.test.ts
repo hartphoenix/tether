@@ -823,19 +823,19 @@ test("Folio theme events follow committed saves and reconnect with the current p
     method: "PUT", headers: { origin: daemon.origin }, body: JSON.stringify(body),
   });
   const events = await connect();
-  expect(await events.next()).toEqual(folioTheme());
+  expect(await events.next()).toMatchObject(folioTheme());
   expect((await put({ theme: "tether" })).status).toBe(200);
-  expect(await events.next()).toEqual(folioTheme({ theme: "tether" }));
+  expect(await events.next()).toMatchObject(folioTheme({ theme: "tether" }));
   const theme = { ...tetherDesign(true), id: "custom-live", name: "Live" };
   expect((await put({ theme: theme.id, saveTheme: theme })).status).toBe(200);
-  expect(await events.next()).toEqual(folioTheme({ design: theme }));
+  expect(await events.next()).toMatchObject(folioTheme({ design: theme }));
   const edited = { ...theme, colors: { ...theme.colors, background: "#123456" } };
   expect((await put({ saveTheme: edited })).status).toBe(200);
-  expect(await events.next()).toEqual(folioTheme({ design: edited }));
+  expect(await events.next()).toMatchObject(folioTheme({ design: edited }));
   expect((await put({ saveTheme: { ...theme, metrics: { bodySize: 500 } } })).status).toBe(400);
   await events.cancel();
   const reconnected = await connect();
-  expect(await reconnected.next()).toEqual(folioTheme({ design: edited }));
+  expect(await reconnected.next()).toMatchObject(folioTheme({ design: edited }));
   await reconnected.cancel();
 });
 
@@ -870,4 +870,32 @@ test("reader and Folio skill reviews require scoped access and same-origin decis
   expect(response.status).toBe(200);
   expect(await readFile(installed.path, "utf8")).toBe("Updated bundle");
   expect(await listAgentSkillReviews(file.config)).toEqual([]);
+});
+
+test('appearance preview reaches ordinary readers without persistence and cancel restores the latest commit', async () => {
+  const file = await fixture();
+  const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000 });
+  daemons.push(daemon); await daemon.ready;
+  const reader = await exchange(daemon, file.path), folio = await exchangeRecents(daemon, file.config);
+  const post = (endpoint: string, body: unknown, origin = daemon.origin) => fetch(recentsUrl(daemon, folio.location, `api/${endpoint}`), {
+    method: 'POST', headers: { cookie: folio.cookie, origin, 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const events = sseSnapshots<{ uiScale?: number; railWidth?: number; committedUiScale: number }>(await sessionFetch(daemon, reader.location, reader.cookie, 'api/theme-events'), 'preferences');
+  try {
+    expect((await events.next()).committedUiScale).toBe(1);
+    expect((await post('preferences', { uiScale: 1.1, railWidth: 410 })).status).toBe(200);
+    expect(await events.next()).toMatchObject({ uiScale: 1.1, railWidth: 410, committedUiScale: 1.1 });
+    const saved = await readFile(file.config.preferencesPath, 'utf8');
+    expect((await post('preferences-preview', { owner: 'one', uiScale: 1.5 })).status).toBe(200);
+    expect(await events.next()).toMatchObject({ uiScale: 1.5, committedUiScale: 1.1 });
+    expect(await readFile(file.config.preferencesPath, 'utf8')).toBe(saved);
+    expect((await post('preferences', { uiScale: 1.2, owner: 'two' })).status).toBe(200);
+    expect(await events.next()).toMatchObject({ uiScale: 1.5, committedUiScale: 1.2 });
+    expect((await post('preferences-preview', { owner: 'one', uiScale: null })).status).toBe(200);
+    expect(await events.next()).toMatchObject({ uiScale: 1.2, railWidth: 410, committedUiScale: 1.2 });
+    expect((await post('preferences-preview', { owner: 'one', uiScale: 9 })).status).toBe(400);
+    expect((await post('preferences', { railWidth: 900 })).status).toBe(400);
+    expect((await post('preferences-preview', { owner: 'one', uiScale: 1 }, 'https://other.invalid')).status).toBe(403);
+    expect((await fetch(recentsUrl(daemon, folio.location, 'api/preferences'), { method: 'POST', headers: { origin: daemon.origin }, body: '{}' })).status).toBe(401);
+  } finally { await events.cancel(); }
 });

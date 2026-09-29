@@ -1,6 +1,7 @@
 import type { Editor } from "@milkdown/kit/core";
 import { commandsCtx, editorViewCtx } from "@milkdown/kit/core";
 import {
+  acceptAllDiffsCmd,
   clearDiffReviewCmd,
   diff,
   diffPluginKey,
@@ -32,4 +33,8 @@ export function cancelIncomingDiff(editor: Editor): boolean {
     cleared = ctx.get(commandsCtx).call(clearDiffReviewCmd.key);
   });
   return cleared;
+}
+
+export function acceptIncomingDiff(editor: Editor): void {
+  editor.action(ctx => { ctx.get(commandsCtx).call(acceptAllDiffsCmd.key); });
 }

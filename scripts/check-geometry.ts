@@ -249,6 +249,38 @@ async function topology(page: Page, scale: number) {
   check(Math.abs(afterY - visibleY) < 3, `long passage reading anchor drift at scale=${scale}: before=${visibleY}, after=${afterY}`);
   console.log(`PASS canvas scale=${scale}`);
 }
+async function appearanceGeometry(page: Page) {
+  await page.goto(server.url.toString());
+  await page.waitForFunction(() => (window as any).ready);
+  await page.evaluate(() => (window as any).audit.overflowThread());
+  const assertOverflow = async (selector: string) => check(await page.locator(selector).evaluate(el => el.scrollWidth <= el.clientWidth), `reply overflow in ${selector}`);
+  await assertOverflow('.wm-annotation-rail-scroll');
+  const handle = page.getByRole('separator', { name: 'Threads width' });
+  await handle.focus(); await page.keyboard.press('ArrowLeft');
+  check(await handle.getAttribute('aria-valuenow') === '316', 'focused arrow resize');
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x + 3, box.y + 100); await page.mouse.down(); await page.mouse.move(box.x - 81, box.y + 100); await page.mouse.up();
+  check(await handle.getAttribute('aria-valuenow') === '400', 'pointer resize');
+  await page.setViewportSize({ width: 700, height: 800 });
+  await page.waitForTimeout(60);
+  check(await handle.getAttribute('aria-valuenow') === '380', 'pane clamps rail to document minimum');
+  check(await page.evaluate(() => (window as any).savedRailWidth) === 400, 'reflow must not save clamped width');
+  await page.setViewportSize({ width: 1200, height: 800 }); await page.waitForTimeout(60);
+  check(await handle.getAttribute('aria-valuenow') === '400', 'widen restores saved width');
+  for (const scale of [.7, 1, 1.5]) {
+    await page.evaluate(scale => document.documentElement.style.setProperty('--wm-ui-scale', String(scale)), scale);
+    await assertOverflow('.wm-annotation-rail-scroll');
+    check(await page.locator('.milkdown-top-bar').evaluate(el => el.getBoundingClientRect().height) === 36 * Math.max(1, scale), 'topbar scale floor');
+  }
+  await page.evaluate(() => { const a = (window as any).audit.annotations; a.setRailOpen(false); a.openThread('overflow'); });
+  await assertOverflow('.wm-thread-popover');
+  check(await page.locator('.wm-thread-popover pre').evaluate(el => el.scrollWidth > el.clientWidth), 'long code scrolls internally');
+  await page.setViewportSize({ width: 600, height: 800 });
+  await page.evaluate(() => (window as any).audit.annotations.setRailOpen(true));
+  check(!await handle.isVisible(), 'mobile overlay hides resize handle');
+  await page.setViewportSize({ width: 1200, height: 800 });
+  console.log('PASS overflow, rail resize, reflow, and interface scale');
+}
 try {
   for (const [name, type] of Object.entries({ chromium, webkit })) {
     let browser: Browser | undefined;
@@ -259,6 +291,7 @@ try {
       page.on('pageerror', error => console.error('Fixture error:', error.message));
       page.setDefaultTimeout(10000);
       console.log(`${name} ${browser.version()}`);
+      await appearanceGeometry(page);
       for (const kind of ['long-prefix', 'image-only']) for (const scale of [1, 1.25]) await readerStartup(page, kind, scale);
       for (const scale of [.75, 1, 1.13, 1.25, 1.75]) await topology(page, scale);
       await context.close();

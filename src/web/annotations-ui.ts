@@ -734,7 +734,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     const latest = latestMessage(thread);
     const card = createElement("article", "wm-thread-card");
     card.dataset.threadId = thread.id;
-    card.dataset.actorColor = actorColor(latest.actor);
+    card.dataset.lastAssistant = String(actorMatches(latest.actor, "assistant"));
     if (thread.id === activeThreadId) card.classList.add("is-active");
     if (orphaned) card.classList.add("is-orphaned");
     if (thread.resolved) card.classList.add("is-resolved");
@@ -744,7 +744,6 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     summary.setAttribute("aria-label", `Open thread started by ${thread.actor}`);
     const identity = createElement("span", "wm-thread-identity");
     const dot = createElement("span", "wm-actor-dot");
-    dot.dataset.actorColor = actorColor(latest.actor);
     dot.setAttribute("aria-hidden", "true");
     const actor = createElement("span", "wm-thread-actor");
     actor.textContent = latest.actor;

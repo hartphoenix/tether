@@ -1,3 +1,4 @@
+import { createRailResize } from '../../src/web/rail-resize';
 import { Crepe } from '@milkdown/crepe';
 import { editorStateOptionsCtx, editorViewCtx } from '@milkdown/kit/core';
 import { TextSelection } from '@milkdown/kit/prose/state';
@@ -40,7 +41,15 @@ const canvas = createCanvas(view);
 canvas.setScale(Number(new URL(location.href).searchParams.get('scale') ?? 1), { preserveScroll: false });
 view.setProps({handleScrollToSelection: scrollSelectionIntoView});
 annotations.attachEditorView(view);
+const railResize = createRailResize(document.querySelector('#workspace')!, document.querySelector('.wm-annotation-rail')!, async width => { (window as any).savedRailWidth = width; }, error => { throw error; });
 (window as any).audit = {
+  railResize,
+  overflowThread() {
+    const anchor = this.selectLink(0)!;
+    annotations.setState({ threads: [{ id: 'overflow', actor: 'human', body: 'Question', createdAt: '2026-09-28T00:00:00Z', anchor,
+      replies: [{ id: 'reply', actor: 'assistant', createdAt: '2026-09-28T00:01:00Z', body: '\x60\x60\x60\n' + 'x'.repeat(200) + '\n\x60\x60\x60\n\n| One | Two | Three | Four | Five | Six |\n| --- | --- | --- | --- | --- | --- |\n| wide | wide | wide | wide | wide | wide |' }] }] });
+    annotations.setRailOpen(true); annotations.openThread('overflow');
+  },
   crepe, view, annotations, selection, canvas,
   setZoom: (z: number) => canvas.setScale(z),
   selectLink(i: number) {

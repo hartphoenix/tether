@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { builtInDesign, builtInThemes, contrastRatio, preferencesFrom, tetherDesign, updatePreferences, validateCustomTheme } from '../src/shared/themes';
+import { chipRing, builtInDesign, builtInThemes, contrastRatio, preferencesFrom, tetherDesign, updatePreferences, validateCustomTheme } from '../src/shared/themes';
 import { googleFontCandidates } from '../src/web/theme-fonts';
 
 const custom = (id = 'custom-one', name = 'Slate') => ({ ...tetherDesign(true), id, name });
@@ -83,5 +83,22 @@ test('Paseo palettes preserve readable text, accents, and controls across their 
     for (const background of [c.background, c.surface, c['surface-low']]) {
       expect(contrastRatio(c.outline, background), label).toBeGreaterThanOrEqual(3);
     }
+  }
+});
+
+test('appearance preferences survive theme edits and reject invalid mutations', () => {
+  const value = preferencesFrom({ uiScale: 1.25, railWidth: 450 });
+  expect(updatePreferences(value, { theme: 'tether' })).toMatchObject({ uiScale: 1.25, railWidth: 450 });
+  expect(preferencesFrom({ uiScale: 8, railWidth: '300' })).toEqual(preferencesFrom(null));
+  for (const uiScale of [0.69, 1.51, NaN, '1']) expect(() => updatePreferences(value, { uiScale })).toThrow();
+  for (const railWidth of [227, 641, Infinity]) expect(() => updatePreferences(value, { railWidth })).toThrow();
+});
+
+test('chip rings and incoming banner maintain preset contrast', () => {
+  const mix = (a: string, b: string, weight: number) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * weight + parseInt(b.slice(i, i + 2), 16) * (1 - weight)).toString(16).padStart(2, '0')).join('');
+  for (const { value: id } of builtInThemes) {
+    const c = builtInDesign(id)!.colors;
+    for (const dot of [c.annotation, c.selected]) expect(contrastRatio(chipRing(c, dot), dot)).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio(c['on-background'], mix(c.annotation, c.background, .18))).toBeGreaterThanOrEqual(4.5);
   }
 });

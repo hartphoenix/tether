@@ -154,6 +154,12 @@ test("Paseo theme inheritance is cookie-scoped, live, and unavailable in other h
   const reader = stream.body!.getReader();
   try {
     expect(new TextDecoder().decode((await reader.read()).value)).toContain('paseo-midnight');
+    const resized = await (await choose({ railWidth: 500, uiScale: 1.25 })).json() as any;
+    expect(resized).toMatchObject({ theme: 'paseo-midnight', inheritPaseoTheme: true, railWidth: 500, uiScale: 1.25 });
+    const appearanceEvent = new TextDecoder().decode((await reader.read()).value);
+    expect(appearanceEvent).toContain('paseo-midnight');
+    expect(appearanceEvent).toContain('"inheritPaseoTheme":true');
+    expect(appearanceEvent).toContain('"uiScale":1.25');
     await hub.theme(clientId, 'paseo-ghostty');
     expect(new TextDecoder().decode((await reader.read()).value)).toContain('paseo-ghostty');
   } finally { abort.abort(); await reader.cancel().catch(() => {}); }

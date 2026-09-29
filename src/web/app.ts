@@ -1,9 +1,11 @@
+import { createRailResize } from "./rail-resize";
 import { updateControlStyles } from "./update-controls";
 import { mountUpdateNotice } from "./update-notice";
 import { iconSvg } from "./icons";
 import { decreaseQuoteLevel } from "./editor-commands";
 import { Crepe } from "@milkdown/crepe";
 import { EditorStatus, editorStateOptionsCtx, editorViewCtx } from "@milkdown/kit/core";
+import { Plugin } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose, replaceAll, callCommand } from "@milkdown/kit/utils";
 import { createCodeBlockCommand } from "@milkdown/kit/preset/commonmark";
@@ -13,7 +15,7 @@ import { createChromeControls } from "./chrome-controls";
 import { createCanvas } from './canvas';
 import { scrollSelectionIntoView } from './scroll-geometry';
 import './canvas.css';
-import { cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
+import { acceptIncomingDiff, cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
 import { documentLinkPath, localDocumentLink, opensAsDocument } from "./local-document-link";
 import { prepareMarkdown, restoreMarkdown } from "../core/markdown-codec";
 import { createSelectionUi, reviewNoteIconSvg, type SelectionUiController } from "./selection-ui";
@@ -111,6 +113,13 @@ const chrome = createChromeControls({
 });
 let themePicker: ReturnType<typeof createThemePicker> | null = null;
 let themeEvents: EventSource | null = null;
+let railResize: ReturnType<typeof createRailResize> | null = null;
+let appearance: { uiScale?: number; railWidth?: number } = {};
+function applyAppearance(value: typeof appearance) {
+  appearance = value;
+  document.documentElement.style.setProperty('--wm-ui-scale', String(value.uiScale ?? 1));
+  railResize?.update(value.railWidth);
+}
 
 function apiPath(pathname: string): string {
   return pathname.replace(/^\//, "").replace(/^api\//, "api/");
@@ -278,7 +287,9 @@ function currentMarkdown(): string {
 function setReviewControls(reviewing: boolean): void {
   saveReviewButton.hidden = !reviewing;
   cancelReviewButton.hidden = !reviewing;
-  saveReviewButton.disabled = reviewing && Boolean(crepe?.editor.status === EditorStatus.Created && incomingDiffActive(crepe.editor));
+  reloadButton.hidden = reviewing;
+  saveReviewButton.disabled = false;
+  cancelReviewButton.disabled = false;
 }
 function showConflict(message = "This file changed elsewhere. Your unsaved version has not been overwritten."): void {
   conflicted = true;
@@ -491,9 +502,19 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       onEdit: async ({ thread, targetId, body }) => postAnnotation("/api/annotations/edit", { threadId: thread.id, targetId, body }, generation, currentPath),
       onDelete: async ({ thread, targetId }) => postAnnotation("/api/annotations/delete", { threadId: thread.id, targetId }, generation, currentPath),
     });
+    railResize?.destroy();
+    railResize = createRailResize(document.querySelector('#workspace')!, annotationsRoot.querySelector('.wm-annotation-rail')!,
+      width => api('api/preferences', { method: 'PUT', body: JSON.stringify({ railWidth: width }) }),
+      error => chrome.setNotice(`Could not save threads width: ${String(error)}`));
+    railResize.update(appearance.railWidth);
     const annotationPlugin = $prose(() => nextAnnotationUi.plugin);
     nextCrepe.editor.config(ctx => ctx.update(editorStateOptionsCtx, previous => options => initialReaderSelection(previous(options))));
-    nextCrepe.editor.use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
+    const completionPlugin = $prose(() => new Plugin({ view: () => ({ update() {
+      if (incomingReview && !reviewSaving && !incomingDiffActive(nextCrepe.editor)) {
+        queueMicrotask(() => { if (crepe === nextCrepe) void saveReviewed(); });
+      }
+    } }) }));
+    nextCrepe.editor.use(completionPlugin).use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
     try { await nextCrepe.create(); }
     catch (error) { nextSelectionUi.destroy(); nextAnnotationUi.destroy(); throw error; }
     crepe = nextCrepe;
@@ -519,7 +540,6 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     crepe.on((listener) => listener.markdownUpdated(() => {
       const currentView = getEditorView();
       if (currentView) document.title = documentTabTitle(currentPath, currentView.state.doc);
-      if (incomingReview && crepe) saveReviewButton.disabled = incomingDiffActive(crepe.editor);
       scheduleSave();
     }));
     applyAnnotationState(documentResponse.annotations);
@@ -548,28 +568,38 @@ async function beginIncomingReview(generation = documentGeneration, path = curre
   if (!startIncomingDiff(crepe.editor, prepared.editorMarkdown)) { incomingReview = null; showConflict(); return; }
   currentLedgerRevision = disk.ledgerRevision;
   applyAnnotationState(disk.annotations);
-  showConflict("Review incoming disk changes in the document. Accept or reject each change, then save the reviewed result.");
+  showConflict("There are new changes for your review.");
+  if (!incomingDiffActive(crepe.editor)) void saveReviewed();
 }
+let reviewSaving = false;
 async function saveReviewed(): Promise<void> {
-  if (!crepe || !incomingReview || incomingDiffActive(crepe.editor)) return;
+  if (!crepe || !incomingReview || reviewSaving || incomingDiffActive(crepe.editor)) return;
+  reviewSaving = true;
+  const generation = documentGeneration;
   const review = incomingReview;
   saveReviewButton.disabled = true;
+  cancelReviewButton.disabled = true;
   try {
     const markdown = currentMarkdown();
     const result = await api<DocumentResponse>("api/file", {
       method: "PUT",
       body: JSON.stringify({ content: restoreMarkdown(markdown, review.frontmatter), expectedBodyRevision: review.bodyRevision }),
     });
+    if (generation !== documentGeneration) return;
     currentFrontmatter = review.frontmatter;
     currentBodyRevision = result.bodyRevision;
     currentLedgerRevision = result.ledgerRevision;
     savedEditorMarkdown = markdown;
     clearConflict();
+    if (currentMarkdown() === markdown) await draftPersistence.clear();
+    else scheduleSave();
     await refreshAnnotations();
   } catch (error) {
+    if (generation !== documentGeneration) return;
+    incomingReview = null;
     chrome.setNotice(`Reviewed save failed: ${(error as Error).message}`, 0);
     showConflict("The disk changed again during review. Reload it before continuing.");
-  }
+  } finally { reviewSaving = false; }
 }
 async function lease(generation = documentGeneration, path = currentPath): Promise<void> {
   try {
@@ -617,10 +647,11 @@ async function start(): Promise<void> {
       persist: (mutation) => api("api/preferences", { method: "PUT", body: JSON.stringify(mutation) }),
       onError: (message) => chrome.setNotice(message),
     });
-    if (bootstrap.preferences.inheritPaseoTheme !== undefined) {
+    applyAppearance(bootstrap.preferences);
+    if (typeof EventSource !== "undefined") {
       themeEvents = new EventSource('api/theme-events');
       themeEvents.addEventListener('preferences', event => {
-        try { themePicker?.update(JSON.parse(event.data)); } catch { /* Preserve the current theme on malformed events. */ }
+        try { const value = JSON.parse(event.data); themePicker?.update(value); applyAppearance(value); } catch { /* Preserve the current theme on malformed events. */ }
       });
     }
     await openDocument(false, bootstrap.document as DocumentResponse);
@@ -677,11 +708,9 @@ async function exportReview(): Promise<void> {
     link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (error) { chrome.setNotice(`Export failed: ${(error as Error).message}`, 0); }
 }
-saveReviewButton.addEventListener("click", () => void saveReviewed());
+saveReviewButton.addEventListener("click", () => { if (crepe && incomingReview) acceptIncomingDiff(crepe.editor); });
 cancelReviewButton.addEventListener("click", () => {
-  if (crepe) cancelIncomingDiff(crepe.editor);
-  incomingReview = null;
-  showConflict("Incoming review cancelled. Reload disk to discard your version; it has not been overwritten.");
+  if (crepe && incomingReview) cancelIncomingDiff(crepe.editor);
 });
 // Hosts that turn a page's new tab into their own tab let the reader open
 // documents directly, still inside the click, so no host round trip moves focus.
@@ -733,6 +762,7 @@ addEventListener("pagehide", event => {
   connection.dispose();
   selectionUi?.destroy();
   annotationUi?.destroy();
+  railResize?.destroy();
   toolbarLabelObserver?.disconnect();
   overflowCleanup?.();
   themeEvents?.close();

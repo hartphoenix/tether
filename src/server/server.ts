@@ -259,6 +259,52 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const recentsSessions = new Map<string, RecentsSession>();
   const recentsStreamClosers = new Set<() => void>();
   const themeSubscribers = new Set<(value: AppPreferences) => void>();
+  let scalePreview: { owner: string; uiScale: number } | undefined;
+  let previewTimer: ReturnType<typeof setTimeout> | undefined;
+  const displayPreferences = (base: AppPreferences) => ({ ...base, committedUiScale: base.uiScale ?? 1, ...(scalePreview ? { uiScale: scalePreview.uiScale } : {}) });
+  const broadcastPreferences = () => {
+    const operation = preferenceWrites.then(async () => {
+      const value = await preferences();
+      for (const subscriber of themeSubscribers) subscriber(value);
+    });
+    preferenceWrites = operation.catch(() => {});
+    return operation;
+  };
+  function validateAppearance(base: AppPreferences, body: Record<string, unknown>) {
+    try { return updatePreferences(base, { uiScale: body.uiScale, railWidth: body.railWidth }); }
+    catch (cause) { throw invalidRequest((cause as Error).message); }
+  }
+  function previewScale(body: Record<string, unknown>) {
+    if (typeof body.owner !== 'string' || body.owner.length > 100 || !body.owner) throw invalidRequest('Preview owner required');
+    if (body.uiScale === null) {
+      if (scalePreview?.owner !== body.owner) return;
+      scalePreview = undefined;
+      clearTimeout(previewTimer);
+    } else {
+      const checked = validateAppearance(preferencesFrom(null), { uiScale: body.uiScale });
+      if (checked.uiScale === undefined) throw invalidRequest('Scale required');
+      scalePreview = { owner: body.owner, uiScale: checked.uiScale };
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(() => { scalePreview = undefined; void broadcastPreferences(); }, 15000);
+      previewTimer.unref();
+    }
+    void broadcastPreferences();
+  }
+  function saveAppearance(body: Record<string, unknown>) {
+    const operation = preferenceWrites.then(async () => {
+      const value = validateAppearance(await preferences(), body);
+      const { mkdir, writeFile, rename } = await import('node:fs/promises');
+      await mkdir(dirname(config.preferencesPath), { recursive: true, mode: 0o700 });
+      const temp = `${config.preferencesPath}.${crypto.randomUUID()}.tmp`;
+      await writeFile(temp, JSON.stringify(value), { mode: 0o600 });
+      await rename(temp, config.preferencesPath);
+      if (scalePreview?.owner === body.owner) { scalePreview = undefined; clearTimeout(previewTimer); }
+      for (const subscriber of themeSubscribers) subscriber(value);
+      return value;
+    });
+    preferenceWrites = operation.catch(() => {});
+    return operation;
+  }
   const hostThemes = new HostThemes(join(config.configDir, "host-themes.json"), () => {
     void preferences().then(value => { for (const subscriber of themeSubscribers) subscriber(value); });
   });
@@ -347,8 +393,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     };
     let lastTheme = "";
     const sendTheme = async (base: AppPreferences) => {
-      const value = await hostThemes.preferences(clientId, base);
-      const theme = JSON.stringify(folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }));
+      const value = displayPreferences(await hostThemes.preferences(clientId, base));
+      const theme = JSON.stringify({ ...folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }), uiScale: value.uiScale ?? 1, committedUiScale: value.committedUiScale });
       if (theme === lastTheme) return;
       lastTheme = theme;
       send(`event: theme\ndata: ${theme}\n\n`);
@@ -554,13 +600,12 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     try {
       if (apiPath === "/theme-events" && request.method === "GET") {
         const id = themeClient(request, session.target);
-        if (!id) return error("not_found", "Host theme unavailable", 404);
         const encoder = new TextEncoder();
         let cleanup = () => {};
         const stream = new ReadableStream({ start(controller) {
           let closed = false, last = "";
           const send = async (base: AppPreferences) => {
-            const value = JSON.stringify(await hostThemes.preferences(id, base));
+            const value = JSON.stringify(displayPreferences(await hostThemes.preferences(id, base)));
             if (closed || value === last) return;
             last = value;
             controller.enqueue(encoder.encode(`event: preferences\ndata: ${value}\n\n`));
@@ -574,7 +619,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       if (apiPath === "/bootstrap" && request.method === "GET") {
         const document = await service.read(session.grant);
-        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, draft: views.draft(session.id), scroll: views.position(session.id), document, capabilities: hostAdapter.capabilities(session.target), preferences: await hostThemes.preferences(themeClient(request, session.target), await preferences()), actor: options.actor ?? "assistant" });
+        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, draft: views.draft(session.id), scroll: views.position(session.id), document, capabilities: hostAdapter.capabilities(session.target), preferences: displayPreferences(await hostThemes.preferences(themeClient(request, session.target), await preferences())), actor: options.actor ?? "assistant" });
       }
       if (apiPath === "/position" && request.method === "POST") {
         const body = await requestJson(request);
@@ -798,7 +843,15 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const suffix = `/${match![2]}`;
       if (request.method === "GET" && suffix === "/") {
         const prefs = await hostThemes.preferences(themeClient(request, session.target), await preferences());
-        return new Response(folioHtml({ pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+        return new Response(folioHtml({ pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), uiScale: prefs.uiScale, theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+      }
+      if (request.method === 'POST' && (suffix === '/api/preferences' || suffix === '/api/preferences-preview')) {
+        if (!sameOrigin(request, daemon.origin)) return error('origin_mismatch', 'State-changing requests must use the daemon origin.', 403);
+        try {
+          const body = await requestJson(request);
+          if (suffix === '/api/preferences-preview') { previewScale(body); return json({ previewed: true }); }
+          return json(await saveAppearance(body));
+        } catch (cause) { return controlError(cause); }
       }
       if (request.method === "GET" && suffix === "/api/files") return json(await recents.files());
       const updateResponse = await updateRequest(request, suffix);
@@ -1131,6 +1184,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (timer) clearInterval(timer);
       timer = undefined;
       for (const close of [...recentsStreamClosers]) close();
+      clearTimeout(previewTimer);
       pullQueue.close();
       stopping = (async () => {
       await initialization;

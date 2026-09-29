@@ -55,7 +55,7 @@ export type ThemeDesign = {
   metrics: Record<Metric, number>;
 };
 export type CustomTheme = ThemeDesign & { id: `custom-${string}`; name: string };
-export type ThemePreferences = { theme: ThemeId; customThemes: CustomTheme[]; inheritPaseoTheme?: boolean };
+export type ThemePreferences = { theme: ThemeId; customThemes: CustomTheme[]; inheritPaseoTheme?: boolean; uiScale?: number; railWidth?: number };
 export type ThemeMutation = { inheritPaseoTheme?: boolean; theme?: ThemeId; saveTheme?: CustomTheme; deleteTheme?: string };
 
 // Migrate retired presets without losing custom designs based on them.
@@ -111,6 +111,20 @@ export function validateCustomTheme(value: unknown): CustomTheme {
   }
   return result;
 }
+function appearancePreferences(raw: Record<string, unknown> | ThemePreferences, strict: boolean): { uiScale?: number; railWidth?: number } {
+  const result: { uiScale?: number; railWidth?: number } = {};
+  for (const [key, min, max] of [['uiScale', 0.7, 1.5], ['railWidth', 228, 640]] as const) {
+    const value = raw[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+      if (strict) throw new Error(`Invalid ${key}`);
+      continue;
+    }
+    result[key] = value;
+  }
+  return result;
+}
+
 export function preferencesFrom(value: unknown): ThemePreferences {
   const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const customThemes: CustomTheme[] = [];
@@ -119,7 +133,7 @@ export function preferencesFrom(value: unknown): ThemePreferences {
   }
   const selected = migrateTheme(raw.theme);
   const theme = isBuiltInTheme(selected) || customThemes.some(t => t.id === selected) ? selected as ThemeId : 'tether-dark';
-  return { theme, customThemes };
+  return { theme, customThemes, ...appearancePreferences(raw, false) };
 }
 export function updatePreferences(current: ThemePreferences, value: unknown): ThemePreferences {
   const raw = object(value);
@@ -136,7 +150,7 @@ export function updatePreferences(current: ThemePreferences, value: unknown): Th
   }
   const theme = raw.theme ?? (current.theme === raw.deleteTheme ? 'tether-dark' : current.theme);
   if (!isBuiltInTheme(theme) && !customThemes.some(t => t.id === theme)) throw new Error('Theme not found.');
-  return { theme: theme as ThemeId, customThemes };
+  return { theme: theme as ThemeId, customThemes, ...appearancePreferences(current, false), ...appearancePreferences(raw, true) };
 }
 export function builtInDesign(id: ThemeId): ThemeDesign | undefined {
   if (!Object.hasOwn(themePresets, id)) return undefined;
@@ -152,4 +166,15 @@ export function contrastRatio(a: string, b: string): number {
   };
   const [x, y] = [luminance(a), luminance(b)];
   return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+
+/** Theme-derived edge that stays visible even when amber and light text coincide. */
+export function chipRing(colors: ThemeColors, fill: string): string {
+  const ink = [colors['on-surface'], colors.background].sort((a, b) => contrastRatio(b, fill) - contrastRatio(a, fill))[0]!;
+  for (let step = 11; step <= 20; step++) {
+    const weight = step / 20;
+    const mixed = '#' + [1, 3, 5].map(i => Math.round(parseInt(ink.slice(i, i + 2), 16) * weight + parseInt(fill.slice(i, i + 2), 16) * (1 - weight)).toString(16).padStart(2, '0')).join('');
+    if (contrastRatio(mixed, fill) >= 3) return mixed;
+  }
+  return ink;
 }

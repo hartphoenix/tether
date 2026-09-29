@@ -1,4 +1,4 @@
-import { builtInThemes, colorKeys, fontSlots, metrics, preferencesFrom, updatePreferences, builtInDesign, type BuiltInTheme, type CustomTheme, type Metric, type ThemeDesign, type ThemeId, type ThemeMutation, type ThemePreferences } from '../shared/themes';
+import { chipRing, builtInThemes, colorKeys, fontSlots, metrics, preferencesFrom, updatePreferences, builtInDesign, type BuiltInTheme, type CustomTheme, type Metric, type ThemeDesign, type ThemeId, type ThemeMutation, type ThemePreferences } from '../shared/themes';
 import { createThemeMaker } from './theme-maker';
 import { iconSvg } from './icons';
 import { createFontLoader } from './theme-fonts';
@@ -14,6 +14,7 @@ export function applyDesign(editorRoot: HTMLElement, base: BuiltInTheme, design?
   html.style.removeProperty('--wm-page-background'); html.style.removeProperty('--wm-page-color');
   html.style.colorScheme = base.endsWith('-dark') ? 'dark' : 'light';
   if (!design) return;
+  for (const key of ['annotation', 'selected'] as const) html.style.setProperty(`--wm-${key}-ring`, chipRing(design.colors, design.colors[key]));
   for (const key of colorKeys) html.style.setProperty(`--wm-color-${key}`, design.colors[key]);
   for (const slot of fontSlots) html.style.setProperty(`--wm-font-${slot}`, `"${design.fonts[slot].family}", ${design.fonts[slot].fallback}`);
   for (const key of Object.keys(metrics) as Metric[]) {
