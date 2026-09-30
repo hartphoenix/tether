@@ -86,6 +86,7 @@
 
 .tether-icon { width: calc(20px * var(--wm-ui-scale, 1)); height: calc(20px * var(--wm-ui-scale, 1)); flex-shrink: 0; fill: currentColor; stroke: none; }
 .wm-comment-button:hover { background: var(--crepe-color-hover); }
+.wm-host-return { width: auto; max-width: 180px; height: auto; min-height: 32px; padding: 4px 8px; font: inherit; overflow-wrap: anywhere; }
 .wm-comment-button.is-active { color: var(--crepe-color-primary); background: var(--crepe-color-selected); }
 .wm-overflow-trigger:focus-visible,
 .wm-comment-button:focus-visible { outline: calc(2px * var(--wm-ui-scale, 1)) solid var(--crepe-color-primary); outline-offset: calc(1px * var(--wm-ui-scale, 1)); }
