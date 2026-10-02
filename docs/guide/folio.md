@@ -14,6 +14,8 @@ Using the **Sort** button (slider icon), you can sort by when a document was ope
 
 The **Folio Menu** (three lines icon) has batch selection, import, and **settings**:
 
+**Interface scale** changes application controls; **Comment text** independently sets conversation body text, starting at 16px. Both apply across readers in the current Tether profile. The threads drawer's zoom button exposes the same two controls. **Default document zoom** controls how newly opened documents are scaled.
+
 ### Archive retention
 
 Archived conversations default to **Keep forever**. Via **settings**, you can choose a custom retention period or **Delete immediately**; when an entry expires, Tether deletes its private conversation and recovery data but leaves the Markdown file alone.

@@ -10,7 +10,8 @@
   },
   "scripts": {
     "test": "bun test",
-    "check": "bun test && bunx tsc --noEmit && bun run build:web",
+    "check": "bun test && bunx tsc --noEmit && bun run check:reader && bun run build:web",
+    "check:reader": "bun scripts/check-reader-model.ts && bun scripts/check-reader-workflows.ts",
     "check:geometry": "bun scripts/check-geometry.ts",
     "build:web": "bun build ./src/web/app.ts ./src/web/index.html --outdir ./dist --minify --splitting",
     "build:release": "bun scripts/build-release.ts"
@@ -18,6 +19,7 @@
   "dependencies": {
     "@milkdown/crepe": "7.22.1",
     "@milkdown/kit": "7.22.1",
+    "github-slugger": "2.0.0",
     "mermaid": "12.0.0",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",

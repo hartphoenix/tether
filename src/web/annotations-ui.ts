@@ -59,6 +59,7 @@ export interface ReplyDraft {
 }
 
 export interface AnnotationUiOptions {
+  sizingControl?: HTMLElement;
   /** Element into which the controller mounts its narrow rail. */
   root: HTMLElement;
   /** The rendered editor root, used for selecting anchors and footnotes. */
@@ -427,14 +428,27 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     setState(nextState) {
       if (destroyed) return;
       const focused = rail.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+      const previousOrder = [...content.querySelectorAll<HTMLElement>('[data-thread-id]')].map(card => card.dataset.threadId!);
+      const previousIndex = activeThreadId ? previousOrder.indexOf(activeThreadId) : -1;
       state = { threads: [...nextState.threads] };
+      const visible = new Set(visibleThreads().map(thread => thread.id));
+      const removedActive = activeThreadId !== null && !visible.has(activeThreadId);
+      let nextThreadId: string | undefined;
+      if (removedActive) {
+        nextThreadId = previousOrder.slice(previousIndex + 1).find(id => visible.has(id))
+          ?? previousOrder.slice(0, previousIndex).reverse().find(id => visible.has(id));
+        activeThreadId = null;
+        threadPopover?.remove();
+        threadPopover = null;
+      }
       renderRail();
       if (focused?.isConnected && !focused.closest('[hidden],[inert]')) focused.focus({ preventScroll: true });
-      if (threadAnimations.size) updateExpansion(activeThreadId ?? undefined);
+      if (removedActive || threadAnimations.size) updateExpansion(nextThreadId ?? activeThreadId ?? undefined);
       onPendingCountChange(attentionCount());
       syncDecorations();
       const active = activeThreadId && state.threads.find((thread) => thread.id === activeThreadId && !thread.deleted);
-      if (active && !railOpen) showThreadPopover(active);
+      // Refresh an explicitly opened popover; a selected thread is not an open request.
+      if (active && threadPopover && !railOpen) showThreadPopover(active);
     },
     attachEditorView(view) {
       editorView = view;
@@ -943,6 +957,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       rail.querySelector<HTMLButtonElement>(".wm-unresolved-filter")?.focus();
     });
     const controls = createElement("div", "wm-annotation-rail-controls");
+    if (options.sizingControl) controls.append(options.sizingControl);
     const hide = createElement("button", "wm-hide-threads");
     hide.type = "button";
     hide.title = "Hide threads";

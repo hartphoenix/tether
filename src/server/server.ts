@@ -1,5 +1,6 @@
 import { HostThemes, isThemeClient } from "./host-themes";
 import { ImageAssets } from "../documents/image-assets";
+import { linkFragment } from '../shared/link-fragment';
 import { version as sourceVersion } from "../../package.json";
 import { diagnosticText, diagnosticValue, errorDetails } from "../shared/diagnostics";
 import { preferencesFrom, storedPreferencesFrom, updatePreferences } from "../shared/themes";
@@ -7,7 +8,7 @@ import { runtimeRoot } from "../runtime-paths";
 import { seedWelcome } from "../onboarding";
 import { UpdateService } from "./updates";
 import { listAgentSkillReviews, readAgentSkillReview, decideAgentSkillReview } from "../cli/agent-skills";
-import { dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
 import { PrivateStore } from "../storage/private-store";
 import { ViewStore, cookieVerifier, verifiesCookie } from "./view-store";
@@ -33,7 +34,7 @@ import { PullQueue } from "../hosts/pull-queue";
 import { PASEO_HOST, PaseoHostAdapter } from "../hosts/paseo";
 import { prepareCmuxBridgeRestart } from "../hosts/cmux-bridge";
 import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type AppendEventInput, type DocumentSession } from "../documents/document-service";
-import { chooseImportDirectory } from "./directory-picker";
+import { chooseImportDirectory, chooseMoveDirectory } from "./directory-picker";
 import { requireFolioFile } from "../recents/file-availability";
 import { RecentsRegistry, type ListFolioOptions, type FolioRetention } from "../recents/registry";
 import { RecentsService, type FolioSnapshot } from "../recents/service";
@@ -75,6 +76,7 @@ export type DaemonOptions = {
   opener?: (url: string) => Promise<void>;
   trashFile?: (path: string) => Promise<void>;
   pickFiles?: () => Promise<string[]>;
+  pickMoveDirectory?: () => Promise<string | null>;
 };
 
 export type TetherDaemon = {
@@ -241,6 +243,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const views = new ViewStore(privateStore.db);
   const trashFile = options.trashFile ?? moveToTrash;
   const pickFiles = options.pickFiles ?? (process.platform === "darwin" ? pickMarkdownFiles : undefined);
+  const pickMoveDirectory = options.pickMoveDirectory ?? (process.platform === 'darwin' ? chooseMoveDirectory : undefined);
   const pullQueue = new PullQueue({ now, ttlMs: ticketMs });
   const browserHost = createBrowserHost({ open: options.opener });
   const paseoHost = new PaseoHostAdapter({ origin: "user", fallback: browserHost, enqueue: async (intent) => pullQueue.enqueue(PASEO_HOST, intent) });
@@ -273,7 +276,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     return operation;
   };
   function validateAppearance(base: AppPreferences, body: Record<string, unknown>) {
-    try { return updatePreferences(base, { uiScale: body.uiScale, railWidth: body.railWidth, defaultDocumentZoom: body.defaultDocumentZoom }); }
+    try { return updatePreferences(base, { uiScale: body.uiScale, railWidth: body.railWidth, commentTextSize: body.commentTextSize, defaultDocumentZoom: body.defaultDocumentZoom }); }
     catch (cause) { throw invalidRequest((cause as Error).message); }
   }
   function previewScale(body: Record<string, unknown>) {
@@ -398,7 +401,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     let lastTheme = "";
     const sendTheme = async (base: AppPreferences) => {
       const value = displayPreferences(await hostThemes.preferences(clientId, base));
-      const theme = JSON.stringify({ ...folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }), uiScale: value.uiScale ?? 1, committedUiScale: value.committedUiScale, defaultDocumentZoom: value.defaultDocumentZoom ?? 100 });
+      const theme = JSON.stringify({ ...folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }), uiScale: value.uiScale ?? 1, committedUiScale: value.committedUiScale, commentTextSize: value.commentTextSize ?? 16, defaultDocumentZoom: value.defaultDocumentZoom ?? 100 });
       if (theme === lastTheme) return;
       lastTheme = theme;
       send(`event: theme\ndata: ${theme}\n\n`);
@@ -630,7 +633,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/bootstrap" && request.method === "GET") {
         const document = await service.read(session.grant);
         const basePreferences = await preferences();
-        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, draft: views.draft(session.id), scroll: views.position(session.id), zoom: views.zoom(session.id, basePreferences.defaultDocumentZoom ?? 100), document, capabilities: hostAdapter.capabilities(session.target), preferences: displayPreferences(await hostThemes.preferences(themeClient(request, session.target), basePreferences)), actor: options.actor ?? "assistant" });
+        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, draft: views.draft(session.id), scroll: views.position(session.id), zoom: views.zoom(session.id, basePreferences.defaultDocumentZoom ?? 100), document, directoryPicker: Boolean(pickMoveDirectory), capabilities: hostAdapter.capabilities(session.target), preferences: displayPreferences(await hostThemes.preferences(themeClient(request, session.target), basePreferences)), actor: options.actor ?? "assistant" });
       }
       if (apiPath === "/position" && request.method === "POST") {
         const body = await requestJson(request);
@@ -724,10 +727,29 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const path = await service.resolveWikilink(session.grant.path, query.get("target") ?? "", format);
           if (![".md", ".markdown"].includes(extname(path).toLowerCase())) throw invalidRequest("This link isn't a Markdown document.");
           const ticket = mintTicket(await service.open(path), session.target);
-          return new Response(null, { status: 302, headers: { location: ticket.url, "cache-control": "no-store" } });
+          return new Response(null, { status: 302, headers: { location: ticket.url + linkFragment(query.get('target') ?? '', format), "cache-control": "no-store" } });
         } catch (cause) {
           return linkErrorPage(cause instanceof Error ? cause.message : String(cause));
         }
+      }
+      if (apiPath === '/file/reveal' && request.method === 'POST') {
+        if (!hostAdapter.capabilities(session.target).revealFile || !hostAdapter.revealFile) throw invalidRequest('Revealing files is unavailable in this host.');
+        await hostAdapter.revealFile(session.grant.realPath);
+        return json({ revealed: true });
+      }
+      if (apiPath === '/file/move' && request.method === 'POST') {
+        const body = await requestJson(request);
+        let target = body.target;
+        if (body.pickDirectory === true) {
+          if (!pickMoveDirectory) throw invalidRequest('The native directory picker is unavailable.');
+          const directory = await pickMoveDirectory();
+          if (!directory) return json({ cancelled: true });
+          target = join(directory, basename(session.grant.realPath));
+        }
+        if (typeof target !== 'string' || !isAbsolute(target)) throw invalidRequest('Enter an absolute destination path.');
+        const result = await service.move(session.grant.realPath, target);
+        await recents.refresh();
+        return json(result);
       }
       if (apiPath === "/open" && request.method === "POST") {
         const body = await requestJson(request);
@@ -747,7 +769,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         }
         const grant = await service.open(path);
         const ticket = mintTicket(grant, session.target);
-        try { await hostAdapter.openView({ url: ticket.url, path: grant.realPath, kind: "document", focus: true, target: session.target,
+        try { await hostAdapter.openView({ url: ticket.url + linkFragment(body.target, body.format as 'markdown' | 'wikilink' | undefined), path: grant.realPath, kind: "document", focus: true, target: session.target,
           ...(session.target?.host === "cmux" ? { targetPolicy: "source-pane" as const, sourceUrl } : {}),
         }); }
         catch (cause) { discardTicket(ticket.ticket); throw cause; }
@@ -859,11 +881,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const suffix = `/${match![2]}`;
       if (request.method === "GET" && suffix === "/") {
         const prefs = await hostThemes.preferences(themeClient(request, session.target), await preferences());
-        return new Response(folioHtml({ pageFind: hostAdapter.capabilities(session.target).pageFind, pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), uiScale: prefs.uiScale, defaultDocumentZoom: prefs.defaultDocumentZoom, theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+        return new Response(folioHtml({ pageFind: hostAdapter.capabilities(session.target).pageFind, pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), uiScale: prefs.uiScale, defaultDocumentZoom: prefs.defaultDocumentZoom, commentTextSize: prefs.commentTextSize, theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
       if (request.method === 'GET' && suffix === '/api/preferences') {
         const value = displayPreferences(await hostThemes.preferences(themeClient(request, session.target), await preferences()));
-        return json({ ...folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }), uiScale: value.uiScale ?? 1, committedUiScale: value.committedUiScale, defaultDocumentZoom: value.defaultDocumentZoom ?? 100 });
+        return json({ ...folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }), uiScale: value.uiScale ?? 1, committedUiScale: value.committedUiScale, commentTextSize: value.commentTextSize ?? 16, defaultDocumentZoom: value.defaultDocumentZoom ?? 100 });
       }
       if (request.method === 'POST' && (suffix === '/api/preferences' || suffix === '/api/preferences-preview')) {
         if (!sameOrigin(request, daemon.origin)) return error('origin_mismatch', 'State-changing requests must use the daemon origin.', 403);

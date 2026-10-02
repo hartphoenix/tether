@@ -54,8 +54,17 @@ describe("bounded agent reads",()=>{
   });
   test("context locates current text and missing revisions have bounded outline fallback",()=>{
     const {store,reads}=fixture();expect(reads.context(path,body,"comment-1").anchorStatus).toBe("located");expect(reads.context(path,"Removed","comment-1").anchorStatus).toBe("orphaned");
-    expect(reads.outline(path,body).headings).toEqual([{level:1,title:"Heading",line:1}]);
+    expect(reads.outline(path,body).headings).toEqual([{level:1,title:"Heading",line:1,anchor:"heading"}]);
     const fallback=reads.diff(path,("# title\n".repeat(1000)),"sha256:"+"0".repeat(64),{maxBytes:2048});expect(fallback.status).toBe("revision_unavailable");expect(size(fallback)).toBeLessThanOrEqual(2048);store.close();
+  });
+  test("outline anchors follow GitHub duplicates, formatting and Unicode across pages",()=>{
+    const {store,reads}=fixture();
+    const source='---\ntitle: Test\n---\n# Hello, **world**!\n# Hello, world!\n# Hello, world!-1\n# Café 中文\n';
+    const headings=reads.outline(path,source).headings;
+    expect(headings.map(h=>h.anchor)).toEqual(['hello-world','hello-world-1','hello-world-1-1','café-中文']);
+    expect(headings[0]?.line).toBe(4);
+    expect(reads.outline(path,source,{offset:2}).headings).toEqual(headings.slice(2));
+    store.close();
   });
   test("observed revisions support bounded change recovery without persistent history",()=>{
     const {store,reads}=fixture();reads.pending(path,body);

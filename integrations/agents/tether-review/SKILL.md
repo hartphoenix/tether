@@ -33,7 +33,9 @@ Body saves require `document save <file> --expected-body-revision <revision> --b
 
 Use `tether recents add <file>` to register a document without opening a view. A shortcut-update warning does not undo successful registration; inspect `data.warnings` separately. Bare `tether recents` opens the Recents view and is not a registration check.
 
-Use `[[../path/file.md|Label]]` for Tether wikilinks; verify paths relative to the containing document, keep spaces literal, and omit heading fragments. Standard Markdown links also work; local non-Markdown links use the host’s file handling (native open in cmux, file reveal where supported elsewhere).
+Use ordinary Markdown links with GitHub-style heading anchors: `[Section](#section)` or `[Section](other.md#section)`. Add links where they help the reader follow a reference, find supporting detail, or continue related work; routine mentions need no link. Prefer a specific section when useful, and verify the destination against the current document. These are editorial defaults, not restrictions on document structure.
+
+`document outline` returns each heading’s `anchor`. Resolve document paths relative to the containing document. Tether wikilinks (`[[../path/file.md|Label]]`) also work; keep spaces literal. Local non-Markdown links use the host’s file handling (native open in cmux, file reveal where supported elsewhere).
 
 Keep formatting readable in Tether:
 

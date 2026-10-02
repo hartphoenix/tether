@@ -1,4 +1,10 @@
 import { diagramViewer } from "./diagram-viewer";
+import { configureMarkdownSerialization } from "./markdown-serialization";
+import { createThreadSizing } from './thread-sizing';
+import { createFileActions } from './file-actions';
+import { scrollToDocumentAnchor } from './anchor-navigation';
+import { linkFragment } from '../shared/link-fragment';
+import { headingAnchors } from './heading-anchors';
 import { configureFootnotes, footnoteIcon, footnoteOrdering } from "./footnotes";
 import { pollPreferences } from "./preferences-poll";
 import { imageDisplayUrl } from "./image-url";
@@ -12,6 +18,7 @@ import { iconSvg } from "./icons";
 import { decreaseQuoteLevel } from "./editor-commands";
 import { Crepe } from "@milkdown/crepe";
 import { EditorStatus, editorStateOptionsCtx, editorViewCtx } from "@milkdown/kit/core";
+import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 import { Plugin } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose, replaceAll, callCommand } from "@milkdown/kit/utils";
@@ -22,7 +29,7 @@ import { createChromeControls } from "./chrome-controls";
 import { createCanvas } from './canvas';
 import { scrollSelectionIntoView } from './scroll-geometry';
 import './canvas.css';
-import { createIncomingNavigator, acceptIncomingDiff, cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff } from "./incoming-diff";
+import { createIncomingNavigator, acceptIncomingDiff, cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff, matchesIncomingDocument } from "./incoming-diff";
 import { documentLinkPath, localDocumentLink, opensAsDocument } from "./local-document-link";
 import { prepareMarkdown, restoreMarkdown } from "../core/markdown-codec";
 import { createSelectionUi, reviewNoteIconSvg, type SelectionUiController } from "./selection-ui";
@@ -58,7 +65,7 @@ type DocumentResponse = {
 type AnnotationResponse = {
   path: string; bodyRevision: string; ledgerRevision: string; annotations: AnnotationState; pending?: unknown[]; events?: unknown[];
 };
-type IncomingReview = { bodyRevision: string; ledgerRevision: string; frontmatter: string };
+type IncomingReview = { bodyRevision: string; ledgerRevision: string; frontmatter: string; body: string; editorDoc?: ProseMirrorNode };
 
 for (const slot of document.querySelectorAll<HTMLElement>("[data-icon]")) {
   slot.outerHTML = iconSvg(slot.dataset.icon as Parameters<typeof iconSvg>[0]);
@@ -72,6 +79,7 @@ const targetActor = "assistant";
 
 const notice = document.querySelector<HTMLElement>("#notice")!;
 const toolbarControls = document.querySelector<HTMLElement>("#toolbar-controls")!;
+const sourceButton = document.querySelector<HTMLButtonElement>('#source')!;
 const themeButton = document.querySelector<HTMLButtonElement>("#theme")!;
 const themeMenu = document.querySelector<HTMLElement>("#theme-menu")!;
 const zoomButton = document.querySelector<HTMLButtonElement>("#zoom")!;
@@ -105,6 +113,8 @@ let currentBodyRevision = "";
 let currentLedgerRevision = "";
 let currentFrontmatter = "";
 let savedEditorMarkdown = "";
+let diskBody = "";
+let sourceEditor: HTMLTextAreaElement | null = null;
 let annotationState: AnnotationState = {};
 let saveTimer: number | undefined;
 let saveInFlight = false;
@@ -117,6 +127,7 @@ let documentGeneration = 0;
 let readOnly = false;
 let initialized = false;
 let initializing = false;
+let revealAvailable = false;
 
 const chrome = createChromeControls({
   notice, zoomButton, zoomMenu, zoomSlider, zoomLabel,
@@ -130,10 +141,31 @@ let themePicker: ReturnType<typeof createThemePicker> | null = null;
 let stopPreferences: (() => void) | undefined;
 let stopFind: (() => void) | undefined;
 let railResize: ReturnType<typeof createRailResize> | null = null;
-let appearance: { uiScale?: number; railWidth?: number } = {};
+const threadSizing = createThreadSizing(async value => {
+  applyAppearance(await api('api/preferences', { method: 'PUT', body: JSON.stringify(value) }));
+}, message => chrome.setNotice(message));
+const fileActions = createFileActions({
+  path: () => currentPath,
+  notice: message => chrome.setNotice(message),
+  copy: async () => { await navigator.clipboard.writeText(currentPath); chrome.setNotice('File path copied.'); },
+  reveal: async () => { await api('api/file/reveal', { method: 'POST' }); },
+  move: async target => {
+    if (!(await save())) throw new Error('Save or resolve the current conflict before moving.');
+    const result = await api<{ path: string; cancelled?: boolean }>('api/file/move', { method: 'POST', body: JSON.stringify(target === undefined ? { pickDirectory: true } : { target }) });
+    if (result.cancelled) return;
+    currentPath = result.path;
+    document.title = filenameStem(currentPath);
+    chrome.setNotice('File moved.');
+  },
+  export: exportReview,
+});
+toolbarControls.prepend(fileActions.root);
+let appearance: { uiScale?: number; railWidth?: number; commentTextSize?: number } = {};
 function applyAppearance(value: typeof appearance) {
   appearance = value;
   document.documentElement.style.setProperty('--wm-ui-scale', String(value.uiScale ?? 1));
+  document.documentElement.style.setProperty('--wm-comment-text-size', `${value.commentTextSize ?? 16}px`);
+  threadSizing.update(value);
   railResize?.update(value.railWidth);
 }
 
@@ -296,9 +328,13 @@ function getEditorView(): EditorView | null {
   return view;
 }
 function currentMarkdown(): string {
+  if (sourceEditor) return sourceEditor.value;
   if (!crepe || crepe.editor.status !== EditorStatus.Created) return savedEditorMarkdown;
   try { return crepe.getMarkdown(); }
   catch { return savedEditorMarkdown; }
+}
+function currentContent(markdown: string): string {
+  return sourceEditor ? markdown : restoreMarkdown(markdown, currentFrontmatter);
 }
 function setReviewControls(reviewing: boolean): void {
   nextChangeButton.hidden = previousChangeButton.hidden = !reviewing;
@@ -366,7 +402,7 @@ async function persistDraft(strict = false): Promise<void> {
   await draftPersistence.update({
     editorMarkdown: markdown,
     savedEditorMarkdown,
-    body: restoreMarkdown(markdown, currentFrontmatter),
+    body: currentContent(markdown),
     baseRevision: currentBodyRevision,
     scroll: canvas?.scroller.scrollTop ?? 0,
   }, strict);
@@ -383,9 +419,10 @@ async function save(): Promise<boolean> {
   try {
     const result = await api<DocumentResponse>("api/file", {
       method: "PUT",
-      body: JSON.stringify({ content: restoreMarkdown(markdown, currentFrontmatter), expectedBodyRevision: currentBodyRevision }),
+      body: JSON.stringify({ content: currentContent(markdown), expectedBodyRevision: currentBodyRevision }),
     });
     currentBodyRevision = result.bodyRevision;
+    diskBody = result.body;
     currentLedgerRevision = result.ledgerRevision;
     annotationState = result.annotations;
     savedEditorMarkdown = markdown;
@@ -417,6 +454,10 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
   try {
     const documentResponse = prefetched ?? await loadDocument();
     if (generation !== documentGeneration) return;
+    sourceEditor?.remove();
+    sourceEditor = null;
+    sourceButton.setAttribute('aria-pressed', 'false');
+    commentButton.disabled = false;
     toolbarLabelObserver?.disconnect();
     overflowCleanup?.();
     const previousCrepe = crepe;
@@ -433,10 +474,12 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     editorRoot.replaceChildren();
     annotationsRoot.replaceChildren();
     currentPath = documentResponse.path;
+    diskBody = documentResponse.body;
     currentBodyRevision = documentResponse.bodyRevision;
     currentLedgerRevision = documentResponse.ledgerRevision;
     annotationState = documentResponse.annotations;
     readOnly = Boolean(documentResponse.readOnly);
+    fileActions.update(revealAvailable, readOnly);
     document.title = filenameStem(currentPath);
     const prepared = prepareMarkdown(documentResponse.body);
     currentFrontmatter = prepared.frontmatter;
@@ -504,15 +547,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     });
     nextAnnotationUi = createAnnotationUi({
       root: annotationsRoot,
-      onExport: exportReview,
-      onCopyFilePath: async () => {
-        try {
-          await navigator.clipboard.writeText(currentPath);
-          chrome.setNotice("File path copied.");
-        } catch {
-          chrome.setNotice("Could not copy the file path to the clipboard.");
-        }
-      },
+      sizingControl: threadSizing.root,
       editorRoot,
       getEditorView,
       onNotice: (message) => chrome.setNotice(message),
@@ -547,13 +582,14 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     railResize.update(appearance.railWidth);
     const annotationPlugin = $prose(() => nextAnnotationUi.plugin);
     nextCrepe.editor.config(configureFootnotes);
+    nextCrepe.editor.config(configureMarkdownSerialization);
     nextCrepe.editor.config(ctx => ctx.update(editorStateOptionsCtx, previous => options => initialReaderSelection(previous(options))));
     const completionPlugin = $prose(() => new Plugin({ view: () => ({ update() {
       if (incomingReview && !reviewSaving && !incomingDiffActive(nextCrepe.editor)) {
         queueMicrotask(() => { if (crepe === nextCrepe) void saveReviewed(); });
       }
     } }) }));
-    nextCrepe.editor.use(diagramViewer).use(footnoteOrdering).use(completionPlugin).use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
+    nextCrepe.editor.use(headingAnchors).use(diagramViewer).use(footnoteOrdering).use(completionPlugin).use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
     try { await nextCrepe.create(); }
     catch (error) { nextSelectionUi.destroy(); nextAnnotationUi.destroy(); throw error; }
     crepe = nextCrepe;
@@ -601,10 +637,13 @@ async function beginIncomingReview(generation = documentGeneration, path = curre
     if (disk.ledgerRevision !== currentLedgerRevision) await refreshAnnotations();
     return;
   }
+  if (sourceEditor) { showConflict(); return; }
   if (currentMarkdown() !== savedEditorMarkdown) { showConflict(); return; }
   const prepared = prepareMarkdown(disk.body);
-  incomingReview = { bodyRevision: disk.bodyRevision, ledgerRevision: disk.ledgerRevision, frontmatter: prepared.frontmatter };
-  if (!startIncomingDiff(crepe.editor, prepared.editorMarkdown)) { incomingReview = null; showConflict(); return; }
+  incomingReview = { bodyRevision: disk.bodyRevision, ledgerRevision: disk.ledgerRevision, frontmatter: prepared.frontmatter, body: disk.body };
+  const target = startIncomingDiff(crepe.editor, prepared.editorMarkdown);
+  if (!target) { incomingReview = null; showConflict(); return; }
+  incomingReview.editorDoc = target;
   currentLedgerRevision = disk.ledgerRevision;
   applyAnnotationState(disk.annotations);
   showConflict("There are new changes for your review.");
@@ -622,11 +661,12 @@ async function saveReviewed(): Promise<void> {
     const markdown = currentMarkdown();
     const result = await api<DocumentResponse>("api/file", {
       method: "PUT",
-      body: JSON.stringify({ content: restoreMarkdown(markdown, review.frontmatter), expectedBodyRevision: review.bodyRevision }),
+      body: JSON.stringify({ content: review.editorDoc && matchesIncomingDocument(crepe.editor, review.editorDoc) ? review.body : restoreMarkdown(markdown, review.frontmatter), expectedBodyRevision: review.bodyRevision }),
     });
     if (generation !== documentGeneration) return;
     currentFrontmatter = review.frontmatter;
     currentBodyRevision = result.bodyRevision;
+    diskBody = result.body;
     currentLedgerRevision = result.ledgerRevision;
     savedEditorMarkdown = markdown;
     clearConflict();
@@ -660,6 +700,8 @@ async function lease(generation = documentGeneration, path = currentPath): Promi
   } catch (error) {
     if ((error as Error & { status?: number }).status === 422) {
       readOnly = true;
+      if (sourceEditor) sourceEditor.readOnly = true;
+      fileActions.update(revealAvailable, true);
       editorRoot.querySelector<HTMLElement>(".ProseMirror")?.setAttribute("contenteditable", "false");
       chrome.setNotice(`Read-only: ${(error as Error).message}`, 0);
       return;
@@ -672,6 +714,8 @@ async function lease(generation = documentGeneration, path = currentPath): Promi
 async function start(): Promise<void> {
   const bootstrap = await api<SessionBootstrap>("api/bootstrap");
   pageOpensLinks = bootstrap.capabilities?.pageOpensLinks === true;
+  revealAvailable = bootstrap.capabilities?.revealFile === true;
+  fileActions.update(revealAvailable, readOnly, bootstrap.directoryPicker === true);
   stopFind?.();
   stopFind = bootstrap.capabilities?.pageFind ? installReaderFind(getEditorView) : undefined;
   initializing = true;
@@ -706,6 +750,7 @@ async function start(): Promise<void> {
     await Promise.race([document.fonts.ready, new Promise(resolve => setTimeout(resolve, 1000))]);
     await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     if (canvas) canvas.scroller.scrollTop = bootstrap.scroll ?? draft?.scroll ?? 0;
+    if (location.hash) scrollToDocumentAnchor(editorRoot, location.hash, false);
     initialized = true;
   } finally {
     initializing = false;
@@ -732,6 +777,34 @@ commentButton.addEventListener("click", () => {
   const open = !annotationUi.isRailOpen();
   annotationUi.setRailOpen(open);
 });
+sourceButton.addEventListener('click', async () => {
+  sourceButton.disabled = true;
+  try {
+    if (!crepe || conflicted || incomingReview) { chrome.setNotice('Resolve the file conflict before switching views.'); return; }
+    if (!readOnly && !(await save())) return;
+    if (sourceEditor) {
+      const fraction = sourceEditor.scrollTop / Math.max(1, sourceEditor.scrollHeight - sourceEditor.clientHeight);
+      await openDocument(true);
+      if (canvas) canvas.scroller.scrollTop = fraction * (canvas.scroller.scrollHeight - canvas.scroller.clientHeight);
+      return;
+    }
+    const fraction = canvas ? canvas.scroller.scrollTop / Math.max(1, canvas.scroller.scrollHeight - canvas.scroller.clientHeight) : 0;
+    sourceEditor = document.createElement('textarea');
+    sourceEditor.className = 'wm-source-editor'; sourceEditor.setAttribute('aria-label', 'Markdown source');
+    sourceEditor.spellcheck = false; sourceEditor.readOnly = readOnly; sourceEditor.value = diskBody;
+    savedEditorMarkdown = diskBody;
+    sourceEditor.addEventListener('input', scheduleSave);
+    annotationUi?.setRailOpen(false);
+    annotationUi?.closeFootnotePopover();
+    commentButton.disabled = true;
+    canvas?.shell.classList.add('wm-source-mode');
+    canvas?.scroller.before(sourceEditor);
+    sourceEditor.scrollTop = fraction * (sourceEditor.scrollHeight - sourceEditor.clientHeight);
+    sourceButton.setAttribute('aria-pressed', 'true');
+    sourceEditor.focus({ preventScroll: true });
+  } catch (error) { chrome.setNotice(`Could not switch source view: ${(error as Error).message}`); }
+  finally { sourceButton.disabled = false; }
+});
 reloadButton.addEventListener("click", async () => {
   await draftPersistence.clear();
   await openDocument(true);
@@ -756,6 +829,13 @@ editorRoot.addEventListener("click", (event) => {
   const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
   const href = link?.getAttribute("href") ?? "";
   const target = localDocumentLink(href);
+  const fragment = href.startsWith('#') ? href : target?.format === 'wikilink' && target.target.startsWith('#') ? linkFragment(target.target, target.format) : '';
+  if (link && fragment) {
+    event.preventDefault(); event.stopPropagation();
+    // Scrolling within the current reader needn't navigate the host's web tab.
+    if (!scrollToDocumentAnchor(editorRoot, fragment)) chrome.setNotice('That anchor was not found in this document.');
+    return;
+  }
   if (!link || !target) return;
   event.preventDefault();
   event.stopPropagation();
@@ -772,6 +852,7 @@ editorRoot.addEventListener("click", (event) => {
     body: JSON.stringify(target),
   }).catch((error) => chrome.setNotice(`Could not open link: ${(error as Error).message}`, 0));
 }, true);
+addEventListener('hashchange', () => scrollToDocumentAnchor(editorRoot, location.hash));
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
 });
@@ -805,6 +886,8 @@ addEventListener("pagehide", event => {
   stopPreferences?.();
   themePicker?.destroy();
   chrome.destroy();
+  threadSizing.destroy();
+  fileActions.destroy();
 });
 connection.wake();
 

@@ -746,9 +746,47 @@ test("local links reveal non-Markdown files without creating document sessions",
   expect(unavailable.status).not.toBe(200);
   expect(await unavailable.text()).toContain("unavailable");
   expect(revealed).toHaveLength(2);
-  expect((await open("./other.md", "markdown")).status).toBe(200);
+  expect((await open("./other.md#some-heading", "markdown")).status).toBe(200);
   expect(opened).toHaveLength(1);
+  expect(new URL(opened[0]!).hash).toBe('#some-heading');
   expect((await sessionFetch(daemon, session.location, session.cookie, "api/file")).status).toBe(200);
+});
+
+test('reader file actions remain scoped to its document and moves preserve the live session', async () => {
+  const file = await fixture();
+  const revealed: string[] = [];
+  const host: HostAdapter = {
+    id: 'browser', detect: async () => true,
+    capabilities: () => ({ embeddedBrowser: false, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: true }),
+    openView: async () => {}, openExternal: async () => {}, revealFile: async path => { revealed.push(path); },
+  };
+  let selectedDirectory: string | null = null;
+  let pickerCalls = 0;
+  const daemon = createDaemon({ config: file.config, hostAdapter: host, pickMoveDirectory: async () => { pickerCalls++; return selectedDirectory; } });
+  daemons.push(daemon);
+  const session = await exchange(daemon, file.path);
+  const post = (action: string, body: unknown = {}, origin = daemon.origin) => sessionFetch(daemon, session.location, session.cookie, `api/file/${action}`, { method: 'POST', headers: { origin }, body: JSON.stringify(body) });
+  expect((await post('move', { target: file.other }, 'https://example.com')).status).toBe(403);
+  expect((await post('move', { pickDirectory: true }, 'https://example.com')).status).toBe(403);
+  expect(pickerCalls).toBe(0);
+  expect(await (await post('move', { pickDirectory: true })).json()).toEqual({ cancelled: true });
+  expect(await readFile(file.path, 'utf8')).toBe('Original body\n');
+  expect((await post('move', { target: 'relative.md' })).status).toBe(400);
+  expect((await post('move', { target: file.other })).status).not.toBe(200);
+  expect(await readFile(file.other, 'utf8')).toBe('Other body\n');
+  expect((await post('reveal', { path: file.other })).status).toBe(200);
+  expect(revealed).toEqual([file.path]);
+  const target = join(file.directory, 'renamed.md');
+  expect((await post('move', { path: file.other, target })).status).toBe(200);
+  const current = await (await sessionFetch(daemon, session.location, session.cookie, 'api/file')).json();
+  expect(current.path).toBe(await realpath(target));
+  expect(current.body).toBe('Original body\n');
+  expect(await readFile(file.other, 'utf8')).toBe('Other body\n');
+  selectedDirectory = join(file.directory, 'destination');
+  await mkdir(selectedDirectory);
+  expect((await post('move', { pickDirectory: true, target: file.other })).status).toBe(200);
+  const moved = await (await sessionFetch(daemon, session.location, session.cookie, 'api/file')).json();
+  expect(moved.path).toBe(await realpath(join(selectedDirectory, 'renamed.md')));
 });
 
 test("filter bank requires scoped same-origin access and survives daemon replacement", async () => {
@@ -907,8 +945,8 @@ test('appearance preview reaches ordinary readers without persistence and cancel
   const readPreferences = async () => (await sessionFetch(daemon, reader.location, reader.cookie, 'api/preferences')).json() as Promise<any>;
   {
     expect((await readPreferences()).committedUiScale).toBe(1);
-    expect((await post('preferences', { uiScale: 1.1, railWidth: 410 })).status).toBe(200);
-    expect(await readPreferences()).toMatchObject({ uiScale: 1.1, railWidth: 410, committedUiScale: 1.1 });
+    expect((await post('preferences', { uiScale: 1.1, railWidth: 410, commentTextSize: 18 })).status).toBe(200);
+    expect(await readPreferences()).toMatchObject({ uiScale: 1.1, railWidth: 410, commentTextSize: 18, committedUiScale: 1.1 });
     const saved = await readFile(file.config.preferencesPath, 'utf8');
     expect((await post('preferences-preview', { owner: 'one', uiScale: 1.5 })).status).toBe(200);
     expect(await readPreferences()).toMatchObject({ uiScale: 1.5, committedUiScale: 1.1 });
@@ -919,6 +957,8 @@ test('appearance preview reaches ordinary readers without persistence and cancel
     expect(await readPreferences()).toMatchObject({ uiScale: 1.2, railWidth: 410, committedUiScale: 1.2 });
     expect((await post('preferences-preview', { owner: 'one', uiScale: 9 })).status).toBe(400);
     expect((await post('preferences', { railWidth: 900 })).status).toBe(400);
+    expect((await post('preferences', { commentTextSize: 40 })).status).toBe(400);
+    expect((await readPreferences()).commentTextSize).toBe(18);
     expect((await post('preferences-preview', { owner: 'one', uiScale: 1 }, 'https://other.invalid')).status).toBe(403);
     expect((await fetch(recentsUrl(daemon, folio.location, 'api/preferences'), { method: 'POST', headers: { origin: daemon.origin }, body: '{}' })).status).toBe(401);
   }
