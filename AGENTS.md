@@ -4,6 +4,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), then the [architecture and code map](do
 
 ## Implementation boundaries
 
+- Treat current implementations as revisable choices, not permanent constraints. Recommend changes to architecture, storage, schema, or language when they materially improve the intended product; explain migration costs and trade-offs without expanding scope for speculative future needs.
 - Keep document, review, storage, and web behavior independent of terminal hosts; use capability-reporting host adapters.
 - Preserve path-scoped authorization, per-path mutation serialization, independent body/review revisions, conflict checks, and private review storage.
 - Keep credentials out of files, URLs, logs, fixtures, and tool output. Presence signals must not revoke document access.

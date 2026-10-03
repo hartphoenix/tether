@@ -26,7 +26,8 @@ test('theme changes refresh code previews once without rebuilding editor content
   globalThis.document = dom.window.document; globalThis.Node = dom.window.Node;
   try {
     const root = document.querySelector('main')!;
-    const block = root.querySelector('.cm-editor')!;
+    const block = root.querySelector('.milkdown-code-block')!;
+    const editor = block.firstElementChild;
     let refreshes = 0;
     block.addEventListener('milkdown:refresh-preview', () => refreshes++);
     const picker = createThemePicker(document.querySelector('button')!, document.querySelector('div')!, root, { initialTheme: 'tether' });
@@ -38,7 +39,7 @@ test('theme changes refresh code previews once without rebuilding editor content
     picker.update(preferencesFrom({ theme: 'tether-dark' }));
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(refreshes).toBe(initial + 1);
-    expect(root.querySelector('.cm-editor')).toBe(block);
+    expect(root.querySelector('.cm-editor')).toBe(editor);
     picker.update(preferencesFrom({ theme: 'tether' }));
     picker.destroy();
     await new Promise(resolve => setTimeout(resolve, 0));

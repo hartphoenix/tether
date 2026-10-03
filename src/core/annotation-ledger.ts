@@ -799,37 +799,21 @@ function matchingContext(text: string, anchor: AnnotationAnchor, start: number, 
 /** Resolve exact quote anchors, making ambiguity explicit instead of guessing. */
 export function resolveAnchor(anchor: AnnotationAnchor, projection: RenderedTextProjection | string): AnchorResolution {
   const text = typeof projection === "string" ? projection : projection.projection;
-  const atStart = anchor.projectionStart;
-  const atEnd = anchor.projectionEnd;
-  if (
-    Number.isSafeInteger(atStart) &&
-    Number.isSafeInteger(atEnd) &&
-    atStart >= 0 &&
-    atEnd >= atStart &&
-    atEnd <= text.length &&
-    text.slice(atStart, atEnd) === anchor.exact
-  ) {
-    return {
-      status: "resolved",
-      projectionStart: atStart,
-      projectionEnd: atEnd,
-      ...(typeof projection === "string" ? {} : { from: projection.positionAt(atStart), to: projection.positionAt(atEnd) }),
-    };
-  }
-
+  if (!anchor.exact) return { status: "orphan", reason: "quote-not-found", matches: [] };
   const matches: number[] = [];
   let from = 0;
   while (from <= text.length) {
     const match = text.indexOf(anchor.exact, from);
     if (match < 0) break;
-    const end = match + anchor.exact.length;
-    if (matchingContext(text, anchor, match, end)) matches.push(match);
-    from = match + Math.max(anchor.exact.length, 1);
+    matches.push(match);
+    // Include overlapping occurrences: repeated characters are not unique quotes.
+    from = match + 1;
   }
-  if (matches.length !== 1) {
-    return { status: "orphan", reason: matches.length === 0 ? "quote-not-found" : "ambiguous", matches };
-  }
-  const match = matches[0];
+  if (!matches.length) return { status: "orphan", reason: "quote-not-found", matches: [] };
+  // Surrounding edits cannot invalidate a quote that is unique in the document.
+  const candidates = matches.length === 1 ? matches : matches.filter(start => matchingContext(text, anchor, start, start + anchor.exact.length));
+  if (candidates.length !== 1) return { status: "orphan", reason: "ambiguous", matches };
+  const match = candidates[0];
   const end = match + anchor.exact.length;
   return {
     status: "resolved",

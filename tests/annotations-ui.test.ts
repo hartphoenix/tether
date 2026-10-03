@@ -247,6 +247,41 @@ test("an open drawer expands threads inline while a closed drawer uses a canvas-
   ui.destroy();
 });
 
+test("annotation refresh does not reopen a thread after hiding the drawer", () => {
+  installDom();
+  const root = document.createElement('div');
+  document.body.append(root);
+  const ui = createAnnotationUi({ root });
+  ui.setState({ threads: [thread()] });
+  ui.setRailOpen(true);
+  ui.openThread('c-1');
+  ui.setRailOpen(false);
+  ui.setState({ threads: [thread({ body: 'Updated remotely.' })] });
+  expect(document.querySelector('.wm-thread-popover')).toBeNull();
+  ui.openThread('c-1');
+  ui.setState({ threads: [thread({ body: 'Updated again.' })] });
+  expect(document.querySelector('.wm-thread-popover')?.textContent).toContain('Updated again.');
+  ui.destroy();
+});
+
+test("removing an active thread leaves its next visible neighbor collapsed", () => {
+  installDom();
+  const root = document.createElement('div');
+  document.body.append(root);
+  const ui = createAnnotationUi({ root });
+  const first = thread();
+  const next = thread({ id: 'c-2', createdAt: '2026-08-28T12:01:00.000Z' });
+  ui.setState({ threads: [first, next] });
+  ui.setRailOpen(true);
+  ui.openThread('c-1');
+  ui.setState({ threads: [{ ...first, resolved: true }, next] });
+  expect(root.querySelector('[data-thread-id="c-1"]')).toBeNull();
+  expect(root.querySelector('[data-thread-id="c-2"] .wm-thread-summary')?.getAttribute('aria-expanded')).toBe('false');
+  ui.setState({ threads: [{ ...first, resolved: true }, { ...next, deleted: true }] });
+  expect(root.querySelector('.wm-thread-card')).toBeNull();
+  ui.destroy();
+});
+
 test("opening a thread scrolls to its highlight without selecting document text", () => {
   installDom();
   const root = document.createElement("div");

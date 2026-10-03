@@ -239,6 +239,22 @@ describe("rendered text projection and anchors", () => {
     expect(createAnchor(projection, 0, 15, bodyRevision("body")).exact).toBe("serious product");
   });
 
+  test("unique quotes survive edits to both surrounding contexts", () => {
+    const original = 'Before. Unique passage. After.';
+    const anchor = createAnchor(original, 8, 23, bodyRevision(original));
+    expect(resolveAnchor(anchor, 'A longer introduction. Unique passage. New ending.')).toMatchObject({ status: 'resolved', projectionStart: 23, projectionEnd: 38 });
+    expect(resolveAnchor(anchor, 'A longer introduction. Altered passage. New ending.')).toMatchObject({ status: 'orphan', reason: 'quote-not-found' });
+  });
+
+  test("repeated quotes use context rather than a stale stored position", () => {
+    const original = 'Before. target After.';
+    const anchor = createAnchor(original, 8, 14, bodyRevision(original));
+    const changed = 'Before. target Wrong. Before. target After.';
+    expect(resolveAnchor(anchor, changed)).toMatchObject({ status: 'resolved', projectionStart: 30 });
+    expect(resolveAnchor({ ...anchor, prefix: '', suffix: '' }, 'Before. target and target')).toMatchObject({ status: 'orphan', reason: 'ambiguous' });
+    expect(resolveAnchor({ ...anchor, exact: 'aaa', prefix: '', suffix: '' }, 'aaaa')).toMatchObject({ status: 'orphan', reason: 'ambiguous', matches: [0, 1] });
+  });
+
   test("relocates a uniquely contextualized quote and orphans an ambiguous quote", () => {
     const original = renderedTextProjection(schema.topNodeType.create(null, [paragraph(text("x".repeat(70) + "before target after"))]));
     const anchor = createAnchor(original, 77, 83, bodyRevision("body"));

@@ -1,5 +1,8 @@
 import { unified } from "unified";
 import remarkParse from "remark-parse";
+import remarkGfm from 'remark-gfm';
+import GithubSlugger from 'github-slugger';
+import { prepareMarkdown } from '../core/markdown-codec';
 import { bodyRevision } from "../core/index";
 import { markdownProjection } from "../server/quote-anchor";
 import { PrivateStore, PrivateStoreConflictError, PrivateStoreDocumentNotFoundError, REVIEW_CURSOR_LIFETIME_MS } from "../storage/private-store";
@@ -284,6 +287,7 @@ export class AgentReads {
             type: string;
             depth?: number;
             value?: string;
+            alt?: string;
             children?: Node[];
             position?: {
                 start: {
@@ -291,14 +295,18 @@ export class AgentReads {
                 };
             };
         };
-        const tree = unified().use(remarkParse).parse(body) as Node, headings: {
+        const prepared = prepareMarkdown(body);
+        const lineOffset = prepared.frontmatter.split('\n').length - 1;
+        const slugger = new GithubSlugger();
+        const tree = unified().use(remarkParse).use(remarkGfm).parse(prepared.editorMarkdown) as Node, headings: {
             level: number;
             title: string;
             line: number;
+            anchor: string;
         }[] = [];
-        const text = (n: Node): string => n.value ?? (n.children ?? []).map(text).join("");
+        const text = (n: Node): string => n.value ?? n.alt ?? (n.children ?? []).map(text).join("");
         const visit = (n: Node) => { if (n.type === "heading")
-            headings.push({ level: n.depth!, title: fitText(text(n), 400), line: n.position!.start.line }); for (const c of n.children ?? [])
+            headings.push({ level: n.depth!, title: fitText(text(n), 400), line: n.position!.start.line + lineOffset, anchor: slugger.slug(text(n).trim()) }); for (const c of n.children ?? [])
             visit(c); };
         visit(tree);
         const page: typeof headings = [];

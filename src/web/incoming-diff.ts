@@ -1,25 +1,51 @@
 import { smoothScroll } from "./motion";
 import { scrollViewportTop } from "./scroll-geometry";
 import type { Editor } from "@milkdown/kit/core";
-import { commandsCtx, editorViewCtx } from "@milkdown/kit/core";
+import { commandsCtx, editorViewCtx, parserCtx, serializerCtx } from "@milkdown/kit/core";
+import { EditorState } from '@milkdown/kit/prose/state';
+import type { Node } from '@milkdown/kit/prose/model';
+import { trailingConfig } from '@milkdown/kit/plugin/trailing';
+import { normalizeFootnotes } from './footnotes';
 import {
   acceptAllDiffsCmd,
   clearDiffReviewCmd,
   diff,
   diffPluginKey,
   getPendingChanges,
-  startDiffReviewCmd,
+  startDiffReviewFromDocCmd,
 } from "@milkdown/kit/plugin/diff";
 import { diffComponent } from "@milkdown/components/diff";
 
 export const incomingDiffPlugins = [...diff, ...diffComponent];
 
-export function startIncomingDiff(editor: Editor, markdown: string): boolean {
-  let started = false;
-  editor.action((ctx) => {
-    started = ctx.get(commandsCtx).call(startDiffReviewCmd.key, markdown);
+/** Compare serialized content without the editor-only caret paragraph.
+ * Milkdown's paragraph serializer checks live-node identity, so serializing
+ * a detached target's empty final paragraph would introduce a spurious <br>.
+ */
+export function matchesIncomingDocument(editor: Editor, target: Node): boolean {
+  const withoutCaret = (doc: Node) => doc.lastChild?.type.name === 'paragraph' && !doc.lastChild.content.size
+    ? doc.copy(doc.content.cut(0, doc.content.size - doc.lastChild.nodeSize)) : doc;
+  return editor.action(ctx => {
+    const serialize = ctx.get(serializerCtx);
+    return serialize(withoutCaret(ctx.get(editorViewCtx).state.doc)) === serialize(withoutCaret(target));
   });
-  return started;
+}
+
+export function startIncomingDiff(editor: Editor, markdown: string): Node | null {
+  let target: Node | null = null;
+  editor.action((ctx) => {
+    const parsed = ctx.get(parserCtx)(markdown);
+    if (!parsed) return;
+    // Compare the same shape the live editor uses: numbered, ordered footnotes
+    // and its editable trailing paragraph. Neither is an authored change.
+    let state = EditorState.create({ doc: parsed });
+    const footnotes = normalizeFootnotes(state);
+    if (footnotes) state = state.apply(footnotes);
+    const trailing = ctx.get(trailingConfig.key);
+    if (trailing.shouldAppend(state.doc.lastChild, state)) state = state.apply(state.tr.insert(state.doc.content.size, trailing.getNode(state)));
+    if (ctx.get(commandsCtx).call(startDiffReviewFromDocCmd.key, state.doc)) target = state.doc;
+  });
+  return target;
 }
 
 export function incomingDiffActive(editor: Editor): boolean {

@@ -47,13 +47,13 @@ export function createThemePicker(
   const preview = (design: ThemeDesign) => {
     applyDesign(editorRoot, design.base, design);
     for (const font of Object.values(design.fonts)) void fonts.load(font).catch(error => options.onError?.((error as Error).message));
-    const signature = JSON.stringify([design.base, design.colors, design.fonts.code]);
+    const signature = JSON.stringify([design.base, design.colors, design.fonts.code, design.metrics.codeSize]);
     if (signature === diagramTheme) return;
     diagramTheme = signature;
     // Refresh previews after the code font can be measured, including diagrams still loading.
     void fonts.load(design.fonts.code).catch(() => {}).then(() => {
       if (destroyed || diagramTheme !== signature) return;
-      for (const block of editorRoot.querySelectorAll('.milkdown-code-block .cm-editor')) {
+      for (const block of editorRoot.querySelectorAll('.milkdown-code-block')) {
         block.dispatchEvent(new editorRoot.ownerDocument.defaultView!.Event('milkdown:refresh-preview'));
       }
     });

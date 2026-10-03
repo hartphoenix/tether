@@ -67,6 +67,19 @@
 }
 .wm-annotation-rail-header h2 { font-size: calc(15px * var(--wm-thread-ui-scale, 1)); font-weight: 600; letter-spacing: 0; }
 .wm-annotation-rail-controls { gap: calc(10px * var(--wm-ui-scale, 1)); }
+.wm-thread-sizing { position: relative; display: inline-flex; }
+.wm-thread-sizing-menu {
+  position: fixed; z-index: 50;
+  width: min(calc(240px * var(--wm-ui-scale, 1)), 80vw);
+  padding: calc(12px * var(--wm-ui-scale, 1));
+  border: 1px solid var(--wm-color-outline); border-radius: calc(7px * var(--wm-ui-scale, 1));
+  background: var(--wm-color-surface); color: var(--wm-color-on-surface-variant); box-shadow: var(--wm-shadow);
+  font: calc(12px * var(--wm-ui-scale, 1))/1.5 system-ui;
+}
+.wm-thread-sizing-menu label { display: grid; grid-template-columns: 1fr auto; gap: .5em; }
+.wm-thread-sizing-menu label + label { margin-top: 1em; }
+.wm-thread-sizing-menu input { grid-column: 1; min-width: 0; width: 100%; accent-color: var(--wm-color-primary); }
+.wm-thread-sizing-menu output { align-self: center; }
 .wm-thread-card { border-radius: calc(10px * var(--wm-ui-scale, 1)); box-shadow: none; }
 :root[data-wm-designed] .wm-thread-card.is-active { border-color: var(--wm-color-primary); box-shadow: none; }
 .wm-thread-summary { padding: calc(12px * var(--wm-thread-ui-scale, 1)); gap: calc(5px * var(--wm-ui-scale, 1)) calc(8px * var(--wm-ui-scale, 1)); }
@@ -113,12 +126,12 @@
   background: color-mix(in srgb, var(--wm-color-primary, var(--wm-annotation-muted)) 8%, var(--wm-annotation-surface));
 }
 .wm-message-header .wm-inline-edit { position: static; margin-left: auto; padding: calc(2px * var(--wm-thread-ui-scale, 1)) 0 calc(2px * var(--wm-thread-ui-scale, 1)) calc(6px * var(--wm-thread-ui-scale, 1)); font: calc(10px * var(--wm-thread-ui-scale, 1))/1.5 var(--wm-review-ui-font); }
-.wm-thread-body { margin: 0; font: calc(14px * var(--wm-thread-ui-scale, 1))/1.6 var(--wm-review-body-font); white-space: pre-wrap; tab-size: 4; overflow-wrap: anywhere; }
+.wm-thread-body { margin: 0; font: var(--wm-comment-text-size, 16px)/1.6 var(--wm-review-body-font); white-space: pre-wrap; tab-size: 4; overflow-wrap: anywhere; }
 .wm-thread-replies { gap: 0; }
 .wm-thread-reply { padding: calc(14px * var(--wm-ui-scale, 1)) 0 0; margin-top: calc(14px * var(--wm-ui-scale, 1)); border-top: calc(1px * var(--wm-ui-scale, 1)) solid var(--wm-annotation-border); }
 :root[data-wm-designed] .wm-thread-reply { border-color: var(--wm-annotation-border); }
 .wm-annotation-reply-form { margin-top: calc(18px * var(--wm-ui-scale, 1)); }
-.wm-annotation-textarea { min-height: calc(64px * var(--wm-ui-scale, 1)); padding: calc(9px * var(--wm-ui-scale, 1)) calc(10px * var(--wm-ui-scale, 1)); border-radius: calc(7px * var(--wm-ui-scale, 1)); font: calc(14px * var(--wm-thread-ui-scale, 1))/1.6 var(--wm-review-body-font); tab-size: 4; }
+.wm-annotation-textarea { min-height: calc(64px * var(--wm-ui-scale, 1)); padding: calc(9px * var(--wm-ui-scale, 1)) calc(10px * var(--wm-ui-scale, 1)); border-radius: calc(7px * var(--wm-ui-scale, 1)); font: var(--wm-comment-text-size, 16px)/1.6 var(--wm-review-body-font); tab-size: 4; }
 .wm-annotation-textarea::placeholder { color: var(--wm-annotation-muted); opacity: .85; }
 .wm-annotation-actions { gap: calc(8px * var(--wm-ui-scale, 1)); margin-top: calc(8px * var(--wm-ui-scale, 1)); }
 .wm-annotation-reply-form .wm-button-secondary { margin-right: auto; border-color: transparent; background: transparent; }

@@ -55,7 +55,7 @@ export type ThemeDesign = {
   metrics: Record<Metric, number>;
 };
 export type CustomTheme = ThemeDesign & { id: `custom-${string}`; name: string };
-export type ThemePreferences = { fontSizingVersion?: 1; theme: ThemeId; customThemes: CustomTheme[]; inheritPaseoTheme?: boolean; uiScale?: number; railWidth?: number; defaultDocumentZoom?: number };
+export type ThemePreferences = { fontSizingVersion?: 1; theme: ThemeId; customThemes: CustomTheme[]; inheritPaseoTheme?: boolean; uiScale?: number; railWidth?: number; commentTextSize?: number; defaultDocumentZoom?: number };
 export type ThemeMutation = { inheritPaseoTheme?: boolean; theme?: ThemeId; saveTheme?: CustomTheme; deleteTheme?: string };
 
 // Migrate retired presets without losing custom designs based on them.
@@ -111,9 +111,9 @@ export function validateCustomTheme(value: unknown): CustomTheme {
   }
   return result;
 }
-function appearancePreferences(raw: Record<string, unknown> | ThemePreferences, strict: boolean): { uiScale?: number; railWidth?: number; defaultDocumentZoom?: number } {
-  const result: { uiScale?: number; railWidth?: number; defaultDocumentZoom?: number } = {};
-  for (const [key, min, max] of [['uiScale', 0.7, 1.5], ['railWidth', 228, 640], ['defaultDocumentZoom', 75, 175]] as const) {
+function appearancePreferences(raw: Record<string, unknown> | ThemePreferences, strict: boolean): { uiScale?: number; railWidth?: number; commentTextSize?: number; defaultDocumentZoom?: number } {
+  const result: { uiScale?: number; railWidth?: number; commentTextSize?: number; defaultDocumentZoom?: number } = {};
+  for (const [key, min, max] of [['uiScale', 0.7, 1.5], ['railWidth', 228, 640], ['commentTextSize', 12, 24], ['defaultDocumentZoom', 75, 175]] as const) {
     const value = raw[key];
     if (value === undefined) continue;
     if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {

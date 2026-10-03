@@ -51,6 +51,7 @@ export type SessionBootstrap = {
   sessionId: string;
   document: DocumentSnapshot;
   capabilities: HostCapabilities;
+  directoryPicker?: boolean;
   preferences: AppPreferences;
   actor: string;
   draft?: { body: string; baseRevision: string; scroll: number; updatedAt: number } | null;
