@@ -1,5 +1,5 @@
 diff --git a/lib/code-block/index.js b/lib/code-block/index.js
-index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..07a86564744f0cf823bcc06a590758c3b2605c7b 100644
+index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..784ff4921a7b78045c92dcae17780f24b0871e9b 100644
 --- a/lib/code-block/index.js
 +++ b/lib/code-block/index.js
 @@ -1,3 +1,4 @@
@@ -7,8 +7,12 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..07a86564744f0cf823bcc06a590758c3
  import { $ctx, $view } from '@milkdown/utils';
  import { codeBlockSchema } from '@milkdown/preset-commonmark';
  import { Compartment, EditorState } from '@codemirror/state';
-@@ -8,7 +9,7 @@ import { TextSelection } from '@milkdown/prose/state';
- import { h, Fragment, defineComponent, ref, watch, computed, onMounted, onUnmounted, watchEffect, createApp } from 'vue';
+@@ -5,10 +6,10 @@ import { EditorView, drawSelection, keymap } from '@codemirror/view';
+ import { exitCode } from '@milkdown/prose/commands';
+ import { undo, redo } from '@milkdown/prose/history';
+ import { TextSelection } from '@milkdown/prose/state';
+-import { h, Fragment, defineComponent, ref, watch, computed, onMounted, onUnmounted, watchEffect, createApp } from 'vue';
++import { h, Fragment, defineComponent, ref, watch, computed, onMounted, onUnmounted, watchEffect, createApp, nextTick } from 'vue';
  import clsx from 'clsx';
  import DOMPurify from 'dompurify';
 -import { computePosition } from '@floating-ui/dom';
@@ -56,8 +60,23 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..07a86564744f0cf823bcc06a590758c3
        window.removeEventListener("click", clickHandler);
      });
      return () => {
-@@ -482,6 +494,14 @@ const CodeBlock = defineComponent({
-     const previewOnlyMode = ref(previewOnlyByDefault);
+@@ -443,6 +455,9 @@ const PreviewPanel = defineComponent({
+ keepAlive(h, Fragment);
+ const CodeBlock = defineComponent({
+   props: {
++    previewOnlyMode: { type: Object, required: true },
++    previewPending: { type: Function, required: true },
++    previewReady: { type: Function, required: true },
+     text: {
+       type: Object,
+       required: true
+@@ -478,10 +493,17 @@ const CodeBlock = defineComponent({
+   },
+   setup(props) {
+     var _a;
+-    const previewOnlyByDefault = (_a = props.config.previewOnlyByDefault) != null ? _a : props.getReadOnly();
+-    const previewOnlyMode = ref(previewOnlyByDefault);
++    const previewOnlyMode = props.previewOnlyMode;
      const codemirrorHostRef = ref();
      const preview = ref(null);
 +    let previewVersion = 0;
@@ -71,7 +90,7 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..07a86564744f0cf823bcc06a590758c3
      onMounted(() => {
        var _a2;
        while ((_a2 = codemirrorHostRef.value) == null ? void 0 : _a2.firstChild) {
-@@ -492,12 +512,13 @@ const CodeBlock = defineComponent({
+@@ -492,12 +514,14 @@ const CodeBlock = defineComponent({
        }
      });
      watch(
@@ -79,14 +98,156 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..07a86564744f0cf823bcc06a590758c3
 +      () => [props.text.value, props.language.value, previewRevision.value],
        () => {
 +        const version = ++previewVersion;
++        props.previewPending();
          const result = props.config.renderPreview(
            props.language.value,
            props.text.value,
 -          (value) => preview.value = value
-+          (value) => { if (version === previewVersion) preview.value = value; }
++          (value) => { if (version === previewVersion) { preview.value = value; props.previewReady(); } }
          );
          if (result) {
            preview.value = result;
+@@ -506,6 +530,7 @@ const CodeBlock = defineComponent({
+         if (isAsyncPreview && !preview.value) {
+           preview.value = DOMPurify.sanitize(props.config.previewLoading);
+         }
++        if (!isAsyncPreview) props.previewReady();
+         if (result === null) {
+           preview.value = null;
+         }
+@@ -596,6 +621,40 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+     this.selected = ref(false);
+     this.language = ref("");
+     this.text = ref("");
++    this.previewOnlyMode = ref(config.previewOnlyByDefault ?? !view.editable);
++    this.layoutVersion = 0;
++    this.layoutFrame = 0;
++    this.visible = false;
++    this.destroyed = false;
++    this.reserveHeight = () => {
++      this.layoutVersion++;
++      cancelAnimationFrame(this.layoutFrame);
++      if (this.dom.style.height || !this.dom.isConnected) return;
++      this.dom.style.height = getComputedStyle(this.dom).height;
++      this.dom.style.overflow = 'hidden';
++    };
++    this.previewReady = () => {
++      const version = this.layoutVersion;
++      void nextTick(() => {
++        if (this.destroyed || !this.initialized || version !== this.layoutVersion) return;
++        this.cm.requestMeasure();
++        this.layoutFrame = requestAnimationFrame(() => {
++          this.layoutFrame = requestAnimationFrame(() => {
++            if (this.destroyed || !this.initialized || version !== this.layoutVersion) return;
++            this.dom.style.removeProperty('height');
++            this.dom.style.removeProperty('overflow');
++          });
++        });
++      });
++    };
++    this.refreshPreview = () => {
++      if (this.destroyed) return;
++      if (this.initialized) this.cm.dom.dispatchEvent(new Event('milkdown:refresh-preview'));
++      else if (this.dom.style.height) {
++        this.initializeCodeMirror();
++        if (!this.visible) this.scheduleTeardown();
++      }
++    };
+     this.initialized = false;
+     this.updating = false;
+     this.languageName = "";
+@@ -626,6 +685,9 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+     };
+     this.createApp = () => {
+       return createApp(CodeBlock, {
++        previewOnlyMode: this.previewOnlyMode,
++        previewPending: this.reserveHeight,
++        previewReady: this.previewReady,
+         text: this.text,
+         selected: this.selected,
+         codemirror: this.cm,
+@@ -726,6 +788,7 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+     });
+     this.renderPlaceholder();
+     visibilityCallbacks.set(this.dom, (isIntersecting) => {
++      this.visible = isIntersecting;
+       if (isIntersecting) {
+         this.cancelTeardown();
+         this.initializeCodeMirror();
+@@ -734,6 +797,16 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+       }
+     });
+     getSharedObserver().observe(this.dom);
++    let width = 0;
++    if (typeof ResizeObserver !== 'undefined') {
++      this.widthObserver = new ResizeObserver(([entry]) => {
++        const next = entry?.contentRect.width ?? 0;
++        if (width && next && next !== width && !this.initialized && this.dom.style.height) this.refreshPreview();
++        width = next;
++      });
++      this.widthObserver.observe(this.dom);
++    }
++    this.dom.addEventListener('milkdown:refresh-preview', this.refreshPreview);
+   }
+   renderPlaceholder() {
+     const pre = document.createElement("pre");
+@@ -745,6 +818,7 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+   }
+   initializeCodeMirror() {
+     if (this.initialized) return;
++    this.reserveHeight();
+     this.initialized = true;
+     this.cm = new EditorView({
+       doc: this.node.textContent,
+@@ -774,6 +848,7 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+   teardownCodeMirror() {
+     if (!this.initialized) return;
+     if (this.cm.hasFocus || this.selected.value) return;
++    this.reserveHeight();
+     this.app.unmount();
+     this.cm.destroy();
+     this.initialized = false;
+@@ -800,9 +875,10 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+     const languageName = this.node.attrs.language;
+     if (languageName === this.languageName) return;
+     this.language.value = languageName;
++    const cm = this.cm;
+     const language = this.loader.load(languageName != null ? languageName : "");
+     language.then((lang) => {
+-      if (lang) {
++      if (lang && this.initialized && this.cm === cm) {
+         this.cm.dispatch({
+           effects: this.languageConf.reconfigure(lang)
+         });
+@@ -827,10 +903,16 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+     var _a;
+     if (node.type !== this.node.type) return false;
+     if (this.updating) return true;
++    const changed = !node.eq(this.node);
+     this.node = node;
+     this.text.value = node.textContent;
+     this.language.value = (_a = node.attrs.language) != null ? _a : "";
+     if (!this.initialized) {
++      if (changed && this.dom.style.height) {
++        this.initializeCodeMirror();
++        if (!this.visible) this.scheduleTeardown();
++        return true;
++      }
+       const code = this.dom.querySelector(
+         ".milkdown-code-block-placeholder code"
+       );
+@@ -877,6 +959,11 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+     return true;
+   }
+   destroy() {
++    this.destroyed = true;
++    this.layoutVersion++;
++    cancelAnimationFrame(this.layoutFrame);
++    this.widthObserver?.disconnect();
++    this.dom.removeEventListener('milkdown:refresh-preview', this.refreshPreview);
+     this.cancelTeardown();
+     getSharedObserver().unobserve(this.dom);
+     visibilityCallbacks.delete(this.dom);
 diff --git a/lib/image-block/index.js b/lib/image-block/index.js
 index ba6e478ff5d685224be694969d139901109f68c2..601a0579d869ef8ce245608290cf2ebbf384bf02 100644
 --- a/lib/image-block/index.js
@@ -508,7 +669,7 @@ index 5ecaaae6c915e01d78b343aa64bbd32c626eb27c..dcdad6899378102ba022d4333f304028
 +  });
 +}
 diff --git a/src/code-block/view/components/code-block.tsx b/src/code-block/view/components/code-block.tsx
-index 3b1d2ab6d9d48f1ff106053608375284d8a36892..28d7fc5cc2ad1d4fa560980fcb8a85a89bbf9b30 100644
+index 3b1d2ab6d9d48f1ff106053608375284d8a36892..5b308f9d1055a8a5f392e6ac5e6888f7d23d3305 100644
 --- a/src/code-block/view/components/code-block.tsx
 +++ b/src/code-block/view/components/code-block.tsx
 @@ -9,6 +9,7 @@ import {
@@ -519,8 +680,34 @@ index 3b1d2ab6d9d48f1ff106053608375284d8a36892..28d7fc5cc2ad1d4fa560980fcb8a85a8
    watch,
  } from 'vue'
  
-@@ -75,6 +76,14 @@ export const CodeBlock = defineComponent<CodeBlockProps>({
-     const previewOnlyMode = ref(previewOnlyByDefault)
+@@ -24,6 +25,9 @@ import { PreviewPanel } from './preview-panel'
+ keepAlive(h, Fragment)
+ 
+ export type CodeBlockProps = {
++  previewOnlyMode: Ref<boolean>
++  previewPending: () => void
++  previewReady: () => void
+   text: Ref<string>
+   selected: Ref<boolean>
+   getReadOnly: () => boolean
+@@ -36,6 +40,9 @@ export type CodeBlockProps = {
+ 
+ export const CodeBlock = defineComponent<CodeBlockProps>({
+   props: {
++    previewOnlyMode: { type: Object, required: true },
++    previewPending: { type: Function, required: true },
++    previewReady: { type: Function, required: true },
+     text: {
+       type: Object,
+       required: true,
+@@ -70,11 +77,17 @@ export const CodeBlock = defineComponent<CodeBlockProps>({
+     },
+   },
+   setup(props) {
+-    const previewOnlyByDefault =
+-      props.config.previewOnlyByDefault ?? props.getReadOnly()
+-    const previewOnlyMode = ref(previewOnlyByDefault)
++    const previewOnlyMode = props.previewOnlyMode
      const codemirrorHostRef = ref<HTMLDivElement>()
      const preview = ref<null | string | HTMLElement>(null)
 +    let previewVersion = 0
@@ -534,7 +721,7 @@ index 3b1d2ab6d9d48f1ff106053608375284d8a36892..28d7fc5cc2ad1d4fa560980fcb8a85a8
  
      onMounted(() => {
        while (codemirrorHostRef.value?.firstChild) {
-@@ -87,12 +96,13 @@ export const CodeBlock = defineComponent<CodeBlockProps>({
+@@ -87,12 +100,14 @@ export const CodeBlock = defineComponent<CodeBlockProps>({
      })
  
      watch(
@@ -542,14 +729,24 @@ index 3b1d2ab6d9d48f1ff106053608375284d8a36892..28d7fc5cc2ad1d4fa560980fcb8a85a8
 +      () => [props.text.value, props.language.value, previewRevision.value],
        () => {
 +        const version = ++previewVersion
++        props.previewPending()
          const result = props.config.renderPreview(
            props.language.value,
            props.text.value,
 -          (value) => (preview.value = value)
-+          (value) => { if (version === previewVersion) preview.value = value }
++          (value) => { if (version === previewVersion) { preview.value = value; props.previewReady() } }
          )
          if (result) {
            preview.value = result
+@@ -104,6 +119,8 @@ export const CodeBlock = defineComponent<CodeBlockProps>({
+           preview.value = DOMPurify.sanitize(props.config.previewLoading)
+         }
+ 
++        if (!isAsyncPreview) props.previewReady()
++
+         if (result === null) {
+           preview.value = null
+         }
 diff --git a/src/code-block/view/components/language-picker.tsx b/src/code-block/view/components/language-picker.tsx
 index 640fc7f8f73ba8693fd75a24d0d30cdb34387929..158ab9e457d56c7a3c458c1709528e876f9e73e3 100644
 --- a/src/code-block/view/components/language-picker.tsx
@@ -604,6 +801,170 @@ index 640fc7f8f73ba8693fd75a24d0d30cdb34387929..158ab9e457d56c7a3c458c1709528e87
        window.removeEventListener('click', clickHandler)
      })
  
+diff --git a/src/code-block/view/node-view.ts b/src/code-block/view/node-view.ts
+index 329ed79d8a80da79f53d4f17b8e7da7805b53370..86f09c835c4439eea4943f6c179611acafe65eac 100644
+--- a/src/code-block/view/node-view.ts
++++ b/src/code-block/view/node-view.ts
+@@ -13,7 +13,7 @@ import {
+ import { exitCode } from '@milkdown/prose/commands'
+ import { redo, undo } from '@milkdown/prose/history'
+ import { TextSelection } from '@milkdown/prose/state'
+-import { createApp, ref, watchEffect, type App, type WatchHandle } from 'vue'
++import { createApp, nextTick, ref, watchEffect, type App, type WatchHandle } from 'vue'
+ 
+ import type { CodeBlockConfig } from '../config'
+ import type { LanguageLoader } from './loader'
+@@ -54,6 +54,12 @@ export class CodeMirrorBlock implements NodeView {
+   language = ref('')
+   text = ref('')
+ 
++  private previewOnlyMode = ref(false)
++  private layoutVersion = 0
++  private layoutFrame = 0
++  private visible = false
++  private destroyed = false
++  private widthObserver: ResizeObserver | undefined
+   private initialized = false
+   private updating = false
+   private languageName: string = ''
+@@ -70,6 +76,7 @@ export class CodeMirrorBlock implements NodeView {
+     public loader: LanguageLoader,
+     public config: CodeBlockConfig
+   ) {
++    this.previewOnlyMode.value = config.previewOnlyByDefault ?? !view.editable
+     this.languageConf = new Compartment()
+     this.readOnlyConf = new Compartment()
+ 
+@@ -91,6 +98,7 @@ export class CodeMirrorBlock implements NodeView {
+     this.renderPlaceholder()
+ 
+     visibilityCallbacks.set(this.dom, (isIntersecting) => {
++      this.visible = isIntersecting
+       if (isIntersecting) {
+         this.cancelTeardown()
+         this.initializeCodeMirror()
+@@ -99,6 +107,51 @@ export class CodeMirrorBlock implements NodeView {
+       }
+     })
+     getSharedObserver().observe(this.dom)
++    let width = 0
++    if (typeof ResizeObserver !== 'undefined') {
++      this.widthObserver = new ResizeObserver(([entry]) => {
++        const next = entry?.contentRect.width ?? 0
++        if (width && next && next !== width && !this.initialized && this.dom.style.height) this.refreshPreview()
++        width = next
++      })
++      this.widthObserver.observe(this.dom)
++    }
++    this.dom.addEventListener('milkdown:refresh-preview', this.refreshPreview)
++  }
++
++  // Reserve the outer block in local CSS pixels, independent of canvas scale.
++  private reserveHeight = () => {
++    this.layoutVersion++
++    cancelAnimationFrame(this.layoutFrame)
++    if (this.dom.style.height || !this.dom.isConnected) return
++    const style = getComputedStyle(this.dom)
++    this.dom.style.height = style.height
++    this.dom.style.overflow = 'hidden'
++  }
++
++  private previewReady = () => {
++    const version = this.layoutVersion
++    void nextTick(() => {
++      if (this.destroyed || !this.initialized || version !== this.layoutVersion) return
++      this.cm.requestMeasure()
++      // Let Vue install the preview and CodeMirror finish its layout first.
++      this.layoutFrame = requestAnimationFrame(() => {
++        this.layoutFrame = requestAnimationFrame(() => {
++          if (this.destroyed || !this.initialized || version !== this.layoutVersion) return
++          this.dom.style.removeProperty('height')
++          this.dom.style.removeProperty('overflow')
++        })
++      })
++    })
++  }
++
++  private refreshPreview = () => {
++    if (this.destroyed) return
++    if (this.initialized) this.cm.dom.dispatchEvent(new Event('milkdown:refresh-preview'))
++    else if (this.dom.style.height) {
++      this.initializeCodeMirror()
++      if (!this.visible) this.scheduleTeardown()
++    }
+   }
+ 
+   private renderPlaceholder() {
+@@ -112,6 +165,7 @@ export class CodeMirrorBlock implements NodeView {
+ 
+   private initializeCodeMirror() {
+     if (this.initialized) return
++    this.reserveHeight()
+     this.initialized = true
+ 
+     this.cm = new CodeMirror({
+@@ -148,6 +202,7 @@ export class CodeMirrorBlock implements NodeView {
+     // Don't tear down if the user is focused on this block
+     if (this.cm.hasFocus || this.selected.value) return
+ 
++    this.reserveHeight()
+     this.app.unmount()
+     this.cm.destroy()
+     this.initialized = false
+@@ -200,6 +255,9 @@ export class CodeMirrorBlock implements NodeView {
+ 
+   private createApp = () => {
+     return createApp(CodeBlock, {
++      previewOnlyMode: this.previewOnlyMode,
++      previewPending: this.reserveHeight,
++      previewReady: this.previewReady,
+       text: this.text,
+       selected: this.selected,
+       codemirror: this.cm,
+@@ -217,11 +275,12 @@ export class CodeMirrorBlock implements NodeView {
+     if (languageName === this.languageName) return
+ 
+     this.language.value = languageName
++    const cm = this.cm
+     const language = this.loader.load(languageName ?? '')
+ 
+     language
+       .then((lang) => {
+-        if (lang) {
++        if (lang && this.initialized && this.cm === cm) {
+           this.cm.dispatch({
+             effects: this.languageConf.reconfigure(lang),
+           })
+@@ -321,11 +380,17 @@ export class CodeMirrorBlock implements NodeView {
+ 
+     if (this.updating) return true
+ 
++    const changed = !node.eq(this.node)
+     this.node = node
+     this.text.value = node.textContent
+     this.language.value = node.attrs.language ?? ''
+ 
+     if (!this.initialized) {
++      if (changed && this.dom.style.height) {
++        this.initializeCodeMirror()
++        if (!this.visible) this.scheduleTeardown()
++        return true
++      }
+       // Update the placeholder text
+       const code = this.dom.querySelector(
+         '.milkdown-code-block-placeholder code'
+@@ -379,6 +444,11 @@ export class CodeMirrorBlock implements NodeView {
+   }
+ 
+   destroy() {
++    this.destroyed = true
++    this.layoutVersion++
++    cancelAnimationFrame(this.layoutFrame)
++    this.widthObserver?.disconnect()
++    this.dom.removeEventListener('milkdown:refresh-preview', this.refreshPreview)
+     this.cancelTeardown()
+     getSharedObserver().unobserve(this.dom)
+     visibilityCallbacks.delete(this.dom)
 diff --git a/src/image-block/view/components/image-viewer.tsx b/src/image-block/view/components/image-viewer.tsx
 index b982b11339a2d0f7c7a27a78c414417d36af6980..e54a912d16cf5d7461433e3bc04767dc9b2d4eda 100644
 --- a/src/image-block/view/components/image-viewer.tsx

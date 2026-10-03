@@ -1,3 +1,4 @@
+import { createSourceEditor } from '../../src/web/source-editor';
 import { createRailResize } from '../../src/web/rail-resize';
 import { Crepe } from '@milkdown/crepe';
 import { editorStateOptionsCtx, editorViewCtx } from '@milkdown/kit/core';
@@ -51,6 +52,11 @@ annotations.attachEditorView(view);
 const railResize = createRailResize(document.querySelector('#workspace')!, document.querySelector('.wm-annotation-rail')!, async width => { (window as any).savedRailWidth = width; }, error => { throw error; });
 (window as any).audit = {
   railResize,
+  openSource() {
+    const source = createSourceEditor(markdown, false, () => {});
+    canvas.shell.classList.add('wm-source-mode');
+    canvas.scroller.before(source.dom);
+  },
   openMaker() {
     const trigger = document.createElement('button'); document.body.append(trigger);
     const maker = createThemeMaker(trigger, {

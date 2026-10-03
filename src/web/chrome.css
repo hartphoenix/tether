@@ -157,15 +157,23 @@
 .wm-move-dialog form > div { display: flex; justify-content: flex-end; gap: .8em; }
 .wm-source-mode .wm-document-scroll, .wm-source-mode .top-bar-inner { display: none; }
 .milkdown > .wm-source-editor {
-  flex: 1; min-height: 0; width: 100%; box-sizing: border-box; resize: none; border: 0; outline: none;
+  flex: 1; min-height: 0; width: 100%;
+  background: var(--crepe-color-surface); color: var(--crepe-color-on-background);
+  font-size: calc(var(--wm-codeSize, 14px) * var(--wm-editor-scale, 1));
+}
+.milkdown > .wm-source-editor.cm-focused { outline: none; }
+.wm-source-editor .cm-scroller {
+  overflow: auto;
+  font-family: var(--wm-font-code, var(--crepe-font-code, monospace));
+  font-weight: var(--wm-codeWeight, 400); line-height: var(--wm-codeLineHeight, 1.5);
+}
+.wm-source-editor .cm-content {
   padding-block: calc(38.4px * var(--wm-editor-scale, 1)) calc(96px * var(--wm-editor-scale, 1));
   padding-inline: max(calc(35.2px * var(--wm-editor-scale, 1)), calc((100% - var(--wm-lineWidth, 66ch) * var(--wm-editor-scale, 1)) / 2));
-  background: var(--crepe-color-surface); color: var(--crepe-color-on-background);
-  font-family: var(--wm-font-code, var(--crepe-font-code, monospace));
-  font-size: calc(var(--wm-codeSize, 14px) * var(--wm-editor-scale, 1));
-  font-weight: var(--wm-codeWeight, 400); line-height: var(--wm-codeLineHeight, 1.5); tab-size: 4;
+  caret-color: var(--crepe-color-on-background);
 }
-@media (max-width: 600px) { .milkdown > .wm-source-editor { padding-inline: calc(16px * var(--wm-editor-scale, 1)); } }
+.wm-source-editor .cm-line { padding: 0; }
+@media (max-width: 600px) { .wm-source-editor .cm-content { padding-inline: calc(16px * var(--wm-editor-scale, 1)); } }
 .wm-zoom-slider { width: calc(158px * var(--wm-ui-scale, 1)); accent-color: var(--crepe-color-primary); }
 
 .wm-zoom-label {

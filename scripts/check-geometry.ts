@@ -44,6 +44,38 @@ async function captureReadingAnchor(page: Page): Promise<number> {
     throw new Error('No visible reading anchor in fixture');
   });
 }
+async function sourceZoom(page: Page) {
+  for (const custom of [false, true]) {
+    await page.goto(new URL(custom ? '?custom' : '/', server.url).toString());
+    await page.waitForFunction(() => (window as any).ready);
+    // Measure glyphs in viewport pixels: code blocks scale through the canvas transform.
+    const code = page.locator('.milkdown-code-block .cm-content');
+    await page.locator('.milkdown-code-block').scrollIntoViewIfNeeded();
+    await code.waitFor({ state: 'visible' });
+    let unitHeight = 0;
+    for (const scale of [1, .75, 1.75]) {
+      await page.evaluate(scale => (window as any).audit.setZoom(scale), scale);
+      const height = await code.evaluate(el => {
+        const text = document.createTreeWalker(el, NodeFilter.SHOW_TEXT).nextNode()!;
+        const range = document.createRange();
+        range.setStart(text, 0); range.setEnd(text, 1);
+        return range.getBoundingClientRect().height;
+      });
+      if (scale === 1) unitHeight = height;
+      check(unitHeight > 0 && Math.abs(height - unitHeight * scale) < .1, `code block glyph size at zoom ${scale}`);
+    }
+    await page.evaluate(() => (window as any).audit.openSource());
+    for (const scale of [.75, 1, 1.75]) {
+      await page.evaluate(scale => (window as any).audit.setZoom(scale), scale);
+      const sizes = await page.locator('.wm-source-editor .cm-content').evaluate(el => {
+        const style = getComputedStyle(el);
+        return { actual: parseFloat(style.fontSize), base: parseFloat(style.getPropertyValue('--wm-codeSize')) };
+      });
+      check(Math.abs(sizes.actual - sizes.base * scale) < .01, `source text size at zoom ${scale}: ${JSON.stringify(sizes)}`);
+    }
+  }
+  console.log('PASS source text and code blocks follow document zoom with default and custom typography');
+}
 async function readerStartup(page: Page, kind: string, scale: number) {
   await page.mouse.move(1195, 795);
   await page.goto(new URL(`?startup=${kind}&scale=${scale}`, server.url).toString());
@@ -407,6 +439,7 @@ try {
         await context.close();
         continue;
       }
+      await sourceZoom(page);
       await fontAndMediaSizing(page);
       await selectionMenuScale(page);
       await appearanceGeometry(page);

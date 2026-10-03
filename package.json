@@ -12,11 +12,17 @@
     "test": "bun test",
     "check": "bun test && bunx tsc --noEmit && bun run check:reader && bun run build:web",
     "check:reader": "bun scripts/check-reader-model.ts && bun scripts/check-reader-workflows.ts",
-    "check:geometry": "bun scripts/check-geometry.ts",
+    "check:geometry": "bun scripts/check-geometry.ts && bun scripts/check-code-block-lifecycle.ts",
     "build:web": "bun build ./src/web/app.ts ./src/web/index.html --outdir ./dist --minify --splitting",
     "build:release": "bun scripts/build-release.ts"
   },
   "dependencies": {
+    "@codemirror/commands": "6.11.0",
+    "@codemirror/lang-markdown": "6.5.2",
+    "@codemirror/language": "6.12.4",
+    "@codemirror/state": "6.7.1",
+    "@codemirror/view": "6.43.9",
+    "@lezer/highlight": "1.2.3",
     "@milkdown/crepe": "7.22.1",
     "@milkdown/kit": "7.22.1",
     "github-slugger": "2.0.0",

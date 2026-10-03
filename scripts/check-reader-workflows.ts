@@ -1,3 +1,4 @@
+import { EditorView } from '@codemirror/view';
 import { JSDOM } from 'jsdom';
 const html=await Bun.file('./src/web/index.html').text();
 const dom=new JSDOM(html,{url:'http://localhost/s/test/',pretendToBeVisual:true,runScripts:'outside-only'});
@@ -11,7 +12,7 @@ Object.defineProperty(w.document,'fonts',{value:{ready:Promise.resolve(),addEven
 (w.navigator as any).sendBeacon=()=>true;
 Range.prototype.getBoundingClientRect=()=>({left:0,right:0,top:0,bottom:0,width:0,height:0} as DOMRect);
 Range.prototype.getClientRects=()=>[] as any;
-let doc={path:'/tmp/workflow.md',body:'---\ntitle: Test\n---\n\n# Heading\n\nA \\$100 stock costs **only** \\$3.\n\n- list\n',bodyRevision:'sha256:original',ledgerRevision:'empty',annotations:{threads:[]}};
+let doc={path:'/tmp/workflow.md',body:'---\ntitle: Test\n---\n\n# Heading\r\n\n[Guide](guide.md) and `code`.\n\nA \\$100 stock costs **only** \\$3.\n\n- list\n',bodyRevision:'sha256:original',ledgerRevision:'empty',annotations:{threads:[]}};
 let preferences={theme:'tether',customThemes:[],uiScale:1,commentTextSize:16};
 const writes:string[]=[];
 (globalThis as any).fetch=async(url:string,options:any={})=>{
@@ -48,11 +49,22 @@ anchorLink.remove();
 if (!scrolled || w.location.href !== beforeUrl) throw new Error('Heading link failed to scroll without navigating');
 (document.querySelector('#source') as HTMLButtonElement).click();
 await wait(()=>!!document.querySelector('.wm-source-editor'));
-const input=document.querySelector<HTMLTextAreaElement>('.wm-source-editor')!;
-if(input.value!==doc.body||writes.length)throw new Error('Opening source rewrote bytes');
-input.value+='\nSource edit with \\$42.\n';input.dispatchEvent(new Event('input'));
+const input=EditorView.findFromDOM(document.querySelector('.wm-source-editor')!)!;
+if(input.state.sliceDoc()!==doc.body||writes.length)throw new Error('Opening source rewrote bytes');
+const sourceSpans=[...input.contentDOM.querySelectorAll('span')];
+for(const token of ['#','**','guide.md','`']) {
+ if(!sourceSpans.some(span=>span.textContent===token&&span.className))throw new Error('Missing source color: '+token);
+}
+if(sourceSpans.some(span=>span.textContent==='Heading'||span.textContent==='only'))throw new Error('Source coloring styled ordinary prose');
+const originalSource=input.state.sliceDoc();
+input.dispatch({changes:{from:input.state.doc.length,insert:'\nSource edit with \\$42.\n'}});
+const changedSource=input.state.sliceDoc();
+input.contentDOM.dispatchEvent(new w.KeyboardEvent('keydown',{key:'z',code:'KeyZ',ctrlKey:true,bubbles:true,cancelable:true}));
+if(input.state.sliceDoc()!==originalSource)throw new Error('Source undo failed');
+input.contentDOM.dispatchEvent(new w.KeyboardEvent('keydown',{key:'y',code:'KeyY',ctrlKey:true,bubbles:true,cancelable:true}));
+if(input.state.sliceDoc()!==changedSource)throw new Error('Source redo failed');
 await wait(()=>writes.length===1);
-if(writes[0]!==input.value)throw new Error('Source save normalized the body');
+if(writes[0]!==input.state.sliceDoc())throw new Error('Source save normalized the body');
 (document.querySelector('#source') as HTMLButtonElement).click();
 await wait(()=>!document.querySelector('.wm-source-editor'));
 if(writes.length!==1)throw new Error('Returning to reader rewrote source');
@@ -67,10 +79,10 @@ if(writes[1]!==external)throw new Error('Accept All rewrote external formatting:
 await wait(()=>document.querySelector<HTMLElement>('#conflict')!.hidden);
 (document.querySelector('#source') as HTMLButtonElement).click();
 await wait(()=>!!document.querySelector('.wm-source-editor'));
-const conflictedSource=document.querySelector<HTMLTextAreaElement>('.wm-source-editor')!;
+const conflictedSource=EditorView.findFromDOM(document.querySelector('.wm-source-editor')!)!;
 doc={...doc,body:'Newer disk content\n',bodyRevision:'sha256:newer'};
-conflictedSource.value+='Unsaved local change';conflictedSource.dispatchEvent(new Event('input'));
+conflictedSource.dispatch({changes:{from:conflictedSource.state.doc.length,insert:'Unsaved local change'}});
 await wait(()=>!document.querySelector<HTMLElement>('#conflict')!.hidden);
-if(Number(writes.length)!==2||!conflictedSource.value.endsWith('Unsaved local change'))throw new Error('Source conflict lost a draft or overwrote disk');
+if(Number(writes.length)!==2||!conflictedSource.state.sliceDoc().endsWith('Unsaved local change'))throw new Error('Source conflict lost a draft or overwrote disk');
 console.log('Reader workflows passed: exact source saves, byte-preserving Accept All, and source conflicts.');
 w.dispatchEvent(new w.Event('pagehide'));dom.window.close();

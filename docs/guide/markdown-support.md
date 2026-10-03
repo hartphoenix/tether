@@ -4,7 +4,7 @@ Tether uses Milkdown Crepe with CommonMark and GFM presets. Support for Markdown
 
 Right-click in the document to open Insert: lists, images, tables, code and math blocks, blockquotes, horizontal rules, and footnotes. Each entry uses its toolbar icon, and the menu follows interface scaling. Inline formatting and comments remain in the selection tooltip; Footnote appears in Insert and the top toolbar.
 
-Use **Edit Markdown source** in the reader toolbar to edit plain text, including frontmatter. Source edits use the same autosave, draft recovery, and conflict checks as the rendered editor. Source saves preserve the text you enter; switching views keeps an approximate reading position. Resolve an incoming-change review before switching views.
+Use **Edit Markdown source** in the reader toolbar to edit plain text, including frontmatter. Markdown markers and link destinations use the theme accent color; ordinary prose stays neutral. Source uses the theme’s code typography and follows document zoom. Source edits use the same autosave, draft recovery, and conflict checks as the rendered editor. Source saves preserve the text you enter; switching views keeps an approximate reading position. Resolve an incoming-change review before switching views.
 
 The toolbar's **File actions** menu contains Copy file path, Reveal in Finder (where supported), Move file, and Export with annotations. On macOS, Move opens a system folder chooser and retains the filename; elsewhere it accepts an absolute destination path. Moves refuse overwrites and keep the document's conversation attached.
 

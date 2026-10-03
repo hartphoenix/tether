@@ -5,6 +5,12 @@
     "": {
       "name": "tether",
       "dependencies": {
+        "@codemirror/commands": "6.11.0",
+        "@codemirror/lang-markdown": "6.5.2",
+        "@codemirror/language": "6.12.4",
+        "@codemirror/state": "6.7.1",
+        "@codemirror/view": "6.43.9",
+        "@lezer/highlight": "1.2.3",
         "@milkdown/crepe": "7.22.1",
         "@milkdown/kit": "7.22.1",
         "github-slugger": "2.0.0",

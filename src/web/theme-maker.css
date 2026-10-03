@@ -60,8 +60,8 @@
 #editor[data-wm-designed] .ProseMirror blockquote { padding-inline-start: 1.2em; margin-block: 1em; }
 #editor[data-wm-designed] .ProseMirror blockquote::before { width: 1.6px; }
 #editor[data-wm-designed] .ProseMirror :is(code, pre),
-#editor[data-wm-designed] .milkdown .cm-editor,
-#editor[data-wm-designed] .milkdown .cm-content {
+#editor[data-wm-designed] .milkdown-code-block .cm-editor,
+#editor[data-wm-designed] .milkdown-code-block .cm-content {
   font-family: var(--wm-font-code);
   font-size: var(--wm-codeSize);
   font-weight: var(--wm-codeWeight);

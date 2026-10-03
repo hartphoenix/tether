@@ -1,3 +1,4 @@
+import { createSourceEditor } from './source-editor';
 import { diagramViewer } from "./diagram-viewer";
 import { configureMarkdownSerialization } from "./markdown-serialization";
 import { createThreadSizing } from './thread-sizing';
@@ -114,7 +115,7 @@ let currentLedgerRevision = "";
 let currentFrontmatter = "";
 let savedEditorMarkdown = "";
 let diskBody = "";
-let sourceEditor: HTMLTextAreaElement | null = null;
+let sourceEditor: ReturnType<typeof createSourceEditor> | null = null;
 let annotationState: AnnotationState = {};
 let saveTimer: number | undefined;
 let saveInFlight = false;
@@ -454,7 +455,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
   try {
     const documentResponse = prefetched ?? await loadDocument();
     if (generation !== documentGeneration) return;
-    sourceEditor?.remove();
+    sourceEditor?.destroy();
     sourceEditor = null;
     sourceButton.setAttribute('aria-pressed', 'false');
     commentButton.disabled = false;
@@ -700,7 +701,7 @@ async function lease(generation = documentGeneration, path = currentPath): Promi
   } catch (error) {
     if ((error as Error & { status?: number }).status === 422) {
       readOnly = true;
-      if (sourceEditor) sourceEditor.readOnly = true;
+      if (sourceEditor) sourceEditor.setReadOnly(true);
       fileActions.update(revealAvailable, true);
       editorRoot.querySelector<HTMLElement>(".ProseMirror")?.setAttribute("contenteditable", "false");
       chrome.setNotice(`Read-only: ${(error as Error).message}`, 0);
@@ -783,25 +784,23 @@ sourceButton.addEventListener('click', async () => {
     if (!crepe || conflicted || incomingReview) { chrome.setNotice('Resolve the file conflict before switching views.'); return; }
     if (!readOnly && !(await save())) return;
     if (sourceEditor) {
-      const fraction = sourceEditor.scrollTop / Math.max(1, sourceEditor.scrollHeight - sourceEditor.clientHeight);
+      const fraction = sourceEditor.scroller.scrollTop / Math.max(1, sourceEditor.scroller.scrollHeight - sourceEditor.scroller.clientHeight);
       await openDocument(true);
       if (canvas) canvas.scroller.scrollTop = fraction * (canvas.scroller.scrollHeight - canvas.scroller.clientHeight);
       return;
     }
     const fraction = canvas ? canvas.scroller.scrollTop / Math.max(1, canvas.scroller.scrollHeight - canvas.scroller.clientHeight) : 0;
-    sourceEditor = document.createElement('textarea');
-    sourceEditor.className = 'wm-source-editor'; sourceEditor.setAttribute('aria-label', 'Markdown source');
-    sourceEditor.spellcheck = false; sourceEditor.readOnly = readOnly; sourceEditor.value = diskBody;
+    sourceEditor = createSourceEditor(diskBody, readOnly, scheduleSave);
     savedEditorMarkdown = diskBody;
-    sourceEditor.addEventListener('input', scheduleSave);
+    selectionUi?.close();
     annotationUi?.setRailOpen(false);
     annotationUi?.closeFootnotePopover();
     commentButton.disabled = true;
     canvas?.shell.classList.add('wm-source-mode');
-    canvas?.scroller.before(sourceEditor);
-    sourceEditor.scrollTop = fraction * (sourceEditor.scrollHeight - sourceEditor.clientHeight);
+    canvas?.scroller.before(sourceEditor.dom);
+    sourceEditor.scroller.scrollTop = fraction * (sourceEditor.scroller.scrollHeight - sourceEditor.scroller.clientHeight);
     sourceButton.setAttribute('aria-pressed', 'true');
-    sourceEditor.focus({ preventScroll: true });
+    sourceEditor.focus();
   } catch (error) { chrome.setNotice(`Could not switch source view: ${(error as Error).message}`); }
   finally { sourceButton.disabled = false; }
 });
@@ -878,6 +877,7 @@ addEventListener("pagehide", event => {
   navigator.sendBeacon(apiPath("api/release"), body);
   if ((event as PageTransitionEvent).persisted) return;
   connection.dispose();
+  sourceEditor?.destroy();
   selectionUi?.destroy();
   annotationUi?.destroy();
   railResize?.destroy();
