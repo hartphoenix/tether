@@ -210,6 +210,43 @@ describe("paseo host through the daemon", () => {
     expect((await fetch(new URL("api/link?target=other", reader), { redirect: "manual" })).status).not.toBe(302);
   });
 
+  test("a reader launched in a plugin panel opens links through the queue", async () => {
+    await wait();
+    process.env.TETHER_PASEO_WORKSPACE_ID = "w5";
+    process.env.TETHER_PASEO_ORIGIN = "user";
+    await runCli(["open", document, "--host", "paseo"], { config });
+    const launch = (await drain()).intents[0] as PullIntent;
+    const exchange = await fetch(`${launch.url!}&surface=panel`, { redirect: "manual" });
+    const reader = new URL(exchange.headers.get("location")!, daemon.origin);
+    const cookie = exchange.headers.get("set-cookie")!.split(";")[0]!;
+    const bootstrap = await (await fetch(new URL("api/bootstrap", reader), { headers: { cookie } })).json() as { capabilities: { pageOpensLinks?: boolean; hostOpensWebLinks?: boolean } };
+    expect(bootstrap.capabilities.pageOpensLinks).toBe(false);
+    expect(bootstrap.capabilities.hostOpensWebLinks).toBe(process.platform !== "win32");
+    const webLink = (url: string, session = reader, sessionCookie = cookie) => fetch(new URL("api/web-link", session), {
+      method: "POST", headers: { cookie: sessionCookie, origin: daemon.origin, "content-type": "application/json" }, body: JSON.stringify({ url }),
+    });
+    expect((await webLink("file:///etc/passwd")).status).toBe(400);
+    expect((await webLink("not a url")).status).toBe(400);
+
+    await wait();
+    const clicked = await fetch(new URL("api/open", reader), {
+      method: "POST",
+      headers: { cookie, origin: daemon.origin, "content-type": "application/json" },
+      body: JSON.stringify({ target: "other" }),
+    });
+    expect(clicked.status).toBe(200);
+    const linked = (await drain()).intents[0] as PullIntent;
+    expect(linked).toMatchObject({ origin: "user", path: join(root, "other.md"), target: { host: "paseo", workspaceId: "w5" } });
+    // The surface belongs to the launch, not the document: the same ticket opened in a browser tab opens links itself.
+    const opened = await fetch(linked.url!, { redirect: "manual" });
+    const tab = new URL(opened.headers.get("location")!, daemon.origin);
+    const tabCookie = opened.headers.get("set-cookie")!.split(";")[0]!;
+    const tabBootstrap = await (await fetch(new URL("api/bootstrap", tab), { headers: { cookie: tabCookie } })).json() as { capabilities: { pageOpensLinks?: boolean; hostOpensWebLinks?: boolean } };
+    expect(tabBootstrap.capabilities).toMatchObject({ pageOpensLinks: true, hostOpensWebLinks: false });
+    // A browser tab opens web links itself; the route refuses it.
+    expect((await webLink("https://example.com/", tab, tabCookie)).status).toBe(400);
+  });
+
   test("Folio mutations wake a waiting consumer", async () => {
     const initial = await wait();
     const pending = wait(initial.cursor, initial.folio, 10);

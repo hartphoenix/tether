@@ -26,6 +26,8 @@ export const intentSchema = z.object({
   id: z.string(),
   url: z.string(),
   workspaceId: z.string(),
+  /** The document's canonical path; reader panels are keyed by it. */
+  path: z.string().optional(),
 });
 export type Intent = z.infer<typeof intentSchema>;
 
@@ -48,6 +50,8 @@ export const pumpBatchSchema = z.object({
   notices: z.record(z.string(), noticeSchema),
   /** Whether the Tether header button is shown at all. */
   buttons: z.boolean(),
+  /** Whether readers open as plugin panels instead of browser tabs. */
+  readerPanels: z.boolean().optional(),
   status: statusSchema,
 });
 export type PumpBatch = z.infer<typeof pumpBatchSchema>;
@@ -96,6 +100,7 @@ export const tetherSettings = defineSettings({
     tetherPath: z.string().trim().max(32768).default(""),
     profile: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/, "Use 1–64 letters, numbers, underscores or hyphens").default("preview"),
     buttons: z.boolean().default(true),
+    readerPanels: z.boolean().default(false),
   }),
 });
 export type TetherSettings = z.infer<typeof tetherSettings.schema>;

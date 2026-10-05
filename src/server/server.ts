@@ -317,6 +317,12 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     const id = cookieValue(request, "tether_paseo_theme");
     return target?.host === PASEO_HOST && isThemeClient(id) ? id : undefined;
   };
+  // A reader in a Paseo plugin panel can't have its new-tab requests turned into tabs, so its launch marks the session.
+  const launchTarget = (target: HostTarget | undefined, surface: string | null): HostTarget | undefined => {
+    if (target?.host !== PASEO_HOST) return target;
+    const { surface: _inherited, ...rest } = target;
+    return surface === "panel" ? { ...rest, surface: "panel" } : rest;
+  };
   const launchCookies = (cookie: string, target?: HostTarget, client?: string | null): Headers => {
     const headers = new Headers({ "set-cookie": cookie });
     if (target?.host === PASEO_HOST && isThemeClient(client)) headers.append("set-cookie", viewCookie("tether_paseo_theme", client, "/"));
@@ -732,6 +738,15 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           return linkErrorPage(cause instanceof Error ? cause.message : String(cause));
         }
       }
+      if (apiPath === "/web-link" && request.method === "POST") {
+        const body = await requestJson(request);
+        if (!hostAdapter.capabilities(session.target).hostOpensWebLinks) throw invalidRequest("This host opens web links itself.");
+        let url: URL;
+        try { url = new URL(String(body.url)); } catch { throw invalidRequest("A web link is required."); }
+        if (url.protocol !== "http:" && url.protocol !== "https:") throw invalidRequest("Only http and https links can be opened.");
+        await hostAdapter.openExternal(url.href);
+        return json({ opened: true });
+      }
       if (apiPath === '/file/reveal' && request.method === 'POST') {
         if (!hostAdapter.capabilities(session.target).revealFile || !hostAdapter.revealFile) throw invalidRequest('Revealing files is unavailable in this host.');
         await hostAdapter.revealFile(session.grant.realPath);
@@ -837,9 +852,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       const id = pending.resumeId ?? randomToken();
       const createdAt = now();
-      const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt, lastSeen: createdAt, leases: new Map(), ...(pending.target ? { target: pending.target } : {}) };
+      const target = launchTarget(pending.target, url.searchParams.get("surface"));
+      const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt, lastSeen: createdAt, leases: new Map(), ...(target ? { target } : {}) };
       const previous = sessions.get(id);
-      try { await recents.record(pending.grant.realPath, pending.target); }
+      try { await recents.record(pending.grant.realPath, target); }
       catch (cause) {
         service.close(pending.grant);
         return error("launch_failed", cause instanceof Error ? cause.message : String(cause), 500);

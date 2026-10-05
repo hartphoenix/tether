@@ -250,3 +250,58 @@ test("only local launch URLs and same-origin session navigations are accepted", 
     expect(invalid.states.at(-1)).toBe("failed");
   }
 });
+
+test("reader views accept panel launches with a heading and cache the session without it", async () => {
+  const sessions: Array<string | undefined> = [];
+  const launch = `${origin}/launch?ticket=one-use&themeClient=00000000-0000-4000-8000-000000000000&surface=panel#plan`;
+  const first = mount({ kind: "reader", cacheKey: "reader-a", launch: async () => ({ url: launch, expiresAt: Date.now() + 30_000 }), onSession: url => sessions.push(url) });
+  await tick();
+  expect(guests[0]!.src).toBe(launch);
+  guests[0]!.ready(`${origin}/s/view-r/#plan`);
+  expect(first.states.at(-1)).toBe("ready");
+  expect(sessions).toEqual([`${origin}/s/view-r/`]);
+  first.dispose();
+
+  // A remount reuses the session; a fresh mount skips it.
+  const again = mount({ kind: "reader", cacheKey: "reader-a" });
+  expect(again.launches).toBe(0);
+  expect(guests[1]!.src).toBe(`${origin}/s/view-r/`);
+  again.dispose();
+  const fresh = mount({ kind: "reader", cacheKey: "reader-a", fresh: true, launch: async () => ({ url: `${origin}/launch?ticket=two`, expiresAt: Date.now() + 30_000 }) });
+  await tick();
+  expect(guests[2]!.src).toBe(`${origin}/launch?ticket=two`);
+  fresh.dispose();
+});
+
+test("a saved reader session is tried first and discarded when it fails", async () => {
+  const sessions: Array<string | undefined> = [];
+  const view = mount({ kind: "reader", cacheKey: "reader-b", saved: `${origin}/s/old/`, launch: async () => ({ url: `${origin}/launch?ticket=new`, expiresAt: Date.now() + 30_000 }), onSession: url => sessions.push(url) });
+  expect(guests[0]!.src).toBe(`${origin}/s/old/`);
+  guests[0]!.navigate(`${origin}/s/old/`, 401);
+  expect(sessions).toEqual([undefined]);
+  await tick();
+  expect(guests[1]!.src).toBe(`${origin}/launch?ticket=new`);
+  guests[1]!.ready(`${origin}/s/new/`);
+  expect(sessions).toEqual([undefined, `${origin}/s/new/`]);
+  view.dispose();
+});
+
+test("reader and Folio launches are not interchangeable", async () => {
+  for (const [kind, url] of [
+    ["reader", `${origin}/recents/launch?ticket=x`],
+    ["reader", `${origin}/launch?ticket=x&surface=tab`],
+    ["reader", `${origin}/launch?ticket=x&other=1`],
+    ["folio", `${origin}/launch?ticket=x`],
+    ["folio", `${origin}/recents/launch?ticket=x&surface=panel`],
+    ["folio", `${origin}/recents/launch?ticket=x#plan`],
+  ] as const) {
+    const view = mount({ kind, cacheKey: `${kind}:${url}`, launch: async () => ({ url, expiresAt: Date.now() + 30_000 }) });
+    await tick();
+    expect(view.states.at(-1)).toBe("failed");
+    view.dispose();
+  }
+  const reader = mount({ kind: "reader", cacheKey: "reader-c", launch: async () => ({ url: `${origin}/launch?ticket=x`, expiresAt: Date.now() + 30_000 }) });
+  await tick();
+  guests.at(-1)!.ready(`${origin}/r/folio-view/`);
+  expect(reader.states.at(-1)).toBe("failed");
+});

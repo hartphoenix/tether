@@ -15,13 +15,24 @@ declare const document: { createElement(name: "webview"): Guest } | undefined;
 
 type Container = { appendChild(guest: Guest): unknown };
 export type FolioViewState = "loading" | "ready" | "failed";
+/** Folio sessions live under `/r/`, reader sessions under `/s/`. */
+export type ViewKind = "folio" | "reader";
 type MountOptions = {
+  kind?: ViewKind;
   cacheKey: string;
   launch: () => Promise<FolioView>;
   onState: (state: FolioViewState) => void;
+  /** A session saved by the caller, tried when this client has none cached. */
+  saved?: string;
+  /** Reports the cached session as it is committed or discarded. */
+  onSession?: (url: string | undefined) => void;
+  /** Launch fresh, skipping any cached session. */
+  fresh?: boolean;
   launchTimeoutMs?: number;
   loadTimeoutMs?: number;
 };
+const launchPaths: Record<ViewKind, string> = { folio: "/recents/launch", reader: "/launch" };
+const sessionPaths: Record<ViewKind, RegExp> = { folio: /^\/r\/[A-Za-z0-9_-]+\/$/, reader: /^\/s\/[A-Za-z0-9_-]+\/$/ };
 
 const sessions = new Map<string, string>();
 const mounts = new Set<() => void>();
@@ -37,22 +48,39 @@ export function disposeFolioViews(): void {
   sessions.clear();
 }
 
-function localUrl(value: string): URL {
+// A reader launch may target a heading; Folio URLs never carry a fragment.
+function localUrl(value: string, kind: ViewKind): URL {
   const url = new URL(value);
   if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
-    || url.username || url.password || url.hash) throw new Error("Invalid Folio URL");
+    || url.username || url.password || (url.hash && kind !== "reader")) throw new Error("Invalid Tether URL");
   return url;
 }
 
-function sessionUrl(value: string, origin: string): string {
-  const url = localUrl(value);
-  if (url.origin !== origin || !/^\/r\/[A-Za-z0-9_-]+\/$/.test(url.pathname)
-    || [...url.searchParams.keys()].some(key => key !== "instance")) throw new Error("Invalid Folio session");
+function sessionUrl(value: string, origin: string, kind: ViewKind): string {
+  const url = localUrl(value, kind);
+  // A heading belongs to one launch, not to the session a later mount reloads.
+  url.hash = "";
+  if (url.origin !== origin || !sessionPaths[kind].test(url.pathname)
+    || [...url.searchParams.keys()].some(key => key !== "instance")) throw new Error("Invalid Tether session");
   return url.href;
+}
+
+function launchUrl(value: string, kind: ViewKind): URL {
+  const url = localUrl(value, kind);
+  const themeClient = url.searchParams.get("themeClient");
+  const surfaces = url.searchParams.getAll("surface");
+  const allowed = kind === "reader" ? ["ticket", "themeClient", "surface"] : ["ticket", "themeClient"];
+  if (url.pathname !== launchPaths[kind] || url.searchParams.getAll("ticket").length !== 1 || !url.searchParams.get("ticket")
+    || url.searchParams.getAll("themeClient").length > 1
+    || (themeClient !== null && !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(themeClient))
+    || surfaces.length > 1 || surfaces.some(surface => surface !== "panel")
+    || [...url.searchParams.keys()].some(key => !allowed.includes(key))) throw new Error("Invalid Tether launch");
+  return url;
 }
 
 /** One guest per mount; cache only authenticated final URLs, never consumable tickets. */
 export function mountFolioWebview(container: unknown, options: MountOptions): () => void {
+  const kind = options.kind ?? "folio";
   let disposed = false;
   let stopAttempt = () => {};
   const dispose = () => {
@@ -87,6 +115,7 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
       if (!live()) return;
       const failedUrl = committedUrl ?? cached;
       if (failedUrl && sessions.get(options.cacheKey) === failedUrl) sessions.delete(options.cacheKey);
+      if (failedUrl) options.onSession?.(undefined);
       stop();
       // Only a failed cached session gets one automatic fresh launch.
       if (cached) begin();
@@ -97,15 +126,8 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
     const attach = (value: string) => {
       if (!live()) return;
       try {
-        const url = localUrl(value);
-        if (cached) sessionUrl(value, url.origin);
-        else {
-          const themeClient = url.searchParams.get("themeClient");
-          if (url.pathname !== "/recents/launch" || url.searchParams.getAll("ticket").length !== 1 || !url.searchParams.get("ticket")
-            || url.searchParams.getAll("themeClient").length > 1
-            || (themeClient !== null && !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(themeClient))
-            || [...url.searchParams.keys()].some(key => key !== "ticket" && key !== "themeClient")) throw new Error("Invalid Folio launch");
-        }
+        const url = cached ? localUrl(value, kind) : launchUrl(value, kind);
+        if (cached) sessionUrl(value, url.origin, kind);
         if (typeof document === "undefined" || !container || typeof (container as Container).appendChild !== "function") throw new Error("Webview unavailable");
         guest = document.createElement("webview");
         const listen = (name: string, listener: Listener) => {
@@ -117,6 +139,7 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
           clearTimeout(timer);
           sessions.set(options.cacheKey, finalUrl);
           committedUrl = finalUrl;
+          options.onSession?.(finalUrl);
           options.onState("ready");
         };
         listen("did-start-navigation", event => {
@@ -129,8 +152,8 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
         listen("did-frame-navigate", event => {
           if (!live() || !event.isMainFrame) return;
           try {
-            if (!event.httpResponseCode || event.httpResponseCode < 200 || event.httpResponseCode >= 300) throw new Error("Folio navigation failed");
-            finalUrl = sessionUrl(event.url ?? "", url.origin);
+            if (!event.httpResponseCode || event.httpResponseCode < 200 || event.httpResponseCode >= 300) throw new Error("Tether navigation failed");
+            finalUrl = sessionUrl(event.url ?? "", url.origin, kind);
             ready();
           } catch { fail(); }
         });
@@ -167,6 +190,7 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
     }
   }
 
-  begin(sessions.get(options.cacheKey));
+  if (options.fresh) sessions.delete(options.cacheKey);
+  begin(options.fresh ? undefined : sessions.get(options.cacheKey) ?? options.saved);
   return dispose;
 }

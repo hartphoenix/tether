@@ -715,6 +715,7 @@ async function lease(generation = documentGeneration, path = currentPath): Promi
 async function start(): Promise<void> {
   const bootstrap = await api<SessionBootstrap>("api/bootstrap");
   pageOpensLinks = bootstrap.capabilities?.pageOpensLinks === true;
+  hostOpensWebLinks = bootstrap.capabilities?.hostOpensWebLinks === true;
   revealAvailable = bootstrap.capabilities?.revealFile === true;
   fileActions.update(revealAvailable, readOnly, bootstrap.directoryPicker === true);
   stopFind?.();
@@ -852,6 +853,15 @@ editorRoot.addEventListener("click", (event) => {
   }).catch((error) => chrome.setNotice(`Could not open link: ${(error as Error).message}`, 0));
 }, true);
 addEventListener('hashchange', () => scrollToDocumentAnchor(editorRoot, location.hash));
+// Where the page's new windows go nowhere (a Paseo plugin panel), web links open in the default browser.
+let hostOpensWebLinks = false;
+document.addEventListener("click", (event) => {
+  const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+  if (!hostOpensWebLinks || event.defaultPrevented || !link || link.target !== "_blank" || !/^https?:$/.test(link.protocol)) return;
+  event.preventDefault();
+  void api("api/web-link", { method: "POST", body: JSON.stringify({ url: link.href }) })
+    .catch((error) => chrome.setNotice(`Could not open link: ${(error as Error).message}`, 0));
+});
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
 });

@@ -39,9 +39,12 @@ export class PaseoHostAdapter implements HostAdapter {
 
   launchTarget(): HostTarget | undefined { return paseoLaunchTarget(this.env); }
 
-  capabilities(): HostCapabilities {
-    // Paseo turns a page's new-tab request into a tab in the focused pane, so the reader opens links itself.
-    return { embeddedBrowser: true, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: process.platform === "darwin", pageOpensLinks: true, pageFind: true };
+  capabilities(target?: HostTarget): HostCapabilities {
+    // Paseo turns a browser tab's new-tab request into a tab in the focused pane, so the reader opens links itself.
+    // A plugin panel's requests go nowhere; its reader opens documents through Tether's queue and
+    // web links in the default browser. Windows' `start` would reinterpret a URL, so it gets neither.
+    const panel = target?.surface === "panel";
+    return { embeddedBrowser: true, hiddenNavigation: false, widgetInstallation: false, fileNavigatorHook: false, revealFile: process.platform === "darwin", pageOpensLinks: !panel, pageFind: true, hostOpensWebLinks: panel && process.platform !== "win32" };
   }
 
   private origin(): PullOrigin {

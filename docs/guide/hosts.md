@@ -51,13 +51,14 @@ paseo plugin add hartphoenix/tether:integrations/paseo
 
 * **Folio.** In any workspace, click the Tether button in the header to open the Folio in the sidebar. Paseo gives each workspace its own Explorer, so add Folio once in each workspace where you want it. It stays there after that – show/hide it with `⌘-E`. Desktop shows Tether's full Folio: filters and saved chips, right-click menus, sorting, Active/Archive, settings, and your Tether theme. Documents, saved filters, and pins stay synchronized across workspaces. If the embedded view cannot load, a basic document list appears with **Retry full Folio**.
 * **Opening documents.** Click a document in Folio to open its reader as a Paseo browser tab. Links to local Markdown open in another tab. To place a reader beside your work, split the pane first, then open it.
+* **Reader panels (experimental).** Turn on **Open readers in panels** in **Settings → Tether** to open readers as Paseo tabs without an address bar or back and forward buttons. Each document gets its own tab, named for the document, which also appears in Paseo's new-tab menu while it's open. Links to local Markdown open as more panels, and web links open in your default browser. Paseo keeps only the three most recently used tabs in each pane loaded, so returning to an older reader reloads it, keeping your scroll position.
 * **The Tether button.** Each workspace header gets a Tether button, which normally opens Folio. When an agent runs `tether open` or `tether recents add` for a document in that workspace, the button shows the document's name; clicking it then opens the document in Tether.
 * **Focus Mode**. With a reader pane in focus, `⌘-⇧-F` fullscreens the pane and hides all others. Focus mode removes distractions and makes room for the threads drawer. `⌘-⇧-F` turns it off again.
 * **Settings.** Paseo **Settings → Tether** shows the connection, turns the button on or off, and sets the `tether` command and profile. By default the plugin finds `tether` on your PATH or in `~/.local/bin`, and uses the `preview` profile.
 
 `tether paseo status` reports whether the plugin is connected.
 
-The embedded Folio uses a desktop webview mechanism outside Paseo's supported plugin API. If a Paseo update blocks it, the basic list remains available.
+The embedded Folio and reader panels use a desktop webview mechanism outside Paseo's supported plugin API. If a Paseo update blocks it, the basic list remains available, and readers can be opened as browser tabs by turning reader panels off.
 
 ## Separate browser
 
