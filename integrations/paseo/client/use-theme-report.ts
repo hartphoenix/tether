@@ -1,12 +1,13 @@
 import { useEffect, useRef } from 'react';
-import { useRpc, useSettings, type PluginHostProps } from '@getpaseo/plugin/client';
-import { themeRpc, tetherSettings } from '../shared/contracts';
+import { useRpc, type PluginHostProps } from '@getpaseo/plugin/client';
+import { themeRpc } from '../shared/contracts';
+import { useTetherSettings } from './use-tether-settings';
 import { matchingTheme, reportTheme, themeClientId } from './theme-sync';
 import { useTetherState } from './state';
 
 /** Report only while a host component supplying live theme props is mounted. */
 export function useThemeReport(props: PluginHostProps) {
-  const settings = useSettings(tetherSettings);
+  const settings = useTetherSettings();
   const send = useRpc(themeRpc);
   const generation = useTetherState(state => state.connection?.generation);
   const serverPath = useTetherState(state => state.connection?.tetherPath);

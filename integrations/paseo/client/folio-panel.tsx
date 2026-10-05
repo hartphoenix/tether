@@ -1,10 +1,11 @@
 import { useThemeReport } from "./use-theme-report";
 import { themedLaunch } from "./theme-sync";
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { useRpc, useSettings } from "@getpaseo/plugin/client";
+import { useRpc } from "@getpaseo/plugin/client";
+import { useTetherSettings } from "./use-tether-settings";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { ackRpc, folioViewRpc, tetherSettings, type TetherSettings } from "../shared/contracts";
+import { ackRpc, folioViewRpc, type TetherSettings } from "../shared/contracts";
 import { FolioList } from "./folio-list";
 import { lendOpener, useTetherState } from "./state";
 import { lendUrlOpener } from "./tab-restore";
@@ -60,7 +61,7 @@ function EmbeddedFolio({ settings, cacheKey, generation, ...props }: PluginWorks
 export function FolioPanel(props: PluginWorkspacePanelProps) {
   const connection = useTetherState(state => state.connection);
   const ack = useRpc(ackRpc);
-  const settings = useSettings(tetherSettings);
+  const settings = useTetherSettings();
   const openBrowser = props.navigation?.openBrowser;
   useEffect(() => {
     if (!openBrowser) return;
