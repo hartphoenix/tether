@@ -1,20 +1,20 @@
 import { expect, test } from "bun:test";
 import { JSDOM } from "jsdom";
-import { folioHtml } from "../src/web/folio-page";
+import { folioHtml, folioTheme } from "../src/web/folio-page";
 
 function runPage(snapshot: Record<string, unknown>, savedView?: string) {
   const html = folioHtml({ pickerAvailable: true });
-  const dom = new JSDOM(html, { runScripts: "outside-only", url: "http://127.0.0.1/r/test/" });
+  const dom = new JSDOM(html, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://127.0.0.1/r/test/" });
   Object.defineProperty(dom.window.HTMLDialogElement.prototype, "showModal", { configurable: true, value: function(this: HTMLDialogElement) { this.open = true; } });
   Object.defineProperty(dom.window.HTMLDialogElement.prototype, "close", { value: function(this: HTMLDialogElement) { this.open = false; this.dispatchEvent(new dom.window.Event("close")); } });
   if (savedView !== undefined) dom.window.localStorage.setItem("tether.folio.view.v1", savedView);
   let currentSnapshot = { ...snapshot };
   const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
-  let currentTheme: Record<string, unknown> = {};
+  let currentTheme: Record<string, unknown> = folioTheme({});
   Object.defineProperty(dom.window, "setInterval", { value: () => 0 });
   Object.defineProperty(dom.window, "fetch", { configurable: true, value: async (input: string | URL, init?: RequestInit) => {
     const endpoint = String(input).split("/api/")[1] ?? "";
-    if (endpoint === "snapshot") return Response.json(currentSnapshot);
+    if (endpoint === "snapshot") return Response.json({ ...currentSnapshot, preferences: currentTheme });
     if (endpoint === "preferences") return Response.json(currentTheme);
     if (init?.body) requests.push({ endpoint, body: JSON.parse(String(init.body)) });
     if (endpoint === "filters") {
@@ -55,12 +55,12 @@ test("Folio retains the original recovery dialog if refreshing after an action f
   dom.window.close();
 });
 
-test("Folio stops polling and disables actions on a lease-only authorization failure", async () => {
+test("Folio stops polling and disables actions on a combined snapshot authorization failure", async () => {
   const snapshot = { sequence: 1, files: [] };
   const { dom, refresh } = runPage(snapshot);
   await Bun.sleep(0);
   Object.defineProperty(dom.window, "fetch", { value: async (input: string) =>
-    String(input).endsWith("lease") ? new Response(null, { status: 401 }) : Response.json(snapshot) });
+    String(input).endsWith("snapshot") ? new Response(null, { status: 401 }) : Response.json(snapshot) });
   await refresh();
   await Bun.sleep(0);
   expect(dom.window.document.querySelector("#freshness")?.textContent).toContain("no longer has access");

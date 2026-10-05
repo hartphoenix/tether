@@ -1,0 +1,314 @@
+import { builtInDesign } from "../src/shared/themes";
+import { DesktopReaderBackend } from "../src/remote/desktop-reader";
+import { controlRequest } from "../src/server/lifecycle";
+/** End-to-end browser check with a disposable profile and a virtual authenticator, never a human passkey. */
+import { createServer } from "node:http";
+import { connect } from "node:net";
+import { chromium, webkit } from "playwright";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { strict as assert } from "node:assert";
+import { resolveConfig } from "../src/server/config";
+import { startDaemon } from "../src/server/server";
+import { FilePasskeys } from "../src/remote/passkeys";
+import { LocalReaderBackend } from "../src/remote/local-reader";
+import { PhoneGateway } from "../src/remote/gateway";
+import { tailscaleIdentity } from "../src/remote/contracts";
+import { createDiagramRenderer, type DiagramRenderer } from "../src/remote/diagram-renderer";
+
+const directory = await mkdtemp("/tmp/tether-phone-browser-");
+const OWNER = "test-owner";
+const document = join(directory, "example.md");
+const fixture = "# Phone pilot test\n\nConcurrent target\n\n```mermaid\nflowchart LR\n  Phone --> Reader --> Tether\n```\n" + (process.env.PHONE_TEST_PROFILE ? Array.from({ length: 12 }, (_, block) => `\n\n\`\`\`javascript\n${Array.from({ length: 20 }, (_, line) => `const value${line} = ${block + line}; // sample code`).join("\n")}\n\`\`\``).join("") : "");
+await writeFile(document, fixture);
+const config = resolveConfig({ profile: "phone-browser-test", runtimeDir: join(directory, "runtime"), configDir: join(directory, "config") });
+await mkdir(dirname(config.preferencesPath), { recursive: true });
+await writeFile(config.preferencesPath, JSON.stringify({ theme: "tether-dark", customThemes: [{ ...builtInDesign("tether")!, id: "custom-phone-test", name: "Phone custom theme" }] }));
+const daemon = await startDaemon({ config, keepAlive: true, persistentViews: false });
+let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+let safari: Awaited<ReturnType<typeof webkit.launch>> | undefined;
+let gateway: PhoneGateway | undefined;
+let diagrams: DiagramRenderer | undefined;
+const proxy = createServer();
+let listener: ReturnType<typeof Bun.serve> | undefined;
+try {
+  diagrams = await createDiagramRenderer();
+  const certificate = Bun.spawn(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(directory, "key.pem"), "-out", join(directory, "cert.pem"), "-days", "1", "-subj", "/CN=tether.test"], { stdout: "ignore", stderr: "ignore" });
+  assert.equal(await certificate.exited, 0);
+  listener = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 120, tls: { key: Bun.file(join(directory, "key.pem")), cert: Bun.file(join(directory, "cert.pem")) },
+    fetch: request => {
+      const headers = new Headers(request.headers); headers.set("tailscale-user-login", OWNER);
+      return gateway!.handle(new Request(request, { headers }), new URL(request.url).hostname === "approve.tether.test" ? "approval" : "reader");
+    } });
+  const READER = `https://reader.tether.test:${listener.port}`, AUTH = `https://approve.tether.test:${listener.port}`;
+  browser = await chromium.launch({ headless: true, args: ["--host-resolver-rules=MAP *.tether.test 127.0.0.1", "--no-proxy-server"] });
+  const grant = await daemon.service.open(document);
+  const documentId = daemon.service.store.documentForPath(grant.realPath)!.id;
+  daemon.service.close(grant);
+  const build = await Bun.build({ entrypoints: [new URL("../src/remote/auth-browser.ts", import.meta.url).pathname], target: "browser", minify: true });
+  assert(build.success);
+  const secondDocument = join(directory, "second.md");
+  await writeFile(secondDocument, "# Second desktop document\n\nShared desktop conversation.\n");
+  await controlRequest(config, "/control/folio/add", { paths: [secondDocument] }, { start: false });
+  gateway = new PhoneGateway({ readerOrigin: READER, approvalOrigin: AUTH, owner: OWNER, document: { id: documentId, title: "example.md" },
+    identify: tailscaleIdentity(OWNER), diagrams, passkeys: new FilePasskeys({ file: join(directory, "passkey.json"), origin: AUTH, owner: OWNER }),
+    backend: new DesktopReaderBackend(config, new LocalReaderBackend(daemon, new Map([[documentId, document]])), documentId), authJavaScript: await build.outputs[0]!.text() });
+  const page = await browser.newPage({ ignoreHTTPSErrors: true, viewport: { width: 390, height: 844 } });
+  const requestCounts: Record<string, number> = {};
+  page.on('request', request => { const name = new URL(request.url()).pathname.split('/').at(-1)!; requestCounts[name] = (requestCounts[name] ?? 0) + 1; });
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  const assetFailures: string[] = [];
+  const diagramDownloads: string[] = [];
+  const watchAssets = (target: import("playwright").Page) => {
+    target.on("request", request => { if (/(?:mermaid|flowDiagram|dagre|elk)[^/]*\.js$/i.test(new URL(request.url()).pathname)) diagramDownloads.push(new URL(request.url()).pathname); });
+    target.on("requestfailed", request => { if (/\.(?:css|js)$/.test(new URL(request.url()).pathname)) assetFailures.push(`${new URL(request.url()).pathname}: ${request.failure()?.errorText}`); });
+    target.on("response", response => { if (/\.(?:css|js)$/.test(new URL(response.url()).pathname) && response.status() >= 400) assetFailures.push(`${new URL(response.url()).pathname}: ${response.status()}`); });
+  };
+  watchAssets(page);
+  const cdp = await page.context().newCDPSession(page);
+  if (process.env.PHONE_TEST_PROFILE) await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  const profile = async (label: string) => {
+    if (!process.env.PHONE_TEST_PROFILE) return;
+    await page.locator(".wm-mermaid svg").waitFor();
+    console.log("PROFILE", label, JSON.stringify(await page.evaluate(async () => {
+      await window.document.fonts.ready;
+      const resources = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+      return { readyMs: Math.round(performance.now()), codeBlocks: window.document.querySelectorAll(".cm-editor").length,
+        codeTextColors: [...new Set([...window.document.querySelectorAll(".cm-line, .cm-line span")].map(node => getComputedStyle(node).color))],
+        resources: resources.filter(r => r.name.startsWith("https:") && !r.name.includes("api/lease") && !r.name.includes("api/position")).map(r => ({ path: new URL(r.name).pathname.split("/").at(-1), transfer: r.transferSize, encoded: r.encodedBodySize, decoded: r.decodedBodySize, ms: Math.round(r.duration) })) };
+    })));
+  };
+  await cdp.send("WebAuthn.enable");
+  await cdp.send("WebAuthn.addVirtualAuthenticator", { options: { protocol: "ctap2", transport: "internal", hasResidentKey: true,
+    hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
+  const setupCode = gateway.beginEnrollment();
+  await page.goto(`${AUTH}/enroll`);
+  await page.locator("#setup-code").fill(setupCode); await page.locator("#register").click();
+  await page.getByText("Passkey enrolled.", { exact: false }).waitFor();
+  await page.goto(READER);
+  await page.waitForURL(`${AUTH}/?request=*`);
+  if (process.env.PHONE_TEST_SLOW) {
+    page.setDefaultTimeout(120000);
+    await cdp.send("Network.enable");
+    await cdp.send("Network.emulateNetworkConditions", { offline: false, latency: 150, downloadThroughput: 150000, uploadThroughput: 150000 });
+  }
+  await page.getByRole("button", { name: "Verify with passkey" }).click({ timeout: 5000 }).catch(async error => {
+    console.error("Approval navigation:", new URL(page.url()).pathname, await page.locator("body").innerText(), errors); throw error;
+  });
+  await page.waitForURL(`${READER}/reader/`);
+  await page.locator(".ProseMirror").waitFor();
+  assert.equal(await page.locator(".ProseMirror").getAttribute("contenteditable"), "false");
+  await page.locator(".wm-mermaid svg").waitFor();
+  await profile("cold-browser-cold-diagram");
+  assert.equal(requestCounts.updates ?? 0, 0, 'No unsupported update requests');
+  assert.equal(requestCounts.preferences ?? 0, 0, 'Appearance is included in revision checks');
+  const cold = await page.evaluate(async () => { await window.document.fonts.ready; return { readyMs: performance.now(), assets: performance.getEntriesByType('resource').filter(r => new URL(r.name).pathname.startsWith('/assets/')).map(r => ({ name: new URL(r.name).pathname.split('/').at(-1), bytes: (r as PerformanceResourceTiming).transferSize })) }; });
+  console.log('LOAD cold', JSON.stringify(cold));
+  proxy.on("connect", (_request, client, head) => {
+    const upstream = connect(listener!.port!, "127.0.0.1", () => { client.write("HTTP/1.1 200 Connection Established\r\n\r\n"); if (head.length) upstream.write(head); client.pipe(upstream); upstream.pipe(client); });
+    client.on("error", () => upstream.destroy()); upstream.on("error", () => client.destroy());
+    client.on("close", () => upstream.destroy()); upstream.on("close", () => client.destroy());
+  });
+  await new Promise<void>(resolve => proxy.listen(0, "127.0.0.1", resolve));
+  safari = await webkit.launch({ proxy: { server: `http://127.0.0.1:${(proxy.address() as import("node:net").AddressInfo).port}` } });
+  const safariContext = await safari.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, ignoreHTTPSErrors: true });
+  await safariContext.addCookies(await page.context().cookies());
+  const safariPage = await safariContext.newPage();
+  watchAssets(safariPage);
+  await safariPage.goto(READER);
+  await safariPage.goto(`${READER}/reader/`);
+  await safariPage.locator(".ProseMirror").waitFor();
+  assert(await safariPage.evaluate(() => [...window.document.styleSheets].some(sheet => sheet.href && sheet.cssRules.length > 100)));
+  await safariPage.locator(".wm-mermaid svg").waitFor();
+  assert.equal(await safariPage.locator("#notice").isVisible(), false, "The permanent access notice must not cover the heading");
+  assert(await safariPage.locator(".ProseMirror h1").isVisible());
+  const themeButton = safariPage.locator("#theme");
+  const themeBounds = (await themeButton.boundingBox())!, folioButtonBounds = (await safariPage.locator("#phone-folio").boundingBox())!;
+  assert(themeBounds.x + themeBounds.width < folioButtonBounds.x && Math.abs(themeBounds.y - folioButtonBounds.y) < 1);
+  await themeButton.tap();
+  assert.notEqual(await safariPage.locator("#theme-menu").evaluate(el => getComputedStyle(el).backgroundColor), "rgba(0, 0, 0, 0)");
+  assert.equal(await safariPage.locator("#theme-menu [data-edit-theme]").count(), 0);
+  assert.equal(await safariPage.locator("#theme-maker").isVisible(), false);
+  await safariPage.getByRole("menuitemradio", { name: "Phone custom theme", exact: true }).tap();
+  await safariPage.locator("#theme:not([disabled])").waitFor();
+  await safariPage.reload();
+  await safariPage.locator(".ProseMirror").waitFor();
+  assert.equal(await safariPage.locator('#theme-menu [data-theme="custom-phone-test"]').getAttribute("aria-checked"), "true");
+  await themeButton.tap();
+  await safariPage.locator('#theme-menu [data-theme="tether-dark"]').tap();
+  await safariPage.locator("#theme:not([disabled])").waitFor();
+  await safariPage.locator("#phone-folio").tap();
+  const folio = safariPage.locator("#mobile-folio");
+  await folio.getByRole("link", { name: "Second desktop document", exact: false }).waitFor();
+  await safariPage.waitForTimeout(200);
+  if (process.env.PHONE_TEST_FOLIO_SCREENSHOT) await safariPage.screenshot({ path: process.env.PHONE_TEST_FOLIO_SCREENSHOT });
+  const folioBounds = await folio.boundingBox();
+  assert(folioBounds && folioBounds.x >= 0 && folioBounds.y >= 0 && folioBounds.y + folioBounds.height < 844);
+  assert.equal((await safariPage.locator("#phone-folio").boundingBox())!.width, (await safariPage.locator("#phone-comment").boundingBox())!.width);
+  const activeTab = folio.getByRole("button", { name: "Active", exact: true });
+  const tabGeometry = await activeTab.evaluate(button => {
+    const bounds = button.getBoundingClientRect(), icon = button.querySelector("svg")!.getBoundingClientRect(), count = button.querySelector("span")!.getBoundingClientRect();
+    return { iconOffset: icon.y + icon.height / 2 - bounds.y - bounds.height / 2, countOffset: count.y + count.height / 2 - bounds.y - bounds.height / 2, background: getComputedStyle(button).backgroundColor };
+  });
+  assert(Math.abs(tabGeometry.iconOffset) < 1 && Math.abs(tabGeometry.countOffset) < 1, "Active icon and count share the vertical center");
+  assert.equal(tabGeometry.background, "rgba(0, 0, 0, 0)", "Tab buttons leave selection color to the shared thumb");
+  await folio.getByRole("button", { name: "Archive", exact: true }).tap();
+  await safariPage.waitForTimeout(220);
+  assert.equal(await activeTab.getAttribute("aria-pressed"), "false");
+  assert.notEqual(await folio.locator(".wm-folio-tabs").evaluate(tabs => getComputedStyle(tabs, "::before").transform), "none", "Selection thumb moves to Archive");
+  await activeTab.tap();
+  await folio.getByRole("button", { name: "Hide filters", exact: true }).tap();
+  assert.equal(await folio.getByRole("searchbox").isVisible(), false);
+  await folio.getByRole("button", { name: "Show filters", exact: true }).tap();
+  await folio.getByRole("searchbox").fill("Second");
+  await folio.getByRole("button", { name: "Save filter", exact: true }).tap();
+  assert.equal(await folio.getByRole("link").count(), 1);
+  await safariPage.reload();
+  await safariPage.locator(".ProseMirror").waitFor();
+  await safariPage.locator("#phone-folio").tap();
+  await folio.getByRole("link", { name: "Second desktop document", exact: false }).waitFor();
+  assert.equal(await folio.getByRole("button", { name: "Second", exact: true }).getAttribute("aria-pressed"), "true");
+  await folio.getByRole("button", { name: "Second", exact: true }).tap();
+  assert.equal(await folio.getByRole("link").count(), 2);
+  await folio.getByRole("button", { name: "Delete filter Second", exact: true }).tap();
+  await folio.locator('summary[aria-label="View options"]').tap();
+  await folio.getByLabel("Sort documents").selectOption("name");
+  await folio.locator('summary[aria-label="Folio menu"]').tap();
+  assert.equal(await folio.getByLabel("Sort documents").isVisible(), false);
+  await folio.getByRole("button", { name: "Refresh Folio", exact: true }).tap();
+  await folio.getByRole("link", { name: "Second desktop document", exact: false }).waitFor();
+  await folio.getByRole("searchbox").fill("does not exist");
+  assert.equal(await folio.getByRole("link").count(), 0);
+  await folio.getByRole("searchbox").fill("");
+  await folio.getByRole("link", { name: "Second desktop document", exact: false }).tap();
+  await safariPage.waitForURL(/\/reader\/d\/[^/]+\/$/);
+  await safariPage.locator(".ProseMirror h1").filter({ hasText: "Second desktop document" }).waitFor();
+  assert.equal(await folio.getAttribute("inert"), "");
+  assert.equal(safariContext.pages().length, 1, "Folio opens in the same tab");
+  await safariPage.locator(".ProseMirror p").first().evaluate(element => {
+    const range = window.document.createRange(); range.selectNodeContents(element);
+    const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+  });
+  await safariPage.locator("#phone-comment").tap();
+  await safariPage.getByRole("textbox", { name: "Comment", exact: true }).fill("Shared from mobile Folio");
+  await safariPage.getByRole("button", { name: "Comment", exact: true }).tap();
+  await safariPage.getByText("Shared from mobile Folio", { exact: true }).first().waitFor({ state: "attached" });
+  const sharedGrant = await daemon.service.open(secondDocument);
+  try { assert.match(JSON.stringify((await daemon.service.read(sharedGrant)).annotations), /Shared from mobile Folio/); }
+  finally { daemon.service.close(sharedGrant); }
+
+  await safariPage.goto(`${READER}/reader/`);
+  await safariPage.locator(".wm-mermaid svg").waitFor();
+  await safariPage.locator(".ProseMirror p").first().evaluate(element => {
+    const range = window.document.createRange(); range.selectNodeContents(element);
+    const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+  });
+  await safariPage.waitForTimeout(100);
+  await safariPage.locator("#phone-comment").tap();
+  const composer = safariPage.getByRole("textbox", { name: "Comment", exact: true });
+  await composer.waitFor({ timeout: 5000 });
+  const composerBounds = await composer.boundingBox();
+  assert(composerBounds && composerBounds.y >= 0 && composerBounds.y + composerBounds.height <= 844, "Touch composer must be inside the viewport");
+  await composer.fill("WebKit touch comment");
+  const composerElement = await composer.elementHandle();
+  const heartbeat = safariPage.waitForResponse(response => new URL(response.url()).pathname.endsWith("/api/changes"));
+  await safariPage.evaluate(() => window.dispatchEvent(new Event("online")));
+  await (await heartbeat).finished();
+  await safariPage.waitForTimeout(300);
+  assert(await composerElement!.evaluate(element => element.isConnected), "Unchanged document heartbeat must preserve the comment composer");
+  assert.equal(await composer.inputValue(), "WebKit touch comment");
+  const existingEditor = await safariPage.locator('.ProseMirror').elementHandle();
+  await writeFile(document, fixture + '\nExternal edit while composing.\n');
+  await safariPage.getByText('External edit while composing.', { exact: true }).waitFor();
+  assert(await existingEditor!.evaluate(element => element.isConnected), 'Body update keeps the editor');
+  assert(await composerElement!.evaluate(element => element.isConnected), 'Body update keeps the composer');
+  assert.equal(await composer.inputValue(), 'WebKit touch comment');
+  await safariPage.getByRole('button', { name: 'View changes', exact: true }).tap();
+  await safariPage.getByRole('dialog', { name: 'Document changes' }).waitFor();
+  await safariPage.getByRole('button', { name: 'Close', exact: true }).tap();
+  await writeFile(document, fixture);
+  await safariPage.getByText('External edit while composing.', { exact: true }).waitFor({ state: 'detached' });
+  await safariPage.getByRole("button", { name: "Comment", exact: true }).tap();
+  if (await safariPage.locator("#comment").getAttribute("aria-pressed") !== "true") await safariPage.locator("#comment").tap();
+  await safariPage.locator(".wm-annotation-rail").evaluate(el => Promise.all(el.getAnimations().map(a => a.finished)));
+  const railBounds = await safariPage.locator(".wm-annotation-rail").boundingBox();
+  const controlsBounds = await safariPage.getByRole("navigation", { name: "Reader comments" }).boundingBox();
+  assert(railBounds && controlsBounds && railBounds.y + railBounds.height <= controlsBounds.y, `Thread drawer must not overlap phone controls: ${JSON.stringify({railBounds,controlsBounds, css: await safariPage.locator(".wm-annotation-rail").evaluate(el => ({ bottom: getComputedStyle(el).bottom, inline: el.getAttribute("style") }))})}`);
+
+  assert.match(await page.locator(".ProseMirror").innerText(), /Concurrent target/);
+  await page.locator(".ProseMirror p").first().click({ clickCount: 3 });
+  await page.locator("#phone-comment").click();
+  await page.getByRole("textbox", { name: "Comment", exact: true }).fill("Comment from reader controls");
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await page.locator("p").filter({ hasText: /^Comment from reader controls$/ }).waitFor({ state: "attached" });
+  if (await page.locator("#comment").getAttribute("aria-pressed") !== "true") await page.locator("#comment").click();
+  await page.getByText("Comment from reader controls", { exact: true }).first().waitFor();
+  const statuses = await page.evaluate(async () => {
+    const document = await (await fetch("api/file")).json();
+    const comment = await fetch("api/annotations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      type: "comment", actor: "forged-label", body: "Phone comment", operationId: "browser-test-comment", expectedBodyRevision: document.bodyRevision,
+      anchor: { exact: "Concurrent", prefix: "", suffix: " target", projectionStart: 0, projectionEnd: 10, bodyRevision: document.bodyRevision },
+    }) });
+    const save = await fetch("api/file", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ body: "Forbidden", expectedBodyRevision: document.bodyRevision }) });
+    const invalidPalette = await fetch("api/diagrams", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ palette: { dark: true, background: "url(https://example.com)" } }) });
+    if (invalidPalette.status !== 400) throw new Error("Invalid diagram palette accepted");
+    const control = await fetch("/control/status");
+    return { comment: comment.status, save: save.status, control: control.status, path: document.path };
+  });
+  assert.deepEqual(statuses, { comment: 200, save: 403, control: 404, path: "example.md" });
+  assert.equal(await readFile(document, "utf8"), fixture);
+  await page.reload();
+  await page.getByText("Phone comment", { exact: true }).first().waitFor({ state: "attached" });
+  await profile("same-document-reload");
+  const warm = await page.evaluate(async () => { await window.document.fonts.ready; return performance.getEntriesByType('resource').filter(r => new URL(r.name).pathname.startsWith('/assets/')).map(r => ({ name: new URL(r.name).pathname.split('/').at(-1), bytes: (r as PerformanceResourceTiming).transferSize })); });
+  assert(warm.every(asset => asset.bytes === 0), 'Application assets and fonts come from cache on reload');
+  console.log('LOAD warm', JSON.stringify(warm));
+  const idleSeconds = Number(process.env.PHONE_TEST_IDLE_SECONDS ?? 6);
+  await cdp.send('Performance.enable');
+  const metrics = async () => Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map(metric => [metric.name, metric.value]));
+  const beforeIdle = { ...requestCounts }, beforeMetrics = await metrics();
+  await page.waitForTimeout(idleSeconds * 1000);
+  const afterMetrics = await metrics();
+  console.log('IDLE', JSON.stringify({ seconds: idleSeconds, requests: Object.fromEntries(Object.entries(requestCounts).map(([key, count]) => [key, count - (beforeIdle[key] ?? 0)]).filter(([, count]) => count)), taskSeconds: afterMetrics.TaskDuration - beforeMetrics.TaskDuration, scriptSeconds: afterMetrics.ScriptDuration - beforeMetrics.ScriptDuration, layouts: afterMetrics.LayoutCount - beforeMetrics.LayoutCount }));
+  await page.evaluate(() => { Object.defineProperty(window.document, 'hidden', { configurable: true, value: true }); window.document.dispatchEvent(new Event('visibilitychange')); });
+  await page.waitForTimeout(500);
+  const hiddenCounts = JSON.stringify(requestCounts);
+  await writeFile(document, fixture + '\nChanged while hidden.\n');
+  await page.waitForTimeout(3500);
+  assert.equal(JSON.stringify(requestCounts), hiddenCounts, 'Hidden reader performs no recurring requests after settling');
+  await page.evaluate(() => { Object.defineProperty(window.document, 'hidden', { configurable: true, value: false }); window.document.dispatchEvent(new Event('visibilitychange')); });
+  await page.getByText('Changed while hidden.', { exact: true }).waitFor();
+  await writeFile(document, fixture);
+  await page.getByText('Changed while hidden.', { exact: true }).waitFor({ state: 'detached' });
+  await page.locator('#phone-folio').click();
+  await page.locator('#mobile-folio').getByRole('link', { name: 'Second desktop document', exact: false }).click();
+  await page.locator('.ProseMirror h1').filter({ hasText: 'Second desktop document' }).waitFor();
+  const crossDocument = await page.evaluate(async () => { await window.document.fonts.ready; return { readyMs: performance.now(), transfers: performance.getEntriesByType('resource').filter(r => new URL(r.name).pathname.startsWith('/assets/')).map(r => (r as PerformanceResourceTiming).transferSize) }; });
+  assert(crossDocument.transfers.every(bytes => bytes === 0), 'Unvisited documents reuse application assets');
+  console.log('LOAD different document', JSON.stringify(crossDocument));
+  await page.goto(`${READER}/reader/`);
+  await page.locator('.ProseMirror').waitFor();
+  await writeFile(document, fixture.replace("Reader --> Tether", "Reader --> UpdatedTether"));
+  await page.reload();
+  await page.locator(".wm-mermaid svg").filter({ hasText: "UpdatedTether" }).waitFor();
+  await profile("new-content-warm-assets-cold-diagram");
+  assert.equal(daemon.sessions.size, 3, "Initial document, desktop document and its frontend connection");
+  await page.goto(AUTH);
+  await page.getByRole("button", { name: "End all sessions" }).click();
+  await page.getByText("All phone sessions and pending requests ended.", { exact: true }).waitFor();
+  for (let attempt = 0; attempt < 50 && daemon.sessions.size; attempt++) await Bun.sleep(20);
+  assert.equal(daemon.sessions.size, 0, "Revocation closes desktop connections as well as the pilot");
+  await page.goto(`${READER}/reader/`);
+  await page.waitForURL(`${AUTH}/?request=*`);
+  await page.getByRole("button", { name: "Verify with passkey" }).click();
+  await page.waitForURL(`${READER}/reader/`);
+  await page.locator(".ProseMirror").waitFor();
+  assert.equal(daemon.sessions.size, 1, "Expired tab must recover through passkey verification");
+  assert.deepEqual(errors, []);
+  assert.deepEqual(assetFailures, []);
+  assert.deepEqual(diagramDownloads, [], "Phone must receive SVG without downloading Mermaid or diagram layout engines");
+  console.log("Phone browser check passed (Chromium and WebKit): virtual passkey enrollment, isolated-origin handoff, reader, mobile Folio navigation, shared desktop comments, denied writes/control, and upstream revocation.");
+} finally {
+  gateway?.close(); await safari?.close(); proxy.close(); await browser?.close(); await listener?.stop(true); await diagrams?.close(); await daemon.stop(); await rm(directory, { recursive: true, force: true });
+}

@@ -16,6 +16,8 @@ const incoming = original.replaceAll('original', 'incoming');
 try {
   await daemon.ready;
   for (const [name, type] of Object.entries({ chromium, webkit })) {
+    if (process.env.TETHER_CHECK_ENGINE && process.env.TETHER_CHECK_ENGINE !== name) continue;
+    console.log(`${name}: starting appearance checks`);
     const browser = await type.launch({ headless: true });
     try {
       const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
@@ -62,12 +64,14 @@ try {
       check(JSON.parse(await readFile(config.preferencesPath, 'utf8')).uiScale === 1.25, 'scale persisted');
       await reader.reload(); await reader.locator('.ProseMirror').waitFor();
       check(await reader.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--wm-ui-scale')) === '1.25', 'reader restored scale');
-      await openSettings(); await folio.locator('#scale-reset').click(); await folio.locator('#settings-save').click(); await folio.locator('#settings-dialog').waitFor({ state: 'hidden' });
+      await openSettings(); await scale(100); await folio.locator('#settings-save').click(); await folio.locator('#settings-dialog').waitFor({ state: 'hidden' });
       // A crashed preview expires independently of any browser cleanup.
       await folio.evaluate(async () => { await fetch('api/preferences-preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ owner: 'crashed-test', uiScale: .7 }) }); });
       await reader.waitForFunction(() => getComputedStyle(document.documentElement).getPropertyValue('--wm-ui-scale') === '0.7');
       await reader.waitForFunction(() => getComputedStyle(document.documentElement).getPropertyValue('--wm-ui-scale') === '1', undefined, { timeout: 20000 });
+      console.log(`${name}: appearance and preview checks passed`);
       for (const mode of ['per-change', 'per-accept', 'accept-all', 'reject-all', 'conflict']) {
+        console.log(`${name}: review ${mode}`);
         await writeFile(path, original); await reader.reload(); await reader.locator('.ProseMirror').waitFor();
         await reader.waitForTimeout(150);
         await writeFile(path, incoming);
@@ -85,9 +89,9 @@ try {
           }
         }
         if (mode === 'per-change') {
-          while (await reader.getByRole('button', { name: 'Reject', exact: true }).count()) await reader.getByRole('button', { name: 'Reject', exact: true }).first().click();
+          for (let count = 0; await reader.getByRole('button', { name: 'Reject', exact: true }).count(); count++) { check(count < 20, 'Reject did not settle'); await reader.getByRole('button', { name: 'Reject', exact: true }).first().click(); }
         } else if (mode === 'per-accept') {
-          while (await reader.getByRole('button', { name: 'Accept', exact: true }).count()) await reader.getByRole('button', { name: 'Accept', exact: true }).first().click();
+          for (let count = 0; await reader.getByRole('button', { name: 'Accept', exact: true }).count(); count++) { check(count < 20, 'Accept did not settle'); await reader.getByRole('button', { name: 'Accept', exact: true }).first().click(); }
         } else if (mode === 'accept-all') {
           await reader.getByRole('button', { name: 'Reject', exact: true }).first().click();
           await reader.locator('#save-review').click();

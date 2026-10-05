@@ -9,7 +9,7 @@ const web = await createWebBundleResponder();
 await mkdir(join(root,'docs'));
 const source = '# Checks\n\nSelect these words.\n\nNote[^calibration].\n\n```mermaid\nflowchart LR\n A[Start] --> B[Finish]\n```\n\n```mermaid\nnot a diagram\n```\n\n[^calibration]: calibration belongs in this note.\n';
 
-const daemon = createDaemon({config: resolveConfig({runtimeDir:join(root,'runtime'),configDir:join(root,'config')}),web});
+const daemon = createDaemon({config: resolveConfig({runtimeDir:join(root,'runtime'),configDir:join(root,'config')}),web,webAssets:web});
 try {
  await daemon.ready;
  for(const [name, engine] of [['chromium',chromium],['webkit',webkit]] as const) {
@@ -104,11 +104,14 @@ try {
     const toolbarIcon=toolbar.querySelector('.top-bar-item svg')!;
     const label=menu.querySelector('[role="menuitem"] > span:last-child')!;
     const icon=menu.querySelector('svg')!;
-    return getComputedStyle(menu).backgroundColor===getComputedStyle(toolbar).backgroundColor
+    // The toolbar is translucent; menus use the same surface opaquely.
+    const probe=document.createElement('span');probe.style.backgroundColor='var(--crepe-color-surface, var(--crepe-color-background))';toolbar.append(probe);
+    const surface=getComputedStyle(probe).backgroundColor;probe.remove();
+    return getComputedStyle(menu).backgroundColor===surface
       && getComputedStyle(label).color===getComputedStyle(toolbarIcon).color
       && getComputedStyle(icon).fill===getComputedStyle(toolbarIcon).fill;
    });
-   if(!matchingColors)throw Error('Insert colors differ from the toolbar');
+   if(!matchingColors)throw Error('Insert colors differ from the theme surface and toolbar icons');
    for(const name of ['Footnote','Code block','Math block','Image','Table','Blockquote','Horizontal rule','Bulleted list','Numbered list','Task list'])if(!names.includes(name))throw Error('Missing Insert action: '+name+'; actual: '+names.join(', '));
    for(const name of ['Heading 1','Heading 2','Heading 3','Heading 4','Heading 5','Heading 6','Bold','Italic','Strikethrough','Inline code','Link','Comment'])if(names.includes(name))throw Error('Duplicate selection-toolbar action: '+name);
    if(await insertMenu.locator('.wm-insert-icon').count()!==names.length)throw Error('Insert action missing icon');

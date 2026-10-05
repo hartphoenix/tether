@@ -29,6 +29,7 @@ export function createThemePicker(
   button: HTMLButtonElement, menu: HTMLElement, editorRoot: HTMLElement,
   options: {
     initialTheme?: ThemeId; customThemes?: CustomTheme[]; makerButton?: HTMLButtonElement; inheritPaseoTheme?: boolean;
+    hideInheritance?: boolean;
     onChange?: (theme: ThemeId) => void;
     persist?: (mutation: ThemeMutation) => Promise<ThemePreferences>;
     onError?: (message: string) => void;
@@ -123,7 +124,7 @@ export function createThemePicker(
       edit.addEventListener('click', () => { if (busy || maker.isOpen()) return; close(); maker.open(custom); });
       row.append(item, edit); return row;
     }));
-    if (inherited !== undefined) {
+    if (inherited !== undefined && !options.hideInheritance) {
       const item = document.createElement('button'); item.type = 'button'; item.dataset.inheritPaseo = 'true';
       item.textContent = 'Inherit Paseo theme'; item.setAttribute('role', 'menuitemradio');
       item.addEventListener('click', () => {

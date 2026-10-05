@@ -198,10 +198,12 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
     element.append(notes, " | ", install, " | ", dismiss);
     addSkillReview();
   };
+  let checkTimer: ReturnType<typeof setTimeout> | undefined;
   const check = async (force = false) => {
     // A manual check always answers, even when a background check is in flight.
     if (force) { quietFailure = false; show("Checking for updates…"); }
     if (pending) { forceQueued ||= force; return; }
+    clearTimeout(checkTimer);
     if (document.hidden && !force) return;
     pending = true;
     try {
@@ -233,12 +235,12 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
     } finally {
       pending = false;
       if (forceQueued) { forceQueued = false; void check(true); }
+      else if (!document.hidden) checkTimer = setTimeout(() => void check(), installing ? 2000 : 60_000);
     }
   };
   if (menuCheck) menuCheck.onclick = () => void check(true);
   void check();
-  setInterval(() => { if (installing) void check(); }, 2000);
-  setInterval(() => void check(), 60_000);
+  addEventListener("pagehide", () => clearTimeout(checkTimer));
   addEventListener("pageshow", () => void check());
   document.addEventListener("visibilitychange", () => void check());
 }

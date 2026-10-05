@@ -1,3 +1,4 @@
+import { mountMobileFolio } from "./mobile-folio";
 import { createSourceEditor } from './source-editor';
 import { diagramViewer } from "./diagram-viewer";
 import { configureMarkdownSerialization } from "./markdown-serialization";
@@ -7,9 +8,9 @@ import { scrollToDocumentAnchor } from './anchor-navigation';
 import { linkFragment } from '../shared/link-fragment';
 import { headingAnchors } from './heading-anchors';
 import { configureFootnotes, footnoteIcon, footnoteOrdering } from "./footnotes";
-import { pollPreferences } from "./preferences-poll";
+import { createChangesInspector, updateReaderBody } from "./reader-changes";
 import { imageDisplayUrl } from "./image-url";
-import { renderMermaidPreview } from "./mermaid-preview";
+import { renderMermaidPreview, setMermaidPreviews } from "./mermaid-preview";
 import { installReaderFind } from "./reader-find";
 import { installMenuMotion } from "./motion";
 import { createRailResize } from "./rail-resize";
@@ -49,6 +50,7 @@ import "./style.css";
 import "./fonts.css";
 import "./theme-maker.css";
 import "./thread-layout.css";
+import "./phone-reader.css";
 
 type ServerComment = { id: string; seq: number; actor: string; createdAt: string; body: string; anchor: AnnotationThread["anchor"] };
 type ServerReply = { id: string; seq: number; actor: string; createdAt: string; body: string };
@@ -61,7 +63,9 @@ type AnnotationState = {
 };
 type DocumentResponse = {
   path: string; body: string; content: string; bodyRevision: string; ledgerRevision: string; revision: string; annotations: AnnotationState;
-  readOnly?: boolean; ledgerError?: string;
+  readOnly?: boolean; ledgerError?: string; bodyEditable?: boolean;
+  diagramPalette?: import("../shared/diagram-theme").DiagramPalette;
+  diagramPreviews?: Record<string, string | null>;
 };
 type AnnotationResponse = {
   path: string; bodyRevision: string; ledgerRevision: string; annotations: AnnotationState; pending?: unknown[]; events?: unknown[];
@@ -126,6 +130,7 @@ let disconnected = false;
 let incomingReview: IncomingReview | null = null;
 let documentGeneration = 0;
 let readOnly = false;
+let ledgerReadOnly = false;
 let initialized = false;
 let initializing = false;
 let revealAvailable = false;
@@ -139,7 +144,9 @@ const chrome = createChromeControls({
   },
 });
 let themePicker: ReturnType<typeof createThemePicker> | null = null;
-let stopPreferences: (() => void) | undefined;
+const changesInspector = createChangesInspector();
+let appearanceRevision = "";
+let updateMounted = false;
 let stopFind: (() => void) | undefined;
 let railResize: ReturnType<typeof createRailResize> | null = null;
 const threadSizing = createThreadSizing(async value => {
@@ -298,7 +305,7 @@ function labelCrepeTools(): void {
 async function fetchResponse(pathname: string, init: RequestInit = {}): Promise<Response> {
   const response = await fetch(apiPath(pathname), {
     ...init,
-    signal: init.signal ?? AbortSignal.timeout(10_000),
+    signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
     credentials: "same-origin",
     headers: { ...(init.body === undefined ? {} : { "content-type": "application/json" }), ...init.headers },
   });
@@ -398,7 +405,7 @@ function scheduleSave(): void {
   saveTimer = window.setTimeout(() => void save(), 600);
 }
 async function persistDraft(strict = false): Promise<void> {
-  if (!crepe || !currentPath || switching || initializing) return;
+  if (!crepe || !currentPath || switching || initializing || readOnly) return;
   const markdown = currentMarkdown();
   await draftPersistence.update({
     editorMarkdown: markdown,
@@ -479,7 +486,9 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     currentBodyRevision = documentResponse.bodyRevision;
     currentLedgerRevision = documentResponse.ledgerRevision;
     annotationState = documentResponse.annotations;
-    readOnly = Boolean(documentResponse.readOnly);
+    setMermaidPreviews(documentResponse.diagramPreviews, documentResponse.diagramPalette);
+    ledgerReadOnly = Boolean(documentResponse.readOnly);
+    readOnly = ledgerReadOnly || documentResponse.bodyEditable === false;
     fileActions.update(revealAvailable, readOnly);
     document.title = filenameStem(currentPath);
     const prepared = prepareMarkdown(documentResponse.body);
@@ -565,7 +574,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       },
       onCreateComment: async ({ body, anchor }) => {
         const annotationPath = currentPath;
-        if (!(await save())) throw new Error("Save the document before commenting.");
+        if (documentResponse.readOnly || (!readOnly && !(await save()))) throw new Error("Save the document before commenting.");
         if (generation !== documentGeneration || annotationPath !== currentPath) throw new Error("The document changed before the comment was sent.");
         const revision = currentBodyRevision;
         await postAnnotation("/api/annotations", { type: "comment", body, anchor: { ...anchor, bodyRevision: revision }, expectedBodyRevision: revision }, generation, annotationPath);
@@ -611,7 +620,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     toolbarLabelObserver.observe(editorRoot, { childList: true, subtree: true });
     const editorElement = editorRoot.querySelector<HTMLElement>(".ProseMirror");
     editorElement?.setAttribute("spellcheck", "false");
-    if (readOnly) editorElement?.setAttribute("contenteditable", "false");
+    if (readOnly) { crepe.setReadonly(true); editorElement?.setAttribute("contenteditable", "false"); }
     savedEditorMarkdown = crepe.getMarkdown();
     crepe.on((listener) => listener.markdownUpdated(() => {
       const currentView = getEditorView();
@@ -620,7 +629,9 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     }));
     applyAnnotationState(documentResponse.annotations);
     if (readOnly) {
-      chrome.setNotice(`Read-only: ${documentResponse.ledgerError ?? "Malformed annotation ledger."}`, 0);
+      chrome.setNotice(documentResponse.bodyEditable === false && !documentResponse.readOnly
+        ? (document.documentElement.dataset.phoneReader ? "" : "Reading and commenting. Document editing is unavailable in this session.")
+        : `Read-only: ${documentResponse.ledgerError ?? "Malformed annotation ledger."}`, 0);
     } else {
       chrome.setNotice("");
     }
@@ -681,12 +692,14 @@ async function saveReviewed(): Promise<void> {
     showConflict("The disk changed again during review. Reload it before continuing.");
   } finally { reviewSaving = false; }
 }
-async function lease(generation = documentGeneration, path = currentPath): Promise<void> {
+async function lease(generation = documentGeneration, path = currentPath, signal?: AbortSignal): Promise<void> {
   try {
-    const result = await api<{ path?: string; bodyRevision: string | null; ledgerRevision: string | null }>("api/lease", {
-      method: "POST", body: JSON.stringify({ clientId }),
+    const result = await api<{ path?: string; bodyRevision: string | null; ledgerRevision: string | null; appearanceRevision: string; preferences?: SessionBootstrap["preferences"] }>("api/changes", {
+      method: "POST", body: JSON.stringify({ clientId, appearanceRevision }), signal,
     });
     if (generation !== documentGeneration || path !== currentPath) return;
+    if (result.preferences) { themePicker?.update(result.preferences); applyAppearance(result.preferences); }
+    appearanceRevision = result.appearanceRevision;
     if (result.path && result.path !== currentPath) {
       currentPath = result.path;
       path = result.path;
@@ -695,12 +708,29 @@ async function lease(generation = documentGeneration, path = currentPath): Promi
     }
     if (disconnected) { disconnected = false; chrome.setNotice(""); }
     if (!currentPath || saveInFlight) return;
-    if (readOnly && result.bodyRevision) { await openDocument(true); return; }
+    if (readOnly && result.bodyRevision && result.bodyRevision !== currentBodyRevision) {
+      const disk = await loadDocument();
+      if (generation !== documentGeneration || path !== currentPath || !crepe) return;
+      const previous = diskBody, prepared = prepareMarkdown(disk.body);
+      setMermaidPreviews(disk.diagramPreviews, disk.diagramPalette);
+      switching = true;
+      try {
+        const changes = updateReaderBody(crepe.editor, prepared.editorMarkdown);
+        currentBodyRevision = disk.bodyRevision; currentFrontmatter = prepared.frontmatter;
+        diskBody = disk.body; savedEditorMarkdown = crepe.getMarkdown();
+        currentLedgerRevision = disk.ledgerRevision;
+        sourceEditor?.replaceBody(disk.body);
+        applyAnnotationState(disk.annotations);
+        changesInspector.record(previous, disk.body, changes);
+      } finally { switching = false; }
+      return;
+    }
     if (result.ledgerRevision && result.ledgerRevision !== currentLedgerRevision) await refreshAnnotations(generation, path);
     if (result.bodyRevision && result.bodyRevision !== currentBodyRevision) await beginIncomingReview(generation, path);
   } catch (error) {
     if ((error as Error & { status?: number }).status === 422) {
       readOnly = true;
+      ledgerReadOnly = true;
       if (sourceEditor) sourceEditor.setReadOnly(true);
       fileActions.update(revealAvailable, true);
       editorRoot.querySelector<HTMLElement>(".ProseMirror")?.setAttribute("contenteditable", "false");
@@ -714,6 +744,31 @@ async function lease(generation = documentGeneration, path = currentPath): Promi
 }
 async function start(): Promise<void> {
   const bootstrap = await api<SessionBootstrap>("api/bootstrap");
+  if (bootstrap.remoteReader && !document.getElementById("phone-comment")) {
+    document.documentElement.dataset.phoneReader = "true";
+    const button = document.createElement("button");
+    button.id = "phone-comment"; button.type = "button"; button.innerHTML = iconSvg("pen-nib");
+    button.setAttribute("aria-label", "Comment on selection");
+    button.title = "Comment on selection";
+    button.addEventListener("mousedown", event => event.preventDefault());
+    button.addEventListener("click", () => {
+      const view = getEditorView();
+      const anchor = view && captureAnchor(view, currentBodyRevision);
+      if (anchor) annotationUi?.openCommentComposer(anchor);
+      else chrome.setNotice("Select a passage first.");
+    });
+    button.className = "wm-comment-button";
+    const controls = document.createElement("nav");
+    controls.setAttribute("aria-label", "Reader comments");
+    controls.className = "wm-phone-controls";
+    controls.append(button, commentButton);
+    document.body.append(controls);
+    const mobileTheme = themeButton.closest<HTMLElement>(".wm-theme-picker")!;
+    mobileTheme.classList.add("wm-phone-theme-picker");
+    document.body.append(mobileTheme);
+    mountMobileFolio({ list: () => api("api/folio"), beforeOpen: () => annotationUi?.setRailOpen(false) });
+  }
+  if (bootstrap.updateControls && !updateMounted) { mountUpdates(); updateMounted = true; }
   pageOpensLinks = bootstrap.capabilities?.pageOpensLinks === true;
   revealAvailable = bootstrap.capabilities?.revealFile === true;
   fileActions.update(revealAvailable, readOnly, bootstrap.directoryPicker === true);
@@ -722,20 +777,20 @@ async function start(): Promise<void> {
   initializing = true;
   editorRoot.inert = true;
   annotationsRoot.inert = true;
-  stopPreferences?.();
   themePicker?.destroy();
   try {
     themePicker = createThemePicker(themeButton, themeMenu, editorRoot, {
       initialTheme: bootstrap.preferences.theme,
+      hideInheritance: bootstrap.remoteReader,
       inheritPaseoTheme: bootstrap.preferences.inheritPaseoTheme,
       customThemes: bootstrap.preferences.customThemes,
-      makerButton: document.querySelector<HTMLButtonElement>("#theme-maker")!,
+      makerButton: bootstrap.remoteReader ? undefined : document.querySelector<HTMLButtonElement>("#theme-maker")!,
       persist: (mutation) => api("api/preferences", { method: "PUT", body: JSON.stringify(mutation) }),
       onError: (message) => chrome.setNotice(message),
     });
     applyAppearance(bootstrap.preferences);
     chrome.setZoom(bootstrap.zoom ?? 100);
-    stopPreferences = pollPreferences('api/preferences', value => { themePicker?.update(value); applyAppearance(value); });
+
     await openDocument(false, bootstrap.document as DocumentResponse);
     const draft = bootstrap.draft;
     const recovery = recoverDraft(bootstrap.document, draft);
@@ -856,16 +911,18 @@ document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
 });
 const connection = createReconnectLoop({
-  run: async () => {
+  intervalMs: 1500,
+  run: async signal => {
+    if (document.hidden) return;
     if (!initialized) await start();
-    else await lease();
+    else await lease(documentGeneration, currentPath, signal);
     // Retry the latest editor state, not an obsolete failed draft request.
     await persistDraft();
   },
   onError: error => chrome.setNotice(`${initialized ? "Disconnected" : "Startup failed"}: ${(error as Error).message}`, 0),
 });
-addEventListener("pageshow", () => connection.wake());
-addEventListener("online", () => connection.wake());
+addEventListener("pageshow", () => { if (!document.hidden) connection.wake(); });
+addEventListener("online", () => { if (!document.hidden) connection.wake(); });
 addEventListener("visibilitychange", () => {
   if (document.hidden) { persistPosition(true); void persistDraft(); connection.pause(); }
   else connection.wake();
@@ -883,13 +940,12 @@ addEventListener("pagehide", event => {
   railResize?.destroy();
   toolbarLabelObserver?.disconnect();
   overflowCleanup?.();
-  stopPreferences?.();
   themePicker?.destroy();
   chrome.destroy();
   threadSizing.destroy();
   fileActions.destroy();
 });
-connection.wake();
+if (!document.hidden) connection.wake();
 
 
 const updateStyle = document.createElement("style");
@@ -908,7 +964,7 @@ const updateNotice = document.createElement("aside");
 updateNotice.id = "update-notice";
 updateNotice.hidden = true;
 updateNotice.setAttribute("aria-live", "polite");
-mountUpdateNotice(updateNotice, new URL("api", location.href).pathname, message => chrome.setNotice(message), async () => {
+function mountUpdates() { mountUpdateNotice(updateNotice, new URL("api", location.href).pathname, message => chrome.setNotice(message), async () => {
   if (!initialized || initializing || switching) throw new Error("Wait for the document to finish loading.");
   await persistDraft(true);
-}, false, undefined, updateButton);
+}, false, undefined, updateButton); }

@@ -27,3 +27,16 @@ test("pause keeps UI lifecycle reusable; disposal prevents wake and in-flight re
   loop.wake(); await Bun.sleep(1); expect(count).toBe(2);
   loop.dispose(); loop.wake(); await Bun.sleep(15); expect(count).toBe(2);
 });
+
+test('resume retries immediately after cancellation, without overlapping requests', async () => {
+  let calls = 0;
+  const loop = createReconnectLoop({ intervalMs: 10_000, run: async signal => {
+    calls++;
+    if (calls === 1) await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }));
+  }, onError: () => { throw new Error('Intentional cancellation is not a disconnection'); } });
+  try {
+    loop.wake(); loop.pause(); loop.wake();
+    await Bun.sleep(15);
+    expect(calls).toBe(2);
+  } finally { loop.dispose(); }
+});

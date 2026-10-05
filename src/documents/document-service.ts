@@ -179,6 +179,11 @@ export class DocumentService {
     const revision = bodyRevision(source);
     return { path, body: source, content: source, bodyRevision: revision, revision, ledgerRevision: this.store.conversationRevision(path) as Revision, annotations: this.annotationState(path, revision) };
   }
+  /** Revision probes skip annotation derivation but retain every access check. */
+  async revisions(session: DocumentSession | string) {
+    const { path, source } = await this.readSource(session);
+    return { path, bodyRevision: bodyRevision(source), ledgerRevision: this.store.conversationRevision(path) };
+  }
   async read(session: DocumentSession | string): Promise<DocumentSnapshot> { return (await this.readExactSnapshot(session)).document; }
   async readExactSnapshot(session: DocumentSession | string): Promise<ExactDocumentRead> { const value = await this.readSource(session); return { document: this.snapshot(value.path, value.source), source: value.source }; }
   async exportExact(session: DocumentSession | string): Promise<string> { return (await this.readSource(session)).source; }

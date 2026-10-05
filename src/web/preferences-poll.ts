@@ -5,7 +5,7 @@ export function pollPreferences(url: string, apply: (value: any) => void): () =>
   let timer: ReturnType<typeof setTimeout> | undefined;
   let request: AbortController | undefined;
   const tick = async () => {
-    if (disposed || paused || running) return;
+    if (disposed || paused || running || document.hidden) return;
     clearTimeout(timer); running = true;
     request = new AbortController();
     const timeout = setTimeout(() => request?.abort(), 5000);
@@ -25,7 +25,7 @@ export function pollPreferences(url: string, apply: (value: any) => void): () =>
   };
   const wake = () => { paused = false; void tick(); };
   const pause = () => { paused = true; clearTimeout(timer); request?.abort(); };
-  const visibility = () => { if (!document.hidden) wake(); };
+  const visibility = () => { if (document.hidden) pause(); else wake(); };
   addEventListener('pageshow', wake); addEventListener('online', wake);
   addEventListener('pagehide', pause); document.addEventListener('visibilitychange', visibility);
   void tick();

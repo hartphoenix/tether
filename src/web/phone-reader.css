@@ -1,0 +1,132 @@
+.wm-phone-controls {
+  position: fixed;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  left: max(16px, env(safe-area-inset-left, 0px));
+  z-index: 100;
+  display: flex;
+  gap: 8px;
+}
+
+:root[data-phone-reader] .wm-phone-controls > button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 1px solid var(--wm-color-primary);
+  border-radius: 7px;
+  background: var(--wm-color-primary);
+  color: var(--wm-color-on-inverse);
+}
+
+:root[data-phone-reader] .wm-phone-controls .tether-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
+:root[data-phone-reader] .wm-phone-controls > button:is(:hover, [aria-pressed="true"]) {
+  background: var(--wm-color-inverse);
+  color: var(--wm-color-on-inverse);
+  border-color: var(--wm-color-inverse);
+}
+
+@media (max-width: 780px) {
+  :root[data-phone-reader] #workspace .wm-annotation-rail {
+    position: fixed;
+    top: max(12px, env(safe-area-inset-top, 0px));
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+    right: 12px;
+    width: min(360px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+    height: auto;
+    max-height: calc(100dvh - 88px - env(safe-area-inset-bottom, 0px));
+    border-radius: 8px;
+  }
+}
+
+:root[data-phone-reader] .wm-phone-folio-button {
+  display: grid; place-items: center; width: 36px; height: 36px; min-height: 36px;
+  padding: 0; border: 1px solid var(--wm-color-primary); border-radius: 7px;
+  background: var(--wm-color-primary); color: var(--wm-color-on-inverse);
+}
+:root[data-phone-reader] .wm-phone-folio-button {
+  position: fixed; top: max(12px, env(safe-area-inset-top, 0px));
+  right: max(16px, env(safe-area-inset-right, 0px)); z-index: 100;
+}
+.wm-mobile-folio {
+  position: fixed; z-index: 101; top: max(12px, env(safe-area-inset-top, 0px));
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px)); right: 12px;
+  width: min(360px, calc(100vw - 24px)); border: 1px solid var(--wm-color-outline);
+  border-radius: 8px; padding: 16px; background: var(--wm-color-background);
+  color: var(--wm-color-on-background); font: 14px system-ui;
+  display: flex; flex-direction: column; gap: 12px; overflow: hidden;
+  transform: translateX(calc(100% + 24px)); visibility: hidden;
+  transition: transform 180ms ease, visibility 180ms;
+}
+.wm-mobile-folio.is-open { transform: translateX(0); visibility: visible; }
+.wm-mobile-folio header { display: flex; align-items: center; justify-content: space-between; }
+.wm-mobile-folio h2 { margin: 0; font: 600 20px system-ui; letter-spacing: -.04em; }
+.wm-mobile-folio .tether-icon, .wm-phone-folio-button .tether-icon { width: 20px; height: 20px; }
+.wm-mobile-folio [hidden] { display: none !important; }
+.wm-folio-toolbar { position: relative; flex-shrink: 0; margin: -16px -16px 0; padding: 6px 12px; border-bottom: 1px solid color-mix(in srgb, var(--wm-color-outline), transparent 75%); background: var(--wm-color-surface); }
+.wm-folio-tabs, .wm-folio-actions { display: flex; align-items: center; gap: 4px; }
+.wm-mobile-folio button, .wm-mobile-folio summary { font: inherit; color: inherit; cursor: pointer; }
+.wm-folio-toolbar button, .wm-folio-toolbar summary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 44px; min-height: 44px; padding: 8px; border: 0; border-radius: 10px; background: transparent; }
+.wm-folio-toolbar summary { list-style: none; }
+.wm-folio-toolbar summary::-webkit-details-marker { display: none; }
+/* One shared track and sliding thumb distinguish the two exclusive views. */
+.wm-folio-tabs { position: relative; isolation: isolate; display: grid; grid-template-columns: repeat(2, minmax(60px, 1fr)); gap: 0; padding: 3px; border-radius: 12px; background: var(--wm-color-background); }
+.wm-folio-tabs::before { content: ""; position: absolute; z-index: -1; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 9px; background: var(--wm-color-selected); box-shadow: 0 1px 4px #0002; transition: transform 180ms ease; }
+.wm-folio-tabs:has([data-view="archive"][aria-pressed="true"])::before { transform: translateX(100%); }
+.wm-folio-tabs button { flex-direction: row; flex-wrap: nowrap; height: 44px; padding: 8px; color: var(--wm-color-on-surface-variant); }
+.wm-folio-tabs button[aria-pressed="true"] { color: var(--wm-color-primary); }
+.wm-folio-tabs .tether-icon { display: block; flex-shrink: 0; }
+.wm-folio-tabs .wm-folio-count { color: inherit; line-height: 1; }
+.wm-folio-count { color: var(--wm-color-on-surface-variant); font-size: 12px; }
+.wm-folio-toolbar .wm-folio-filter-toggle[aria-pressed="true"], .wm-folio-threads[aria-pressed="true"] { background: var(--wm-color-selected); color: var(--wm-color-primary); }
+.wm-folio-popover { position: absolute; z-index: 2; top: calc(100% + 4px); right: 8px; width: min(260px, calc(100% - 16px)); padding: 12px; border: 1px solid var(--wm-color-outline); border-radius: 10px; background: var(--wm-color-background); box-shadow: 0 6px 20px #0002; }
+.wm-folio-popover label { display: grid; gap: 8px; }
+.wm-folio-popover button { width: 100%; justify-content: flex-start; }
+.wm-folio-popover select { width: 100%; padding: 12px; font: inherit; color: inherit; border: 1px solid var(--wm-color-outline); border-radius: 7px; background: var(--wm-color-surface); }
+#mobile-folio-filters { min-width: 0; flex-shrink: 0; }
+.wm-folio-filter-entry { display: flex; align-items: center; border-radius: 10px; background: var(--wm-color-surface); overflow: hidden; }
+.wm-folio-filter-entry input { width: 100%; min-width: 0; min-height: 48px; padding: 12px; border: 0; font: inherit; font-size: 16px; background: transparent; color: var(--wm-color-on-surface); }
+.wm-folio-filter-entry input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.wm-folio-filter-entry button { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 44px; height: 44px; border: 0; background: transparent; }
+.wm-folio-filter-bank { display: flex; gap: 8px; overflow-x: auto; overscroll-behavior-x: contain; padding: 12px 2px 4px; }
+.wm-folio-filter-bank:empty { display: none; }
+.wm-folio-filter-pill { display: inline-flex; flex-shrink: 0; align-items: center; border: 1px solid var(--wm-color-outline); border-radius: 999px; color: var(--wm-color-on-surface-variant); }
+.wm-folio-filter-pill button { border: 0; background: transparent; border-radius: 999px; min-height: 44px; padding: 8px 12px; white-space: nowrap; }
+.wm-folio-filter-pill button[aria-pressed="true"] { background: var(--wm-color-selected); color: var(--wm-color-primary); }
+.wm-folio-filter-pill button[aria-label] { display: flex; align-items: center; justify-content: center; width: 44px; padding: 8px; }
+.wm-folio-files { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+.wm-mobile-folio [role="status"] { margin: 0; color: var(--wm-color-on-surface-variant); }
+.wm-mobile-folio [role="status"]:empty { display: none; }
+.wm-mobile-folio .wm-folio-file { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; padding: 12px; min-height: 54px; border-radius: 10px; background: var(--wm-color-surface); color: var(--wm-color-on-surface); text-decoration: none; }
+.wm-folio-label { flex: 1; min-width: 0; }
+.wm-folio-label > span, .wm-folio-label small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wm-folio-label > span { font-weight: 550; }
+.wm-folio-label small { color: var(--wm-color-on-surface-variant); margin-top: 4px; }
+.wm-folio-attention { border-radius: 12px; padding: 4px 7px; background: var(--wm-color-selected); color: var(--wm-color-primary); }
+.wm-folio-file[aria-disabled] { opacity: .55; }
+.wm-mobile-folio :focus-visible, .wm-phone-folio-button:focus-visible { outline: 2px solid var(--wm-color-primary); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .wm-mobile-folio, .wm-folio-tabs::before { transition: none; } }
+
+.wm-reader-changes { position: fixed; right: 16px; top: max(12px, env(safe-area-inset-top)); z-index: 75; border: 1px solid var(--wm-color-outline); border-radius: 8px; padding: 8px 12px; color: var(--wm-color-on-surface); background: var(--wm-color-surface); font: inherit; }
+.wm-reader-changes[hidden] { display: none; }
+.wm-changes-dialog { width: min(680px, 90vw); max-height: 85vh; overflow: auto; color: var(--wm-color-on-surface); background: var(--wm-color-surface); border: 1px solid var(--wm-color-outline); border-radius: 12px; padding: 20px; }
+.wm-changes-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.wm-changes-dialog section { border-bottom: 1px solid var(--wm-color-outline); }
+
+/* Reuse the desktop picker beside the mobile Folio control. */
+:root[data-phone-reader] .wm-phone-theme-picker { position: fixed; top: max(12px, env(safe-area-inset-top, 0px)); right: calc(max(16px, env(safe-area-inset-right, 0px)) + 44px); z-index: 100; }
+:root[data-phone-reader] .wm-phone-theme-picker > button { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 1px solid var(--wm-color-primary); border-radius: 7px; background: var(--wm-color-primary); color: var(--wm-color-on-inverse); }
+:root[data-phone-reader] .wm-phone-theme-picker .wm-theme-menu { top: calc(100% + 8px); right: 0; left: auto; max-height: min(70dvh, 480px); max-width: calc(100vw - 76px); }
+:root[data-phone-reader] .wm-phone-theme-picker .wm-theme-menu button { min-height: 44px; }
+:root[data-phone-reader] .wm-reader-changes { top: calc(max(12px, env(safe-area-inset-top, 0px)) + 44px); }
+:root[data-phone-reader] .wm-phone-theme-picker .wm-theme-menu { background: var(--wm-color-surface); color: var(--wm-color-on-surface); border-color: var(--wm-color-outline); box-shadow: 0 6px 20px #0003; }
+:root[data-phone-reader] .wm-phone-theme-picker .wm-theme-menu button { color: var(--wm-color-on-surface); font: 14px/1.3 system-ui; }
+:root[data-phone-reader] .wm-phone-theme-picker .wm-theme-menu button:hover { background: var(--wm-color-hover); }
+:root[data-phone-reader] .wm-phone-theme-picker .wm-theme-menu button.is-active { color: var(--wm-color-primary); }

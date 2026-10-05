@@ -549,7 +549,8 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   }
 
   function showThreadPopover(thread: AnnotationThread, trigger?: HTMLElement): void {
-    threadPopover?.remove();
+    const previous = threadPopover;
+    const focused = previous?.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
     const view = currentView();
     const orphaned = Boolean(thread.orphaned || (view && !resolveAnchor(view.state.doc, thread.anchor)));
     const details = renderThreadDetails(thread, orphaned);
@@ -566,8 +567,18 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       activeThreadId = null;
       renderRail();
     });
+    if (previous) {
+      const form = previous.querySelector('.wm-annotation-reply-form');
+      if (form) details.querySelector('.wm-annotation-reply-form')?.replaceWith(form);
+      for (const editor of previous.querySelectorAll<HTMLElement>('[data-message-id]')) {
+        if (!editor.querySelector('textarea')) continue;
+        [...details.querySelectorAll<HTMLElement>('[data-message-id]')].find(node => node.dataset.messageId === editor.dataset.messageId)?.replaceWith(editor);
+      }
+      previous.remove();
+    }
     popover.append(close, details);
     document.body.append(popover);
+    if (focused?.isConnected) focused.focus({ preventScroll: true });
     threadPopover = popover;
     positionPopover(popover, thread.anchor, trigger);
   }

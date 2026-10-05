@@ -2,7 +2,19 @@
 
 [Documentation](../README.md)
 
+## Current review
+
+The Mobile Folio section describes the new phone drawer and its available controls. No desktop behavior changes.
+
 Run `tether folio` to open the document organizer. In cmux, you can add it to the Dock (right sidebar) in **Settings > Beta Features**, then use  `⌘-⌥-B` to show/hide it. Folio keeps active projects together and helps you find documents and conversations that need attention.
+
+## Mobile Folio
+
+In the phone reader, the folder button at the top right opens Folio beside the document. It follows the reader’s theme and shows Active and Archive, text filtering, sorting, pins and conversation counts. Selecting an available document closes the drawer and opens it in the same tab. Mobile comments belong to the same conversation as desktop comments.
+
+The mobile drawer has no custom context menu, document-link hover effects, file picker, annotation import, Quit, or service restart. Restart remains a host operation: it disconnects every phone session. The toolbar uses solid backgrounds without blur.
+
+Desktop library access must be explicitly enabled when configuring the phone reader; the single-document pilot remains scoped to its test document otherwise. See [phone reader setup](../contributing/phone-reader.md).
 
 ## Folio Toolbar
 

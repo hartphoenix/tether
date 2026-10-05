@@ -18,3 +18,7 @@ Use the [CLI reference](reference/cli.md) to review comments and work with files
 ## Contributing
 
 Start with [CONTRIBUTING.md](../CONTRIBUTING.md) to run Tether from source and check your changes. The [architecture and code map](contributing/architecture.md) helps you find your way through the code; [package verification](contributing/packages.md) covers builds and installation checks. Agents working on a checkout should read [AGENTS.md](../AGENTS.md).
+
+The experimental [phone reader](contributing/phone-reader.md) has a separate [CLI operations guide](contributing/phone-reader-operations.md) for supervision and source deployments.
+
+Use [local phone staging](contributing/phone-staging.md) to preview the phone reader in a Paseo browser tab with disposable state.

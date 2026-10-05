@@ -19,7 +19,7 @@ const writes:string[]=[];
  const path=new URL(url,w.location.href).pathname;
  if(path.endsWith('/bootstrap'))return Response.json({document:doc,preferences,capabilities:{},scroll:0,zoom:100});
  if(path.endsWith('/preferences'))return Response.json(preferences);
- if(path.endsWith('/lease'))return Response.json({path:doc.path,bodyRevision:doc.bodyRevision,ledgerRevision:doc.ledgerRevision});
+ if(path.endsWith('/changes'))return Response.json({path:doc.path,bodyRevision:doc.bodyRevision,ledgerRevision:doc.ledgerRevision});
  if(path.endsWith('/file')){if(options.method==='PUT'){const request=JSON.parse(options.body);if(request.expectedBodyRevision!==doc.bodyRevision)return Response.json({error:{message:'Conflict'}},{status:409});writes.push(request.content);doc={...doc,body:request.content,bodyRevision:'sha256:'+writes.length};}return Response.json(doc);}
  if(path.endsWith('/annotations'))return Response.json({...doc,annotations:{threads:[]}});
  if(path.endsWith('/draft')||path.endsWith('/position'))return Response.json({});

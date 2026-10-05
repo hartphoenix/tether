@@ -37,6 +37,13 @@ export function createSourceEditor(body: string, readOnly: boolean, onChange: ()
     scroller: view.scrollDOM,
     get value() { return view.state.sliceDoc(); },
     setReadOnly(value: boolean) { view.dispatch({ effects: access.reconfigure(EditorState.readOnly.of(value)) }); },
+    replaceBody(body: string) {
+      const previous = view.state.sliceDoc();
+      let from = 0, to = previous.length, end = body.length;
+      while (from < to && from < end && previous[from] === body[from]) from++;
+      while (to > from && end > from && previous[to - 1] === body[end - 1]) { to--; end--; }
+      view.dispatch({ changes: { from, to, insert: body.slice(from, end) } });
+    },
     focus() { view.focus(); },
     destroy() { view.destroy(); view.dom.remove(); },
   };

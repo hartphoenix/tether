@@ -1,4 +1,16 @@
+import { diagramThemeOptions, type DiagramPalette } from "../shared/diagram-theme";
 type ApplyPreview = (value: string | HTMLElement | null) => void;
+let suppliedPreviews: Record<string, string | null> | undefined;
+let suppliedPalette = '';
+let suppliedGeneration = 0;
+let currentRemotePalette = '';
+const remoteRequests = new Map<string, Promise<Record<string, string | null>>>();
+export function setMermaidPreviews(previews: Record<string, string | null> | undefined, palette?: DiagramPalette): void {
+  suppliedPreviews = previews;
+  suppliedPalette = JSON.stringify(palette);
+  suppliedGeneration++;
+  remoteRequests.clear();
+}
 let library: Promise<typeof import("mermaid")> | undefined;
 let queue: Promise<unknown> = Promise.resolve();
 let nextId = 0;
@@ -33,22 +45,35 @@ export function renderMermaidPreview(language: string, source: string, apply: Ap
   const fontFamily = style.getPropertyValue("--wm-font-code").trim() || style.getPropertyValue("--crepe-font-code").trim() || "monospace";
   const background = color("background", "#ffffff"), surface = color("surface", "#f5f5f5");
   const ink = color("on-surface", "#222222"), outline = color("outline", "#777777");
-  const options = {
-    startOnLoad: false, securityLevel: "strict", htmlLabels: false, theme: "base", suppressErrorRendering: true,
-    themeVariables: {
-      darkMode: document.documentElement.style.colorScheme === "dark", fontFamily,
-      background, primaryColor: surface, primaryTextColor: ink, primaryBorderColor: outline,
-      secondaryColor: color("surface-low", surface), secondaryTextColor: ink, secondaryBorderColor: outline,
-      tertiaryColor: background, tertiaryTextColor: ink, tertiaryBorderColor: outline,
-      lineColor: color("on-surface-variant", ink), textColor: ink,
-      mainBkg: surface, nodeBorder: outline, clusterBkg: color("surface-low", surface), clusterBorder: outline,
-      edgeLabelBackground: background, titleColor: ink,
-      actorBkg: surface, actorTextColor: ink, actorBorder: outline, actorLineColor: outline,
-      signalColor: ink, signalTextColor: ink, labelBoxBkgColor: surface, labelBoxBorderColor: outline, labelTextColor: ink,
-      noteBkgColor: color("surface-low", surface), noteTextColor: ink, noteBorderColor: outline,
-      activationBkgColor: surface, activationBorderColor: outline,
-    },
-  } as const;
+  const palette: DiagramPalette = { dark: document.documentElement.style.colorScheme === "dark", background, surface, surfaceLow: color("surface-low", surface), ink, outline, line: color("on-surface-variant", ink) };
+  if (suppliedPreviews !== undefined) {
+    const signature = JSON.stringify(palette);
+    currentRemotePalette = signature;
+    const show = (entries: Record<string, string | null>) => {
+      const svg = entries[source.trim()];
+      return svg ? instantiate(svg) : '<div class="wm-mermaid-error">This diagram could not be rendered on the host.</div>';
+    };
+    if (signature === suppliedPalette) return show(suppliedPreviews);
+    const generation = suppliedGeneration;
+    let pending = remoteRequests.get(signature);
+    if (!pending) {
+      pending = fetch('api/diagrams', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ palette }), signal: AbortSignal.timeout(60_000) })
+        .then(async response => { if (!response.ok) throw new Error('Host diagram render failed'); return await response.json() as Record<string, string | null>; });
+      remoteRequests.set(signature, pending);
+      // Bound retained batches; host cache handles subsequent requests.
+      if (remoteRequests.size > 4) remoteRequests.delete(remoteRequests.keys().next().value!);
+    }
+    pending.then(entries => {
+      if (generation !== suppliedGeneration || currentRemotePalette !== signature) return;
+      apply(show(entries));
+    }).catch(() => {
+      if (remoteRequests.get(signature) === pending) remoteRequests.delete(signature);
+      if (generation === suppliedGeneration && currentRemotePalette === signature) apply('<div class="wm-mermaid-error">Diagram unavailable. Reload to retry.</div>');
+    });
+    return undefined;
+  }
+  const options = diagramThemeOptions(palette, fontFamily);
   const key = JSON.stringify([source, options]);
   const cached = previews.get(key);
   if (cached && document.fonts.check(`16px ${fontFamily}`)) {

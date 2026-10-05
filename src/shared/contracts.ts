@@ -43,6 +43,10 @@ export type DocumentSnapshot = {
   revision: Revision;
   annotations: SerializableAnnotationState;
   readOnly?: boolean;
+  /** Reader capability supplied by a service; independent of annotation integrity. */
+  bodyEditable?: boolean;
+  /** Optional host-rendered diagrams, keyed by trimmed Mermaid source; null means rendering failed. */
+  diagramPreviews?: Record<string, string | null>;
   ledgerError?: string;
 };
 
@@ -52,6 +56,8 @@ export type SessionBootstrap = {
   document: DocumentSnapshot;
   capabilities: HostCapabilities;
   directoryPicker?: boolean;
+  remoteReader?: boolean;
+  updateControls?: boolean;
   preferences: AppPreferences;
   actor: string;
   draft?: { body: string; baseRevision: string; scroll: number; updatedAt: number } | null;

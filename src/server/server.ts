@@ -1,3 +1,4 @@
+import { isApplicationAsset, type WebResponder } from "../web/bundle";
 import { HostThemes, isThemeClient } from "./host-themes";
 import { ImageAssets } from "../documents/image-assets";
 import { linkFragment } from '../shared/link-fragment';
@@ -63,6 +64,8 @@ export type DaemonOptions = {
   leaseMs?: number;
   startupGraceMs?: number;
   idleMs?: number;
+  /** An embedding service owns this daemon's lifetime, even before its first reader. */
+  keepAlive?: boolean;
   actor?: string;
   restart?: () => Promise<void>;
   quit?: () => Promise<void>;
@@ -72,7 +75,8 @@ export type DaemonOptions = {
   updates?: Pick<UpdateService, "status" | "install" | "dismiss">;
   persistentViews?: boolean;
   /** A production web build can supply the extracted editor response. */
-  web?: (request: Request, session: Session) => Response | Promise<Response>;
+  webAssets?: WebResponder;
+  web?: ((request: Request, session: Session) => Response | Promise<Response>) & { assets?: WebResponder };
   opener?: (url: string) => Promise<void>;
   trashFile?: (path: string) => Promise<void>;
   pickFiles?: () => Promise<string[]>;
@@ -89,6 +93,8 @@ export type TetherDaemon = {
   closed: Promise<void>;
   stop: () => Promise<void>;
   mintTicket: (grant: DocumentSession, target?: HostTarget) => Ticket;
+  /** Explicit service-owner revocation; presence/lease expiry still never revokes access. */
+  revokeSession: (id: string) => void;
   service: DocumentService;
   sessions: ReadonlyMap<string, Session>;
 };
@@ -633,7 +639,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/bootstrap" && request.method === "GET") {
         const document = await service.read(session.grant);
         const basePreferences = await preferences();
-        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, draft: views.draft(session.id), scroll: views.position(session.id), zoom: views.zoom(session.id, basePreferences.defaultDocumentZoom ?? 100), document, directoryPicker: Boolean(pickMoveDirectory), capabilities: hostAdapter.capabilities(session.target), preferences: displayPreferences(await hostThemes.preferences(themeClient(request, session.target), basePreferences)), actor: options.actor ?? "assistant" });
+        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, draft: views.draft(session.id), scroll: views.position(session.id), zoom: views.zoom(session.id, basePreferences.defaultDocumentZoom ?? 100), document, directoryPicker: Boolean(pickMoveDirectory), capabilities: hostAdapter.capabilities(session.target), updateControls: true, preferences: displayPreferences(await hostThemes.preferences(themeClient(request, session.target), basePreferences)), actor: options.actor ?? "assistant" });
       }
       if (apiPath === "/position" && request.method === "POST") {
         const body = await requestJson(request);
@@ -650,7 +656,13 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       if (apiPath === "/draft" && request.method === "DELETE") { views.clearDraft(session.id); return json({ cleared: true }); }
       if (apiPath === "/export" && request.method === "POST") return json(await service.exportReviews([session.grant]));
-      if (apiPath === "/file" && request.method === "GET") return json(await service.read(session.grant));
+      if (apiPath === "/file" && request.method === "GET") {
+        const value = await service.read(session.grant);
+        const etag = `"${value.bodyRevision}:${value.ledgerRevision}"`;
+        const headers = { etag, "cache-control": "no-store" };
+        if (!sessions.has(session.id)) return error("session_expired", "Session revoked.", 401);
+        return request.headers.get("if-none-match") === etag ? new Response(null, { status: 304, headers }) : json(value, { headers });
+      }
       if (apiPath === "/image" && request.method === "GET") return await imageAssets.response(request, session.grant, await service.read(session.grant));
       if (apiPath === "/file" && request.method === "PUT") {
         const body = await requestJson(request);
@@ -699,6 +711,17 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/annotations" && request.method === "POST") {
         const body = await requestJson(request);
         return json(await browserAnnotation({ session: session.grant, event: selectEvent(body), operationId: typeof body.operationId === "string" ? body.operationId : undefined, expectedBodyRevision: expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
+      }
+      if (apiPath === "/changes" && request.method === "POST") {
+        const body = await requestJson(request);
+        if (typeof body.clientId !== "string" || !body.clientId) return error("invalid_client", "A clientId is required.", 400);
+        const revisions = await service.revisions(session.grant);
+        const appearance = displayPreferences(await hostThemes.preferences(themeClient(request, session.target), await preferences()));
+        const appearanceRevision = new Bun.CryptoHasher("sha256").update(JSON.stringify(appearance)).digest("hex");
+        if (!sessions.has(session.id)) return error("session_expired", "Session revoked.", 401);
+        session.leases.set(body.clientId, now() + leaseMs);
+        emptySince = 0;
+        return json({ ...revisions, appearanceRevision, ...(body.appearanceRevision === appearanceRevision ? {} : { preferences: appearance }) }, { headers: { "cache-control": "no-store" } });
       }
       if (apiPath === "/lease" && request.method === "POST") {
         const body = await requestJson(request);
@@ -898,7 +921,12 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (request.method === "GET" && suffix === "/api/files") return json(await recents.files());
       const updateResponse = await updateRequest(request, suffix);
       if (updateResponse) return updateResponse;
-      if (request.method === "GET" && suffix === "/api/snapshot") return json({ ...await recents.folioSnapshot({ view: "all" }), instanceId });
+      if (request.method === "GET" && suffix === "/api/snapshot") {
+        const value = displayPreferences(await hostThemes.preferences(themeClient(request, session.target), await preferences()));
+        session.leaseUntil = now() + leaseMs;
+        return json({ ...await recents.folioSnapshot({ view: "all" }), instanceId,
+          preferences: { ...folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }), uiScale: value.uiScale ?? 1, committedUiScale: value.committedUiScale, commentTextSize: value.commentTextSize ?? 16, defaultDocumentZoom: value.defaultDocumentZoom ?? 100 } });
+      }
       if (request.method === "GET" && suffix === "/api/events") return recentsEventStream(request, themeClient(request, session.target));
       if (request.method === "POST" && suffix === "/api/filters") {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
@@ -989,6 +1017,22 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           return json({ views: inventory });
         }
         if (pathname === "/control/updates/check" && request.method === "POST") return json(await updates.status(true));
+        if (pathname === "/control/session/revoke" && request.method === "POST") {
+          const body = await requestJson(request);
+          if (typeof body.id !== "string") throw invalidRequest("A session ID is required.");
+          daemon.revokeSession(body.id);
+          return json({ revoked: true });
+        }
+        if (pathname === "/control/folio/member" && request.method === "POST") {
+          const body = await requestJson(request);
+          if (typeof body.id !== "string" || body.id.length > 256) throw invalidRequest("A document ID is required.");
+          const row = privateStore.db.query("SELECT id,path,title FROM documents WHERE id=?").get(body.id) as { id: string; path: string; title: string | null } | null;
+          if (!row) return json(null);
+          try { await requireFolioFile(row.path); } catch { return json(null); }
+          // Recheck deletion after asynchronous filesystem validation.
+          if (privateStore.documentForPath(row.path)?.id !== row.id) return json(null);
+          return json({ id: row.id, path: row.path, title: row.title ?? basename(row.path) });
+        }
         if (pathname === "/control/launch" && request.method === "POST") {
           const body = await requestJson(request);
           const grant = await service.open(typeof body.path === "string" ? body.path : "");
@@ -999,7 +1043,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const target = hostTarget(body.target);
           maintenanceEnabled = true;
           const ticket = mintTicket(grant, target, body.resumeId as string | undefined);
-          return json({ ...ticket, path: grant.path });
+          return json({ ...ticket, path: grant.path, revocable: true });
         }
         if (pathname.startsWith("/control/folio/") && request.method === "POST") {
           const body = await requestJson(request);
@@ -1156,6 +1200,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       } catch (cause) { return controlError(cause); }
       return error("not_found", "Control endpoint not found.", 404);
     }
+    if (request.method === "GET" && isApplicationAsset(pathname)) {
+      const assets = options.webAssets ?? options.web?.assets;
+      if (assets) return assets(request);
+    }
     if (pathname.startsWith("/s/")) {
       const session = sessionFrom(request, pathname);
       if (session instanceof Response) return session;
@@ -1190,7 +1238,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     const pending = requestHandler(request).then(response => {
       response = new Response(response.body, { status: response.status, headers: response.headers });
       response.headers.set("referrer-policy", "no-referrer");
-      const match = /^\/(s|r)\/([^/]+)\/(?:api\/(?:bootstrap|lease|snapshot))?$/.exec(new URL(request.url).pathname);
+      const match = /^\/(s|r)\/([^/]+)\/(?:api\/(?:bootstrap|lease|changes|snapshot))?$/.exec(new URL(request.url).pathname);
       if (!response.ok || !match) return response;
       const session = match[1] === "s" ? sessions.get(match[2]!) : recentsSessions.get(match[2]!);
       const name = match[1] === "s" ? "tether_session" : "tether_recents";
@@ -1249,6 +1297,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       return stopping;
     },
     mintTicket,
+    revokeSession: id => {
+      const session = sessions.get(id);
+      if (session) { sessions.delete(id); service.close(session.grant); views.forget(id); }
+    },
     sessions,
   };
 
@@ -1296,7 +1348,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           }
         }
         for (const [ticket, pending] of recentsTickets) if (pending.expiresAt <= current) recentsTickets.delete(ticket);
-        const active = sessions.size > 0 || recentsSessions.size > 0 || tickets.size > 0 || recentsTickets.size > 0 || pullQueue.anyPresent();
+        const active = options.keepAlive || sessions.size > 0 || recentsSessions.size > 0 || tickets.size > 0 || recentsTickets.size > 0 || pullQueue.anyPresent();
         if (active) { emptySince = 0; return; }
         if (emptySince === 0) emptySince = current;
         const grace = current - startedAt < startupGraceMs ? startupGraceMs : idleMs;
@@ -1323,8 +1375,8 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<TetherDa
   let configured = { ...options, config, port, persistentViews: options.persistentViews ?? true };
   if (!configured.web) {
     const { createWebBundleResponder } = await import("../web/bundle");
-    const responder = await createWebBundleResponder();
-    configured = { ...configured, web: (request: Request) => responder(request) };
+    const responder = await createWebBundleResponder(join(config.runtimeDir, "web-assets"));
+    configured = { ...configured, web: responder, webAssets: responder };
   }
   let daemon: TetherDaemon;
   try { daemon = createDaemon(configured); }

@@ -1,36 +1,45 @@
-import { expect, test } from "bun:test";
-import { createWebBundleResponder } from "../src/web/bundle";
+import { expect, test } from 'bun:test';
+import { mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { ASSET_RETENTION_MS, createWebBundleResponder } from '../src/web/bundle';
 
-test("builds and serves the extracted editor with relative session assets", async () => {
+test('application URLs are shared and fonts retain declarations without embedded bytes', async () => {
   const respond = await createWebBundleResponder();
-  const html = respond(new Request("http://127.0.0.1:1234/s/example/"));
-  expect(html.status).toBe(200);
-  expect(html.headers.get("content-type")).toContain("text/html");
-  const source = await html.text();
-  expect(source).toContain("Tether");
-  expect(source).toMatch(/\.\/[^\"]+\.js/);
-  expect(source).toMatch(/\.\/[^\"]+\.css/);
-  expect(source).not.toContain("token=");
-  const icon = /<link[^>]*rel="icon"[^>]*href="([^\"]+)"/.exec(source)![1];
-  expect(icon).toBe("/favicon.png");
-
-  const script = /\.\/([^\"]+\.js)/.exec(source)?.[1];
-  expect(script).toBeTruthy();
-  const asset = respond(new Request(`http://127.0.0.1:1234/s/example/${script}`));
-  expect(asset.status).toBe(200);
-  expect(asset.headers.get("content-type")).toContain("text/javascript");
+  const first = await respond(new Request('http://localhost/s/first/')).text();
+  expect(await respond(new Request('http://localhost/s/second/')).text()).toBe(first);
+  expect(first).not.toContain('token=');
+  const paths = [...first.matchAll(/(?:src|href)="(\/assets\/[^\"]+)"/g)].map(match => match[1]);
+  expect(paths.some(path => path.endsWith('.js'))).toBe(true);
+  const css = await respond(new Request(`http://localhost${paths.find(path => path.endsWith('.css'))}`)).text();
+  expect(css).not.toContain('data:font');
+  expect(css).not.toContain('fonts.googleapis.com');
+  for (const family of ['Hanken Grotesk', 'Source Serif 4', 'Source Sans 3', 'Cabin', 'Alegreya', 'DM Mono']) expect(css).toContain(family);
+  expect(css).toContain('unicode-range:');
+  const fonts = [...css.matchAll(/url\(["']?(\/assets\/[^)'" ]+\.(?:woff2?|ttf))/g)].map(match => match[1]);
+  expect(fonts.length).toBe(126);
+  for (const path of fonts) {
+    const response = respond(new Request(`http://localhost${path}`));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toStartWith('font/');
+    expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(100);
+  }
+  const compressed = respond(new Request(`http://localhost${paths.find(path => path.endsWith('.css'))}`, { headers: { 'accept-encoding': 'gzip' } }));
+  expect(compressed.headers.get('content-encoding')).toBe('gzip');
+  expect(new TextDecoder().decode(Bun.gunzipSync(await compressed.arrayBuffer()))).toBe(css);
+  expect(respond(new Request('http://localhost/assets/index.html')).status).toBe(404);
 });
 
-test('bundled fonts are embedded in the local stylesheet with no Google requests', async () => {
-  const respond = await createWebBundleResponder();
-  const html = await respond(new Request('http://127.0.0.1:1234/s/example/')).text();
-  const cssName = /\.\/([^\"]+\.css)/.exec(html)![1];
-  const css = await respond(new Request(`http://127.0.0.1:1234/s/example/${cssName}`)).text();
-  expect(css).not.toContain('fonts.googleapis.com'); expect(css).not.toContain('fonts.gstatic.com');
-  const families = [...css.matchAll(/font-family:([^;{}]+)/g)].map(match => match[1].replaceAll('"', '').replaceAll("'", ''));
-  for (const family of ['Hanken Grotesk', 'Source Serif 4', 'Source Sans 3', 'Cabin', 'Alegreya', 'DM Mono']) {
-    expect(families).toContain(family);
-  }
-  const data = /src:url\(data:font\/woff2;base64,([A-Za-z0-9+/=]+)/.exec(css)![1];
-  expect(Buffer.from(data, 'base64').subarray(0, 4).toString()).toBe('wOF2');
+test('prior lazy assets survive restart for seven days; expired files are removed', async () => {
+  const dir = await mkdtemp('/tmp/tether-assets-');
+  try {
+    const old = 'lazy-12345678.js', expired = 'lazy-87654321.js';
+    await writeFile(join(dir, old), 'old lazy module');
+    await writeFile(join(dir, expired), 'expired module');
+    const past = new Date(Date.now() - ASSET_RETENTION_MS - 1000);
+    await utimes(join(dir, expired), past, past);
+    const responder = await createWebBundleResponder(dir);
+    expect(await responder(new Request(`http://localhost/assets/${old}`)).text()).toBe('old lazy module');
+    expect(responder(new Request(`http://localhost/assets/${expired}`)).status).toBe(404);
+    expect(await Bun.file(join(dir, expired)).exists()).toBe(false);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

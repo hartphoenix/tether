@@ -36,9 +36,19 @@ try {
   const readerUrl = new URL(location, launch.url);
   const page = await fetch(readerUrl, { headers: { cookie } });
   const html = await page.text();
-  const script = /src="\.\/([^\"]+\.js)"/.exec(html)?.[1];
+  const script = /src="(\/assets\/[^\"]+\.js)"/.exec(html)?.[1];
   if (!page.ok || !script) throw new Error("Packaged reader did not serve its HTML.");
   if (!(await fetch(new URL(script, readerUrl), { headers: { cookie } })).ok) throw new Error("Packaged JavaScript is missing.");
+  const cssPath = /href="(\/assets\/[^\"]+\.css)"/.exec(html)?.[1];
+  if (!cssPath) throw new Error("Packaged stylesheet link missing.");
+  const css = await (await fetch(new URL(cssPath, readerUrl))).text();
+  if (css.includes('data:font')) throw new Error("Packaged fonts were embedded.");
+  const fonts = [...css.matchAll(/url\(["']?(\/assets\/[^)'" ]+\.(?:woff2?|ttf))/g)].map(match => match[1]);
+  if (!fonts.length) throw new Error("Packaged font URLs missing.");
+  for (const path of fonts) {
+    const response = await fetch(new URL(path, readerUrl));
+    if (!response.ok || !response.headers.get('content-type')?.startsWith('font/')) throw new Error("Packaged font missing.");
+  }
   const text = await readFile(setup.path, "utf8");
   await command("comment", setup.path, "--actor", "human", "--quote", "Your Markdown stays in its original file.", "--body-file", setup.path, "--operation-id", "release-smoke-comment");
   if (await readFile(setup.path, "utf8") !== text) throw new Error("A comment changed Markdown.");

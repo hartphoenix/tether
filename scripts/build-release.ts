@@ -1,5 +1,6 @@
 import { chmod, copyFile, cp, mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { buildWeb } from "../src/web/build";
 import { buildBootstrap } from "./build-bootstrap";
 import { version as packageVersion } from "../package.json";
 const version = process.argv[3] ?? packageVersion;
@@ -23,8 +24,7 @@ for (const [name, entry] of Object.entries(entries)) {
   const result = await Bun.build({ entrypoints: [entry], target: "bun", outdir: join(destination, "lib"), naming: `${name}.js` });
   if (!result.success) throw new Error(result.logs.map(String).join("\n"));
 }
-const web = await Bun.build({ entrypoints: ["src/web/app.ts", "src/web/index.html"], target: "browser", minify: true, splitting: true, outdir: join(destination, "dist") });
-if (!web.success) throw new Error(web.logs.map(String).join("\n"));
+await buildWeb(join(destination, "dist"));
 await copyFile("src/web/favicon.png", join(destination, "dist/favicon.png"));
 await mkdir(join(destination, "docs"));
 await copyFile("docs/getting-started.md", join(destination, "docs/getting-started.md"));

@@ -697,20 +697,20 @@ test('reader tab icons load without webview cookies while document resources rem
   const { createWebBundleResponder } = await import('../src/web/bundle');
   const respond = await createWebBundleResponder();
   const file = await fixture();
-  const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, web: request => respond(request) });
+  const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000, web: respond, webAssets: respond });
   daemons.push(daemon); await daemon.ready;
   const session = await exchange(daemon, file.path);
   const page = await (await sessionFetch(daemon, session.location, session.cookie, '')).text();
   const iconHref = /<link[^>]*rel="icon"[^>]*href="([^\"]+)"/.exec(page)![1];
   const iconUrl = new URL(iconHref, `${daemon.origin}${session.location}`);
-  expect(iconUrl.pathname).toBe('/favicon.png');
+  expect(iconUrl.pathname).toMatch(/^\/assets\/favicon-/);
   // Mirrors cmux's native URLSession request, which has no WKWebView session cookie.
   const icon = await fetch(iconUrl);
   expect(icon.status).toBe(200);
   expect(icon.headers.get('content-type')).toBe('image/png');
   expect(Buffer.from(await icon.arrayBuffer())).toEqual(Buffer.from(await Bun.file('src/web/favicon.png').arrayBuffer()));
-  const privateScript = /src="(\.\/[^\"]+\.js)"/.exec(page)![1];
-  expect((await fetch(new URL(privateScript, `${daemon.origin}${session.location}`))).status).toBe(401);
+  const privateScript = /src="(\/assets\/[^\"]+\.js)"/.exec(page)![1];
+  expect((await fetch(new URL(privateScript, `${daemon.origin}${session.location}`))).status).toBe(200);
   expect((await fetch(new URL('api/bootstrap', `${daemon.origin}${session.location}`))).status).toBe(401);
 });
 
@@ -962,4 +962,31 @@ test('appearance preview reaches ordinary readers without persistence and cancel
     expect((await post('preferences-preview', { owner: 'one', uiScale: 1 }, 'https://other.invalid')).status).toBe(403);
     expect((await fetch(recentsUrl(daemon, folio.location, 'api/preferences'), { method: 'POST', headers: { origin: daemon.origin }, body: '{}' })).status).toBe(401);
   }
+});
+
+test('combined changes distinguish body, conversation and appearance; conditional reads still authorize', async () => {
+  const file = await fixture();
+  const daemon = createDaemon({ config: file.config, startupGraceMs: 600_000 });
+  daemons.push(daemon); await daemon.ready;
+  const session = await exchange(daemon, file.path);
+  const probe = (appearanceRevision?: string) => sessionFetch(daemon, session.location, session.cookie, 'api/changes', {
+    method: 'POST', headers: { origin: daemon.origin }, body: JSON.stringify({ clientId: 'changes-test', appearanceRevision }),
+  });
+  const first = await (await probe()).json();
+  expect(first.preferences).toBeDefined();
+  const second = await (await probe(first.appearanceRevision)).json();
+  expect(second.preferences).toBeUndefined();
+  expect(second.bodyRevision).toBe(first.bodyRevision);
+  await writeFile(file.path, '# Direct filesystem change\n');
+  const changed = await (await probe(first.appearanceRevision)).json();
+  expect(changed.bodyRevision).not.toBe(first.bodyRevision);
+  expect(changed.ledgerRevision).toBe(first.ledgerRevision);
+  const response = await sessionFetch(daemon, session.location, session.cookie, 'api/file');
+  const etag = response.headers.get('etag')!;
+  expect(etag).toBeTruthy();
+  const unchanged = await sessionFetch(daemon, session.location, session.cookie, 'api/file', { headers: { 'if-none-match': etag } });
+  expect(unchanged.status).toBe(304);
+  expect(await unchanged.text()).toBe('');
+  daemon.revokeSession(session.location.split('/')[2]!);
+  expect((await sessionFetch(daemon, session.location, session.cookie, 'api/file', { headers: { 'if-none-match': etag } })).status).toBe(401);
 });

@@ -80,6 +80,12 @@ export class ViewStore {
       if (zoom !== undefined) this.db.query("INSERT OR REPLACE INTO reader_zoom VALUES (?,?)").run(id, zoom);
     })();
   }
+  forget(id: string): void {
+    this.db.transaction(() => {
+      for (const table of ["reader_drafts", "reader_positions", "reader_zoom"]) this.db.query(`DELETE FROM ${table} WHERE view_id=?`).run(id);
+      this.db.query("DELETE FROM reader_views WHERE id=?").run(id);
+    })();
+  }
   forgetPath(path: string): void {
     this.db.query("DELETE FROM reader_drafts WHERE view_id IN (SELECT id FROM reader_views WHERE path=?)").run(path);
     this.db.query("DELETE FROM reader_views WHERE path=?").run(path);

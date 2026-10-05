@@ -24,7 +24,7 @@ test("the actual reader recovers its draft before post-mount requests, and prese
           draft: { body: "# My unsaved draft\n", baseRevision: "original", scroll: 900 },
         });
       }
-      if (route === "api/lease") {
+      if (route === "api/changes") {
         if (++leases === 1) throw new Error("temporary disconnection after mount");
         return Response.json({ bodyRevision: "disk", ledgerRevision: "ledger" });
       }
