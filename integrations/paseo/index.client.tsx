@@ -4,6 +4,7 @@ import { FolioPanel } from "./client/folio-panel";
 import { startHeaderButtons } from "./client/header-buttons";
 import { FOLIO_PANEL, startPump } from "./client/pump";
 import { SettingsScreen } from "./client/settings-screen";
+import { startTabRestore } from "./client/tab-restore";
 import { tetherThemes } from "./client/themes";
 import { disposeFolioViews } from "./client/web-folio";
 
@@ -13,10 +14,12 @@ export default function contribute(client: PluginClientContext) {
   client.addSettingsScreen({ id: "tether", title: "Settings", icon: "BookOpen", Component: SettingsScreen });
   const stopPump = startPump(client);
   const stopButtons = startHeaderButtons(client);
+  const stopRestore = startTabRestore(client);
   return () => {
     for (const removeTheme of removeThemes) removeTheme();
     disposeFolioViews();
     clearThemeReports();
+    stopRestore();
     stopButtons();
     stopPump();
   };

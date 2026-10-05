@@ -3,11 +3,13 @@ import { openRpc, type Notice } from "../shared/contracts";
 import { ThemeMark } from "./theme-mark";
 import { FOLIO_PANEL } from "./pump";
 import { getState, subscribeState } from "./state";
+import { restoreTabs, type Restore } from "./tab-restore";
 
 /**
  * One Tether button per workspace header. It reveals that workspace's Folio,
  * and when an agent announces a document for the workspace it shows the
- * document's name and opens it. Nothing opens until the user presses it.
+ * document's name and opens it. After a workspace move it shows how many
+ * browser tabs are queued and opens them. Nothing opens until the user presses it.
  */
 export function startHeaderButtons(client: PluginClientContext): () => void {
   let stopped = false;
@@ -15,14 +17,18 @@ export function startHeaderButtons(client: PluginClientContext): () => void {
   const buttons = new Map<string, PluginButtonRegistration>();
   const shown = new Map<string, string>();
 
-  const present = (workspaceId: string, notice: Notice | undefined, visible: boolean, generation: string | undefined) => ({
-    title: notice ? `Open ${notice.name} in Tether` : "Tether Folio",
+  const present = (workspaceId: string, notice: Notice | undefined, restore: Restore | undefined, visible: boolean, generation: string | undefined) => ({
+    title: restore ? `Open ${restore.urls.length} queued browser tab${restore.urls.length === 1 ? "" : "s"} from before the move` : notice ? `Open ${notice.name} in Tether` : "Tether Folio",
     icon: ThemeMark,
-    label: notice?.name,
+    label: restore ? `${restore.urls.length} tab${restore.urls.length === 1 ? "" : "s"} queued` : notice?.name,
     visible,
     behavior: {
       kind: "action" as const,
       onPress: () => {
+        if (restore) {
+          if (!restoreTabs(workspaceId)) client.openPanel(FOLIO_PANEL, { workspaceId, location: "explorer" });
+          return;
+        }
         if (!notice) { client.openPanel(FOLIO_PANEL, { workspaceId, location: "explorer" }); return; }
         void client.rpc(openRpc, { path: notice.path, workspaceId, generation }).catch(() => {});
       },
@@ -30,12 +36,13 @@ export function startHeaderButtons(client: PluginClientContext): () => void {
   });
 
   const render = (workspaceId: string) => {
-    const { notices, buttons: enabled, connection } = getState();
+    const { notices, restores, buttons: enabled, connection } = getState();
     const notice = notices[workspaceId];
-    const key = `${connection?.generation}:${enabled}:${notice?.path ?? ""}:${notice?.name ?? ""}`;
+    const restore = restores[workspaceId];
+    const key = `${connection?.generation}:${enabled}:${notice?.path ?? ""}:${notice?.name ?? ""}:${restore?.urls.length ?? 0}`;
     if (shown.get(workspaceId) === key) return;
     shown.set(workspaceId, key);
-    const button = present(workspaceId, notice, enabled, connection?.generation);
+    const button = present(workspaceId, notice, restore, enabled, connection?.generation);
     const existing = buttons.get(workspaceId);
     if (existing) existing.update(button);
     else buttons.set(workspaceId, client.addHeaderButton({ id: "tether", workspaceId, button }));
