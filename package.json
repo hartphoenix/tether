@@ -11,7 +11,7 @@
   "scripts": {
     "test": "bun test",
     "check": "bun test && bunx tsc --noEmit && bun run check:reader && bun run build:web",
-    "check:reader": "bun scripts/check-reader-model.ts && bun scripts/check-reader-workflows.ts",
+    "check:reader": "bun scripts/check-reader-model.ts && bun scripts/check-reader-workflows.ts && bun scripts/check-shared-reader.ts",
     "check:geometry": "bun scripts/check-geometry.ts && bun scripts/check-code-block-lifecycle.ts",
     "build:web": "bun scripts/build-web.ts",
     "build:release": "bun scripts/build-release.ts",

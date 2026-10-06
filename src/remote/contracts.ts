@@ -16,7 +16,7 @@ export interface ReaderBackend {
   /** An explicit owner-authorized catalog; membership is checked again when opening. */
   list?(): Promise<RemoteFolioEntry[]>;
   member?(documentId: string): Promise<RemoteDocument | null>;
-  open(documentId: string): Promise<ReaderConnection>;
+  open(documentId: string, options?: { resume?: boolean }): Promise<ReaderConnection>;
 }
 
 /** Identity must come from a trusted transport, never a transcript or request body. */

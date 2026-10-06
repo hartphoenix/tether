@@ -41,7 +41,7 @@ function runPage(snapshot: Record<string, unknown>, savedView?: string) {
 }
 
 test("Folio retains the original recovery dialog if refreshing after an action failure disconnects", async () => {
-  const file = { path: "/notes.md", name: "Notes", view: "active", hasConversation: true };
+  const file = { id: "notes", path: "/notes.md", name: "Notes", view: "active", hasConversation: true };
   const { dom } = runPage({ sequence: 1, files: [file] });
   await Bun.sleep(0);
   Object.defineProperty(dom.window, "fetch", { value: async (input: string) => {
@@ -127,7 +127,7 @@ test("confirms immediate-retention clearing before sending the mutation", async 
   expect(requests).toEqual([]);
   dom.window.document.querySelector<HTMLButtonElement>("#confirm-action")!.click();
   await Bun.sleep(0);
-  expect(requests).toContainEqual({ endpoint: "action", body: { path: "/tmp/one.md", action: "archive", confirmed: true } });
+  expect(requests).toContainEqual({ endpoint: "action", body: { documentId: "one", action: "archive", confirmed: true } });
 });
 
 test("does not render unavailable native and service actions", () => {
@@ -301,7 +301,7 @@ test("Folio open failures show the shared modal outside the scrolling document l
 
 test("file recovery offers disposable removal or conversation relocation", async () => {
   for (const hasConversation of [false, true]) {
-    const file = { path: "/old.md", name: "Transcript", view: "active", hasConversation, fileIssue: { code: "folio_path_changed", message: "The saved path points elsewhere." } };
+    const file = { id: "transcript", path: "/old.md", name: "Transcript", view: "active", hasConversation, fileIssue: { code: "folio_path_changed", message: "The saved path points elsewhere." } };
     const { dom, requests } = runPage({ sequence: 1, files: [file] });
     await Bun.sleep(0);
     const doc = dom.window.document;
@@ -311,13 +311,13 @@ test("file recovery offers disposable removal or conversation relocation", async
     expect(doc.querySelector("#recovery-message")?.textContent).toBe(file.fileIssue.message);
     buttons.find(button => button.textContent === "Archive")!.click();
     await Bun.sleep(0);
-    expect(requests).toContainEqual({ endpoint: "action", body: { path: file.path, action: "archive", confirmed: false } });
+    expect(requests).toContainEqual({ endpoint: "action", body: { documentId: file.id, action: "archive", confirmed: false } });
     dom.window.close();
   }
 });
 
 test("file errors discovered at action time offer recovery, and Locate cancellation is honest", async () => {
-  const file = { path: "/old.md", name: "Transcript", view: "active", hasConversation: true };
+  const file = { id: "transcript", path: "/old.md", name: "Transcript", view: "active", hasConversation: true };
   const { dom } = runPage({ sequence: 1, files: [file] }); await Bun.sleep(0);
   const doc = dom.window.document;
   Object.defineProperty(dom.window, "fetch", { configurable: true, value: async () => Response.json({ error: { code: "folio_file_missing", message: "The file is missing." } }, { status: 409 }) });
@@ -330,12 +330,12 @@ test("file errors discovered at action time offer recovery, and Locate cancellat
 });
 
 test("disposable entries need no preservation confirmation with immediate retention", async () => {
-  const file = { path: "/missing.md", name: "Missing", view: "active", missing: true, hasConversation: false };
+  const file = { id: "missing", path: "/missing.md", name: "Missing", view: "active", missing: true, hasConversation: false };
   const { dom, requests } = runPage({ sequence: 1, files: [file], retention: { mode: "immediate" } }); await Bun.sleep(0);
   dom.window.document.querySelector<HTMLButtonElement>(".file")!.click();
   dom.window.document.querySelector<HTMLButtonElement>("#recovery-actions button")!.click(); await Bun.sleep(0);
   expect(dom.window.document.querySelector("#confirm-dialog.open")).toBeNull();
-  expect(requests).toContainEqual({ endpoint: "action", body: { path: file.path, action: "archive", confirmed: true } });
+  expect(requests).toContainEqual({ endpoint: "action", body: { documentId: file.id, action: "archive", confirmed: true } });
   dom.window.close();
 });
 

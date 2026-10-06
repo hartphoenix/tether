@@ -40,47 +40,46 @@ function imageType(bytes: Buffer, path: string): string | undefined {
 }
 
 /** Document references grant access to individual image files, never a directory. */
-export class ImageAssets {
-  private readonly references = new WeakMap<DocumentSession, { revision: string; urls: Set<string> }>();
+export async function readReferencedImage(documentPath: string, markdown: string, source: string): Promise<{bytes: Uint8Array; contentType: string; etag: string}> {
+  const fail = (code: string, message: string, status: number): never => { throw Object.assign(new Error(message), {code,status}); };
+  if (!source || !imageReferences(markdown).has(source)) fail("image_not_referenced", "Image is not referenced by this document.", 403);
+  let relative: string;
+  try { relative = decodeURIComponent(source.split(/[?#]/, 1)[0]!); } catch { return fail("invalid_request", "Invalid image path.", 400); }
+  if (!relative || isAbsolute(relative) || /^[a-z][a-z\d+.-]*:/i.test(relative) || relative.includes("\0") || relative.includes("\\")) fail("invalid_request", "Expected a document-relative image path.", 400);
+  const requested = resolve(dirname(documentPath), relative);
+  let canonical: string;
+  try { canonical = await realpath(requested); }
+  catch { return fail("file_missing", "Image not found.", 404); }
+  const handle = await open(canonical, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = await handle.stat();
+    if (!before.isFile()) fail("unsupported_image", "Not an image file.", 415);
+    if (before.size > MAX_IMAGE_BYTES) fail("input_too_large", "Image exceeds 32 MiB.", 413);
+    const bytes = await handle.readFile();
+    const after = await handle.stat(), current = await stat(canonical);
+    if (await realpath(requested) !== canonical || before.dev !== current.dev || before.ino !== current.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw pathChanged();
+    if (bytes.length > MAX_IMAGE_BYTES) fail("input_too_large", "Image exceeds 32 MiB.", 413);
+    const contentType = imageType(bytes, canonical);
+    if (!contentType) return fail("unsupported_image", "Unsupported image content.", 415);
+    return { bytes, contentType, etag: `"${createHash("sha256").update(bytes).digest("hex")}"` };
+  } finally { await handle.close(); }
+}
 
+export function imageResponse(asset: {bytes: Uint8Array;contentType: string;etag: string}, request: Request): Response {
+  const headers = {
+    "content-type": asset.contentType, etag: asset.etag, "cache-control": "private, no-cache",
+    "x-content-type-options": "nosniff", "cross-origin-resource-policy": "same-origin",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+  };
+  return request.headers.get("if-none-match") === asset.etag ? new Response(null, {status:304,headers}) : new Response(Buffer.from(asset.bytes), {headers});
+}
+export class ImageAssets {
   async response(request: Request, grant: DocumentSession, document: DocumentSnapshot): Promise<Response> {
-    const source = new URL(request.url).searchParams.get("src");
-    let references = this.references.get(grant);
-    if (!references || references.revision !== document.bodyRevision) {
-      references = { revision: document.bodyRevision, urls: imageReferences(document.body) };
-      this.references.set(grant, references);
+    try { return imageResponse(await readReferencedImage(grant.realPath, document.body, new URL(request.url).searchParams.get("src") ?? ""), request); }
+    catch (error) {
+      const status = (error as {status?:number}).status;
+      if (status && status !== 409) return new Response((error as Error).message, {status});
+      throw error;
     }
-    if (!source || !references.urls.has(source)) return new Response("Image is not referenced by this document.", { status: 403 });
-    const pathPart = source.split(/[?#]/, 1)[0]!;
-    let relative: string;
-    try { relative = decodeURIComponent(pathPart); } catch { return new Response("Invalid image path.", { status: 400 }); }
-    if (!relative || isAbsolute(relative) || /^[a-z][a-z\d+.-]*:/i.test(relative) || relative.includes("\0") || relative.includes("\\")) {
-      return new Response("Expected a document-relative image path.", { status: 400 });
-    }
-    const requested = resolve(dirname(grant.realPath), relative);
-    let canonical: string;
-    try { canonical = await realpath(requested); }
-    catch { return new Response("Image not found.", { status: 404 }); }
-    const handle = await open(canonical, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    try {
-      const before = await handle.stat();
-      if (!before.isFile()) return new Response("Not an image file.", { status: 415 });
-      if (before.size > MAX_IMAGE_BYTES) return new Response("Image exceeds 32 MiB.", { status: 413 });
-      const bytes = await handle.readFile();
-      const after = await handle.stat();
-      const current = await stat(canonical);
-      if (await realpath(requested) !== canonical || before.dev !== current.dev || before.ino !== current.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw pathChanged();
-      if (bytes.length > MAX_IMAGE_BYTES) return new Response("Image exceeds 32 MiB.", { status: 413 });
-      const type = imageType(bytes, canonical);
-      if (!type) return new Response("Unsupported image content.", { status: 415 });
-      const etag = `"${createHash("sha256").update(bytes).digest("hex")}"`;
-      const headers = {
-        "content-type": type, "etag": etag, "cache-control": "private, no-cache",
-        "x-content-type-options": "nosniff", "cross-origin-resource-policy": "same-origin",
-        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
-      };
-      if (request.headers.get("if-none-match") === etag) return new Response(null, { status: 304, headers });
-      return new Response(bytes, { headers });
-    } finally { await handle.close(); }
   }
 }

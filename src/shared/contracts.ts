@@ -35,6 +35,9 @@ export type SerializableAnnotationState = {
 };
 
 export type DocumentSnapshot = {
+  documentId?: string;
+  machineId?: string;
+  locationVersion?: number;
   path: string;
   body: string;
   content: string;
@@ -57,6 +60,7 @@ export type SessionBootstrap = {
   capabilities: HostCapabilities;
   directoryPicker?: boolean;
   remoteReader?: boolean;
+  sharedReader?: boolean;
   updateControls?: boolean;
   preferences: AppPreferences;
   actor: string;

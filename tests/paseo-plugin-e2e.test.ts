@@ -87,7 +87,8 @@ test("an agent's open and an agent's recents add each light only its own workspa
     expect(opened.response).toMatchObject({ ok: true, data: { notified: true, opened: false } });
     // Notices can arrive before Folio has refreshed their document titles.
     const noticed = await until(true, batch => batch.notices["ws-agent"]?.name === "Agent draft");
-    expect(noticed.notices).toEqual({ "ws-agent": { path: join(project, "agent.md"), name: "Agent draft" } });
+    expect(noticed.notices).toEqual({ "ws-agent": { path: join(project, "agent.md"), name: "Agent draft", documentId: expect.any(String), machineId: expect.any(String) } });
+    expect(noticed.notices["ws-agent"]!.documentId).toBe(noticed.folio?.find(entry => entry.path === join(project,"agent.md"))?.documentId);
     expect(noticed.intents).toEqual([]);
 
     process.env.TETHER_PASEO_WORKSPACE_ID = "ws-other";

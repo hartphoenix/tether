@@ -55,10 +55,10 @@ export function FolioList({ theme, layout, navigation, workspaceId }: PluginWork
 
   const launch = (entry: FolioEntry) => {
     if (entry.missing) return;
-    void open({ path: entry.path, workspaceId, generation }).catch(cause => toast.show(`Couldn't open ${entry.name}: ${cause instanceof Error ? cause.message : String(cause)}`, { variant: "error" }));
+    void open({ ...(entry.documentId ? { documentId: entry.documentId } : { path: entry.path }), workspaceId, generation }).catch(cause => toast.show(`Couldn't open ${entry.name}: ${cause instanceof Error ? cause.message : String(cause)}`, { variant: "error" }));
   };
   const togglePin = (entry: FolioEntry) => {
-    void pin({ path: entry.path, pinned: !entry.pinned, generation }).catch(cause => toast.show(cause instanceof Error ? cause.message : String(cause), { variant: "error" }));
+    void pin({ ...(entry.documentId ? { documentId: entry.documentId } : { path: entry.path }), pinned: !entry.pinned, generation }).catch(cause => toast.show(cause instanceof Error ? cause.message : String(cause), { variant: "error" }));
   };
   const scopeButton = (value: FolioScope, label: string) => (
     <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: scope === value }} onPress={() => setState({ scope: value })} style={[styles.scope, scope === value && styles.scopeActive]}>
@@ -86,7 +86,7 @@ export function FolioList({ theme, layout, navigation, workspaceId }: PluginWork
       {status.error ? <Text style={styles.note}>Tether is unavailable: {status.error}</Text> : null}
       <FlatList
         data={entries}
-        keyExtractor={entry => entry.path}
+        keyExtractor={entry => entry.documentId ?? entry.path}
         ListEmptyComponent={<Text style={styles.note}>{folio === null ? "Connecting to Tether…" : "No documents here yet."}</Text>}
         renderItem={({ item }) => (
           <Pressable

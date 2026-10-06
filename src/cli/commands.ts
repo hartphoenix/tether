@@ -21,7 +21,7 @@ type CommandSpec = {
   required?: string[];
 };
 
-type ParsedCommand = {
+export type ParsedCommand = {
   spec: CommandSpec;
   positionals: string[];
   flags: Map<string, string | true>;
@@ -34,6 +34,20 @@ const budgetFlags = { "--max-bytes": { value: true }, "--continuation": { value:
 const mutationActorFlags = { "--actor": { value: true } } as const;
 const operationFlags = { "--operation-id": { value: true }, "--expected-thread-sequence": { value: true } } as const;
 export const commandSpecs: Record<string, CommandSpec> = {
+  "shared.configure": { name: "shared.configure", usage: "tether shared configure --origin <https-origin> --port <loopback-port> [--owner <name>]", min: 0, max: 0, flags: { "--origin": { value: true }, "--port": { value: true }, "--owner": { value: true } }, required: ["--origin", "--port"] },
+  "shared.activate": { name: "shared.activate", usage: "tether shared activate --confirm [--same-file-machine]", min: 0, max: 0, flags: { "--confirm": {}, "--same-file-machine": {} }, required: ["--confirm"] },
+  "shared.enroll": { name: "shared.enroll", usage: "tether shared enroll", min: 0, max: 0 },
+  "shared.recover": { name: "shared.recover", usage: "tether shared recover", min: 0, max: 0 },
+  "shared.status": { name: "shared.status", usage: "tether shared status", min: 0, max: 0 },
+  "remote.pair": { name: "remote.pair", usage: "tether remote pair --origin <https-origin> --name <client-name> --connection <private-file> [--kind agent|connector] [--machine <stable-id>]", min: 0, max: 0, flags: { "--origin": { value: true }, "--name": { value: true }, "--connection": { value: true }, "--kind": { value: true }, "--machine": { value: true } }, required: ["--origin", "--name", "--connection"] },
+  "remote.complete": { name: "remote.complete", usage: "tether remote complete --connection <private-file>", min: 0, max: 0, flags: { "--connection": { value: true } }, required: ["--connection"] },
+  "remote.endpoint": { name: "remote.endpoint", usage: "tether remote endpoint --connection <private-file> --origin <https-origin>", min: 0, max: 0, flags: { "--connection": { value: true }, "--origin": { value: true } }, required: ["--connection", "--origin"] },
+  "remote.machines": { name: "remote.machines", usage: "tether remote machines --connection <private-file>", min: 0, max: 0, flags: { "--connection": { value: true } }, required: ["--connection"] },
+  "remote.receive": { name: "remote.receive", usage: "tether remote receive --connection <private-file> [--host cmux|wave|paseo] [--once]", min: 0, max: 0, flags: { "--connection": { value: true }, "--host": { value: true }, "--once": {} }, required: ["--connection"] },
+  "connector.run": { name: "connector.run", usage: "tether connector run --connection <private-file>", min: 0, max: 0, flags: { "--connection": { value: true } }, required: ["--connection"] },
+  "document.history": { name: "document.history", usage: "tether document history id:<uuid> --connection <private-file> [--thread <id>] [--continuation <cursor>] [--limit <count>] [--max-bytes <bytes>]", min: 1, max: 1, flags: { ...budgetFlags, "--thread": { value: true }, "--limit": { value: true }, "--before-sequence": { value: true } } },
+  "document.relink": { name: "document.relink", usage: "tether document relink id:<uuid> <path> --connection <private-file> --machine <id>", min: 2, max: 2 },
+  "document.verify-save": { name: "document.verify-save", usage: "tether document verify-save id:<uuid> --connection <private-file> --body-file <attempted-text> --expected-body-revision <base-revision>", min: 1, max: 1, flags: { "--body-file": { value: true }, "--expected-body-revision": { value: true } }, required: ["--body-file", "--expected-body-revision"] },
   resume: { name: "resume", usage: "tether resume [--inspect]", min: 0, max: 0, flags: { "--inspect": {} } },
   "cmux.attach": { name: "cmux.attach", usage: "tether cmux attach", min: 0, max: 0 },
   "startup.status": { name: "startup.status", usage: "tether startup status", min: 0, max: 0 },
@@ -94,9 +108,15 @@ export const commandSpecs: Record<string, CommandSpec> = {
   "folio.import": { name: "folio.import", usage: "mdreview folio import --package <package.tether> --directory <directory>", min: 0, max: 0, flags: { "--package": { value: true }, "--directory": { value: true } }, required: ["--package", "--directory"] },
 };
 
+for (const spec of Object.values(commandSpecs)) {
+  if (spec.name.startsWith("document.") || spec.name.startsWith("folio.") || ["open", "recents.add", "folio", "recents", "pending", "thread", "threads", "event", "operation", "quote-candidates", "comment", "reply", "resolve", "reopen", "edit", "delete", "acknowledge"].includes(spec.name)) {
+    spec.flags = { ...spec.flags, "--connection": { value: true }, "--machine": { value: true }, "--receiver": { value: true }, "--restore": {}, "--expected-location-version": { value: true } };
+  }
+}
+
 function commandPrefix(argv: string[]): { name: string; start: number } {
   const [first, second] = argv;
-  if (["daemon", "cmux", "wave", "paseo", "document", "skills", "startup"].includes(first ?? "")) return { name: `${first}.${second ?? ""}`, start: 2 };
+  if (["daemon", "cmux", "wave", "paseo", "document", "skills", "startup", "shared", "remote", "connector"].includes(first ?? "")) return { name: `${first}.${second ?? ""}`, start: 2 };
   if (first === "recents" && second === "add") return { name: "recents.add", start: 2 };
   if (first === "folio" && second && commandSpecs[`folio.${second}`]) return { name: `folio.${second}`, start: 2 };
   return { name: first ?? "unknown", start: 1 };

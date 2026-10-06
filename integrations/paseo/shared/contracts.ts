@@ -10,6 +10,8 @@ export type Connection = z.infer<typeof connectionSchema>;
 
 /** The subset of a Tether Folio entry the plugin renders. */
 export const folioEntrySchema = z.object({
+  documentId: z.string().uuid().optional(),
+  machineId: z.string().optional(),
   path: z.string(),
   name: z.string(),
   directory: z.string(),
@@ -21,16 +23,27 @@ export const folioEntrySchema = z.object({
 });
 export type FolioEntry = z.infer<typeof folioEntrySchema>;
 
+/** This address has already been authorized against the local receiver's connection. */
+export const sharedReaderSchema = z.object({ origin: z.string(), documentId: z.string().uuid(), url: z.string() }).refine(value => {
+  try {
+    const url = new URL(value.url);
+    return url.protocol === "https:" && url.origin === value.origin && !url.username && !url.password && !url.search && !url.hash
+      && url.pathname === `/reader/d/${value.documentId}/` && url.href === value.url;
+  } catch { return false; }
+}, "Invalid shared reader address");
+export type SharedReader = z.infer<typeof sharedReaderSchema>;
+
 /** A reader tab for a client that can open tabs, resolved to its Paseo workspace. */
 export const intentSchema = z.object({
   id: z.string(),
   url: z.string(),
   workspaceId: z.string(),
+  sharedReader: sharedReaderSchema.optional(),
 });
 export type Intent = z.infer<typeof intentSchema>;
 
 /** A document announced to one workspace's header button. */
-export const noticeSchema = z.object({ path: z.string(), name: z.string() });
+export const noticeSchema = z.object({ path: z.string().optional(), name: z.string(), documentId: z.string().uuid().optional(), machineId: z.string().optional(), sharedReader: sharedReaderSchema.optional() });
 export type Notice = z.infer<typeof noticeSchema>;
 
 export const statusSchema = z.object({
@@ -68,13 +81,20 @@ export const ackRpc = defineRpc({
 /** Ask Tether to open a document for the user in a workspace; the tab arrives as an intent. */
 export const openRpc = defineRpc({
   name: "tether.open",
-  input: z.object({ ...generationInput, path: pathSchema, workspaceId: idSchema }),
+  input: z.object({ ...generationInput, path: pathSchema.optional(), documentId: z.string().uuid().optional(), workspaceId: idSchema }).refine(value => Boolean(value.documentId || value.path)),
+  output: z.object({ queued: z.boolean() }),
+});
+
+/** A human chooses a notice already held by this workspace; callers cannot supply URLs. */
+export const openNoticeRpc = defineRpc({
+  name: "tether.open-notice",
+  input: z.object({ ...generationInput, documentId: z.string().uuid(), workspaceId: idSchema }),
   output: z.object({ queued: z.boolean() }),
 });
 
 export const pinRpc = defineRpc({
   name: "tether.pin",
-  input: z.object({ ...generationInput, path: pathSchema, pinned: z.boolean() }),
+  input: z.object({ ...generationInput, path: pathSchema.optional(), documentId: z.string().uuid().optional(), pinned: z.boolean() }).refine(value => Boolean(value.documentId || value.path)),
   output: z.object({ pinned: z.boolean() }),
 });
 

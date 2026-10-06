@@ -67,6 +67,41 @@ describe("plugin hub", () => {
     hub.stop();
   });
 
+  test("shared readers become workspace notices and open authenticated public URLs only after a human chooses them", async () => {
+    const tether = fakeTether(), hub = new Hub({ run: tether.run, pumpMs: 20 });
+    const documentId = crypto.randomUUID(), origin = "https://reader.example", sharedReader = { origin, documentId, url: `${origin}/reader/d/${documentId}/` };
+    tether.push({ cursor: 1, folio: 0, intents: [intent("remote", 1, { origin: "agent", path: undefined, url: undefined, sharedReader })], instanceId: "d1" });
+    await hub.pullOnce();
+    const announced = await hub.pump(-1, true);
+    expect(announced.intents).toEqual([]);
+    expect(announced.notices["ws-a"]).toMatchObject({ documentId, sharedReader });
+    expect(tether.calls).toContainEqual(["paseo", "ack", "remote"]);
+    await expect(hub.openNotice(documentId, "other-workspace")).rejects.toThrow("no longer available");
+    await expect(hub.openNotice(crypto.randomUUID(), "ws-a")).rejects.toThrow("no longer available");
+    await hub.openNotice(documentId, "ws-a"); await hub.openNotice(documentId, "ws-a");
+    const opened = await hub.pump(-1, true);
+    expect(opened.intents).toHaveLength(1);
+    expect(opened.intents[0]).toMatchObject({ url: sharedReader.url, sharedReader, workspaceId: "ws-a" });
+    expect(tether.calls.some(call => call[0] === "open")).toBe(false);
+    const callsBeforeAck = tether.calls.length;
+    await hub.ack([opened.intents[0]!.id]);
+    expect(tether.calls).toHaveLength(callsBeforeAck);
+    expect((await hub.pump(-1, true)).notices).toEqual({});
+    hub.stop();
+  });
+
+  test("native Folio preserves machine-qualified document IDs when local and remote paths match", async () => {
+    const local = crypto.randomUUID(), remote = crypto.randomUUID(), path = "/same/document.md";
+    const tether = fakeTether([{ ...entry(path, 1), id: local, machineId: "local" }, { ...entry(path, 2), id: remote, machineId: "remote" }]);
+    const hub = new Hub({ run: tether.run });
+    tether.push({ cursor: 0, folio: 1, intents: [], instanceId: "d1" }); await hub.pullOnce();
+    expect((await hub.pump(-1, false)).folio?.map(file => ({ documentId: file.documentId, machineId: file.machineId }))).toEqual([{ documentId: local, machineId: "local" }, { documentId: remote, machineId: "remote" }]);
+    await hub.open(`id:${remote}`, "ws-a"); await hub.pin(`id:${remote}`, true);
+    expect(tether.calls).toContainEqual(["open", `id:${remote}`, "--host", "paseo"]);
+    expect(tether.calls).toContainEqual(["folio", "pin", `id:${remote}`]);
+    hub.stop();
+  });
+
   test("terminal targets resolve through Paseo", async () => {
     const tether = fakeTether();
     const hub = new Hub({ run: tether.run, pumpMs: 20 });

@@ -1,5 +1,5 @@
 import type { Connection, FolioEntry, HubStatus, Intent, Notice, PumpBatch } from "../shared/contracts";
-import { folioViewSchema, type FolioView } from "../shared/contracts";
+import { folioViewSchema, sharedReaderSchema, type SharedReader, type FolioView } from "../shared/contracts";
 import type { TetherRunner } from "./tether-cli";
 
 /** One intent as `tether paseo wait` returns it. */
@@ -8,6 +8,9 @@ type TetherIntent = {
   seq: number;
   url?: string;
   path?: string;
+  documentId?: string;
+  machineId?: string;
+  sharedReader?: SharedReader;
   kind: "document" | "recents";
   origin: "user" | "agent";
   target?: Record<string, string>;
@@ -32,8 +35,8 @@ export type HubOptions = {
   buttons?: () => boolean;
 };
 
-type Held = { intent: Intent; leaseUntil: number; expiresAt: number; notices: Map<string, Announced> };
-type Announced = { path: string; at: number };
+type Held = { intent: Intent; leaseUntil: number; expiresAt: number; notices: Map<string, Announced>; local?: boolean };
+type Announced = { path?: string; documentId?: string; machineId?: string; sharedReader?: SharedReader; at: number };
 
 function fileName(path: string): string {
   return path.split("/").pop()?.replace(/\.(md|markdown)$/i, "") ?? path;
@@ -141,10 +144,10 @@ export class Hub {
       if (this.held.has(intent.id)) continue;
       if (intent.origin === "agent" || intent.kind !== "document") {
         acknowledged.push(intent.id);
-        if (intent.origin === "agent" && intent.path) {
+        if (intent.origin === "agent" && (intent.path || intent.sharedReader)) {
           const workspace = await this.workspaceFor(intent.target);
           this.assertActive();
-          this.announce(intent.path, workspace);
+          this.announce(intent, workspace);
         }
         continue;
       }
@@ -152,7 +155,7 @@ export class Hub {
       this.assertActive();
       if (!workspaceId || !intent.url) { acknowledged.push(intent.id); continue; }
       this.held.set(intent.id, { intent: { id: intent.id, url: intent.url, workspaceId }, leaseUntil: 0, expiresAt: intent.expiresAt,
-        notices: new Map([...this.notices].filter(([, notice]) => notice.path === intent.path)),
+        notices: new Map([...this.notices].filter(([, notice]) => !notice.sharedReader && (intent.documentId ? notice.documentId === intent.documentId : notice.path === intent.path))),
       });
       this.changed();
     }
@@ -176,13 +179,16 @@ export class Hub {
   }
 
   /** Named from Folio when it knows the document, so the title stays current. */
-  private notice(path: string): Notice {
-    return { path, name: this.folio?.find(entry => entry.path === path)?.name ?? fileName(path) };
+  private notice(value: Announced): Notice {
+    if (value.sharedReader) return { sharedReader: value.sharedReader, documentId: value.sharedReader.documentId, name: `Shared document (${new URL(value.sharedReader.origin).host})` };
+    const entry = this.folio?.find(entry => value.documentId ? entry.documentId === value.documentId : entry.path === value.path);
+    return { path: value.path, ...(value.documentId ? { documentId: value.documentId } : {}), ...(value.machineId ? { machineId: value.machineId } : {}), name: entry?.name ?? fileName(value.path ?? "Document") };
   }
 
-  private announce(path: string, workspaceId: string | null): void {
+  private announce(intent: TetherIntent, workspaceId: string | null): void {
     if (!workspaceId) return;
-    this.notices.set(workspaceId, { path, at: this.now() });
+    const sharedReader = intent.sharedReader ? sharedReaderSchema.parse(intent.sharedReader) : undefined;
+    this.notices.set(workspaceId, { ...(sharedReader ? { sharedReader } : { path: intent.path, documentId: intent.documentId, machineId: intent.machineId }), at: this.now() });
     this.changed();
   }
 
@@ -190,6 +196,8 @@ export class Hub {
     const data = await this.options.run(["folio", "list", "--view", "active", "--sort", "opened"]) as { files: Array<Record<string, unknown>> };
     this.assertActive();
     const entries: FolioEntry[] = data.files.map(file => ({
+      ...(typeof file.id === "string" ? { documentId: file.id } : {}),
+      ...(typeof file.machineId === "string" ? { machineId: file.machineId } : {}),
       path: String(file.path),
       name: String(file.name ?? fileName(String(file.path))),
       directory: String(file.directory ?? ""),
@@ -202,7 +210,7 @@ export class Hub {
     this.folio = entries;
     // A notice lasts until its document is opened anywhere, which records a newer open.
     for (const [workspaceId, notice] of this.notices) {
-      if ((entries.find(entry => entry.path === notice.path)?.openedAt ?? 0) > notice.at) this.notices.delete(workspaceId);
+      if (!notice.sharedReader && (entries.find(entry => notice.documentId ? entry.documentId === notice.documentId : entry.path === notice.path)?.openedAt ?? 0) > notice.at) this.notices.delete(workspaceId);
     }
     this.changed();
   }
@@ -240,7 +248,7 @@ export class Hub {
       revision: this.revision,
       intents,
       folio: this.folio,
-      notices: this.options.buttons?.() === false ? {} : Object.fromEntries([...this.notices].map(([workspaceId, { path }]) => [workspaceId, this.notice(path)])),
+      notices: this.options.buttons?.() === false ? {} : Object.fromEntries([...this.notices].map(([workspaceId, notice]) => [workspaceId, this.notice(notice)])),
       buttons: this.options.buttons?.() !== false,
       status: this.status,
     };
@@ -251,7 +259,8 @@ export class Hub {
     const done = ids.filter(id => this.held.has(id));
     for (let index = 0; index < done.length; index += 256) {
       const chunk = done.slice(index, index + 256);
-      await this.options.run(["paseo", "ack", ...chunk]);
+      const daemonIds = chunk.filter(id => !this.held.get(id)?.local);
+      if (daemonIds.length) await this.options.run(["paseo", "ack", ...daemonIds]);
       this.assertActive();
       for (const id of chunk) {
         const held = this.held.get(id);
@@ -273,6 +282,18 @@ export class Hub {
   async open(path: string, workspaceId: string): Promise<void> {
     this.assertActive();
     await this.options.run(["open", path, "--host", "paseo"], { TETHER_PASEO_WORKSPACE_ID: workspaceId, TETHER_PASEO_ORIGIN: "user" });
+  }
+
+  /** Only the human's notice click creates a browser intent for a shared reader. */
+  async openNotice(documentId: string, workspaceId: string): Promise<void> {
+    this.assertActive();
+    const notice = this.notices.get(workspaceId), reader = notice?.sharedReader;
+    if (!reader || reader.documentId !== documentId) throw new Error("This shared reader notice is no longer available.");
+    // Repeated clicks before tab acknowledgement reuse the same delivery.
+    if ([...this.held.values()].some(held => held.local && held.notices.get(workspaceId) === notice)) return;
+    const id = crypto.randomUUID();
+    this.held.set(id, { intent: { id, url: reader.url, sharedReader: reader, workspaceId }, leaseUntil: 0, expiresAt: this.now() + 30_000, notices: new Map([[workspaceId, notice!]]), local: true });
+    this.changed();
   }
 
   async theme(clientId: string, theme: string | null): Promise<{ updated: boolean }> {

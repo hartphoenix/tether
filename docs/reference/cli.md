@@ -42,6 +42,23 @@ tether document save /path/to/doc.md --expected-body-revision BODY_REVISION --bo
 
 Pass the `sha256:` revision you read; Tether rejects a save if it's stale. If you're unsure whether a save succeeded, check the current body and revision before retrying.
 
+## Shared profiles
+
+See [shared-profile setup](../guide/shared-profile.md) for owner enrollment, client pairing, connectors, and supervised startup. Shared commands take `--connection <private-credential-file>`; use `id:<document-uuid>` for existing documents or a path with `--machine <machine-uuid>` to register a file on that machine. Credentials never belong in a document URL.
+
+Shared saves also require `--expected-location-version` from the preceding read. Keep both original revisions and the attempted text after an uncertain response:
+
+```sh
+tether document save id:DOCUMENT_ID --connection CONNECTION_FILE --expected-body-revision BODY_REVISION --expected-location-version LOCATION_VERSION --body-file /tmp/revised.md
+tether document verify-save id:DOCUMENT_ID --connection CONNECTION_FILE --expected-body-revision BODY_REVISION --expected-location-version LOCATION_VERSION --body-file /tmp/revised.md
+```
+
+Verification waits behind earlier connector work and reports `matches_edit`, `matches_base`, or `diverged`; it does not replay the save. Retry explicitly only when the current file still matches the original base. A relink changes the location version, so reopen before editing the replacement location.
+
+`document history id:DOCUMENT_ID --connection CONNECTION_FILE` reads historical reviews even when the file machine is unavailable. Use `--thread THREAD_ID` for messages, `--continuation TOKEN` for the next page, and `--limit` / `--max-bytes` for bounded output. These responses have no current body or anchor context.
+
+`document relink id:DOCUMENT_ID DESTINATION --machine MACHINE_ID --connection CONNECTION_FILE` verifies an accessible replacement location and preserves reviews. It refuses a location already associated with another document. Archived destinations require explicit restoration before a new reader opens them; registration accepts `--restore` for that choice. Managed file moves remain local operations.
+
 ## Register finished documents
 
 ```sh
@@ -54,7 +71,7 @@ For local embedding, `tether folio --url` (also `tether recents --url`) returns 
 
 ## Folio and file operations
 
-Conversations are identified by canonical file paths. If you move a file outside Tether, reconnect its conversation through Folio's Locate action. Tether treats annotation footers already in a Markdown file as file content; it doesn't import their comments.
+Conversations have stable document IDs; local commands also accept canonical file paths. If you move a file outside Tether, reconnect its conversation through Folio's Locate action. Tether treats annotation footers already in a Markdown file as file content; it doesn't import their comments.
 
 Use `folio list --view active --open-threads` to find active entries with open conversations. Omit `--view active` to include archived entries. Focused help lists directory and repository filters and sort options. Address documents by path, since positions in the recent list can change.
 

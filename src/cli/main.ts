@@ -1,4 +1,7 @@
 #!/usr/bin/env -S bun --no-env-file
+import { remoteSetup, remoteAddress, remoteControl } from "./remote";
+import { readSharedCredential, sharedRequest } from "../remote/shared-client";
+import type { ReaderAnnouncement } from "../remote/reader-delivery";
 import { pendingAgentSkillReviews, listAgentSkillReviews, readAgentSkillReview, mergeAgentSkill } from "./agent-skills";
 import { diagnosticText, errorDetails, operationError } from "../shared/diagnostics";
 import { commandResult } from "./results";
@@ -7,7 +10,7 @@ import { readBoundedInput, writeExport } from "./io";
 import { usageText, commandSpecs, CliUsageError, parseCommand, requiredFlag, optionalFlag, readOptions, focusPreference, positiveInteger, usage } from "./commands";
 import { dirname, resolve } from "node:path";
 import { resolveConfig, type TetherConfig } from "../server/config";
-import { cancelLaunch, controlLaunch, controlRecentsLaunch, controlRequest, ControlRequestError, ensureDaemon, statusDaemon, stopDaemon } from "../server/lifecycle";
+import { cancelLaunch, controlRecentsLaunch, controlRequest, ControlRequestError, ensureDaemon, statusDaemon, stopDaemon } from "../server/lifecycle";
 import { createBrowserHost } from "../hosts/browser";
 import { createWaveHost } from "../hosts/wave";
 import { startWaveBridge } from "../hosts/wave-bridge";
@@ -36,8 +39,10 @@ export type CliDependencies = {
   readCmuxBridgeStatus?: (config: TetherConfig) => Promise<CmuxBridgeStatus>;
 };
 
-function createPaseoHost(config: TetherConfig): PaseoHostAdapter {
-  return new PaseoHostAdapter({ enqueue: intent => controlRequest(config, `/control/hosts/${PASEO_HOST}/enqueue`, intent) });
+function createPaseoHost(config: TetherConfig, connectionPath?: string): PaseoHostAdapter {
+  return new PaseoHostAdapter({ enqueue: intent => intent.sharedReader
+    ? controlRequest(config, `/control/hosts/${PASEO_HOST}/reader`, { connectionPath, reader: intent.sharedReader, target: intent.target })
+    : controlRequest(config, `/control/hosts/${PASEO_HOST}/enqueue`, intent) });
 }
 
 async function paseoConnected(config: TetherConfig): Promise<boolean> {
@@ -45,12 +50,12 @@ async function paseoConnected(config: TetherConfig): Promise<boolean> {
   catch { return false; }
 }
 
-async function launchHost(dependencies: CliDependencies, preference: HostPreference = "auto", config?: TetherConfig): Promise<HostAdapter> {
+async function launchHost(dependencies: CliDependencies, preference: HostPreference = "auto", config?: TetherConfig, connectionPath?: string): Promise<HostAdapter> {
   if (dependencies.host) return dependencies.host;
   if (preference === "browser") return createBrowserHost({ open: dependencies.open });
   if (preference === "paseo") {
     if (!config) throw new Error("Paseo launches require daemon configuration.");
-    return createPaseoHost(config);
+    return createPaseoHost(config, connectionPath);
   }
   if (preference === "wave" || preference === "cmux") {
     const host = preference === "wave" ? createWaveHost() : dependencies.cmuxHost ?? createCmuxHost();
@@ -60,7 +65,7 @@ async function launchHost(dependencies: CliDependencies, preference: HostPrefere
   if (!dependencies.open) {
     // Paseo is checked first: a Paseo daemon started from another host's
     // terminal inherits that host's environment, and the innermost host wins.
-    if (config && paseoLaunchTarget() && await paseoConnected(config)) return createPaseoHost(config);
+    if (config && paseoLaunchTarget() && await paseoConnected(config)) return createPaseoHost(config, connectionPath);
     const wave = createWaveHost();
     if (await wave.detect()) return wave;
     const cmux = dependencies.cmuxHost ?? createCmuxHost();
@@ -127,6 +132,22 @@ function commandName(argv: string[]): string {
 
 const reportingGuidance = "For user-facing summaries, report what completed, what did not, and any decision needed in plain language. Omit diagnostic codes, host implementation names, and internal paths unless the user asks for technical diagnosis. Keep these details for your own recovery decisions. A warning does not undo a completed operation.";
 
+function localDocumentId(value: string): string | undefined {
+  if (!value.startsWith("id:")) return undefined;
+  const id = value.slice(3);
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)) usage("Use id:<uuid> for a registered document.");
+  return id;
+}
+
+function localFolioSelection(values: string[]): { documentIds: string[] } | { paths: string[] } {
+  const ids = values.map(localDocumentId);
+  if (ids.some(Boolean)) {
+    if (ids.some(id => !id)) usage("Select either document IDs or local paths in one Folio command.");
+    return { documentIds: ids as string[] };
+  }
+  return { paths: values.map(path => resolve(path)) };
+}
+
 export async function runCli(argv = process.argv.slice(2), dependencies: CliDependencies = {}): Promise<{ response: ProtocolResponse; exitCode: number }> {
   let command = commandName(argv);
   const completed: Array<{ step: string; path?: string }> = [];
@@ -142,6 +163,62 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     command = parsed.spec.name;
     if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage, ...(command === "setup" ? { agentSetup: agentSetupGuidance } : {}), reporting: reportingGuidance }), exitCode: 0 };
     const config = dependencies.config ?? resolveConfig();
+    const setup = await remoteSetup(parsed, config);
+    if (setup !== undefined) return { response: success(command, setup), exitCode: 0 };
+    const connectionPath = optionalFlag(parsed, "--connection");
+    const connection = connectionPath ? await readSharedCredential(resolve(connectionPath)) : undefined;
+    const requestControl: typeof controlRequest = async (localConfig, route, input = {}, options) => connection
+      ? remoteControl(connection, parsed, route, input as Record<string, unknown>)
+      : controlRequest(localConfig, route, input, options);
+    if (connection && ["open", "recents.add", "folio", "recents", "remote.machines"].includes(command)) {
+      if (command === "remote.machines") return { response: success(command, await sharedRequest(connection, "machines.list", {})), exitCode: 0 };
+      if (command === "folio" || command === "recents") return { response: success(command, { url: `${connection.origin}/folio/`, opened: false }), exitCode: 0 };
+      const address = remoteAddress(parsed.positionals[0]!, optionalFlag(parsed, "--machine") ?? connection.machineId ?? undefined);
+      const result = address.documentId ? { documentId: address.documentId, url: `/reader/d/${address.documentId}/` }
+        : await sharedRequest<{documentId:string;url:string}>(connection, "document.register", { ...address, restoreArchived: parsed.flags.has("--restore") });
+      const receiver = optionalFlag(parsed, "--receiver");
+      const announcement = receiver ? await sharedRequest(connection, "reader.announce", { documentId: result.documentId, clientId: receiver, host: optionalFlag(parsed, "--host") }) : undefined;
+      return { response: success(command, { ...result, url: new URL(result.url, connection.origin).href, opened: false, ...(announcement ? { announcement } : {}) }), exitCode: 0 };
+    }
+    if (["document.history", "document.relink", "document.verify-save"].includes(command)) {
+      if (!connection) usage("This command requires --connection.");
+      const address = remoteAddress(parsed.positionals[0]!, optionalFlag(parsed, "--machine") ?? connection.machineId ?? undefined);
+      if (!address.documentId) usage("This command requires id:<uuid>.");
+      const body = command === "document.relink" ? { ...address, machineId: requiredFlag(parsed, "--machine"), path: parsed.positionals[1] }
+        : command === "document.verify-save" ? { ...address, body: await bodyFile(requiredFlag(parsed, "--body-file"), dependencies, 16 * 1024 * 1024), expectedBodyRevision: requiredFlag(parsed, "--expected-body-revision"), expectedLocationVersion: positiveInteger(requiredFlag(parsed, "--expected-location-version"), "--expected-location-version") } : { ...address, ...readOptions(parsed), ...(optionalFlag(parsed, "--thread") ? { threadId: optionalFlag(parsed, "--thread") } : {}) };
+      return { response: success(command, await sharedRequest(connection, command, body)), exitCode: 0 };
+    }
+    if (command === "remote.receive") {
+      if (!connection) usage("This command requires --connection.");
+      const hostName = optionalFlag(parsed, "--host");
+      if (hostName && !["browser", "cmux", "wave", "paseo"].includes(hostName)) usage("Unknown receiving host.");
+      const { createReaderReceiver } = await import("../remote/reader-receiver");
+      const receivers = new Map<string, ReturnType<typeof createReaderReceiver>>();
+      const stop = new AbortController(), cancel = () => stop.abort();
+      for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, cancel);
+      let delivered = 0;
+      try {
+        do {
+          const batch = await sharedRequest<{announcements: ReaderAnnouncement[]}>(connection, "reader.receive", {}, { signal: stop.signal });
+          for (const item of batch.announcements) {
+            const requestedHost = hostName ?? item.host ?? "auto";
+            if (!["auto", "browser", "cmux", "wave", "paseo"].includes(requestedHost)) throw new Error("Invalid receiving host.");
+            let receiver = receivers.get(requestedHost);
+            if (!receiver) {
+              const host = await launchHost(dependencies, requestedHost as HostPreference, config, resolve(connectionPath!)).catch(() => undefined);
+              receiver = createReaderReceiver({ origin: connection.origin, host }); receivers.set(requestedHost, receiver);
+            }
+            const placement = await receiver.deliver(item);
+            const output = JSON.stringify({ protocol: 1, ok: true, command: "reader.announcement", data: { ...item, ...placement, requestedHost } }) + "\n";
+            await new Promise<void>((resolve, reject) => process.stdout.write(output, error => error ? reject(error) : resolve()));
+            await sharedRequest(connection, "reader.acknowledge", { ids: [item.id] }); delivered++;
+          }
+          if (parsed.flags.has("--once")) break;
+          await new Promise<void>(resolve => { const timer = setTimeout(finish, 2000); function finish() { clearTimeout(timer); stop.signal.removeEventListener("abort", finish); resolve(); } stop.signal.addEventListener("abort", finish, { once: true }); });
+        } while (!stop.signal.aborted);
+      } finally { for (const signal of ["SIGINT", "SIGTERM"] as const) process.off(signal, cancel); }
+      return { response: success(command, { delivered }), exitCode: 0 };
+    }
     if (command === "startup.status") return { response: success(command, await startupStatus(config)), exitCode: 0 };
     if (command === "startup.enable") return { response: success(command, await enableStartup(config)), exitCode: 0 };
     if (command === "startup.disable") return { response: success(command, await disableStartup(config)), exitCode: 0 };
@@ -157,7 +234,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const inspect = parsed.flags.has("--inspect");
       const host = await launchHost(dependencies, "cmux");
       if (!host.recoverViews) throw new Error("This host does not support in-place recovery.");
-      const inventory = await controlRequest<{ views: RecoveryView[] }>(config, "/control/recovery/views", {}, { start: !inspect });
+      const inventory = await requestControl<{ views: RecoveryView[] }>(config, "/control/recovery/views", {}, { start: !inspect });
       if (!inspect && !dependencies.host) await startCmuxBridge(config, process.env, cmuxBridgeOptions(host));
       return { response: success(command, await host.recoverViews(inventory.views, inspect)), exitCode: 0 };
     }
@@ -195,7 +272,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       if (!process.env.TETHER_INSTALL_ROOT) throw new Error("Source checkouts update through Git. Use the release installer for a managed installation.");
       if (parsed.flags.has("--check")) {
         const checked = (await statusDaemon(config)).running
-          ? await controlRequest(config, "/control/updates/check", {}, { timeoutMs: 60_000 })
+          ? await requestControl(config, "/control/updates/check", {}, { timeoutMs: 60_000 })
           : await new UpdateService({ config, root: runtimeRoot() }).status(true);
         return { response: success(command, checked), exitCode: 0 };
       }
@@ -223,7 +300,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       if (wave) completed.push({ step: "wave_launchers_installed" });
       const path = await seedWelcome(config);
       completed.push({ step: "welcome_document_ready", path });
-      await controlRequest(config, "/control/folio/add", { paths: [path] });
+      await requestControl(config, "/control/folio/add", { paths: [path] });
       completed.push({ step: "registered", path });
       if (!parsed.flags.has("--no-open")) {
         const opened = await runCli(["open", path, "--host", selectedHost], dependencies);
@@ -240,17 +317,21 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       if (argv[0] === "recent") {
         const index = Number(path);
         if (!Number.isSafeInteger(index) || index < 1 || index > 3) usage("recent requires an index from 1 through 3.");
-        const folio = await controlRequest<{ files?: Array<{ path?: unknown; missing?: unknown }> }>(config, "/control/folio/list", { view: "active", sort: "opened" });
+        const folio = await requestControl<{ files?: Array<{ id?: unknown; path?: unknown; missing?: unknown }> }>(config, "/control/folio/list", { view: "active", sort: "opened" });
         const entry = folio.files?.filter((item) => item.missing !== true)[index - 1];
-        path = typeof entry?.path === "string" ? entry.path : undefined;
+        path = typeof entry?.id === "string" ? `id:${entry.id}` : typeof entry?.path === "string" ? entry.path : undefined;
         if (!path) throw new Error(`Recent Markdown file ${index} is unavailable.`);
       }
       if (!path) usage();
-      const canonicalPath = await realpath(resolve(path));
+      const documentId = localDocumentId(path);
+      const canonicalPath = documentId ? undefined : await realpath(resolve(path));
       const host = await launchHost(dependencies, selectedHost, config);
       const target = host.launchTarget?.();
-      const launch = await controlLaunch(config, canonicalPath, target, optionalFlag(parsed, "--resume"));
-      completed.push({ step: "registered", path: canonicalPath });
+      const resumeId = optionalFlag(parsed, "--resume");
+      const launch = await requestControl<{ url: string; expiresAt: number; path: string; documentId: string }>(config, "/control/launch", {
+        ...(documentId ? { documentId } : { path: canonicalPath }), ...(target ? { target } : {}), ...(resumeId ? { resumeId } : {}), ...(parsed.flags.has("--restore") ? { restoreArchived: true } : {}),
+      });
+      completed.push({ step: "registered", path: launch.path });
       if (host.id === "wave" && !dependencies.host) {
         try { await startWaveBridge(config, process.env, { wait: false }); }
         catch (cause) { throw await launchFailure(config, launch.url, cause); }
@@ -262,7 +343,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       let notified = false;
       if (process.env.TETHER_SUPPRESS_BROWSER !== "1") {
         try {
-          const result = await host.openView({ url: launch.url, path: canonicalPath, kind: "document", focus, allowFocusedFallback: focus, target });
+          const result = await host.openView({ url: launch.url, path: launch.path, ...(documentId || host.id === "paseo" ? { documentId: launch.documentId } : {}), kind: "document", focus, allowFocusedFallback: focus, target });
           if (result?.launchConsumed === false) await cancelLaunch(config, launch.url);
           notified = result?.notified === true;
         }
@@ -271,7 +352,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       return { response: success(argv[0], { path: launch.path, expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" && !notified, ...(notified ? { notified: true } : {}) }), exitCode: 0 };
     }
     if (argv[0] === "recents" && argv[1] === "add") {
-      const added = await controlRequest<Record<string, unknown>>(config, "/control/folio/add", { paths: [resolve(parsed.positionals[0]!)] });
+      const added = await requestControl<Record<string, unknown>>(config, "/control/folio/add", { paths: [resolve(parsed.positionals[0]!)] });
       completed.push({ step: "registered", path: resolve(parsed.positionals[0]!) });
       // Inside Paseo, an agent's addition names the document on its workspace's Tether button.
       const announced = !dependencies.host && paseoLaunchTarget() !== undefined && await paseoConnected(config)
@@ -300,10 +381,10 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       return { response: success(command, { expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" && !notified, ...(notified ? { notified: true } : {}) }), exitCode: 0 };
     }
     if (command === "paseo.theme") {
-      return { response: success(command, await controlRequest(config, `/control/hosts/${PASEO_HOST}/theme`, { clientId: parsed.positionals[0], theme: parsed.positionals[1] === "unknown" ? null : parsed.positionals[1] })), exitCode: 0 };
+      return { response: success(command, await requestControl(config, `/control/hosts/${PASEO_HOST}/theme`, { clientId: parsed.positionals[0], theme: parsed.positionals[1] === "unknown" ? null : parsed.positionals[1] })), exitCode: 0 };
     }
     if (command === "paseo.status") {
-      return { response: success(command, await controlRequest(config, `/control/hosts/${PASEO_HOST}/status`, {}, { start: false }).catch(() => ({ present: false, pending: 0, running: false }))), exitCode: 0 };
+      return { response: success(command, await requestControl(config, `/control/hosts/${PASEO_HOST}/status`, {}, { start: false }).catch(() => ({ present: false, pending: 0, running: false }))), exitCode: 0 };
     }
     if (command === "paseo.wait") {
       const seconds = Number(optionalFlag(parsed, "--timeout") ?? 20);
@@ -311,10 +392,10 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const after = Number(optionalFlag(parsed, "--after") ?? 0);
       const folio = Number(optionalFlag(parsed, "--folio") ?? -1);
       if (!Number.isSafeInteger(after) || !Number.isSafeInteger(folio)) usage("--after and --folio must be integers.");
-      return { response: success(command, await controlRequest(config, `/control/hosts/${PASEO_HOST}/wait`, { after, folio, timeoutMs: seconds * 1000 }, { timeoutMs: seconds * 1000 + 10_000 })), exitCode: 0 };
+      return { response: success(command, await requestControl(config, `/control/hosts/${PASEO_HOST}/wait`, { after, folio, timeoutMs: seconds * 1000 }, { timeoutMs: seconds * 1000 + 10_000 })), exitCode: 0 };
     }
     if (command === "paseo.ack") {
-      return { response: success(command, await controlRequest(config, `/control/hosts/${PASEO_HOST}/ack`, { ids: parsed.positionals })), exitCode: 0 };
+      return { response: success(command, await requestControl(config, `/control/hosts/${PASEO_HOST}/ack`, { ids: parsed.positionals })), exitCode: 0 };
     }
     if (argv[0] === "daemon" && argv[1] === "status") return { response: success(command, await statusDaemon(config)), exitCode: 0 };
     if (argv[0] === "daemon" && argv[1] === "stop") {
@@ -363,7 +444,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
 
     if (["document.move", "document.outline", "document.context", "document.diff", "quote-candidates", "operation", "event"].includes(command)) {
       const action = command.startsWith("document.") ? command.replace(".", "/") : `review/${command}`;
-      return { response: success(command, await controlRequest(config, `/control/${action}`, {
+      return { response: success(command, await requestControl(config, `/control/${action}`, {
         path: resolve(parsed.positionals[0]!), ...readOptions(parsed),
         ...(command === "document.move" ? { target: resolve(parsed.positionals[1]!) } : {}),
         ...(command === "document.context" ? { threadId: parsed.positionals[1]! } : {}),
@@ -374,17 +455,17 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       })), exitCode: 0 };
     }
     if (command === "document.read") {
-      return { response: success(command, await controlRequest(config, "/control/document/read", { path: resolve(parsed.positionals[0]!) })), exitCode: 0 };
+      return { response: success(command, await requestControl(config, "/control/document/read", { path: resolve(parsed.positionals[0]!) })), exitCode: 0 };
     }
     if (command === "document.save") {
       const expectedBodyRevision = requiredFlag(parsed, "--expected-body-revision");
       const body = await bodyFile(requiredFlag(parsed, "--body-file"), dependencies, 16 * 1024 * 1024);
-      return { response: success(command, await controlRequest(config, "/control/document/save", { path: resolve(parsed.positionals[0]!), body, expectedBodyRevision })), exitCode: 0 };
+      return { response: success(command, await requestControl(config, "/control/document/save", { path: resolve(parsed.positionals[0]!), body, expectedBodyRevision })), exitCode: 0 };
     }
 
     if (command === "pending") {
       const actor = requiredFlag(parsed, "--actor");
-      return { response: success(command, await controlRequest(config, "/control/review/pending", { path: resolve(parsed.positionals[0]!), actor, ...readOptions(parsed), ...(optionalFlag(parsed, "--consumer") ? { consumer: optionalFlag(parsed, "--consumer") } : {}) })), exitCode: 0 };
+      return { response: success(command, await requestControl(config, "/control/review/pending", { path: resolve(parsed.positionals[0]!), actor, ...readOptions(parsed), ...(optionalFlag(parsed, "--consumer") ? { consumer: optionalFlag(parsed, "--consumer") } : {}) })), exitCode: 0 };
     }
     if (command === "thread" || command === "threads") {
       const beforeSequence = optionalFlag(parsed, "--before-sequence");
@@ -396,14 +477,14 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         ...(beforeSequence ? { beforeSequence: positiveInteger(beforeSequence, "--before-sequence") } : {}),
         ...(limit ? { limit: positiveInteger(limit, "--limit") } : {}),
       };
-      return { response: success(command, await controlRequest(config, `/control/review/${command}`, request)), exitCode: 0 };
+      return { response: success(command, await requestControl(config, `/control/review/${command}`, request)), exitCode: 0 };
     }
     if (["reply", "resolve", "reopen", "edit", "delete"].includes(command)) {
       const actor = requiredFlag(parsed, "--actor");
       const expectedThreadSequence = optionalFlag(parsed, "--expected-thread-sequence");
       const body = (command === "reply" || command === "edit") ? await bodyFile(requiredFlag(parsed, "--body-file"), dependencies) : undefined;
       return {
-        response: success(command, await controlRequest(config, `/control/review/${command}`, {
+        response: success(command, await requestControl(config, `/control/review/${command}`, {
           path: resolve(parsed.positionals[0]!), threadId: parsed.positionals[1]!, actor,
           ...(["edit", "delete"].includes(command) ? { targetId: parsed.positionals[2]! } : {}),
           operationId: requiredFlag(parsed, "--operation-id"),
@@ -416,7 +497,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     if (command === "acknowledge") {
       const actor = requiredFlag(parsed, "--actor");
       return {
-        response: success(command, await controlRequest(config, "/control/review/acknowledge", {
+        response: success(command, await requestControl(config, "/control/review/acknowledge", {
           path: resolve(parsed.positionals[0]!), actor, cursor: requiredFlag(parsed, "--cursor"), operationId: requiredFlag(parsed, "--operation-id"),
           ...(optionalFlag(parsed, "--consumer") ? { consumer: optionalFlag(parsed, "--consumer") } : {}),
         })),
@@ -426,7 +507,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     if (command === "comment") {
       const body = await bodyFile(requiredFlag(parsed, "--body-file"), dependencies);
       return {
-        response: success(command, await controlRequest(config, "/control/review/comment", {
+        response: success(command, await requestControl(config, "/control/review/comment", {
           path: resolve(parsed.positionals[0]!), actor: requiredFlag(parsed, "--actor"), quote: requiredFlag(parsed, "--quote"), body,
           operationId: requiredFlag(parsed, "--operation-id"),
           ...(optionalFlag(parsed, "--candidate-id") ? { candidateId: optionalFlag(parsed, "--candidate-id") } : {}),
@@ -437,9 +518,9 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     }
     if (command.startsWith("folio.")) {
       const action = command.slice("folio.".length);
-      if (action === "sync") return { response: success(command, await controlRequest(config, "/control/folio/sync", {})), exitCode: 0 };
+      if (action === "sync") return { response: success(command, await requestControl(config, "/control/folio/sync", {})), exitCode: 0 };
       if (action === "list") {
-        return { response: success(command, await controlRequest(config, "/control/folio/list", {
+        return { response: success(command, await requestControl(config, "/control/folio/list", {
           ...(optionalFlag(parsed, "--view") ? { view: optionalFlag(parsed, "--view") } : {}),
           ...(optionalFlag(parsed, "--sort") ? { sort: optionalFlag(parsed, "--sort") } : {}),
           ...((parsed.flags.has("--open-threads") || parsed.flags.has("--needs-attention")) ? { needsAttention: true } : {}),
@@ -450,23 +531,24 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         })), exitCode: 0 };
       }
       if (["add", "archive", "restore"].includes(action)) {
-        return { response: success(command, await controlRequest(config, `/control/folio/${action}`, { paths: parsed.positionals.map((path) => resolve(path)), ...(parsed.flags.has("--confirm") ? { confirmed: true } : {}) })), exitCode: 0 };
+        return { response: success(command, await requestControl(config, `/control/folio/${action}`, { ...localFolioSelection(parsed.positionals), ...(parsed.flags.has("--confirm") ? { confirmed: true } : {}) })), exitCode: 0 };
       }
       if (action === "pin") {
-        return { response: success(command, await controlRequest(config, "/control/folio/pin", { paths: parsed.positionals.map((path) => resolve(path)), pinned: !parsed.flags.has("--off") })), exitCode: 0 };
+        return { response: success(command, await requestControl(config, "/control/folio/pin", { ...localFolioSelection(parsed.positionals), pinned: !parsed.flags.has("--off") })), exitCode: 0 };
       }
       if (action === "locate") {
-        return { response: success(command, await controlRequest(config, "/control/folio/locate", { path: resolve(parsed.positionals[0]!), target: resolve(requiredFlag(parsed, "--new-path")) })), exitCode: 0 };
+        const documentId = localDocumentId(parsed.positionals[0]!);
+        return { response: success(command, await requestControl(config, "/control/folio/locate", { ...(documentId ? { documentId } : { path: resolve(parsed.positionals[0]!) }), target: resolve(requiredFlag(parsed, "--new-path")) })), exitCode: 0 };
       }
       if (action === "settings") {
         const retention = optionalFlag(parsed, "--retention");
         if (retention !== undefined && !parsed.flags.has("--confirm")) usage("Changing archive retention requires --confirm.");
         const setting = retention === undefined ? {} : retention === "forever" ? { retention: { mode: "forever" } } : retention === "immediate" ? { retention: { mode: "immediate" } } : { retention: { mode: "days", days: positiveInteger(retention, "--retention") } };
-        return { response: success(command, await controlRequest(config, "/control/folio/settings", { ...setting, ...(parsed.flags.has("--confirm") ? { confirmed: true } : {}) })), exitCode: 0 };
+        return { response: success(command, await requestControl(config, "/control/folio/settings", { ...setting, ...(parsed.flags.has("--confirm") ? { confirmed: true } : {}) })), exitCode: 0 };
       }
       if (action === "export") {
         const output = resolve(requiredFlag(parsed, "--output"));
-        const packageData = await controlRequest(config, "/control/folio/export", { paths: parsed.positionals.map((path) => resolve(path)) });
+        const packageData = await requestControl(config, "/control/folio/export", localFolioSelection(parsed.positionals));
         await writeExport(output, `${JSON.stringify(packageData)}\n`, parsed.flags.has("--overwrite"));
         return { response: success(command, { output }), exitCode: 0 };
       }
@@ -475,7 +557,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         let packageData: unknown;
         try { packageData = JSON.parse(await readBoundedInput(packagePath, 32 * 1024 * 1024)); }
         catch (cause) { if (!(cause instanceof SyntaxError)) throw cause; throw new ControlRequestError("invalid_package", `Unable to read package: ${cause instanceof Error ? cause.message : String(cause)}`, 400); }
-        return { response: success(command, await controlRequest(config, "/control/folio/import", { package: packageData, directory: resolve(requiredFlag(parsed, "--directory")) })), exitCode: 0 };
+        return { response: success(command, await requestControl(config, "/control/folio/import", { package: packageData, directory: resolve(requiredFlag(parsed, "--directory")) })), exitCode: 0 };
       }
     }
     usage();

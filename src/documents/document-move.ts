@@ -71,7 +71,7 @@ export class DocumentMoves {
     this.store.db.transaction(() => {
       const record = this.store.db.query("SELECT path FROM documents WHERE id=?").get(move.document_id) as { path: string } | null;
       if (!record || ![move.source, move.target].includes(record.path)) throw conflict("The conversation changed during move recovery.");
-      this.store.db.query("UPDATE documents SET path=? WHERE id=?").run(move.target, move.document_id);
+      this.store.db.query("UPDATE documents SET path=?,location_version=location_version+CASE WHEN path=? THEN 0 ELSE 1 END WHERE id=?").run(move.target, move.target, move.document_id);
       const views = this.store.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='reader_views'").get();
       if (views) this.store.db.query("UPDATE reader_views SET path=?,parent_dev=?,parent_ino=? WHERE path=?").run(move.target, targetParent.dev, targetParent.ino, move.source);
     }).immediate();

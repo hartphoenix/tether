@@ -39,6 +39,17 @@ test("bootstrap waits for settings, returns a generation and accepts valid defau
   expect(await server.call("folio-view", { ...values, generation: connection.generation, workspaceId: "w" })).toEqual(launch);
 });
 
+test("native Folio open and pin RPCs preserve UUID identity instead of substituting the displayed path", async () => {
+  const open = spyOn(Hub.prototype,"open").mockResolvedValue(), pin = spyOn(Hub.prototype,"pin").mockResolvedValue();
+  try {
+    const server = setup(), {connection} = await server.pump(), documentId = crypto.randomUUID();
+    await server.call("open",{generation:connection.generation,documentId,path:"/same/document.md",workspaceId:"workspace"});
+    await server.call("pin",{generation:connection.generation,documentId,path:"/same/document.md",pinned:true});
+    expect(open).toHaveBeenCalledWith(`id:${documentId}`,"workspace");
+    expect(pin).toHaveBeenCalledWith(`id:${documentId}`,true);
+  } finally { open.mockRestore(); pin.mockRestore(); }
+});
+
 test("failed and invalid settings publish unavailable state and reject every mutation", async () => {
   for (const read of [async () => { throw new Error("read failed"); }, async () => ({ status: "invalid" })]) {
     const server = setup(read);

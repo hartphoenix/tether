@@ -5,7 +5,7 @@ import GithubSlugger from 'github-slugger';
 import { prepareMarkdown } from '../core/markdown-codec';
 import { bodyRevision } from "../core/index";
 import { markdownProjection } from "../server/quote-anchor";
-import { PrivateStore, PrivateStoreConflictError, PrivateStoreDocumentNotFoundError, REVIEW_CURSOR_LIFETIME_MS } from "../storage/private-store";
+import { PrivateStore, PrivateStoreConflictError, PrivateStoreDocumentNotFoundError, REVIEW_CURSOR_LIFETIME_MS, type DocumentReference } from "../storage/private-store";
 export type AgentPageOptions = {
     limit?: number;
     maxBytes?: number;
@@ -63,8 +63,8 @@ export class AgentReads {
     private readonly revisions = new Map<string, string>();
     private revisionBytes = 0;
     constructor(readonly store: PrivateStore) { }
-    forget(path: string): void {
-        const doc = this.store.documentForPath(path);
+    forget(path: DocumentReference): void {
+        const doc = this.store.document(path);
         if (!doc)
             return;
         for (const [key, value] of this.revisions)
@@ -73,10 +73,10 @@ export class AgentReads {
                 this.revisionBytes -= Buffer.byteLength(value);
             }
     }
-    private document(path: string) { const doc = this.store.documentForPath(path); if (!doc)
+    private document(path: DocumentReference) { const doc = this.store.document(path); if (!doc)
         throw new PrivateStoreDocumentNotFoundError(); return doc; }
     /** Small, process-local recovery cache; never a persistent Markdown history. */
-    private remember(path: string, body: string): string {
+    private remember(path: DocumentReference, body: string): string {
         const revision = bodyRevision(body), key = `${this.document(path).id}:${revision}`, size = Buffer.byteLength(body);
         if (size > 2 * 1024 * 1024)
             return revision;
@@ -95,8 +95,8 @@ export class AgentReads {
     private latest(documentId: string): number { return (this.store.db.query("SELECT COALESCE(MAX(seq),0) AS seq FROM annotation_events WHERE document_id=?").get(documentId) as {
         seq: number;
     }).seq; }
-    private state(path: string, body: string, kind: string, identity: string, options: AgentPageOptions, after: number): PageState {
-        const doc = this.document(path), revision = this.remember(path, body);
+    private state(path: DocumentReference, body: string | null, kind: string, identity: string, options: AgentPageOptions, after: number): PageState {
+        const doc = this.document(path), revision = body === null ? "unavailable" : this.remember(path, body);
         if (!options.continuation)
             return { kind, identity, revision, snapshot: this.latest(doc.id), after, fragmentOffset: 0 };
         const row = this.store.db.query("SELECT payload_json,created_at FROM agent_continuations WHERE cursor=? AND document_id=?").get(options.continuation, doc.id) as {
@@ -110,7 +110,7 @@ export class AgentReads {
             throw new PrivateStoreConflictError("The continuation does not match this read or the document changed; restart this read.");
         return state;
     }
-    private continuation(path: string, state: PageState): string {
+    private continuation(path: DocumentReference, state: PageState): string {
         const cursor = `p-${crypto.randomUUID()}`;
         this.store.db.query("DELETE FROM agent_continuations WHERE created_at < ?").run(Date.now() - REVIEW_CURSOR_LIFETIME_MS);
         this.store.db.query("INSERT INTO agent_continuations VALUES(?,?,?,?)").run(cursor, this.document(path).id, JSON.stringify(state), Date.now());
@@ -131,7 +131,7 @@ export class AgentReads {
         const next = offset + text.length;
         return { seq: ref.seq, fragment: { encoding: "json", offset, nextOffset: next < json.length ? next : null, text } };
     }
-    pending(path: string, body: string, options: AgentPageOptions & {
+    pending(path: DocumentReference, body: string, options: AgentPageOptions & {
         actor?: string;
         consumer?: string;
     } = {}) {
@@ -196,7 +196,7 @@ export class AgentReads {
             throw Object.assign(new Error("Thread metadata exceeds the response budget. Retrieve its root event with event."), { code: "item_too_large", eventId: id });
         return result;
     }
-    threads(path: string, body: string, options: AgentPageOptions & {
+    threads(path: DocumentReference, body: string | null, options: AgentPageOptions & {
         status?: "open" | "resolved";
     } = {}) {
         const maxBytes = budget(options), limit = bound(options.limit, 50, 1, 200), doc = this.document(path);
@@ -226,9 +226,9 @@ export class AgentReads {
         }
         if (refs.length === 201)
             more = true;
-        return { documentId: doc.id, bodyRevision: state.revision, maxSequence: state.snapshot, threads, maxBytes, continuation: more ? this.continuation(path, { ...state, after }) : null };
+        return { documentId: doc.id, bodyRevision: body === null ? null : state.revision, maxSequence: state.snapshot, threads, maxBytes, continuation: more ? this.continuation(path, { ...state, after }) : null };
     }
-    thread(path: string, body: string, threadId: string, options: AgentPageOptions = {}) {
+    thread(path: DocumentReference, body: string | null, threadId: string, options: AgentPageOptions = {}) {
         const maxBytes = budget(options), limit = bound(options.limit, 50, 1, 200), doc = this.document(path);
         const before = bound(options.beforeSequence, Number.MAX_SAFE_INTEGER, 1, Number.MAX_SAFE_INTEGER);
         const state = this.state(path, body, "thread", JSON.stringify([threadId, before]), options, 0);
@@ -264,9 +264,9 @@ export class AgentReads {
             more = fragmentOffset > 0 || refs.length > 1;
             break;
         }
-        return { documentId: doc.id, bodyRevision: state.revision, thread: summary, messages, maxBytes, continuation: more ? this.continuation(path, { ...state, after, fragmentOffset }) : null };
+        return { documentId: doc.id, bodyRevision: body === null ? null : state.revision, thread: summary, messages, maxBytes, continuation: more ? this.continuation(path, { ...state, after, fragmentOffset }) : null };
     }
-    event(path: string, eventId: string, options: {
+    event(path: DocumentReference, eventId: string, options: {
         offset?: number;
         maxBytes?: number;
     } = {}) {
@@ -278,7 +278,7 @@ export class AgentReads {
         const event = JSON.parse(json) as EventRef;
         return { ...this.fragment({ id: event.id, seq: event.seq }, json, offset, maxBytes - 200), maxBytes };
     }
-    outline(path: string, body: string, options: {
+    outline(path: DocumentReference, body: string, options: {
         offset?: number;
         maxBytes?: number;
     } = {}) {
@@ -319,7 +319,7 @@ export class AgentReads {
         }
         return { bodyRevision: revision, headings: page, nextOffset: index < headings.length ? index : null, totalHeadings: headings.length, maxBytes };
     }
-    context(path: string, body: string, threadId: string, options: {
+    context(path: DocumentReference, body: string, threadId: string, options: {
         radius?: number;
         maxBytes?: number;
     } = {}) {
@@ -348,7 +348,7 @@ export class AgentReads {
         const contextStart = position === null ? 0 : Math.max(0, position - radius), text = position === null ? "" : fitText(projection.slice(contextStart, position + anchor.exact.length + radius), maxBytes - 600);
         return { bodyRevision: revision, threadId, anchorStatus: status, occurrences: count, projectionStart: position, contextStart: position === null ? null : contextStart, text, truncated: position !== null && contextStart + text.length < projection.length, maxBytes };
     }
-    diff(path: string, body: string, fromRevision: string, options: {
+    diff(path: DocumentReference, body: string, fromRevision: string, options: {
         maxBytes?: number;
     } = {}) {
         const prior = this.revisions.get(`${this.document(path).id}:${fromRevision}`), revision = this.remember(path, body), maxBytes = budget(options);

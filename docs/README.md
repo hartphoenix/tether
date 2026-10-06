@@ -1,6 +1,6 @@
 # Tether documentation
 
-Try your first comment exchange with the [getting-started guide](getting-started.md). Tether runs locally on your Mac, so your agent needs access to the same files and CLI.
+Try your first comment exchange with the [getting-started guide](getting-started.md). A local profile uses files on your Mac; a shared profile connects browsers and agents to one library across file machines.
 
 ## Using Tether
 
@@ -10,6 +10,7 @@ Try your first comment exchange with the [getting-started guide](getting-started
 - [Agent setup](guide/agent-setup.md): install and maintain the optional review skill.
 - [Installation and updates](guide/installation.md): package locations, updates, and uninstall.
 - [Recovery and backups](guide/recovery.md): reconnect saved views and restore private data.
+- [Shared profiles](guide/shared-profile.md): one library across file machines, authenticated readers, and headless source deployment.
 
 ## Using the CLI
 

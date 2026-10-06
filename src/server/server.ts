@@ -1,6 +1,7 @@
 import { isApplicationAsset, type WebResponder } from "../web/bundle";
+import { createSharedLibrary } from "./shared-library";
 import { HostThemes, isThemeClient } from "./host-themes";
-import { ImageAssets } from "../documents/image-assets";
+import { imageResponse } from "../documents/image-assets";
 import { linkFragment } from '../shared/link-fragment';
 import { version as sourceVersion } from "../../package.json";
 import { diagnosticText, diagnosticValue, errorDetails } from "../shared/diagnostics";
@@ -11,7 +12,7 @@ import { UpdateService } from "./updates";
 import { listAgentSkillReviews, readAgentSkillReview, decideAgentSkillReview } from "../cli/agent-skills";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
-import { PrivateStore } from "../storage/private-store";
+import { PrivateStore, type DocumentReference, type PrivateDocumentRow } from "../storage/private-store";
 import { ViewStore, cookieVerifier, verifiesCookie } from "./view-store";
 import { stopHostBridges } from "./stop-hosts";
 import { anchorForQuote, quoteCandidates } from "./quote-anchor";
@@ -50,7 +51,7 @@ const DEFAULT_IDLE_MS = 5_000;
 
 export type Clock = () => number;
 export type Ticket = { ticket: string; url: string; expiresAt: number };
-export type Session = { id: string; grant: DocumentSession; cookie: string; verifier?: string; createdAt: number; lastSeen: number; leases: Map<string, number>; target?: HostTarget };
+export type Session = { id: string; grant: DocumentSession; cookie: string; verifier?: string; createdAt: number; lastSeen: number; leases: Map<string, number>; target?: HostTarget; shared?: boolean };
 type RecentsSession = { id: string; cookie: string; verifier?: string; createdAt: number; lastSeen: number; leaseUntil: number; target?: HostTarget };
 
 export type DaemonOptions = {
@@ -97,6 +98,8 @@ export type TetherDaemon = {
   revokeSession: (id: string) => void;
   service: DocumentService;
   sessions: ReadonlyMap<string, Session>;
+  library: ReturnType<typeof createSharedLibrary>;
+  shared?: { localControl: (action: string, body: Record<string, unknown>) => Promise<unknown>; stop: () => Promise<void> };
 };
 
 function randomToken(): string {
@@ -227,6 +230,14 @@ function linkErrorPage(message: string): Response {
   return new Response(`<!doctype html><meta charset="utf-8"><title>Link unavailable · Tether</title><link rel="icon" type="image/png" href="/favicon.png"><body style="font:15px/1.5 system-ui;margin:3rem auto;max-width:36rem;padding:0 1rem"><h1 style="font-size:1.2rem">This link couldn't be opened</h1><p>${text}</p><p>Close this tab to return to your document.</p></body>`, { status: 404, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
 
+function archivedLinkPage(target: string, format: "markdown" | "wikilink"): Response {
+  const payload = JSON.stringify({target,format,restoreArchived:true}).replaceAll("<","\\u003c");
+  return new Response(`<!doctype html><meta charset="utf-8"><title>Restore document · Tether</title><body style="font:15px/1.5 system-ui;margin:3rem auto;max-width:36rem;padding:0 1rem"><main><p>This document has been archived. Restore it?</p><button id="restore">Restore</button> <button id="cancel">Cancel</button><p id="notice"></p></main><script>
+document.getElementById('cancel').onclick=()=>{document.querySelector('main').textContent='The document remains archived. Close this tab to return.'};
+document.getElementById('restore').onclick=async()=>{const button=document.getElementById('restore');button.disabled=true;try{const response=await fetch(location.href,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(${payload})});const value=await response.json();if(!response.ok)throw new Error(value.error?.message||'Could not restore the document.');location.assign(value.url)}catch(error){document.getElementById('notice').textContent=error.message;button.disabled=false}};
+</script></body>`,{status:409,headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","referrer-policy":"no-referrer"}});
+}
+
 const fallbackHtml = `<!doctype html><meta charset="utf-8"><title>Tether</title><link rel="icon" type="image/png" href="/favicon.png"><main id="app">Tether session</main>`;
 
 /**
@@ -254,16 +265,18 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const browserHost = createBrowserHost({ open: options.opener });
   const paseoHost = new PaseoHostAdapter({ origin: "user", fallback: browserHost, enqueue: async (intent) => pullQueue.enqueue(PASEO_HOST, intent) });
   const hostAdapter = options.hostAdapter ?? new HostGateway(config, browserHost, paseoHost);
-  const recents = new RecentsService(options.recents ?? new RecentsRegistry({ path: config.recentsPath, now, database: privateStore.db, deletePrivateData: async (path: string, onlyWithoutConversation?: boolean) => {
-    agentReads.forget(path);
-    await service.deleteConversation(path, onlyWithoutConversation);
-    for (const [id, session] of sessions) if (session.grant.realPath === path) { service.close(session.grant); sessions.delete(id); }
-    for (const [ticket, pending] of tickets) if (pending.grant.realPath === path) { service.close(pending.grant); tickets.delete(ticket); }
-    views.forgetPath(path);
+  const recents = new RecentsService(options.recents ?? new RecentsRegistry({ path: config.recentsPath, now, database: privateStore.db,
+    inspectLocation: row => service.fileAccess(row.machine_id).inspect(row.path),
+    deletePrivateData: async (path: string, onlyWithoutConversation?: boolean, documentId?: string) => {
+    const reference = documentId ? { documentId } : path;
+    agentReads.forget(reference);
+    await service.deleteConversation(reference, onlyWithoutConversation);
+    for (const [id, session] of sessions) if (documentId ? session.grant.documentId === documentId : session.grant.realPath === path && session.grant.machineId === privateStore.localMachineId) { service.close(session.grant); sessions.delete(id); }
+    for (const [ticket, pending] of tickets) if (documentId ? pending.grant.documentId === documentId : pending.grant.realPath === path && pending.grant.machineId === privateStore.localMachineId) { service.close(pending.grant); tickets.delete(ticket); }
+    if (!documentId || privateStore.documentById(documentId)?.machine_id === privateStore.localMachineId) views.forgetPath(path);
   } }), hostAdapter);
   recents.subscribeFolio(() => pullQueue.folioChanged());
   const instanceId = crypto.randomUUID();
-  const imageAssets = new ImageAssets();
   const tickets = new Map<string, { grant: DocumentSession; expiresAt: number; target?: HostTarget; resumeId?: string }>();
   const recentsTickets = new Map<string, { expiresAt: number; target?: HostTarget }>();
   const sessions = new Map<string, Session>();
@@ -449,75 +462,97 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     } });
   }
 
-  async function folioFile(requested: string): Promise<string> {
-    const files = (await recents.folioSnapshot({ view: "all" })).files;
-    let entry = files.find(file => file.path === resolve(requested));
-    if (!entry) {
-      let canonical: string | undefined;
-      try { canonical = await realpath(resolve(requested)); } catch {}
-      entry = files.find(file => file.path === canonical);
+  async function folioRecord(reference: DocumentReference): Promise<PrivateDocumentRow> {
+    if (typeof reference !== "string") {
+      const record = privateStore.documentById(reference.documentId);
+      if (!record) throw Object.assign(new Error("The document record no longer exists."), {code:"folio_entry_missing",status:404});
+      return record;
     }
-    if (!entry) throw Object.assign(new Error("The path is not registered in Folio."), { code: "folio_entry_missing", status: 403 });
-    return requireFolioFile(entry.path);
+    let path = resolve(reference), record = privateStore.documentForPath(path);
+    if (!record) { try { path = await realpath(path); } catch {} record = privateStore.documentForPath(path); }
+    if (!record) throw Object.assign(new Error("The path is not registered in Folio."), {code:"folio_entry_missing",status:403});
+    return record;
+  }
+  function folioReferences(body: Record<string, unknown>): DocumentReference[] {
+    if (body.documentIds !== undefined) {
+      if (!Array.isArray(body.documentIds) || body.documentIds.length > 200 || !body.documentIds.every(id => typeof id === "string" && id.length > 0)) throw invalidRequest("Select no more than 200 document IDs.");
+      return body.documentIds.map(documentId => ({documentId}));
+    }
+    if (body.documentId !== undefined) {
+      if (typeof body.documentId !== "string" || !body.documentId) throw invalidRequest("A document ID is required.");
+      return [{documentId:body.documentId}];
+    }
+    const paths = Array.isArray(body.paths) && body.paths.every(path => typeof path === "string") ? body.paths as string[] : typeof body.path === "string" ? [body.path] : [];
+    if (paths.length > 200) throw invalidRequest("Select no more than 200 documents.");
+    return paths;
+  }
+  function requireLocalMachine(machineId: string): void {
+    if (machineId !== privateStore.localMachineId) throw Object.assign(new Error("This action is available only on the document's file machine."), {code:"local_file_required",status:409});
+  }
+  async function folioFile(reference: DocumentReference): Promise<string> {
+    const record = await folioRecord(reference); requireLocalMachine(record.machine_id);
+    return requireFolioFile(record.path);
   }
 
   async function folioOperation(action: string, body: Record<string, unknown>, target?: HostTarget, browser = false): Promise<unknown> {
     const paths = Array.isArray(body.paths) && body.paths.every(p => typeof p === "string") ? body.paths as string[] : typeof body.path === "string" ? [body.path] : [];
-    if (paths.length > 200) throw invalidRequest("Select no more than 200 documents at once.");
+    const selected = folioReferences(body);
     if (action === "list") return { ...await recents.folioSnapshot(body as ListFolioOptions), instanceId };
     if (action === "sync") return recents.retryHostSync(target);
     if (action === "add") { if (!paths.length) throw invalidRequest("At least one Markdown path is required."); return recents.recordMany(paths, target); }
-    if (browser && paths.length) {
-      const known = new Set((await recents.folioSnapshot({ view: "all" })).files.map(file => file.path));
-      if (paths.some(path => !known.has(resolve(path)))) throw new DocumentAccessError("The selection is not in Folio.");
-    }
+    if (browser) for (const reference of selected) await folioRecord(reference);
     if (action === "archive" || action === "clear-unpinned") {
       if ((await recents.getRetention()).mode === "immediate" && body.confirmed !== true) throw Object.assign(new Error("Confirm deleting the selected archived data."), { code: "confirmation_required" });
-      return action === "archive" ? recents.archive(paths, target) : recents.clearUnpinned(target);
+      return action === "archive" ? recents.archive(selected, target) : recents.clearUnpinned(target);
     }
-    if (action === "restore") return recents.restore(paths, target);
-    if (action === "pin" || action === "unpin") { return { updated: true, ...await recents.setPinned(paths, action === "pin" && body.pinned !== false) }; }
+    if (action === "restore") return recents.restore(selected, target);
+    if (action === "pin" || action === "unpin") { return { updated: true, ...await recents.setPinned(selected, action === "pin" && body.pinned !== false) }; }
     if (action === "settings") {
       if (body.retention === undefined) return { retention: await recents.getRetention() };
       if (body.confirmed !== true) throw Object.assign(new Error("Confirm the archive retention change."), { code: "confirmation_required" });
       return recents.setRetention(body.retention as FolioRetention, target);
     }
-    if (action === "remove-entry") {
-      const files = (await recents.folioSnapshot({ view: "all" })).files;
-      for (const path of paths) {
-        const entry = files.find(file => file.path === resolve(path));
-        if (!entry) throw Object.assign(new Error("The Folio entry no longer exists."), { code: "folio_entry_missing", status: 404 });
-        if (entry.hasConversation) throw Object.assign(new Error("This entry has conversation history. Archive it to keep the conversation."), { code: "conversation_present", status: 409 });
-      }
-      return recents.delete(paths, target, true);
-    }
+    if (action === "remove-entry") return recents.delete(selected,target,true);
     if (action === "delete-conversation" || action === "start-fresh" || action === "delete") {
       if (body.confirmed !== true) throw Object.assign(new Error("Confirm deleting the selected conversations."), { code: "confirmation_required" });
-      if (action === "delete") return recents.delete(paths, target);
-      const records = await Promise.all(paths.map(async path => {
-        let stored = resolve(path);
-        if (!privateStore.documentForPath(stored)) { try { stored = await realpath(stored); } catch {} }
-        if (!privateStore.documentForPath(stored)) throw Object.assign(new Error("The Folio entry no longer exists."), { code: "folio_entry_missing", status: 404 });
-        return stored;
-      }));
-      for (const path of records) { agentReads.forget(path); privateStore.deleteConversation(path); }
+      if (action === "delete") return recents.delete(selected, target);
+      const records = await Promise.all(selected.map(reference => folioRecord(reference)));
+      for (const record of records) { const reference = {documentId:record.id}; agentReads.forget(reference); privateStore.deleteConversation(reference); }
       await recents.refresh();
-      return { cleared: paths };
+      return { cleared: records.map(record => record.path), documentIds:records.map(record => record.id) };
     }
     if (action === "locate") {
+      if (!selected[0]) throw invalidRequest("A source document is required.");
+      const existing = await folioRecord(selected[0]);
+      const machineId = typeof body.machineId === "string" ? body.machineId : existing.machine_id;
       let destination = typeof body.target === "string" ? body.target : undefined;
-      if (!destination && browser && !pickFiles) throw Object.assign(new Error("Locate file is unavailable in this host."), { code: "locate_unavailable" });
-      if (!destination && browser && pickFiles) destination = (await pickFiles())[0];
-      if (!paths[0]) throw invalidRequest("A source path is required.");
-      if (!destination) return { cancelled: true };
-      const entry = await recents.locate(paths[0], destination);
-      const parent = await stat(dirname(entry.path));
-      privateStore.db.query("UPDATE reader_views SET path=?,parent_dev=?,parent_ino=? WHERE path=?").run(entry.path, parent.dev, parent.ino, resolve(paths[0]));
+      if (!destination && browser) {
+        requireLocalMachine(machineId);
+        if (!pickFiles) throw Object.assign(new Error("Locate file is unavailable in this host."), {code:"locate_unavailable"});
+        destination = (await pickFiles())[0];
+      }
+      if (!destination) return {cancelled:true};
+      const relocated = await service.relink(existing.id,machineId,destination); service.close(relocated);
+      await recents.refresh(); await recents.retryHostSync();
+      const entry = (await recents.folioSnapshot({view:"all"})).files.find(file => file.id === existing.id)!;
+      if (existing.machine_id === privateStore.localMachineId) {
+        if (machineId === privateStore.localMachineId) {
+          const parent = await stat(dirname(entry.path));
+          privateStore.db.query("UPDATE reader_views SET path=?,parent_dev=?,parent_ino=? WHERE path=?").run(entry.path,parent.dev,parent.ino,existing.path);
+        } else views.forgetPath(existing.path);
+      }
       return entry;
     }
     if (action === "export") {
       const grants: DocumentSession[] = [];
-      try { for (const path of paths) grants.push(await service.open(await folioFile(path))); return await service.exportReviews(grants); }
+      try {
+        for (const reference of selected) {
+          const record = await folioRecord(reference);
+          if (record.machine_id === privateStore.localMachineId) await requireFolioFile(record.path);
+          grants.push(await service.openById(record.id,{existingReader:true}));
+        }
+        return await service.exportReviews(grants);
+      }
       finally { for (const grant of grants) service.close(grant); }
     }
     if (action === "import") {
@@ -587,14 +622,18 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   }
 
   async function withControlDocument<T>(body: Record<string, unknown>, operation: (grant: DocumentSession) => Promise<T>): Promise<T> {
-    if (typeof body.path !== "string" || !body.path.trim()) throw invalidRequest("A Markdown path is required.");
-    const grant = await service.open(body.path);
+    const grant = typeof body.documentId === "string"
+      ? await service.openById(body.documentId, { restoreArchived: body.restoreArchived === true })
+      : typeof body.path === "string" && body.path.trim()
+        ? await service.openLocation(typeof body.machineId === "string" ? body.machineId : privateStore.localMachineId, body.path, { restoreArchived: body.restoreArchived === true })
+        : (() => { throw invalidRequest("A document ID or machine-qualified Markdown path is required."); })();
     try { return await operation(grant); }
     finally { service.close(grant); }
   }
 
   function mutationSummary(document: DocumentSnapshot): Record<string, unknown> {
     return {
+      documentId:document.documentId,machineId:document.machineId,locationVersion:document.locationVersion,
       path: document.path,
       bodyRevision: document.bodyRevision,
       ledgerRevision: document.ledgerRevision,
@@ -610,11 +649,116 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     return result;
   }
 
+  async function documentOperation(pathname: string, body: Record<string, unknown>): Promise<unknown> {
+    if (pathname === "/control/document/move") {
+      if (typeof body.path !== "string" || typeof body.target !== "string") throw invalidRequest("Move requires source and destination paths.");
+      const result = await service.move(body.path, body.target);
+      await recents.refresh();
+      return result;
+     }
+    if (pathname === "/control/review/operation" || pathname === "/control/review/event") {
+      const reference = typeof body.documentId === "string" ? {documentId:body.documentId} : typeof body.path === "string" ? body.path : undefined;
+      if (!reference) throw invalidRequest("A registered document ID or local path is required.");
+      const record = await folioRecord(reference), identity = {documentId:record.id};
+      if (pathname.endsWith("/operation")) {
+        if (typeof body.operationId !== "string") throw invalidRequest("An operation ID is required.");
+        return privateStore.lookupMutation(identity,body.operationId);
+      }
+      if (typeof body.eventId !== "string") throw invalidRequest("An event ID is required.");
+      return agentReads.event(identity,body.eventId,body);
+    }
+    const result = await withControlDocument(body, async (grant) => {
+      const actionName = pathname.split("/").at(-1)!;
+      if (["outline", "context", "diff", "pending", "threads", "thread", "event", "quote-candidates", "operation"].includes(actionName)) {
+        const source = await service.exportExact(grant);
+        if (actionName === "outline") return agentReads.outline({ documentId: grant.documentId! }, source, body);
+        if (actionName === "context") {
+          if (typeof body.threadId !== "string") throw invalidRequest("Context requires threadId.");
+          return agentReads.context({ documentId: grant.documentId! }, source, body.threadId, body);
+        }
+        if (actionName === "diff") {
+          if (typeof body.fromRevision !== "string") throw invalidRequest("Diff requires fromRevision.");
+          return agentReads.diff({ documentId: grant.documentId! }, source, body.fromRevision, body);
+        }
+        if (actionName === "pending") {
+          if (typeof body.actor !== "string") throw invalidRequest("Pending requires actor.");
+          return agentReads.pending({ documentId: grant.documentId! }, source, { ...body, actor: body.actor, consumer: typeof body.consumer === "string" ? body.consumer : body.actor });
+        }
+        if (actionName === "threads") return agentReads.threads({ documentId: grant.documentId! }, source, body);
+        if (actionName === "thread") {
+          if (typeof body.threadId !== "string") throw invalidRequest("A thread ID is required.");
+          return agentReads.thread({ documentId: grant.documentId! }, source, body.threadId, body);
+        }
+        if (actionName === "event") {
+          if (typeof body.eventId !== "string") throw invalidRequest("An event ID is required.");
+          return agentReads.event({ documentId: grant.documentId! }, body.eventId, body);
+        }
+        if (actionName === "operation") {
+          if (typeof body.operationId !== "string") throw invalidRequest("An operation ID is required.");
+          return privateStore.lookupMutation({ documentId: grant.documentId! }, body.operationId);
+        }
+        if (typeof body.quote !== "string") throw invalidRequest("A quote is required.");
+        return quoteCandidates(source, body.quote, body);
+      }
+      if (pathname === "/control/document/read") {
+        const doc = await service.read(grant);
+        return { documentId:grant.documentId,machineId:grant.machineId,locationVersion:grant.locationVersion,path: doc.path, body: doc.body, bodyRevision: doc.bodyRevision, conversationRevision: doc.ledgerRevision };
+      }
+      if (pathname === "/control/document/save") {
+        if (typeof body.body !== "string" || typeof body.expectedBodyRevision !== "string") throw invalidRequest("Document save requires body and expectedBodyRevision.");
+        return mutationSummary(await service.saveBody({ session: grant, body: body.body, expectedBodyRevision: body.expectedBodyRevision, expectedLocationVersion: typeof body.expectedLocationVersion === "number" ? body.expectedLocationVersion : undefined }));
+      }
+      if (pathname === "/control/review/comment") {
+        if (typeof body.actor !== "string" || !textBody(body) || typeof body.quote !== "string") throw invalidRequest("A comment needs actor, body and quote.");
+        const requestFingerprint = { type: "comment", actor: body.actor, body: textBody(body), quote: body.quote, ...(body.candidateId ? { candidateId: body.candidateId } : {}), ...(body.expectedBodyRevision ? { expectedBodyRevision: body.expectedBodyRevision } : {}) };
+        if (typeof body.operationId === "string") {
+          const replay = await service.mutationReceipt(grant, body.operationId, requestFingerprint);
+          if (replay) return mutationSummary(replay);
+        }
+        const doc = await service.read(grant);
+        if ((body.candidateId || body.expectedBodyRevision) && body.expectedBodyRevision !== doc.bodyRevision) throw new DocumentConflictError("The quote candidate requires the current body revision.", { currentBodyRevision: doc.bodyRevision });
+        const anchor = anchorForQuote(doc.body, body.quote, doc.bodyRevision, typeof body.candidateId === "string" ? body.candidateId : undefined);
+        return mutationSummary(await service.appendComment({ session: grant, actor: body.actor, body: textBody(body), requestFingerprint, anchor, expectedBodyRevision: doc.bodyRevision, operationId: typeof body.operationId === "string" ? body.operationId : undefined }));
+      }
+      const action = /^\/control\/review\/(reply|resolve|reopen|edit|delete|acknowledge)$/.exec(pathname)?.[1];
+      if (!action) throw invalidRequest("Control endpoint not found.");
+      if (typeof body.actor !== "string" || !body.actor.trim()) throw invalidRequest(`Review ${action} requires actor.`);
+      let event: AnnotationEventInput;
+      if (action === "edit" || action === "delete") {
+        if (typeof body.threadId !== "string" || typeof body.targetId !== "string" || (action === "edit" && !textBody(body))) throw invalidRequest("Edit/delete requires threadId, targetId, and edit text.");
+        event = selectEvent({ ...body, type: action, ...(action === "edit" ? { body: textBody(body) } : {}) }, action);
+      } else if (action === "reply") {
+        if (typeof body.threadId !== "string" || !textBody(body)) throw invalidRequest("A reply needs threadId and body.");
+        event = selectEvent({ ...body, type: "reply", body: textBody(body) }, "reply");
+      } else if (action === "acknowledge") {
+        if (typeof body.cursor !== "string" || !body.cursor) throw invalidRequest("An acknowledgement needs the cursor returned by pending.");
+        event = selectEvent({ ...body, type: "ack" }, "ack");
+      } else {
+        if (typeof body.threadId !== "string" || !body.threadId) throw invalidRequest(`A ${action} event needs threadId.`);
+        event = selectEvent({ ...body, type: action }, action);
+      }
+      return mutationSummary(await service.appendEvent({
+        session: grant,
+        event,
+        cursor: typeof body.cursor === "string" ? body.cursor : undefined,
+        consumer: typeof body.consumer === "string" ? body.consumer : undefined,
+        operationId: typeof body.operationId === "string" ? body.operationId : undefined,
+        expectedThreadSequence: typeof body.expectedThreadSequence === "number" ? body.expectedThreadSequence : undefined,
+        expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined,
+      }));
+    });
+    if (pathname.startsWith("/control/review/") && !["pending", "thread", "threads", "event", "quote-candidates", "operation"].includes(pathname.split("/").at(-1)!)) await recents.refresh();
+    return result;
+  }
+
   async function sessionApi(request: Request, session: Session, path: string): Promise<Response> {
     const apiPath = path.replace(/^\/s\/[^/]+\/api/, "") || "/";
     const stateChanging = request.method !== "GET" && request.method !== "HEAD";
     if (stateChanging && !sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
     try {
+      const locationVersion = request.headers.get("x-tether-location-version") ?? new URL(request.url).searchParams.get("locationVersion");
+      if (locationVersion !== null && Number(locationVersion) !== session.grant.locationVersion) throw Object.assign(new Error("The document location changed. Reopen this reader."),{code:"stale_location",status:409});
+      if (session.shared && locationVersion === null && (apiPath === "/file" && request.method === "PUT" || apiPath === "/verify-save" && request.method === "POST")) throw invalidRequest("The reader's original location version is required.");
       if (apiPath === "/theme-events" && request.method === "GET") {
         const id = themeClient(request, session.target);
         const encoder = new TextEncoder();
@@ -639,18 +783,33 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/bootstrap" && request.method === "GET") {
         const document = await service.read(session.grant);
         const basePreferences = await preferences();
-        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, draft: views.draft(session.id), scroll: views.position(session.id), zoom: views.zoom(session.id, basePreferences.defaultDocumentZoom ?? 100), document, directoryPicker: Boolean(pickMoveDirectory), capabilities: hostAdapter.capabilities(session.target), updateControls: true, preferences: displayPreferences(await hostThemes.preferences(themeClient(request, session.target), basePreferences)), actor: options.actor ?? "assistant" });
+        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, sharedReader:session.shared === true, draft: session.shared ? null : views.draft(session.id), scroll: session.shared ? 0 : views.position(session.id), zoom: session.shared ? basePreferences.defaultDocumentZoom ?? 100 : views.zoom(session.id, basePreferences.defaultDocumentZoom ?? 100), document, directoryPicker: !session.shared && Boolean(pickMoveDirectory), capabilities: {...hostAdapter.capabilities(session.target),...(session.grant.machineId !== privateStore.localMachineId ? {revealFile:false} : {})}, updateControls: true, preferences: displayPreferences(await hostThemes.preferences(themeClient(request, session.target), basePreferences)), actor: options.actor ?? "assistant" });
+      }
+      if (apiPath === "/history" && request.method === "GET") {
+        const query: Record<string,unknown> = Object.fromEntries(new URL(request.url).searchParams);
+        for (const key of ["limit","maxBytes","beforeSequence"]) if (query[key] !== undefined) query[key] = Number(query[key]);
+        validateControlInput(query,"/control/document/history");
+        return json(service.history(session.grant.documentId,query));
+      }
+      if (apiPath === "/verify-save" && request.method === "POST") {
+        const body = await requestJson(request);
+        if (typeof body.body !== "string" || typeof body.expectedBodyRevision !== "string") throw invalidRequest("Verification requires attempted text and its original base revision.");
+        await service.barrier(session.grant);
+        const document = await service.read(session.grant);
+        return json({outcome:document.body === body.body ? "matches_edit" : document.bodyRevision === body.expectedBodyRevision ? "matches_base" : "diverged",document});
       }
       if (apiPath === "/position" && request.method === "POST") {
         const body = await requestJson(request);
         if (typeof body.scroll !== "number" || !Number.isFinite(body.scroll) || body.scroll < 0) throw invalidRequest("Invalid reader position.");
         if (body.zoom !== undefined && (typeof body.zoom !== "number" || !Number.isFinite(body.zoom) || body.zoom < 75 || body.zoom > 175)) throw invalidRequest("Invalid reader zoom.");
+        if (session.shared) return json({saved:false,local:true});
         views.savePosition(session.id, body.scroll, body.zoom as number | undefined);
         return json({ saved: true });
       }
       if (apiPath === "/draft" && request.method === "POST") {
         const body = await requestJson(request);
         if (typeof body.body !== "string" || body.body.length > 8_000_000 || typeof body.baseRevision !== "string") return error("invalid_request", "Invalid draft.", 400);
+        if (session.shared) return json({saved:false,persistent:false});
         views.saveDraft(session.id, { body: body.body, baseRevision: body.baseRevision, scroll: typeof body.scroll === "number" && Number.isFinite(body.scroll) ? Math.max(0, body.scroll) : 0, updatedAt: now() });
         return json({ saved: true });
       }
@@ -663,13 +822,13 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         if (!sessions.has(session.id)) return error("session_expired", "Session revoked.", 401);
         return request.headers.get("if-none-match") === etag ? new Response(null, { status: 304, headers }) : json(value, { headers });
       }
-      if (apiPath === "/image" && request.method === "GET") return await imageAssets.response(request, session.grant, await service.read(session.grant));
+      if (apiPath === "/image" && request.method === "GET") return imageResponse(await service.image(session.grant,new URL(request.url).searchParams.get("src") ?? ""),request);
       if (apiPath === "/file" && request.method === "PUT") {
         const body = await requestJson(request);
         const content = typeof body.content === "string" ? body.content : typeof body.body === "string" ? body.body : undefined;
         const expected = expectedBodyRevision(body);
         if (content === undefined || !expected) return error("invalid_request", "A body and expectedBodyRevision are required.", 400);
-        return json(await service.saveBody({ session: session.grant, body: content, expectedBodyRevision: expected }));
+        return json(await service.saveBody({ session: session.grant, body: content, expectedBodyRevision: expected, expectedLocationVersion:typeof body.expectedLocationVersion === "number" ? body.expectedLocationVersion : undefined }));
       }
       if (apiPath === "/annotations" && request.method === "GET") {
         const actor = new URL(request.url).searchParams.get("actor") ?? options.actor ?? "assistant";
@@ -742,25 +901,36 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         session.lastSeen = now();
         return json({ ok: true });
       }
+      if (apiPath === "/link" && request.method === "POST") {
+        const body = await requestJson(request);
+        if (body.restoreArchived !== true || typeof body.target !== "string") throw invalidRequest("Confirm restoring the linked document.");
+        const format = body.format === "markdown" ? "markdown" : "wikilink";
+        const grant = await service.resolveLink(session.grant,body.target,format,{restoreArchived:true});
+        const ticket = mintTicket(grant,session.target);
+        return json({url:ticket.url + linkFragment(body.target,format)});
+      }
       if (apiPath === "/link" && request.method === "GET") {
         // Opened by the reader as a new tab; the tab carries this session's cookie.
         const query = new URL(request.url).searchParams;
         const format = query.get("format") === "markdown" ? "markdown" : "wikilink";
         try {
-          const path = await service.resolveWikilink(session.grant.path, query.get("target") ?? "", format);
-          if (![".md", ".markdown"].includes(extname(path).toLowerCase())) throw invalidRequest("This link isn't a Markdown document.");
-          const ticket = mintTicket(await service.open(path), session.target);
+          const target = query.get("target") ?? "";
+          const grant = await service.resolveLink(session.grant,target,format);
+          const ticket = mintTicket(grant,session.target);
           return new Response(null, { status: 302, headers: { location: ticket.url + linkFragment(query.get('target') ?? '', format), "cache-control": "no-store" } });
         } catch (cause) {
+          if ((cause as {code?:string}).code === "restore_required") return archivedLinkPage(query.get("target") ?? "",format);
           return linkErrorPage(cause instanceof Error ? cause.message : String(cause));
         }
       }
       if (apiPath === '/file/reveal' && request.method === 'POST') {
+        requireLocalMachine(session.grant.machineId);
         if (!hostAdapter.capabilities(session.target).revealFile || !hostAdapter.revealFile) throw invalidRequest('Revealing files is unavailable in this host.');
         await hostAdapter.revealFile(session.grant.realPath);
         return json({ revealed: true });
       }
       if (apiPath === '/file/move' && request.method === 'POST') {
+        requireLocalMachine(session.grant.machineId);
         const body = await requestJson(request);
         let target = body.target;
         if (body.pickDirectory === true) {
@@ -778,19 +948,20 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         const body = await requestJson(request);
         if (typeof body.target !== "string" || !body.target.trim()) throw invalidRequest("A wikilink target is required.");
         if (body.format !== undefined && body.format !== "markdown" && body.format !== "wikilink") throw invalidRequest("Invalid link format.");
-        const path = await service.resolveWikilink(session.grant.path, body.target, body.format);
         const sourceUrl = `${daemon.origin}/s/${session.id}/`;
-        if (![".md", ".markdown"].includes(extname(path).toLowerCase())) {
-          if (session.target?.host === "cmux") {
-            if (!hostAdapter.openLocalFile) throw invalidRequest("Native local-file opening is unavailable in this host.");
-            await hostAdapter.openLocalFile({ path, sourceUrl, target: session.target });
-            return json({ path, resolvedPath: path, opened: true });
+        if (session.grant.machineId === privateStore.localMachineId) {
+          const path = await service.resolveWikilink(session.grant.path,body.target,body.format);
+          if (![".md", ".markdown"].includes(extname(path).toLowerCase())) {
+            if (session.target?.host === "cmux") {
+              if (!hostAdapter.openLocalFile) throw invalidRequest("Native local-file opening is unavailable in this host.");
+              await hostAdapter.openLocalFile({path,sourceUrl,target:session.target});
+              return json({path,resolvedPath:path,opened:true});
+            }
+            if (!hostAdapter.capabilities(session.target).revealFile || !hostAdapter.revealFile) throw invalidRequest("Revealing local files is unavailable in this host.");
+            await hostAdapter.revealFile(path); return json({path,resolvedPath:path,opened:false,revealed:true});
           }
-          if (!hostAdapter.capabilities(session.target).revealFile || !hostAdapter.revealFile) throw invalidRequest("Revealing local files is unavailable in this host.");
-          await hostAdapter.revealFile(path);
-          return json({ path, resolvedPath: path, opened: false, revealed: true });
         }
-        const grant = await service.open(path);
+        const grant = await service.resolveLink(session.grant,body.target,body.format === "markdown" ? "markdown" : "wikilink",{restoreArchived:body.restoreArchived === true});
         const ticket = mintTicket(grant, session.target);
         try { await hostAdapter.openView({ url: ticket.url + linkFragment(body.target, body.format as 'markdown' | 'wikilink' | undefined), path: grant.realPath, kind: "document", focus: true, target: session.target,
           ...(session.target?.host === "cmux" ? { targetPolicy: "source-pane" as const, sourceUrl } : {}),
@@ -825,9 +996,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       return error("not_found", "API endpoint not found.", 404);
     } catch (cause) {
-      const status = cause instanceof DocumentConflictError ? 409 : cause instanceof DocumentReadOnlyError ? 422 : 400;
-      if (cause && typeof cause === "object" && typeof (cause as { code?: unknown }).code === "string") return codedError(cause, "invalid_request", status);
-      return error(status === 409 ? "conflict" : status === 422 ? "ledger_invalid" : "invalid_request", (cause as Error).message || "Request failed.", status);
+      if (cause && typeof cause === "object" && typeof (cause as {code?:unknown}).code === "string") return controlError(cause);
+      return error("invalid_request",cause instanceof Error ? cause.message : "Request failed.",400);
     }
   }
 
@@ -854,15 +1024,15 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         service.close(pending.grant);
         return error("ticket_expired", "The launch ticket has expired.", 401);
       }
-      if (pending.resumeId && sessions.get(pending.resumeId)?.grant.realPath !== pending.grant.realPath) {
+      if (pending.resumeId && sessions.get(pending.resumeId)?.grant.documentId !== pending.grant.documentId) {
         service.close(pending.grant);
         return error("session_expired", "The saved view is no longer available.", 401);
       }
       const id = pending.resumeId ?? randomToken();
       const createdAt = now();
-      const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt, lastSeen: createdAt, leases: new Map(), ...(pending.target ? { target: pending.target } : {}) };
+      const session: Session = { id, grant: pending.grant, cookie: randomToken(), createdAt, lastSeen: createdAt, leases: new Map(), shared:pending.grant.machineId !== privateStore.localMachineId, ...(pending.target ? { target: pending.target } : {}) };
       const previous = sessions.get(id);
-      try { await recents.record(pending.grant.realPath, pending.target); }
+      try { if (privateStore.documentById(pending.grant.documentId)?.active) await recents.recordDocument(pending.grant.documentId, pending.target); }
       catch (cause) {
         service.close(pending.grant);
         return error("launch_failed", cause instanceof Error ? cause.message : String(cause), 500);
@@ -871,7 +1041,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         service.close(pending.grant);
         return error("session_expired", "The saved view changed during launch. Relaunch explicitly.", 401);
       }
-      views.put({ id, kind: "document", path: session.grant.realPath, verifier: cookieVerifier(session.cookie), createdAt, target: session.target });
+      if (!session.shared) views.put({ id, kind: "document", path: session.grant.realPath, verifier: cookieVerifier(session.cookie), createdAt, target: session.target });
       sessions.set(id, session);
       if (previous) service.close(previous.grant);
       const root = sessionRoutes(id).root;
@@ -955,11 +1125,13 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (request.method === "POST" && (suffix === "/api/open" || suffix === "/api/welcome")) {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
         try {
-          const body = suffix === "/api/welcome" ? { path: await seedWelcome(config) } : await requestJson(request);
-          if (typeof body.path !== "string") throw invalidRequest("A recent Markdown path is required.");
-          if (suffix === "/api/welcome") await recents.record(body.path, session.target);
-          const canonical = await folioFile(body.path);
-          const grant = await service.open(canonical);
+          const body: Record<string,unknown> = suffix === "/api/welcome" ? {path:await seedWelcome(config)} : await requestJson(request);
+          if (suffix === "/api/welcome") await recents.record(body.path as string,session.target);
+          const selected = folioReferences(body);
+          if (!selected[0]) throw invalidRequest("A document ID or local Markdown path is required.");
+          const record = await folioRecord(selected[0]);
+          if (record.machine_id === privateStore.localMachineId) await requireFolioFile(record.path);
+          const grant = await service.openById(record.id,{restoreArchived:body.restoreArchived === true});
           const launch = mintTicket(grant, session.target);
           try {
             await hostAdapter.openView({
@@ -973,7 +1145,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
             });
           }
           catch (cause) { discardTicket(launch.ticket); throw cause; }
-          return json({ opened: true, path: grant.path });
+          return json({ opened: true, path: grant.path, documentId:grant.documentId });
         } catch (cause) { return codedError(cause, "open_failed", 400); }
       }
       if (request.method === "POST" && ["/api/action", "/api/batch", "/api/settings", "/api/import", "/api/clear-unpinned", "/api/service"].includes(suffix)) {
@@ -982,19 +1154,22 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const body = await requestJson(request);
           const action = suffix === "/api/action" || suffix === "/api/batch" ? String(body.action) : suffix.slice(5);
           if (["reveal", "default", "trash"].includes(action)) {
-            const path = typeof body.path === "string" ? await folioFile(body.path) : "";
-            if (!path) throw invalidRequest("A Folio path is required.");
+            const selected = folioReferences(body);
+            if (!selected[0]) throw invalidRequest("A Folio document is required.");
+            const path = await folioFile(selected[0]);
             if (action === "reveal") { if (!hostAdapter.revealFile) throw invalidRequest("Reveal is unavailable."); await hostAdapter.revealFile(path); }
             if (action === "default") await hostAdapter.openExternal(path);
             if (action === "trash") { if (body.confirmed !== true) throw invalidRequest("Confirm moving the file to Trash."); await trashFile(path); await recents.remove(path, session.target); }
             return json({ action, path });
           }
           if (suffix === "/api/batch" && ["archive", "restore", "pin", "unpin"].includes(action)) {
-            if (!Array.isArray(body.paths) || body.paths.length > 200 || !body.paths.every(path => typeof path === "string")) throw invalidRequest("Select no more than 200 document paths.");
-            const completed: string[] = [], failed: Array<{ path: string; message: string }> = [];
-            for (const path of body.paths) {
-              try { await folioOperation(action, { ...body, paths: [path] }, session.target, true); completed.push(path); }
-              catch (cause) { failed.push({ path, message: cause instanceof Error ? cause.message : String(cause) }); }
+            const selected = folioReferences(body);
+            const completed: string[] = [], failed: Array<{path:string;documentId?:string;message:string}> = [];
+            for (const reference of selected) {
+              const identity = typeof reference === "string" ? reference : reference.documentId;
+              const selection = typeof reference === "string" ? {paths:[reference]} : {documentIds:[reference.documentId]};
+              try { await folioOperation(action,{...body,paths:undefined,documentIds:undefined,documentId:undefined,...selection},session.target,true); completed.push(identity); }
+              catch (cause) { failed.push({path:identity,...typeof reference === "string" ? {} : {documentId:reference.documentId},message:cause instanceof Error ? cause.message : String(cause)}); }
             }
             return json({ completed, failed });
           }
@@ -1007,6 +1182,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const expected = await readControlToken(config);
       if (!expected || request.headers.get("authorization") !== `Bearer ${expected}`) return error("forbidden", "Control authorization is required.", 403);
       try {
+        if (pathname.startsWith("/control/shared/") && request.method === "POST") {
+          if (!daemon.shared) throw Object.assign(new Error("The shared endpoint is not configured."), { code: "shared_not_configured", status: 409 });
+          return json(await daemon.shared.localControl(pathname.slice("/control/shared/".length), await requestJson(request)));
+        }
         if (pathname === "/control/activate" && request.method === "POST") { maintenanceEnabled = true; return json({ activated: true }); }
         if (pathname === "/control/recovery/views" && request.method === "POST") {
           const inventory = [
@@ -1026,24 +1205,21 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         if (pathname === "/control/folio/member" && request.method === "POST") {
           const body = await requestJson(request);
           if (typeof body.id !== "string" || body.id.length > 256) throw invalidRequest("A document ID is required.");
-          const row = privateStore.db.query("SELECT id,path,title FROM documents WHERE id=?").get(body.id) as { id: string; path: string; title: string | null } | null;
+          const row = privateStore.documentById(body.id);
           if (!row) return json(null);
-          try { await requireFolioFile(row.path); } catch { return json(null); }
-          // Recheck deletion after asynchronous filesystem validation.
-          if (privateStore.documentForPath(row.path)?.id !== row.id) return json(null);
-          return json({ id: row.id, path: row.path, title: row.title ?? basename(row.path) });
+          return json({id:row.id,path:row.path,machineId:row.machine_id,title:row.title ?? basename(row.path)});
         }
         if (pathname === "/control/launch" && request.method === "POST") {
           const body = await requestJson(request);
-          const grant = await service.open(typeof body.path === "string" ? body.path : "");
-          if (body.resumeId !== undefined && (typeof body.resumeId !== "string" || sessions.get(body.resumeId)?.grant.realPath !== grant.realPath)) {
+          const grant = typeof body.documentId === "string" ? await service.openById(body.documentId,{restoreArchived:body.restoreArchived === true,existingReader:typeof body.resumeId === "string"}) : await service.open(typeof body.path === "string" ? body.path : "",{restoreArchived:body.restoreArchived === true,existingReader:typeof body.resumeId === "string"});
+          if (body.resumeId !== undefined && (typeof body.resumeId !== "string" || sessions.get(body.resumeId)?.grant.documentId !== grant.documentId)) {
             service.close(grant);
             throw invalidRequest("The saved view must belong to this document and remain authorized.");
           }
           const target = hostTarget(body.target);
           maintenanceEnabled = true;
           const ticket = mintTicket(grant, target, body.resumeId as string | undefined);
-          return json({ ...ticket, path: grant.path, revocable: true });
+          return json({ ...ticket, path: grant.path, documentId:grant.documentId, revocable: true });
         }
         if (pathname.startsWith("/control/folio/") && request.method === "POST") {
           const body = await requestJson(request);
@@ -1068,12 +1244,29 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const [host, operation] = pathname.slice("/control/hosts/".length).split("/");
           if (host !== PASEO_HOST) return error("not_found", "Unknown pull host.", 404);
           const body = await requestJson(request);
+          if (operation === "reader") {
+            const { readSharedCredential } = await import("../remote/shared-client");
+            const { createSharedReaderLink } = await import("../remote/reader-receiver");
+            if (typeof body.connectionPath !== "string" || !body.reader || typeof body.reader !== "object") throw invalidRequest("A private connection and shared document are required.");
+            const credential = await readSharedCredential(body.connectionPath);
+            if (credential.expiresAt <= now()) throw invalidRequest("The receiving connection has expired.");
+            const value = body.reader as Record<string, unknown>;
+            if (typeof value.documentId !== "string" || typeof value.url !== "string") throw invalidRequest("A shared document ID and URL are required.");
+            const reader = createSharedReaderLink(credential.origin, value.documentId, value.url);
+            const target = hostTarget(body.target);
+            if (!target || target.host !== PASEO_HOST) throw invalidRequest("A receiving Paseo workspace is required.");
+            const intent = pullQueue.enqueue(host, { kind: "document", origin: "agent", sharedReader: { origin: reader.origin, documentId: reader.documentId, url: reader.url }, target });
+            return json({ id: intent.id, origin: intent.origin, expiresAt: intent.expiresAt });
+          }
           if (operation === "enqueue") {
             const origin = body.origin === "user" ? "user" : "agent";
             // Only an agent's announcement may omit the launch URL.
             if (body.url === undefined ? origin === "user" || typeof body.path !== "string" : typeof body.url !== "string" || !body.url.startsWith(`${daemon.origin}/`)) throw invalidRequest("A launch URL from this daemon is required.");
             if (body.kind !== "document" && body.kind !== "recents") throw invalidRequest("Invalid view kind.");
+            const document = typeof body.documentId === "string" ? privateStore.documentById(body.documentId) : null;
+            if (body.documentId !== undefined && (!document || document.path !== body.path || body.machineId !== undefined && document.machine_id !== body.machineId)) throw invalidRequest("The document identity does not match this announcement.");
             const intent = pullQueue.enqueue(host, { kind: body.kind, origin,
+              ...(document ? { documentId: document.id, machineId: document.machine_id } : {}),
               ...(typeof body.url === "string" ? { url: body.url } : {}),
               ...(typeof body.path === "string" ? { path: body.path } : {}),
               ...(hostTarget(body.target) ? { target: hostTarget(body.target) } : {}),
@@ -1106,95 +1299,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         }
         if (request.method === "POST" && (pathname.startsWith("/control/document/") || pathname.startsWith("/control/review/"))) {
           const body = await requestJson(request);
-          if (pathname === "/control/document/move") {
-            if (typeof body.path !== "string" || typeof body.target !== "string") throw invalidRequest("Move requires source and destination paths.");
-            const result = await service.move(body.path, body.target);
-            await recents.refresh();
-            return json(result);
+          return json(await documentOperation(pathname, body));
           }
-          const result = await withControlDocument(body, async (grant) => {
-            const actionName = pathname.split("/").at(-1)!;
-            if (["outline", "context", "diff", "pending", "threads", "thread", "event", "quote-candidates", "operation"].includes(actionName)) {
-              const source = await service.exportExact(grant);
-              if (actionName === "outline") return agentReads.outline(grant.path, source, body);
-              if (actionName === "context") {
-                if (typeof body.threadId !== "string") throw invalidRequest("Context requires threadId.");
-                return agentReads.context(grant.path, source, body.threadId, body);
-              }
-              if (actionName === "diff") {
-                if (typeof body.fromRevision !== "string") throw invalidRequest("Diff requires fromRevision.");
-                return agentReads.diff(grant.path, source, body.fromRevision, body);
-              }
-              if (actionName === "pending") {
-                if (typeof body.actor !== "string") throw invalidRequest("Pending requires actor.");
-                return agentReads.pending(grant.path, source, { ...body, actor: body.actor, consumer: typeof body.consumer === "string" ? body.consumer : body.actor });
-              }
-              if (actionName === "threads") return agentReads.threads(grant.path, source, body);
-              if (actionName === "thread") {
-                if (typeof body.threadId !== "string") throw invalidRequest("A thread ID is required.");
-                return agentReads.thread(grant.path, source, body.threadId, body);
-              }
-              if (actionName === "event") {
-                if (typeof body.eventId !== "string") throw invalidRequest("An event ID is required.");
-                return agentReads.event(grant.path, body.eventId, body);
-              }
-              if (actionName === "operation") {
-                if (typeof body.operationId !== "string") throw invalidRequest("An operation ID is required.");
-                return privateStore.lookupMutation(grant.path, body.operationId);
-              }
-              if (typeof body.quote !== "string") throw invalidRequest("A quote is required.");
-              return quoteCandidates(source, body.quote, body);
-            }
-            if (pathname === "/control/document/read") {
-              const doc = await service.read(grant);
-              return { path: doc.path, body: doc.body, bodyRevision: doc.bodyRevision, conversationRevision: doc.ledgerRevision };
-            }
-            if (pathname === "/control/document/save") {
-              if (typeof body.body !== "string" || typeof body.expectedBodyRevision !== "string") throw invalidRequest("Document save requires body and expectedBodyRevision.");
-              return mutationSummary(await service.saveBody({ session: grant, body: body.body, expectedBodyRevision: body.expectedBodyRevision }));
-            }
-            if (pathname === "/control/review/comment") {
-              if (typeof body.actor !== "string" || !textBody(body) || typeof body.quote !== "string") throw invalidRequest("A comment needs actor, body and quote.");
-              const requestFingerprint = { type: "comment", actor: body.actor, body: textBody(body), quote: body.quote, ...(body.candidateId ? { candidateId: body.candidateId } : {}), ...(body.expectedBodyRevision ? { expectedBodyRevision: body.expectedBodyRevision } : {}) };
-              if (typeof body.operationId === "string") {
-                const replay = await service.mutationReceipt(grant, body.operationId, requestFingerprint);
-                if (replay) return mutationSummary(replay);
-              }
-              const doc = await service.read(grant);
-              if ((body.candidateId || body.expectedBodyRevision) && body.expectedBodyRevision !== doc.bodyRevision) throw new DocumentConflictError("The quote candidate requires the current body revision.", { currentBodyRevision: doc.bodyRevision });
-              const anchor = anchorForQuote(doc.body, body.quote, doc.bodyRevision, typeof body.candidateId === "string" ? body.candidateId : undefined);
-              return mutationSummary(await service.appendComment({ session: grant, actor: body.actor, body: textBody(body), requestFingerprint, anchor, expectedBodyRevision: doc.bodyRevision, operationId: typeof body.operationId === "string" ? body.operationId : undefined }));
-            }
-            const action = /^\/control\/review\/(reply|resolve|reopen|edit|delete|acknowledge)$/.exec(pathname)?.[1];
-            if (!action) throw invalidRequest("Control endpoint not found.");
-            if (typeof body.actor !== "string" || !body.actor.trim()) throw invalidRequest(`Review ${action} requires actor.`);
-            let event: AnnotationEventInput;
-            if (action === "edit" || action === "delete") {
-              if (typeof body.threadId !== "string" || typeof body.targetId !== "string" || (action === "edit" && !textBody(body))) throw invalidRequest("Edit/delete requires threadId, targetId, and edit text.");
-              event = selectEvent({ ...body, type: action, ...(action === "edit" ? { body: textBody(body) } : {}) }, action);
-            } else if (action === "reply") {
-              if (typeof body.threadId !== "string" || !textBody(body)) throw invalidRequest("A reply needs threadId and body.");
-              event = selectEvent({ ...body, type: "reply", body: textBody(body) }, "reply");
-            } else if (action === "acknowledge") {
-              if (typeof body.cursor !== "string" || !body.cursor) throw invalidRequest("An acknowledgement needs the cursor returned by pending.");
-              event = selectEvent({ ...body, type: "ack" }, "ack");
-            } else {
-              if (typeof body.threadId !== "string" || !body.threadId) throw invalidRequest(`A ${action} event needs threadId.`);
-              event = selectEvent({ ...body, type: action }, action);
-            }
-            return mutationSummary(await service.appendEvent({
-              session: grant,
-              event,
-              cursor: typeof body.cursor === "string" ? body.cursor : undefined,
-              consumer: typeof body.consumer === "string" ? body.consumer : undefined,
-              operationId: typeof body.operationId === "string" ? body.operationId : undefined,
-              expectedThreadSequence: typeof body.expectedThreadSequence === "number" ? body.expectedThreadSequence : undefined,
-              expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined,
-            }));
-          });
-          if (pathname.startsWith("/control/review/") && !["pending", "thread", "threads", "event", "quote-candidates", "operation"].includes(pathname.split("/").at(-1)!)) await recents.refresh();
-          return json(result);
-        }
         if (pathname === "/control/status" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId, origin: daemon.origin, pid: process.pid, sessions: sessions.size, version: releaseVersion });
         if (pathname === "/control/stop" && request.method === "POST") { setTimeout(() => { void quit().catch(() => {}); }, 50); return json({ stopping: true }); }
       } catch (cause) { return controlError(cause); }
@@ -1265,6 +1371,26 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     instanceId,
     config,
     service,
+    library: createSharedLibrary({
+      service, recents, instanceId, documentOperation, preferences, saveAppearance,
+      assets: request => options.webAssets?.(request) ?? options.web?.assets?.(request) ?? new Response("Application assets unavailable.", { status: 404 }),
+      reader: grant => {
+        const id = randomToken();
+        const session: Session = { id, grant, cookie: "", createdAt: now(), lastSeen: now(), leases: new Map(), shared: true };
+        sessions.set(id, session);
+        return {
+          close: async () => { sessions.delete(id); service.close(grant); },
+          request: async (resource, request) => {
+            if (!sessions.has(id)) return error("session_expired", "Reader closed.", 401);
+            const url = new URL(resource, `${daemon.origin}/s/${id}/`);
+            if (url.origin !== daemon.origin || !url.pathname.startsWith(`/s/${id}/`)) throw invalidRequest("Invalid reader resource.");
+            const forwarded = new Request(url, { method: request.method, headers: { origin: daemon.origin, "content-type": "application/json", ...(request.headers.has("x-tether-location-version") ? {"x-tether-location-version":request.headers.get("x-tether-location-version")!} : {}), ...(request.headers.has("if-none-match") ? { "if-none-match": request.headers.get("if-none-match")! } : {}) }, body: ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer(), signal: request.signal });
+            if (resource.startsWith("api/")) return sessionApi(forwarded, session, url.pathname);
+            return options.web?.(forwarded, session) ?? new Response("Application assets unavailable.", { status: 404 });
+          },
+        };
+      },
+    }),
     ready,
     closed,
     stop: () => {
@@ -1277,6 +1403,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       clearTimeout(previewTimer);
       pullQueue.close();
       stopping = (async () => {
+      await daemon.shared?.stop();
       await initialization;
       await maintenance.catch(() => {});
       await Promise.allSettled([...requests]);
@@ -1317,7 +1444,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
               if (await realpath(view.path) !== view.path) throw new DocumentAccessError();
               const parent = await stat(dirname(view.path));
               if (view.parent && (parent.dev !== view.parent.dev || parent.ino !== view.parent.ino)) throw new DocumentAccessError();
-              const grant = await service.open(view.path);
+              const grant = await service.open(view.path,{existingReader:true});
               if (!view.parent) views.put({ ...view, parent: { dev: parent.dev, ino: parent.ino } });
               sessions.set(view.id, { id: view.id, grant, cookie: "", verifier: view.verifier, createdAt: view.createdAt, lastSeen: now(), leases: new Map(), target: view.target });
             }
@@ -1364,6 +1491,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
 export async function startDaemon(options: DaemonOptions = {}): Promise<TetherDaemon> {
   const config = options.config ?? resolveConfig();
   await prepareConfig(config);
+  const { readSharedConfig, startSharedProfile } = await import("./shared-profile");
+  const sharedConfig = await readSharedConfig(config);
+  if (sharedConfig && !sharedConfig.active) throw new Error("Restored shared service is fenced. Stop the previous authority and run tether shared activate --confirm.");
   const listenerPath = join(config.runtimeDir, "listener.json");
   let port = options.port;
   if (port === undefined) {
@@ -1372,7 +1502,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<TetherDa
       if (Number.isSafeInteger(saved.port) && saved.port > 0 && saved.port < 65536) port = saved.port;
     } catch { /* First launch allocates a port and remembers it. */ }
   }
-  let configured = { ...options, config, port, persistentViews: options.persistentViews ?? true };
+  let configured = { ...options, config, port, keepAlive: options.keepAlive || !!sharedConfig, persistentViews: options.persistentViews ?? true };
   if (!configured.web) {
     const { createWebBundleResponder } = await import("../web/bundle");
     const responder = await createWebBundleResponder(join(config.runtimeDir, "web-assets"));
@@ -1391,6 +1521,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<TetherDa
     // can publish discovery and let a launcher observe a successful startup.
     writeFileSync(listenerPath, JSON.stringify({ port: daemon.port }), { mode: 0o600 });
     await daemon.ready;
+    if (sharedConfig) daemon.shared = await startSharedProfile(daemon, sharedConfig);
     return daemon;
   } catch (cause) {
     await daemon.stop().catch(() => {});

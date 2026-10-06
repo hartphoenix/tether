@@ -1,5 +1,5 @@
 import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
-import { openRpc, type Notice } from "../shared/contracts";
+import { openRpc, openNoticeRpc, type Notice } from "../shared/contracts";
 import { ThemeMark } from "./theme-mark";
 import { FOLIO_PANEL } from "./pump";
 import { getState, subscribeState } from "./state";
@@ -30,7 +30,10 @@ export function startHeaderButtons(client: PluginClientContext): () => void {
           return;
         }
         if (!notice) { client.openPanel(FOLIO_PANEL, { workspaceId, location: "explorer" }); return; }
-        void client.rpc(openRpc, { path: notice.path, workspaceId, generation }).catch(() => {});
+        if (notice.sharedReader) {
+          client.openPanel(FOLIO_PANEL, { workspaceId, location: "explorer" });
+          void client.rpc(openNoticeRpc, { documentId: notice.sharedReader.documentId, workspaceId, generation }).catch(() => {});
+        } else void client.rpc(openRpc, { ...(notice.documentId ? { documentId: notice.documentId } : { path: notice.path }), workspaceId, generation }).catch(() => {});
       },
     },
   });
@@ -39,7 +42,7 @@ export function startHeaderButtons(client: PluginClientContext): () => void {
     const { notices, restores, buttons: enabled, connection } = getState();
     const notice = notices[workspaceId];
     const restore = restores[workspaceId];
-    const key = `${connection?.generation}:${enabled}:${notice?.path ?? ""}:${notice?.name ?? ""}:${restore?.urls.length ?? 0}`;
+    const key = `${connection?.generation}:${enabled}:${notice?.sharedReader?.url ?? notice?.documentId ?? notice?.path ?? ""}:${notice?.name ?? ""}:${restore?.urls.length ?? 0}`;
     if (shown.get(workspaceId) === key) return;
     shown.set(workspaceId, key);
     const button = present(workspaceId, notice, restore, enabled, connection?.generation);

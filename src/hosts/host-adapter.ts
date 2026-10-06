@@ -1,6 +1,7 @@
 import type { HostCapabilities } from "../shared/contracts";
 import type { RecentEntry } from "../recents/registry";
 import type { RecoveryReport, RecoveryView } from "./recovery";
+import type { ReceiveReaderRequest, ReceiveReaderResult } from "../remote/reader-receiver";
 
 export type HostTarget = Record<string, string>;
 export type InstallResult = { installed: boolean; message?: string };
@@ -8,6 +9,8 @@ export type OpenViewRequest = {
   url: string;
   /** Canonical document path, when the view is a document. */
   path?: string;
+  documentId?: string;
+  machineId?: string;
   kind: "document" | "recents";
   focus: boolean;
   allowFocusedFallback?: boolean;
@@ -25,6 +28,8 @@ export interface HostAdapter {
   capabilities(target?: HostTarget): HostCapabilities;
   launchTarget?(): HostTarget | undefined;
   openView(request: OpenViewRequest): Promise<OpenViewResult | void>;
+  /** Receive an authorized shared document without moving the user's focus. */
+  receiveReader?(request: ReceiveReaderRequest): Promise<ReceiveReaderResult>;
   openLocalFile?(request: OpenLocalFileRequest): Promise<void>;
   openExternal(pathOrUrl: string): Promise<void>;
   revealFile?(path: string): Promise<void>;

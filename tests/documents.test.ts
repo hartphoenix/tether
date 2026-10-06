@@ -90,7 +90,7 @@ describe("private review storage", () => {
     const queue = new ObservedQueue();
     const file = await fixture(); const service = new DocumentService({ queue }); const session = await service.open(file.path); const initial = await service.read(session);
     let releaseQueue!: () => void; const queueGate = new Promise<void>((resolve) => { releaseQueue = resolve; });
-    const blocker = service.queue.run(session.path, async () => { await queueGate; });
+    const blocker = service.queue.run(session.documentId, async () => { await queueGate; });
     const deletionQueued = new Promise<void>(resolve => { queue.onEnqueued = resolve; });
     const deleting = service.deleteConversation(session.path); await deletionQueued;
     const saveQueued = new Promise<void>(resolve => { queue.onEnqueued = resolve; });

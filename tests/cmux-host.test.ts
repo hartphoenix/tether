@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createSharedReaderLink } from "../src/remote/reader-receiver";
 import {
   isSupportedCmuxVersion,
   CmuxHostAdapter,
@@ -163,6 +164,41 @@ test("creates the first review browser beside the exact captured surface without
   expect(commands.some((command) => command.includes("rename-tab"))).toBe(false);
   expect(navigateIndex).toBeGreaterThan(commands.indexOf(rpc));
   expect(commands[navigateIndex]).toContain("http://127.0.0.1:8420/launch?ticket=one");
+});
+
+test("shared reader capability places HTTPS beside the captured cmux surface without focusing or weakening ordinary URL checks", async () => {
+  const commands: string[][] = [];
+  const host = await detected(async command => {
+    commands.push(command);
+    if (command.includes("--version")) return { exitCode: 0, stdout: versionOutput, stderr: "" };
+    if (command.includes("identify")) return ok(identity);
+    if (command.includes("tree")) return ok(tree());
+    if (command.includes("rpc")) return ok(openSplit());
+    return ok({});
+  });
+  const url = `https://reader.example/reader/d/${ids.source}/`;
+  const reader = createSharedReaderLink("https://reader.example", ids.source, url);
+  await expect(host.openView({ url, kind: "document", focus: false })).rejects.toMatchObject({ code: "invalid_target" });
+  expect(await host.receiveReader({ reader, target: host.launchTarget()! })).toEqual({ placement: "opened" });
+  expect(JSON.parse(commands.find(command => command.includes("browser.open_split"))!.at(-1)!)).toMatchObject({ workspace_id: ids.workspace, surface_id: ids.source, focus: false });
+  expect(commands.find(command => command.includes("navigate"))).toContain(url);
+  expect(commands.some(command => command.includes("focus-panel") || command.includes("--no-caller"))).toBe(false);
+  await expect(host.receiveReader({ reader: { ...reader }, target: host.launchTarget()! })).rejects.toThrow("capability");
+});
+
+test("shared reader delivery reuses its origin's existing review pane", async () => {
+  const commands:string[][] = [];
+  const url = `https://reader.example/reader/d/${ids.source}/`;
+  const host = await detected(async command => {
+    commands.push(command);
+    if (command.includes("--version")) return {exitCode:0,stdout:versionOutput,stderr:""};
+    if (command.includes("identify")) return ok(identity);
+    if (command.includes("tree")) return ok(tree([{id:ids.reviewPane,surfaces:[{id:ids.reviewSurface,type:"browser",url,title:"Document title"}]}]));
+    if (command.includes("rpc")) return ok(openSplit({created_split:false}));
+    return ok({});
+  });
+  await host.receiveReader({reader:createSharedReaderLink("https://reader.example",ids.source,url),target:host.launchTarget()!});
+  expect(commands.some(command => command.includes("split") || command.includes("move-surface") || command.includes("focus-panel"))).toBe(false);
 });
 
 test("isolates the first chromeless review when cmux reuses a right sibling pane", async () => {

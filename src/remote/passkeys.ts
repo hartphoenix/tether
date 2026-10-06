@@ -26,6 +26,9 @@ export interface PasskeyProvider {
   register(challenge: string, response: RegistrationResponseJSON): Promise<void>;
   authenticationOptions(): Promise<PublicKeyCredentialRequestOptionsJSON>;
   authenticate(challenge: string, response: AuthenticationResponseJSON): Promise<void>;
+  /** Called only after an OS-owner recovery ceremony has authorized replacement. */
+  recoveryOptions?(): Promise<PublicKeyCredentialCreationOptionsJSON>;
+  replace?(challenge: string, response: RegistrationResponseJSON): Promise<void>;
 }
 
 export type FilePasskeysOptions = {
@@ -35,6 +38,8 @@ export type FilePasskeysOptions = {
   owner: string;
   /** Development only: also accept `http://localhost[:port]`. */
   allowLoopbackHttp?: boolean;
+  /** Permit loading the old public credential while recovering at a new origin. */
+  allowOriginRecovery?: boolean;
 };
 
 export type PasskeyErrorCode = "invalid-config" | "invalid-store" | "identity-mismatch" | "not-enrolled" | "already-enrolled" | "verification-failed";
@@ -61,6 +66,7 @@ export class FilePasskeys implements PasskeyProvider {
   readonly rpID: string;
   readonly owner: string;
   private readonly file: string;
+  private readonly allowOriginRecovery: boolean;
   private record: PasskeyRecord | null;
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -71,6 +77,7 @@ export class FilePasskeys implements PasskeyProvider {
     this.owner = parseOwner(options.owner);
     if (typeof options.file !== "string" || options.file.length === 0) throw new PasskeyError("invalid-config", "Passkey file path is required.");
     this.file = options.file;
+    this.allowOriginRecovery = options.allowOriginRecovery === true;
     prepareDirectory(dirname(this.file));
     this.record = this.load();
   }
@@ -81,6 +88,10 @@ export class FilePasskeys implements PasskeyProvider {
 
   async registrationOptions(): Promise<PublicKeyCredentialCreationOptionsJSON> {
     if (this.record) throw new PasskeyError("already-enrolled", "A passkey is already enrolled.");
+    return this.recoveryOptions();
+  }
+
+  async recoveryOptions(): Promise<PublicKeyCredentialCreationOptionsJSON> {
     return generateRegistrationOptions({
       rpName: "Tether",
       rpID: this.rpID,
@@ -95,8 +106,16 @@ export class FilePasskeys implements PasskeyProvider {
   }
 
   register(challenge: string, response: RegistrationResponseJSON): Promise<void> {
+    return this.registerCredential(challenge, response, false);
+  }
+
+  replace(challenge: string, response: RegistrationResponseJSON): Promise<void> {
+    return this.registerCredential(challenge, response, true);
+  }
+
+  private registerCredential(challenge: string, response: RegistrationResponseJSON, replace: boolean): Promise<void> {
     return this.serialized(async () => {
-      if (this.record) throw new PasskeyError("already-enrolled", "A passkey is already enrolled.");
+      if (this.record && !replace) throw new PasskeyError("already-enrolled", "A passkey is already enrolled.");
       const result = await verified(() => verifyRegistrationResponse({
         response,
         expectedChallenge: requireChallenge(challenge),
@@ -121,7 +140,8 @@ export class FilePasskeys implements PasskeyProvider {
           ...(transports?.length ? { transports } : {}),
         },
       };
-      await this.writeExclusive(record);
+      if (replace) await this.writeReplace(record);
+      else await this.writeExclusive(record);
       this.record = record;
     });
   }
@@ -159,6 +179,7 @@ export class FilePasskeys implements PasskeyProvider {
 
   private requireRecord(): PasskeyRecord {
     if (!this.record) throw new PasskeyError("not-enrolled", "No passkey is enrolled.");
+    if (this.record.origin !== this.origin) throw new PasskeyError("identity-mismatch", "Owner recovery is required at this origin.");
     return this.record;
   }
 
@@ -188,7 +209,7 @@ export class FilePasskeys implements PasskeyProvider {
       closeSync(descriptor);
     }
     const record = parseRecord(text);
-    if (record.origin !== this.origin || record.rpID !== this.rpID || record.owner !== this.owner) {
+    if (record.owner !== this.owner || (!this.allowOriginRecovery && (record.origin !== this.origin || record.rpID !== this.rpID))) {
       throw new PasskeyError("identity-mismatch", "Passkey file belongs to a different origin or owner.");
     }
     return record;

@@ -3,7 +3,7 @@ import { Hub } from "./server/hub";
 import { paseoLookup } from "./server/paseo-lookup";
 import { ProcessPool } from "./server/process-pool";
 import { createTetherRunner, resolveTether } from "./server/tether-cli";
-import { ackRpc, folioViewRpc, openRpc, pinRpc, pumpRpc, themeRpc, tetherSettings, type Connection, type PumpBatch } from "./shared/contracts";
+import { ackRpc, folioViewRpc, openRpc, openNoticeRpc, pinRpc, pumpRpc, themeRpc, tetherSettings, type Connection, type PumpBatch } from "./shared/contracts";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(tetherSettings);
@@ -78,8 +78,9 @@ export default function contribute(server: PluginServerContext) {
     return result;
   });
   server.handle(ackRpc, input => operate(input, async ({ hub }) => ({ acknowledged: await hub.ack(input.ids) })));
-  server.handle(openRpc, (input, context) => operate(input, async session => { attach(session, context); await session.hub.open(input.path, input.workspaceId); return { queued: true }; }));
-  server.handle(pinRpc, input => operate(input, async ({ hub }) => { await hub.pin(input.path, input.pinned); return { pinned: input.pinned }; }));
+  server.handle(openRpc, (input, context) => operate(input, async session => { attach(session, context); await session.hub.open(input.documentId ? `id:${input.documentId}` : input.path!, input.workspaceId); return { queued: true }; }));
+  server.handle(openNoticeRpc, input => operate(input, async ({ hub }) => { await hub.openNotice(input.documentId, input.workspaceId); return { queued: true }; }));
+  server.handle(pinRpc, input => operate(input, async ({ hub }) => { await hub.pin(input.documentId ? `id:${input.documentId}` : input.path!, input.pinned); return { pinned: input.pinned }; }));
   server.handle(themeRpc, input => operate(input, ({ hub }) => hub.theme(input.clientId, input.theme)));
   server.handle(folioViewRpc, input => operate(input, ({ hub }) => hub.folioView(input.workspaceId)));
 

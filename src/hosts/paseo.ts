@@ -2,6 +2,7 @@ import type { HostCapabilities } from "../shared/contracts";
 import type { HostAdapter, HostTarget, OpenViewRequest, OpenViewResult } from "./host-adapter";
 import type { PullIntentInput, PullOrigin } from "./pull-queue";
 import { createBrowserHost } from "./browser";
+import { assertSharedReaderLink, type ReceiveReaderRequest, type ReceiveReaderResult } from "../remote/reader-receiver";
 
 export const PASEO_HOST = "paseo";
 
@@ -56,11 +57,20 @@ export class PaseoHostAdapter implements HostAdapter {
       kind: request.kind,
       origin,
       ...(request.path ? { path: request.path } : {}),
+      ...(request.documentId ? { documentId: request.documentId } : {}),
+      ...(request.machineId ? { machineId: request.machineId } : {}),
       ...(target ? { target } : {}),
       ...(request.sourceUrl ? { sourceUrl: request.sourceUrl } : {}),
     });
     // A notification leaves its ticket unused; the plugin reopens by path when the user chooses.
     return origin === "user" ? { launchConsumed: true } : { launchConsumed: false, notified: true };
+  }
+
+  async receiveReader({ reader, target }: ReceiveReaderRequest): Promise<ReceiveReaderResult> {
+    assertSharedReaderLink(reader);
+    if (target.host !== PASEO_HOST || (!target.workspaceId && !target.terminalId)) throw new Error("A captured Paseo workspace is required.");
+    await this.options.enqueue({ kind: "document", origin: "agent", sharedReader: { origin: reader.origin, documentId: reader.documentId, url: reader.url }, target });
+    return { placement: "announced" };
   }
 
   /** An agent's `recents add` names its document on the workspace's Tether button. */

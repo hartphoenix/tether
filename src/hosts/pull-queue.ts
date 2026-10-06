@@ -1,10 +1,13 @@
 import type { HostTarget } from "./host-adapter";
 
 export type PullOrigin = "user" | "agent";
-/** An open request; an agent's announcement carries only the document path. */
+/** Agent announcements carry a local document or an authorized public reader address. */
 export type PullIntentInput = {
   url?: string;
   path?: string;
+  documentId?: string;
+  machineId?: string;
+  sharedReader?: { origin: string; documentId: string; url: string };
   kind: "document" | "recents";
   origin: PullOrigin;
   target?: HostTarget;

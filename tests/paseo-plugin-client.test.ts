@@ -1,8 +1,18 @@
 import { expect, test } from "bun:test";
 import { acceptBatch, hasOpener, lendOpener, runOrHold, sourceKey, type Delivery } from "../integrations/paseo/client/state";
 import type { Intent } from "../integrations/paseo/shared/contracts";
+import { intentBrowserUrl } from "../integrations/paseo/client/theme-sync";
 
 const intent = (id: string): Delivery => ({ generation: "g1", source: sourceKey(), id, url: `http://127.0.0.1:1/launch?ticket=${id}`, workspaceId: "w" });
+
+test("public reader intents retain their credential-free authenticated URL without local launch parameters", () => {
+  const documentId = crypto.randomUUID(), origin = "https://reader.example", url = `${origin}/reader/d/${documentId}/`;
+  const publicIntent = { id: "shared", workspaceId: "w", url, sharedReader: { origin, documentId, url } };
+  expect(intentBrowserUrl(publicIntent)).toBe(url);
+  expect(() => intentBrowserUrl({ ...publicIntent, url: "https://unrelated.example/" })).toThrow("Mismatched");
+  expect(() => intentBrowserUrl({ ...publicIntent, sharedReader: { ...publicIntent.sharedReader, url: url + "?token=secret" } })).toThrow();
+  expect(() => intentBrowserUrl({ id: "untrusted", workspaceId: "w", url })).toThrow("Invalid Tether launch");
+});
 
 test("intents wait for a Folio panel, open exactly once, and use the oldest panel", () => {
   acceptBatch({ connection: { generation: "g1", tetherPath: "", profile: "preview" }, revision: 0, folio: [], notices: {}, intents: [], buttons: true, status: { connected: true, tether: "daemon", error: null } });

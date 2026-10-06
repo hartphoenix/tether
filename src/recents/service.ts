@@ -1,5 +1,6 @@
 import { errorDetails, diagnosticText } from "../shared/diagnostics";
 import type { HostAdapter, HostTarget } from "../hosts/host-adapter";
+import type { DocumentReference } from "../storage/private-store";
 import type { FolioEntry, FolioMutationResult, FolioRetention, ListFolioOptions, RecentEntry, RecentsRegistry, SavedFilter } from "./registry";
 
 export type RecentFile = RecentEntry & { name: string; directory: string };
@@ -172,6 +173,10 @@ export class RecentsService {
     return this.mutateAndSync(async () => ({ entry: await this.registry.add(path) }), target);
   }
 
+  recordDocument(documentId: string, target?: HostTarget): Promise<RecordRecentResult> {
+    return this.mutateAndSync(async () => ({ entry: await this.registry.recordDocument(documentId) }), target);
+  }
+
   recordMany(paths: string[], target?: HostTarget): Promise<RecordRecentsResult> {
     return this.mutateAndSync(async () => ({ added: await this.registry.addMany(paths) }), target);
   }
@@ -180,15 +185,15 @@ export class RecentsService {
     return this.mutateAndSync(async () => { await this.registry.remove(path); return {}; }, target);
   }
 
-  archive(paths: string[], target?: HostTarget): Promise<FolioMutationResult & SyncRecentsResult> {
+  archive(paths: DocumentReference[], target?: HostTarget): Promise<FolioMutationResult & SyncRecentsResult> {
     return this.mutateAndSync(() => this.registry.archive(paths), target);
   }
 
-  restore(paths: string[], target?: HostTarget): Promise<FolioMutationResult & SyncRecentsResult> {
+  restore(paths: DocumentReference[], target?: HostTarget): Promise<FolioMutationResult & SyncRecentsResult> {
     return this.mutateAndSync(() => this.registry.restore(paths), target);
   }
 
-  setPinned(paths: string[], pinned: boolean): Promise<FolioMutationResult> {
+  setPinned(paths: DocumentReference[], pinned: boolean): Promise<FolioMutationResult> {
     return this.queued(async () => {
       const result = await this.registry.setPinned(paths, pinned);
       const snapshot = await this.snapshotNow();
@@ -212,11 +217,11 @@ export class RecentsService {
     });
   }
 
-  delete(paths: string[], target?: HostTarget, onlyWithoutConversation = false): Promise<FolioMutationResult & SyncRecentsResult> {
+  delete(paths: DocumentReference[], target?: HostTarget, onlyWithoutConversation = false): Promise<FolioMutationResult & SyncRecentsResult> {
     return this.mutateAndSync(() => this.registry.delete(paths, onlyWithoutConversation), target);
   }
 
-  deleteConversation(paths: string[]): Promise<void> {
+  deleteConversation(paths: DocumentReference[]): Promise<void> {
     return this.queued(async () => {
       await this.registry.deleteConversation(paths);
       const snapshot = await this.snapshotNow();

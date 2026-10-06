@@ -3,6 +3,7 @@ import { recoveryRoute, recoveryScript, type RecoveryView, type RecoverySurface,
 import { diagnosticText } from "../shared/diagnostics";
 import { createBrowserHost, type BrowserHostAdapter } from "./browser";
 import type { HostAdapter, HostTarget, OpenLocalFileRequest, OpenViewRequest } from "./host-adapter";
+import { assertSharedReaderLink, type ReceiveReaderRequest, type ReceiveReaderResult } from "../remote/reader-receiver";
 import { PROTOCOL_VERSION, SERVICE_ID, type HostCapabilities } from "../shared/contracts";
 
 // First verified release; build and commit are reference metadata, not gates.
@@ -171,7 +172,8 @@ function liveTetherDocumentUrl(raw: unknown, launchUrl: string): boolean {
   if (typeof raw !== "string") return false;
   try {
     const current = new URL(raw);
-    return current.origin === new URL(launchUrl).origin && /^\/s\/[^/]+\/$/.test(current.pathname) && !current.hash;
+    const documentPath = current.protocol === "https:" ? /^\/reader\/d\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\/$/i : /^\/s\/[^/]+\/$/;
+    return current.origin === new URL(launchUrl).origin && documentPath.test(current.pathname) && !current.hash;
   } catch { return false; }
 }
 
@@ -419,6 +421,14 @@ export class CmuxHostAdapter implements HostAdapter {
       };
       return effectiveTarget.workspaceId === target.workspaceId ? place() : this.serialized(effectiveTarget.workspaceId, place);
     });
+  }
+
+  async receiveReader({ reader, target: captured }: ReceiveReaderRequest): Promise<ReceiveReaderResult> {
+    assertSharedReaderLink(reader);
+    if (!supportedBuild(this.build)) throw new CmuxHostError("unsupported_version", this.unsupportedBuildMessage());
+    const target = this.validatedTarget(captured);
+    await this.serialized(target.workspaceId, () => this.openDocument({ url: reader.url, kind: "document", focus: false }, target));
+    return { placement: "opened" };
   }
 
   async openLocalFile(request: OpenLocalFileRequest): Promise<void> {

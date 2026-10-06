@@ -1,5 +1,6 @@
 import type { PluginTheme } from '@getpaseo/plugin';
 import { tetherThemes } from './themes';
+import { sharedReaderSchema, type Intent } from '../shared/contracts';
 
 declare const localStorage: { getItem(key: string): string | null; setItem(key: string, value: string): void };
 declare const crypto: { randomUUID(): string };
@@ -37,6 +38,13 @@ export function themedLaunch(value: string): string {
   if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || !['/launch', '/recents/launch'].includes(url.pathname)) throw new Error('Invalid Tether launch');
   url.searchParams.set('themeClient', themeClientId());
   return url.href;
+}
+
+export function intentBrowserUrl(intent: Intent): string {
+  if (!intent.sharedReader) return themedLaunch(intent.url);
+  const reader = sharedReaderSchema.parse(intent.sharedReader);
+  if (reader.url !== intent.url) throw new Error('Mismatched shared reader address');
+  return reader.url;
 }
 
 const reports = new Map<string, { theme: string | null; promise: Promise<unknown>; settled: boolean }>();

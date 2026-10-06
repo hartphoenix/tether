@@ -1,5 +1,5 @@
 import { useThemeReport } from "./use-theme-report";
-import { themedLaunch } from "./theme-sync";
+import { themedLaunch, intentBrowserUrl } from "./theme-sync";
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useTetherSettings } from "./use-tether-settings";
@@ -66,7 +66,7 @@ export function FolioPanel(props: PluginWorkspacePanelProps) {
   useEffect(() => {
     if (!openBrowser) return;
     return lendOpener(
-      intent => openBrowser({ url: themedLaunch(intent.url), workspaceId: intent.workspaceId }),
+      intent => openBrowser({ url: intentBrowserUrl(intent), workspaceId: intent.workspaceId }),
       intent => { void ack({ ids: [intent.id], generation: intent.generation }).catch(() => {}); },
     );
   }, [openBrowser, ack]);

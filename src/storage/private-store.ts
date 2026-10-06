@@ -12,6 +12,8 @@ import {
 
 export type PrivateDocumentRow = {
   id: string;
+  machine_id: string;
+  location_version: number;
   path: string;
   title: string | null;
   added_at: number;
@@ -24,6 +26,9 @@ export type PrivateDocumentRow = {
   archived_at: number | null;
   expires_at: number | null;
 };
+
+/** A string is a path on this profile's original local file machine. */
+export type DocumentReference = string | { documentId: string };
 
 export type MutationReceipt = {
   operationId: string;
@@ -66,6 +71,7 @@ type MutationRow = { payload_hash: string; result_json: string };
 export class PrivateStore {
   readonly db: Database;
   readonly path: string;
+  readonly localMachineId: string;
 
   constructor(path = ":memory:") {
     this.path = path;
@@ -73,10 +79,22 @@ export class PrivateStore {
     this.db = new Database(path, { create: true, strict: true });
     this.db.exec("PRAGMA foreign_keys = ON");
     if (path !== ":memory:") this.db.exec("PRAGMA journal_mode = WAL");
+    const legacyDocuments = (this.db.query("PRAGMA table_info(documents)").all() as { name: string }[]);
+    if (legacyDocuments.length && !legacyDocuments.some(column => column.name === "machine_id") && path !== ":memory:") {
+      const backup = `${path}.before-machines-${Date.now()}-${crypto.randomUUID()}.sqlite`;
+      this.db.query("VACUUM INTO ?").run(backup);
+      chmodSync(backup, 0o600);
+    }
+    this.db.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    this.db.query("INSERT OR IGNORE INTO settings(key,value) VALUES ('local_machine_id',?)").run(crypto.randomUUID());
+    this.localMachineId = (this.db.query("SELECT value FROM settings WHERE key='local_machine_id'").get() as {value:string}).value;
+    if (!/^[a-f0-9-]{36}$/i.test(this.localMachineId)) throw new Error("Invalid local machine identity.");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS documents (
         id TEXT PRIMARY KEY,
-        path TEXT NOT NULL UNIQUE,
+        path TEXT NOT NULL,
+        machine_id TEXT NOT NULL DEFAULT '${this.localMachineId}',
+        location_version INTEGER NOT NULL DEFAULT 1,
         title TEXT,
         added_at INTEGER NOT NULL,
         opened_at INTEGER NOT NULL,
@@ -86,7 +104,8 @@ export class PrivateStore {
         active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
         pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
         archived_at INTEGER,
-        expires_at INTEGER
+        expires_at INTEGER,
+        UNIQUE(machine_id,path)
       );
       CREATE TABLE IF NOT EXISTS annotation_events (
         document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -143,6 +162,26 @@ export class PrivateStore {
         PRIMARY KEY (document_id, consumer)
       );
     `);
+    if (legacyDocuments.length && !legacyDocuments.some(column => column.name === "machine_id")) {
+      // Preserve child foreign keys and UUIDs; never rename the old parent table.
+      this.db.exec("PRAGMA foreign_keys = OFF");
+      try {
+        this.db.transaction(() => {
+          this.db.exec(`CREATE TABLE documents_next (
+            id TEXT PRIMARY KEY, path TEXT NOT NULL,
+            machine_id TEXT NOT NULL DEFAULT '${this.localMachineId}', location_version INTEGER NOT NULL DEFAULT 1,
+            title TEXT, added_at INTEGER NOT NULL, opened_at INTEGER NOT NULL, conversation_at INTEGER,
+            body_mtime_ms REAL, created_at_ms REAL, active INTEGER NOT NULL DEFAULT 1 CHECK(active IN(0,1)),
+            pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN(0,1)), archived_at INTEGER, expires_at INTEGER,
+            UNIQUE(machine_id,path));
+            INSERT INTO documents_next(id,path,title,added_at,opened_at,conversation_at,body_mtime_ms,created_at_ms,active,pinned,archived_at,expires_at)
+              SELECT id,path,title,added_at,opened_at,conversation_at,body_mtime_ms,created_at_ms,active,pinned,archived_at,expires_at FROM documents;
+            DROP TABLE documents;
+            ALTER TABLE documents_next RENAME TO documents;`);
+          if (this.db.query("PRAGMA foreign_key_check").all().length) throw new Error("Machine identity migration failed its foreign key check.");
+        }).immediate();
+      } finally { this.db.exec("PRAGMA foreign_keys = ON"); }
+    }
     const columns = this.db.query("PRAGMA table_info(acknowledgements)").all() as { name: string }[];
     if (!columns.some((column) => column.name === "observation_order")) this.db.exec("ALTER TABLE acknowledgements ADD COLUMN observation_order INTEGER NOT NULL DEFAULT 0");
     this.db.exec(`CREATE TABLE IF NOT EXISTS observation_clock (id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
@@ -162,18 +201,30 @@ export class PrivateStore {
   close(): void { this.db.close(); }
 
   ensureDocument(path: string, now = Date.now()): PrivateDocumentRow {
+    return this.ensureLocation(this.localMachineId, path, now);
+  }
+
+  ensureLocation(machineId: string, path: string, now = Date.now(), id: string = crypto.randomUUID()): PrivateDocumentRow {
     this.db.query(`INSERT OR IGNORE INTO documents
-      (id,path,title,added_at,opened_at,active,pinned)
-      VALUES ($id,$path,NULL,$now,$now,1,0)`).run({ id: crypto.randomUUID(), path, now });
-    return this.documentForPath(path)!;
+      (id,machine_id,path,title,added_at,opened_at,active,pinned)
+      VALUES ($id,$machineId,$path,NULL,$now,$now,1,0)`).run({ id, machineId, path, now });
+    return this.documentForPath(path, machineId)!;
   }
 
-  documentForPath(path: string): PrivateDocumentRow | null {
-    return this.db.query("SELECT * FROM documents WHERE path = ?").get(path) as PrivateDocumentRow | null;
+  documentForPath(path: string, machineId = this.localMachineId): PrivateDocumentRow | null {
+    return this.db.query("SELECT * FROM documents WHERE machine_id=? AND path=?").get(machineId, path) as PrivateDocumentRow | null;
   }
 
-  private requireDocument(path: string): PrivateDocumentRow {
-    const document = this.documentForPath(path);
+  documentById(id: string): PrivateDocumentRow | null {
+    return this.db.query("SELECT * FROM documents WHERE id=?").get(id) as PrivateDocumentRow | null;
+  }
+
+  document(reference: DocumentReference): PrivateDocumentRow | null {
+    return typeof reference === "string" ? this.documentForPath(reference) : this.documentById(reference.documentId);
+  }
+
+  private requireDocument(path: DocumentReference): PrivateDocumentRow {
+    const document = this.document(path);
     if (!document) throw new PrivateStoreDocumentNotFoundError();
     return document;
   }
@@ -182,14 +233,14 @@ export class PrivateStore {
     return this.db.query("SELECT * FROM documents ORDER BY opened_at DESC, path").all() as PrivateDocumentRow[];
   }
 
-  events(path: string): AnnotationEvent[] {
-    const document = this.documentForPath(path);
+  events(path: DocumentReference): AnnotationEvent[] {
+    const document = this.document(path);
     if (!document) return [];
     return (this.db.query("SELECT payload_json FROM annotation_events WHERE document_id = ? ORDER BY seq").all(document.id) as EventRow[])
       .map((row) => JSON.parse(row.payload_json) as AnnotationEvent);
   }
 
-  ledger(path: string, baseBodyRevision: string): AnnotationLedger {
+  ledger(path: DocumentReference, baseBodyRevision: string): AnnotationLedger {
     const document = this.requireDocument(path);
     return createAnnotationLedger({
       type: "ledger",
@@ -199,12 +250,12 @@ export class PrivateStore {
     }, this.events(path));
   }
 
-  conversationRevision(path: string): string {
+  conversationRevision(path: DocumentReference): string {
     return ledgerRevision(JSON.stringify(this.events(path)));
   }
 
-  mutationReceipt(path: string, operationId: string, payloadHash: string): MutationReceipt | null {
-    const document = this.documentForPath(path);
+  mutationReceipt(path: DocumentReference, operationId: string, payloadHash: string): MutationReceipt | null {
+    const document = this.document(path);
     if (!document) return null;
     const prior = this.db.query("SELECT payload_hash,result_json FROM mutations WHERE document_id = ? AND operation_id = ?")
       .get(document.id, operationId) as MutationRow | null;
@@ -214,14 +265,14 @@ export class PrivateStore {
   }
 
   /** Receipts remain available for the lifetime of this conversation. */
-  lookupMutation(path: string, operationId: string): { operationId: string; outcome: "applied" | "outcome_unknown"; receipt: MutationReceipt | null } {
+  lookupMutation(path: DocumentReference, operationId: string): { operationId: string; outcome: "applied" | "outcome_unknown"; receipt: MutationReceipt | null } {
     const document = this.requireDocument(path);
     const row = this.db.query("SELECT result_json FROM mutations WHERE document_id=? AND operation_id=?").get(document.id,operationId) as {result_json:string}|null;
     return { operationId, outcome: row ? "applied" : "outcome_unknown", receipt: row ? JSON.parse(row.result_json) as MutationReceipt : null };
   }
 
   appendEvent(input: {
-    path: string;
+    path: DocumentReference;
     event: AnnotationEvent;
     operationId: string;
     payloadHash: string;
@@ -267,7 +318,7 @@ export class PrivateStore {
     return transact.immediate();
   }
 
-  replaceEvents(path: string, events: AnnotationEvent[], now = Date.now()): void {
+  replaceEvents(path: DocumentReference, events: AnnotationEvent[], now = Date.now()): void {
     const document = this.requireDocument(path);
     createAnnotationLedger({
       type: "ledger", documentId: document.id,
@@ -291,7 +342,7 @@ export class PrivateStore {
     transact.immediate();
   }
 
-  observe(path: string, consumer: string, throughSequence: number, bodyRevision: string, now = Date.now()): ReviewObservation {
+  observe(path: DocumentReference, consumer: string, throughSequence: number, bodyRevision: string, now = Date.now()): ReviewObservation {
     const document = this.requireDocument(path);
     const cursor = `r-${crypto.randomUUID()}`;
     this.db.query("DELETE FROM review_observations WHERE created_at < ?").run(now - REVIEW_CURSOR_LIFETIME_MS);
@@ -302,24 +353,24 @@ export class PrivateStore {
     return { cursor, documentId: document.id, consumer, throughSequence, bodyRevision, observationOrder: order.value };
   }
 
-  observation(path: string, consumer: string, cursor: string, now = Date.now()): ReviewObservation {
-    const document = this.documentForPath(path);
+  observation(path: DocumentReference, consumer: string, cursor: string, now = Date.now()): ReviewObservation {
+    const document = this.document(path);
     const row = document && this.db.query("SELECT * FROM review_observations WHERE cursor = ? AND document_id = ? AND consumer = ?")
       .get(cursor, document.id, consumer) as { cursor: string; document_id: string; consumer: string; through_seq: number; body_revision: string; created_at:number; observation_order:number } | null;
     if (!row || row.created_at < now - REVIEW_CURSOR_LIFETIME_MS) throw new PrivateStoreConflictError("The reviewed cursor is invalid or expired; run pending again.");
     return { cursor: row.cursor, documentId: row.document_id, consumer: row.consumer, throughSequence: row.through_seq, bodyRevision: row.body_revision, observationOrder:row.observation_order };
   }
 
-  acknowledgement(path: string, consumer: string): Record<string, unknown> | null {
-    const document = this.documentForPath(path);
+  acknowledgement(path: DocumentReference, consumer: string): Record<string, unknown> | null {
+    const document = this.document(path);
     if (!document) return null;
     const row = this.db.query("SELECT consumer,actor,cursor,through_seq,body_revision,updated_at FROM acknowledgements WHERE document_id = ? AND consumer = ?")
       .get(document.id, consumer) as Record<string, unknown> | null;
     return row ? { consumer: row.consumer, actor: row.actor, cursor: row.cursor, throughSeq: row.through_seq, bodyRevision: row.body_revision, updatedAt: row.updated_at } : null;
   }
 
-  acknowledgements(path: string): Record<string, unknown>[] {
-    const document = this.documentForPath(path);
+  acknowledgements(path: DocumentReference): Record<string, unknown>[] {
+    const document = this.document(path);
     if (!document) return [];
     return (this.db.query("SELECT consumer,actor,cursor,through_seq,body_revision,updated_at FROM acknowledgements WHERE document_id = ? ORDER BY consumer")
       .all(document.id) as Array<Record<string, unknown>>).map((row) => ({
@@ -328,9 +379,9 @@ export class PrivateStore {
       }));
   }
 
-  acknowledge(path: string, consumer: string, actor: string, cursor: string, now = Date.now()): ReviewObservation {
+  acknowledge(path: DocumentReference, consumer: string, actor: string, cursor: string, now = Date.now()): ReviewObservation {
     const observation = this.observation(path, consumer, cursor, now);
-    const document = this.documentForPath(path)!;
+    const document = this.document(path)!;
     const prior = this.acknowledgement(path, consumer) as { throughSeq?: number } | null;
     if ((prior?.throughSeq ?? 0) > observation.throughSequence) throw new PrivateStoreConflictError("A reviewed cursor cannot move acknowledgement backwards.");
     const priorOrder = this.db.query("SELECT observation_order FROM acknowledgements WHERE document_id=? AND consumer=?").get(document.id,consumer) as {observation_order:number}|null;
@@ -343,7 +394,7 @@ export class PrivateStore {
   }
 
   acknowledgeWithReceipt(input: {
-    path: string; consumer: string; actor: string; cursor: string;
+    path: DocumentReference; consumer: string; actor: string; cursor: string;
     operationId: string; payloadHash: string; now?: number;
   }): MutationReceipt {
     const transact = this.db.transaction((): MutationReceipt => {
@@ -363,16 +414,35 @@ export class PrivateStore {
     return transact.immediate();
   }
 
-  locate(path: string, target: string): PrivateDocumentRow {
-    const source = this.documentForPath(path);
+  locate(path: DocumentReference, target: string): PrivateDocumentRow {
+    const source = this.document(path);
     if (!source) throw new Error("Conversation not found.");
-    if (this.documentForPath(target)) throw new PrivateStoreConflictError("The destination already has a Tether record.");
-    this.db.query("UPDATE documents SET path = ? WHERE id = ?").run(target, source.id);
-    return this.documentForPath(target)!;
+    if (this.documentForPath(target, source.machine_id)) throw new PrivateStoreConflictError("The destination already has a Tether record.");
+    return this.relinkLocation(source.id, source.location_version, source.machine_id, target);
   }
 
-  deleteConversation(path: string): boolean {
-    const document = this.documentForPath(path);
+  relinkLocation(documentId: string, expectedVersion: number, machineId: string, path: string): PrivateDocumentRow {
+    return this.db.transaction(() => {
+      const source = this.documentById(documentId);
+      if (!source || source.location_version !== expectedVersion) throw new PrivateStoreConflictError("The document location changed; reopen it.");
+      const destination = this.documentForPath(path, machineId);
+      if (destination && destination.id !== documentId) throw new PrivateStoreConflictError("The destination already has a Tether record.");
+      if (source.machine_id === machineId && source.path === path) return source;
+      this.db.query("UPDATE documents SET machine_id=?,path=?,location_version=location_version+1,title=NULL,body_mtime_ms=NULL,created_at_ms=NULL WHERE id=? AND location_version=?")
+        .run(machineId,path,documentId,expectedVersion);
+      return this.documentById(documentId)!;
+    }).immediate();
+  }
+
+  reserveLocationVersion(documentId: string, expectedVersion: number): PrivateDocumentRow {
+    const row = this.db.query("UPDATE documents SET location_version=location_version+1 WHERE id=? AND location_version=? RETURNING *")
+      .get(documentId,expectedVersion) as PrivateDocumentRow|null;
+    if (!row) throw new PrivateStoreConflictError("The document location changed; reopen it.");
+    return row;
+  }
+
+  deleteConversation(path: DocumentReference): boolean {
+    const document = this.document(path);
     if (!document) return false;
     const transact = this.db.transaction(() => {
       this.db.query("DELETE FROM mutations WHERE document_id = ?").run(document.id);

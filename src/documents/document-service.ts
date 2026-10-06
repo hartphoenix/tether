@@ -1,26 +1,28 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, open, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { realpath, stat } from "node:fs/promises";
+import { basename, dirname, extname, resolve } from "node:path";
 import { bodyRevision, deriveAnnotationState, validateAnnotationEvent, type AnnotationAnchor, type AnnotationEvent, type DerivedThread, type PendingAnnotation, type ReviewEvent, type Revision } from "../core/index";
 import type { DocumentSnapshot, SerializableAnnotationState } from "../shared/contracts";
-import { PrivateStore, PrivateStoreConflictError, type MutationReceipt } from "../storage/index";
+import { PrivateStore, PrivateStoreConflictError, type MutationReceipt, type DocumentReference } from "../storage/index";
 import { RealPathMutationQueue } from "./mutation-queue";
-import { directoryIdentity, readSafe, syncDirectory, type DirectoryIdentity } from "./safe-files";
+import { readSafe } from "./safe-files";
 import { withPathLock } from "./path-lock";
 import { DocumentMoves } from "./document-move";
 import { importPackageItems, type PackageImportResult } from "./package-import";
+import { AgentReads, type AgentPageOptions } from "./agent-reads";
+import { LocalFileAccess, FileAccessError, type FileAccess, type FileLocation } from "./file-access";
 import { INPUT_LIMITS, invalidRequest } from "../shared/control-input";
 
-export type DocumentSession = { sessionId: string; id: string; path: string; realPath: string };
+export type DocumentSession = { sessionId: string; id: string; path: string; realPath: string; documentId: string; machineId: string; locationVersion: number };
 export type DocumentGrant = DocumentSession;
 export type DocumentServiceOptions = {
   now?: () => number; queue?: RealPathMutationQueue; readText?: (path: string) => Promise<string>;
-  store?: PrivateStore; storePath?: string;
+  store?: PrivateStore; storePath?: string; fileAccess?: Map<string, FileAccess>;
   /** Test seam for an external writer landing after the temporary file is complete. */
   beforeBodyReplace?: (path: string) => void | Promise<void>;
 };
 export type AnnotationEventInput = { type: AnnotationEvent["type"]; actor: string; body?: string; anchor?: AnnotationAnchor; threadId?: string; targetId?: string; throughSeq?: number; bodyRevision?: string; [key: string]: unknown };
-export type SaveBodyInput = { session?: DocumentSession | string; grant?: DocumentGrant | string; body?: string; content?: string; expectedBodyRevision: string };
+export type SaveBodyInput = { expectedLocationVersion?: number; session?: DocumentSession | string; grant?: DocumentGrant | string; body?: string; content?: string; expectedBodyRevision: string };
 export type SaveBodyArguments = SaveBodyInput | [DocumentSession | string, string, string];
 export type AppendEventInput = {
   session?: DocumentSession | string; grant?: DocumentGrant | string; event?: AnnotationEventInput;
@@ -47,10 +49,10 @@ export type PortableThread = {
 };
 export type ReviewPackage = { format: "tether-review"; version: 1; documents: Array<{ name: string; body: string; threads: PortableThread[] }> };
 
-export class DocumentAccessError extends Error { constructor(message = "The document session is not authorized for this file.") { super(message); this.name = "DocumentAccessError"; } }
-export class DocumentConflictError extends Error { constructor(message = "The document changed before this mutation was applied.", readonly details?: unknown) { super(message); this.name = "DocumentConflictError"; } }
-export class DocumentReadOnlyError extends Error { readonly ledgerError?: string; constructor(message = "This Markdown document is read-only.", ledgerError?: string) { super(message); this.name = "DocumentReadOnlyError"; this.ledgerError = ledgerError; } }
-export class DocumentNotFoundError extends Error { constructor(message = "The Markdown document does not exist.") { super(message); this.name = "DocumentNotFoundError"; } }
+export class DocumentAccessError extends Error { readonly code = "document_unauthorized"; readonly status = 403; constructor(message = "The document session is not authorized for this file.") { super(message); this.name = "DocumentAccessError"; } }
+export class DocumentConflictError extends Error { readonly code = "conflict"; readonly status = 409; constructor(message = "The document changed before this mutation was applied.", readonly details?: unknown) { super(message); this.name = "DocumentConflictError"; } }
+export class DocumentReadOnlyError extends Error { readonly code = "ledger_invalid"; readonly status = 422; readonly ledgerError?: string; constructor(message = "This Markdown document is read-only.", ledgerError?: string) { super(message); this.name = "DocumentReadOnlyError"; this.ledgerError = ledgerError; } }
+export class DocumentNotFoundError extends Error { readonly code = "document_not_found"; readonly status = 404; constructor(message = "The Markdown document does not exist.") { super(message); this.name = "DocumentNotFoundError"; } }
 
 function isMarkdown(path: string): boolean { return [".md", ".markdown"].includes(extname(path).toLowerCase()); }
 function inputSession(input: { session?: DocumentSession | string; grant?: DocumentGrant | string }): DocumentSession | string {
@@ -72,120 +74,174 @@ function fingerprint(value: unknown): string {
     ? Object.fromEntries(Object.entries(input as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, canonical(child)])) : input;
   return createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 }
-async function atomicReplace(path: string, source: string, expectedSource: string, readText: (path: string) => Promise<string>, beforeReplace?: (path: string) => void | Promise<void>): Promise<void> {
-  const info = await stat(path);
-  const temporary = join(dirname(path), `.${basename(path)}.tether-${process.pid}-${crypto.randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, source, { encoding: "utf8", mode: info.mode & 0o777 });
-    await chmod(temporary, info.mode & 0o777);
-    const temporaryHandle = await open(temporary, "r");
-    try { await temporaryHandle.sync(); } finally { await temporaryHandle.close(); }
-    await beforeReplace?.(path);
-    let canonical: string;
-    let current: string;
-    try { [canonical, current] = await Promise.all([realpath(path), readText(path)]); }
-    catch { throw new DocumentConflictError("The document changed before this save was applied.", { outcome: "not_applied" }); }
-    if (canonical !== path || current !== expectedSource) throw new DocumentConflictError("The document changed before this save was applied.", { outcome: "not_applied" });
-    await rename(temporary, path);
-    await syncDirectory(dirname(path));
-    await chmod(path, info.mode & 0o777).catch(() => {});
-  } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
-}
 
 export class DocumentService {
   private readonly now: () => number;
   private readonly readText: (path: string) => Promise<string>;
-  private readonly beforeBodyReplace?: (path: string) => void | Promise<void>;
+  private readonly adapters = new Map<string, FileAccess>();
+  private readonly relocating = new Set<string>();
   readonly queue: RealPathMutationQueue;
   readonly store: PrivateStore;
   private readonly sessions = new Map<string, DocumentSession>();
-  private readonly grantedPaths = new Set<string>();
-  private readonly parents = new Map<string, DirectoryIdentity>();
   private readonly moves: DocumentMoves;
   private recovery?: Promise<void>;
 
   constructor(options: DocumentServiceOptions = {}) {
     this.now = options.now ?? Date.now;
-    this.readText = options.readText ?? ((path) => readSafe(path, this.parents.get(path)));
-    this.beforeBodyReplace = options.beforeBodyReplace;
+    this.readText = options.readText ?? readSafe;
+
     this.queue = options.queue ?? new RealPathMutationQueue();
     this.store = options.store ?? new PrivateStore(options.storePath);
     this.moves = new DocumentMoves(this.store);
+    this.adapters.set(this.store.localMachineId, new LocalFileAccess({ readText: options.readText, beforeBodyReplace: options.beforeBodyReplace }));
+    for (const [machineId, adapter] of options.fileAccess ?? []) this.adapters.set(machineId, adapter);
   }
   recoverMoves(): Promise<void> { return this.recovery ??= this.moves.recover(); }
-  async open(requestedPath: string): Promise<DocumentSession> {
-    await this.recoverMoves();
-    if (typeof requestedPath !== "string" || !requestedPath.trim()) throw new DocumentNotFoundError("A Markdown path is required.");
-    const candidate = resolve(requestedPath);
-    if (!isMarkdown(candidate)) throw new DocumentNotFoundError("Only .md and .markdown files can be opened.");
-    let canonical: string;
-    try { const info = await stat(candidate); if (!info.isFile()) throw new Error(); canonical = await realpath(candidate); } catch { throw new DocumentNotFoundError(); }
-    return this.queue.run(canonical, async () => {
-      const parent = await directoryIdentity(canonical);
-      const previous = this.parents.get(canonical);
-      if (previous && (previous.dev !== parent.dev || previous.ino !== parent.ino)) this.revokePath(canonical);
-      this.parents.set(canonical, parent);
-      this.store.ensureDocument(canonical, this.now());
-      const sessionId = crypto.randomUUID();
-      const session = { sessionId, id: sessionId, path: canonical, realPath: canonical };
-      this.sessions.set(sessionId, session); this.grantedPaths.add(canonical);
-      return session;
+  registerFileAccess(machineId: string, adapter: FileAccess): void { this.adapters.set(machineId, adapter); }
+  fileAccess(machineId: string): FileAccess {
+    const adapter = this.adapters.get(machineId);
+    if (!adapter) throw new FileAccessError("connector_disconnected", "The file machine's connector is disconnected.");
+    return adapter;
+  }
+  async open(requestedPath: string, options: {restoreArchived?: boolean; existingReader?: boolean} = {}): Promise<DocumentSession> {
+    return this.openLocation(this.store.localMachineId, requestedPath, options);
+  }
+  async openLocation(machineId: string, path: string, options: {restoreArchived?: boolean; existingReader?: boolean} = {}): Promise<DocumentSession> {
+    if (machineId === this.store.localMachineId) await this.recoverMoves();
+    const adapter = this.fileAccess(machineId);
+    const inspection = await adapter.inspect(path).catch(error => {
+      if (machineId === this.store.localMachineId && (error as FileAccessError).code === "file_missing") throw new DocumentNotFoundError();
+      throw error;
+    });
+    return this.queue.run(`register:${machineId}:${inspection.path}`, async () => {
+      const existing = this.store.documentForPath(inspection.path,machineId), documentId = existing?.id ?? crypto.randomUUID();
+      if (existing && !existing.active && !options.restoreArchived && !options.existingReader) throw new FileAccessError("restore_required", "This document has been archived. Restore it?", 409, {documentId});
+      await adapter.bind({documentId,machineId,path:inspection.path,version:existing?.location_version ?? 1});
+      const document = this.store.ensureLocation(machineId,inspection.path,this.now(),documentId);
+      this.store.db.query("UPDATE documents SET body_mtime_ms=?,created_at_ms=COALESCE(created_at_ms,?) WHERE id=?")
+        .run(inspection.mtimeMs,inspection.createdAtMs,document.id);
+      return this.openById(document.id,options);
     });
   }
+
+  async openById(documentId: string, options: {restoreArchived?: boolean; existingReader?: boolean} = {}): Promise<DocumentSession> {
+    if (this.relocating.has(documentId)) throw new FileAccessError("location_changing", "The document location is changing; retry after it finishes.", 409);
+    const document = this.store.documentById(documentId);
+    if (!document) throw new DocumentNotFoundError("The document record no longer exists.");
+    if (!document.active) {
+      if (!options.restoreArchived && !options.existingReader) throw new FileAccessError("restore_required", "This document has been archived. Restore it?", 409, {documentId});
+      if (options.restoreArchived) this.store.db.query("UPDATE documents SET active=1,archived_at=NULL,expires_at=NULL WHERE id=?").run(documentId);
+    }
+    const sessionId = crypto.randomUUID();
+    const session = { sessionId, id: sessionId, path: document.path, realPath: document.path,
+      documentId, machineId: document.machine_id, locationVersion: document.location_version };
+    this.sessions.set(sessionId, session);
+    return session;
+  }
+  grantById(documentId: string, options: {restoreArchived?: boolean; existingReader?: boolean} = {}): Promise<DocumentSession> { return this.openById(documentId, options); }
   grant(path: string): Promise<DocumentSession> { return this.open(path); }
   close(session: DocumentSession | string): void {
     const id = typeof session === "string" ? session : session.sessionId;
     const current = this.sessions.get(id); if (!current) return;
     this.sessions.delete(id);
-    if (![...this.sessions.values()].some((entry) => entry.realPath === current.realPath)) this.grantedPaths.delete(current.realPath);
   }
-  private async canonicalFor(session: DocumentSession | string): Promise<string> {
-    if (typeof session !== "string") {
-      const current = this.sessions.get(session.sessionId ?? session.id);
-      const requested = session.realPath ?? session.path;
-      if (!current || current.realPath !== requested || current.path !== session.path) throw new DocumentAccessError();
-      return current.realPath;
+  private async authorized(session: DocumentSession | string): Promise<DocumentSession> {
+    let current: DocumentSession | undefined;
+    if (typeof session === "string") {
+      let canonical: string;
+      try { canonical = await realpath(resolve(session)); } catch { throw new DocumentAccessError(); }
+      current = [...this.sessions.values()].find(entry => entry.machineId === this.store.localMachineId && entry.path === canonical);
+    } else {
+      current = this.sessions.get(session.sessionId ?? session.id);
+      if (!current || current.realPath !== session.realPath || current.path !== session.path || current.documentId !== session.documentId || current.machineId !== session.machineId || current.locationVersion !== session.locationVersion) throw new DocumentAccessError();
     }
-    let canonical: string; try { canonical = await realpath(resolve(session)); } catch { throw new DocumentAccessError(); }
-    if (!this.grantedPaths.has(canonical)) throw new DocumentAccessError();
-    return canonical;
+    if (!current) throw new DocumentAccessError();
+    this.assertAuthorized(current, current.path);
+    return current;
   }
   private assertAuthorized(session: DocumentSession | string, path: string): void {
-    if (typeof session === "string") {
-      if (!this.grantedPaths.has(path)) throw new DocumentAccessError();
-      return;
-    }
-    const current = this.sessions.get(session.sessionId ?? session.id);
-    if (!current || current.realPath !== path || current.path !== path) throw new DocumentAccessError();
+    const current = typeof session === "string" ? [...this.sessions.values()].find(entry => entry.machineId === this.store.localMachineId && entry.path === path) : this.sessions.get(session.sessionId ?? session.id);
+    if (!current || current.path !== path) throw new DocumentAccessError();
+    if (this.relocating.has(current.documentId)) throw new FileAccessError("location_changing", "The document location is changing; retry after it finishes.", 409);
+    const record = this.store.documentById(current.documentId);
+    if (!record) throw new DocumentAccessError("The private document record was deleted.");
+    if (record.machine_id !== current.machineId || record.path !== current.path || record.location_version !== current.locationVersion) throw new FileAccessError("stale_location", "The document location changed; reopen it.", 409);
   }
-  private revokePath(path: string): void {
-    for (const [id, session] of this.sessions) if (session.realPath === path) this.sessions.delete(id);
-    this.grantedPaths.delete(path);
+  async location(session: DocumentSession | string): Promise<FileLocation> {
+    const current = await this.authorized(session);
+    return { documentId: current.documentId, machineId: current.machineId, path: current.path, version: current.locationVersion };
   }
-  private async readSource(session: DocumentSession | string): Promise<{ path: string; source: string }> {
-    const path = await this.canonicalFor(session);
-    let source: string;
-    try { source = await this.readText(path); } catch (cause) { if ((cause as NodeJS.ErrnoException).code === "ENOENT") throw new DocumentNotFoundError(); throw cause; }
-    this.assertAuthorized(session, path);
-    if (!this.store.documentForPath(path)) throw new DocumentAccessError("The private document record was deleted.");
-    return { path, source };
+  private async readSource(session: DocumentSession | string): Promise<{ path: string; source: string; reference: DocumentReference }> {
+    const location = await this.location(session), adapter = this.fileAccess(location.machineId);
+    await adapter.bind(location);
+    const {source} = await adapter.read(location);
+    this.assertAuthorized(session, location.path);
+    return {path: location.path, source, reference: {documentId:location.documentId}};
   }
-  private annotationState(path: string, revision: string): SerializableAnnotationState {
+  private annotationState(path: DocumentReference, revision: string): SerializableAnnotationState {
     const state = deriveAnnotationState(this.store.ledger(path, revision));
     return { header: state.header, events: state.events, threads: state.threads, acknowledgements: this.store.acknowledgements(path), maxSequence: state.maxSequence, unresolvedCount: state.unresolvedCount };
   }
-  private snapshot(path: string, source: string): DocumentSnapshot {
-    if (!this.store.documentForPath(path)) throw new DocumentAccessError("The private document record was deleted.");
+  private snapshot(reference: DocumentReference, source: string): DocumentSnapshot {
+    const document = this.store.document(reference);
+    if (!document) throw new DocumentAccessError("The private document record was deleted.");
     const revision = bodyRevision(source);
-    return { path, body: source, content: source, bodyRevision: revision, revision, ledgerRevision: this.store.conversationRevision(path) as Revision, annotations: this.annotationState(path, revision) };
+    return { documentId:document.id,machineId:document.machine_id,locationVersion:document.location_version,path: document.path, body: source, content: source, bodyRevision: revision, revision, ledgerRevision: this.store.conversationRevision(reference) as Revision, annotations: this.annotationState(reference, revision) };
+  }
+  async barrier(session: DocumentSession | string): Promise<void> {
+    const location = await this.location(session), adapter = this.fileAccess(location.machineId);
+    await adapter.bind(location); await adapter.barrier(location); this.assertAuthorized(session, location.path);
+  }
+  async image(session: DocumentSession | string, source: string) {
+    const location = await this.location(session), adapter = this.fileAccess(location.machineId);
+    await adapter.bind(location); const image = await adapter.image(location, source); this.assertAuthorized(session, location.path); return image;
+  }
+  async resolveLink(session: DocumentSession | string, target: string, format: "wikilink" | "markdown" = "wikilink", options: {restoreArchived?: boolean; existingReader?: boolean} = {}): Promise<DocumentSession> {
+    const location = await this.location(session), adapter = this.fileAccess(location.machineId);
+    await adapter.bind(location); const resolved = await adapter.resolveLink(location, target, format); this.assertAuthorized(session, location.path);
+    return this.openLocation(location.machineId, resolved.path, options);
+  }
+  /** Historical reviews do not imply that a current body or anchor context was read. */
+  history(documentId: string, options: AgentPageOptions & {threadId?:string} = {}) {
+    const document = this.store.documentById(documentId);
+    if (!document) throw new DocumentNotFoundError("The document record no longer exists.");
+    const reads = new AgentReads(this.store), reference = {documentId};
+    const page = options.threadId ? reads.thread(reference,null,options.threadId,options) : reads.threads(reference,null,options);
+    return {...page, machineId:document.machine_id, anchorContext:"unavailable" as const};
+  }
+  async relink(documentId: string, machineId: string, path: string): Promise<DocumentSession> {
+    return this.queue.run(documentId, async () => {
+      const record = this.store.documentById(documentId);
+      if (!record) throw new DocumentNotFoundError("The document record no longer exists.");
+      const target = await this.fileAccess(machineId).inspect(path), collision = this.store.documentForPath(target.path, machineId);
+      if (collision && collision.id !== documentId) throw new DocumentConflictError("The destination already has a Tether record.");
+      if (record.machine_id === machineId && record.path === target.path) return this.openById(documentId,{existingReader:true});
+      const old = {documentId, machineId:record.machine_id, path:record.path, version:record.location_version};
+      const adapter = this.fileAccess(record.machine_id);
+      this.relocating.add(documentId);
+      try {
+        // A crash after fencing must leave an unfenced generation at the original
+        // location. New admissions wait until this operation has committed or failed.
+        const reserved = this.store.reserveLocationVersion(documentId,record.location_version);
+        await adapter.fence(old);
+        this.store.relinkLocation(documentId,reserved.location_version,machineId,target.path);
+      } catch (error) {
+        const details = {outcome:"not_applied",locationChanged:false,documentId,reopenRequired:true};
+        if (error instanceof PrivateStoreConflictError) throw new DocumentConflictError(error.message,details);
+        if (error instanceof FileAccessError) throw new FileAccessError(error.code,error.message,error.status,{...(typeof error.details === "object" ? error.details : {}),...details});
+        throw error;
+      }
+      finally { this.relocating.delete(documentId); }
+      return this.openById(documentId,{existingReader:true});
+    });
   }
   /** Revision probes skip annotation derivation but retain every access check. */
   async revisions(session: DocumentSession | string) {
-    const { path, source } = await this.readSource(session);
-    return { path, bodyRevision: bodyRevision(source), ledgerRevision: this.store.conversationRevision(path) };
+    const { path, source, reference } = await this.readSource(session);
+    return { path, bodyRevision: bodyRevision(source), ledgerRevision: this.store.conversationRevision(reference) };
   }
   async read(session: DocumentSession | string): Promise<DocumentSnapshot> { return (await this.readExactSnapshot(session)).document; }
-  async readExactSnapshot(session: DocumentSession | string): Promise<ExactDocumentRead> { const value = await this.readSource(session); return { document: this.snapshot(value.path, value.source), source: value.source }; }
+  async readExactSnapshot(session: DocumentSession | string): Promise<ExactDocumentRead> { const value = await this.readSource(session); return { document: this.snapshot(value.reference, value.source), source: value.source }; }
   async exportExact(session: DocumentSession | string): Promise<string> { return (await this.readSource(session)).source; }
   exactExport(session: DocumentSession | string): Promise<string> { return this.exportExact(session); }
   export(session: DocumentSession | string): Promise<string> { return this.exportExact(session); }
@@ -198,14 +254,20 @@ export class DocumentService {
     const nextBody = input.body ?? input.content;
     if (typeof nextBody !== "string") throw new Error("A body and expected body revision are required.");
     if (Buffer.byteLength(nextBody) > INPUT_LIMITS.markdown) throw invalidRequest("Markdown exceeds its byte limit.");
-    const path = await this.canonicalFor(inputSession(input));
-    return this.queue.run(path, () => withPathLock(path, async () => {
-      this.assertAuthorized(inputSession(input), path);
-      const current = await this.readText(path);
-      if (bodyRevision(current) !== input.expectedBodyRevision) throw new DocumentConflictError("The document body changed before this save was applied.", { outcome: "not_applied", currentBodyRevision: bodyRevision(current) });
-      await atomicReplace(path, nextBody, current, this.readText, this.beforeBodyReplace);
-      return this.snapshot(path, nextBody);
-    }));
+    const session = await this.authorized(inputSession(input)), location = await this.location(session);
+    if (input.expectedLocationVersion !== undefined && input.expectedLocationVersion !== location.version) throw new FileAccessError("stale_location", "The document location changed; reopen it.", 409, {outcome:"not_applied",currentLocationVersion:location.version});
+    return this.queue.run(location.documentId, async () => {
+      this.assertAuthorized(session, location.path);
+      const adapter = this.fileAccess(location.machineId); await adapter.bind(location);
+      try {
+        const saved = await adapter.save(location, {body: nextBody, expectedBodyRevision: input.expectedBodyRevision});
+        this.assertAuthorized(session, location.path);
+        return this.snapshot({documentId: location.documentId}, saved.source);
+      } catch (error) {
+        if ((error as FileAccessError).code === "stale_revision") throw new DocumentConflictError((error as Error).message, (error as FileAccessError).details);
+        throw error;
+      }
+    });
   }
 
   async appendEvent(input: AppendEventInput): Promise<MutationDocumentSnapshot>;
@@ -216,10 +278,10 @@ export class DocumentService {
     const eventInput = sourceEvent(input);
     if (typeof eventInput.body === "string" && Buffer.byteLength(eventInput.body) > INPUT_LIMITS.review) throw invalidRequest("Review text exceeds its byte limit.");
     const operationId = input.operationId ?? input.mutationId ?? crypto.randomUUID();
-    const path = await this.canonicalFor(inputSession(input));
-    return this.queue.run(path, async () => {
-      this.assertAuthorized(inputSession(input), path);
-      const source = await this.readText(path);
+    const session = await this.authorized(inputSession(input)), path: DocumentReference = {documentId: session.documentId};
+    return this.queue.run(session.documentId, async () => {
+      this.assertAuthorized(session, session.path);
+      const {source} = await this.readSource(session);
       const revision = bodyRevision(source);
       const expectedBody = input.expectedBodyRevision ?? (typeof input.expectedRevision === "string" ? input.expectedRevision : undefined);
       const payloadHash = input.requestFingerprint !== undefined ? fingerprint(input.requestFingerprint) : eventInput.type === "ack"
@@ -254,7 +316,7 @@ export class DocumentService {
         return { ...this.snapshot(path, source), mutation };
       } catch (error) {
         if (error instanceof PrivateStoreConflictError) {
-          const document = this.store.documentForPath(path)!;
+          const document = this.store.document(path)!;
           const latest = this.store.db.query("SELECT MAX(seq) AS sequence FROM annotation_events WHERE document_id=? AND (id=? OR thread_id=?)").get(document.id, eventInput.threadId ?? "", eventInput.threadId ?? "") as { sequence: number | null };
           throw new DocumentConflictError(error.message, { currentBodyRevision: revision, currentConversationRevision: this.store.conversationRevision(path), currentThreadSequence: latest.sequence });
         }
@@ -273,20 +335,20 @@ export class DocumentService {
   acknowledge(input: AppendEventInput): Promise<MutationDocumentSnapshot> { return this.eventAction(input, "ack"); }
 
   async mutationReceipt(session: DocumentSession | string, operationId: string, requestFingerprint: unknown): Promise<MutationDocumentSnapshot | null> {
-    const { path, source } = await this.readSource(session);
+    const { path, source, reference } = await this.readSource(session);
     try {
-      const mutation = this.store.mutationReceipt(path, operationId, fingerprint(requestFingerprint));
-      return mutation ? { ...this.snapshot(path, source), mutation } : null;
+      const mutation = this.store.mutationReceipt(reference, operationId, fingerprint(requestFingerprint));
+      return mutation ? { ...this.snapshot(reference, source), mutation } : null;
     } catch (error) { if (error instanceof PrivateStoreConflictError) throw new DocumentConflictError(error.message); throw error; }
   }
 
   async pending(session: DocumentSession | string, actor = "assistant", consumer = actor): Promise<PendingRead> {
-    const { path, source } = await this.readSource(session);
+    const { path, source, reference } = await this.readSource(session);
     const revision = bodyRevision(source);
-    const document = this.store.ensureDocument(path, this.now());
-    const events = this.store.events(path);
-    const state = deriveAnnotationState(this.store.ledger(path, revision));
-    const acknowledgement = this.store.acknowledgement(path, consumer);
+    const document = this.store.document(reference)!;
+    const events = this.store.events(reference);
+    const state = deriveAnnotationState(this.store.ledger(reference, revision));
+    const acknowledgement = this.store.acknowledgement(reference, consumer);
     const watermark = (acknowledgement as { throughSeq?: number } | null)?.throughSeq ?? 0;
     const acknowledgedBodyRevision = (acknowledgement as { bodyRevision?: string } | null)?.bodyRevision;
     const pending = events.filter((event): event is ReviewEvent => event.type !== "ack" && event.seq > watermark && event.actor !== actor).flatMap((event) => {
@@ -294,27 +356,27 @@ export class DocumentService {
       const thread = state.byThread.get(threadId);
       return thread ? [{ event, thread }] : [];
     });
-    const cursor = this.store.observe(path, consumer, state.maxSequence, revision, this.now()).cursor;
-    const conversationRevision = this.store.conversationRevision(path) as Revision;
-    return { path, documentId: document.id, bodyRevision: revision, conversationRevision, ledgerRevision: conversationRevision, cursor, annotations: this.annotationState(path, revision), pending, events: pending, maxSequence: state.maxSequence, acknowledgement, bodyChangedSinceAck: acknowledgedBodyRevision !== undefined && acknowledgedBodyRevision !== revision };
+    const cursor = this.store.observe(reference, consumer, state.maxSequence, revision, this.now()).cursor;
+    const conversationRevision = this.store.conversationRevision(reference) as Revision;
+    return { path, documentId: document.id, bodyRevision: revision, conversationRevision, ledgerRevision: conversationRevision, cursor, annotations: this.annotationState(reference, revision), pending, events: pending, maxSequence: state.maxSequence, acknowledgement, bodyChangedSinceAck: acknowledgedBodyRevision !== undefined && acknowledgedBodyRevision !== revision };
   }
   pendingRead(session: DocumentSession | string, actor = "assistant", consumer = actor): Promise<PendingRead> { return this.pending(session, actor, consumer); }
   async pendingEvents(session: DocumentSession | string, actor = "assistant", consumer = actor): Promise<PendingAnnotation[]> { return (await this.pending(session, actor, consumer)).pending; }
   pendingAnnotations(session: DocumentSession | string, actor = "assistant", consumer = actor): Promise<PendingAnnotation[]> { return this.pendingEvents(session, actor, consumer); }
 
   async thread(session: DocumentSession | string, threadId: string): Promise<ThreadRead> {
-    const { path, source } = await this.readSource(session);
-    const thread = deriveAnnotationState(this.store.ledger(path, bodyRevision(source))).byThread.get(threadId);
+    const { path, source, reference } = await this.readSource(session);
+    const thread = deriveAnnotationState(this.store.ledger(reference, bodyRevision(source))).byThread.get(threadId);
     if (!thread) throw Object.assign(new Error("Annotation thread not found."), { code: "thread_not_found", status: 404 });
     return { path, thread, sequence: thread.latestEvent.seq };
   }
   async threadValue(session: DocumentSession | string, threadId: string): Promise<DerivedThread> { return (await this.thread(session, threadId)).thread; }
   threadRead(session: DocumentSession | string, threadId: string): Promise<ThreadRead> { return this.thread(session, threadId); }
   async threads(session: DocumentSession | string, options: { status?: "open" | "resolved"; beforeSequence?: number; limit?: number } = {}): Promise<ThreadsRead> {
-    const { path, source } = await this.readSource(session);
+    const { path, source, reference } = await this.readSource(session);
     const before = options.beforeSequence ?? Number.MAX_SAFE_INTEGER;
     const limit = Math.max(1, Math.min(options.limit ?? 50, 200));
-    const matching = deriveAnnotationState(this.store.ledger(path, bodyRevision(source))).threads
+    const matching = deriveAnnotationState(this.store.ledger(reference, bodyRevision(source))).threads
       .filter((thread) => !thread.deleted && (!options.status || thread.status === options.status) && thread.latestEvent.seq < before)
       .sort((a, b) => b.latestEvent.seq - a.latestEvent.seq);
     const threads = matching.slice(0, limit);
@@ -329,34 +391,37 @@ export class DocumentService {
     const source = await realpath(resolve(sourcePath));
     const target = await this.moves.target(targetPath);
     if (source === target) throw new DocumentConflictError("Source and destination are the same path.");
+    const record = this.store.documentForPath(source);
+    if (!record) throw new DocumentNotFoundError("The document record no longer exists.");
     const paths = [source, target].sort();
-    return this.queue.run(paths[0]!, () => this.queue.run(paths[1]!, () =>
+    return this.queue.run(record.id, () => this.queue.run(paths[0]!, () => this.queue.run(paths[1]!, () =>
       withPathLock(paths[0]!, () => withPathLock(paths[1]!, async () => {
         await this.readText(source);
         await this.moves.move(source, target);
-        const parent = await directoryIdentity(target);
-        this.parents.set(target, parent);
-        this.parents.delete(source);
-        for (const session of this.sessions.values()) if (session.path === source) {
-          session.path = target; session.realPath = target;
+        for (const session of this.sessions.values()) if (session.documentId === record.id) {
+          session.path = target; session.realPath = target; session.locationVersion = this.store.documentForPath(target)!.location_version;
         }
-        if (this.grantedPaths.delete(source)) this.grantedPaths.add(target);
         return { path: target, previousPath: source, documentId: this.store.documentForPath(target)!.id, outcome: "applied" as const };
-      }))));
+      })))));
   }
 
   async locate(path: string, target: string): Promise<DocumentSession> {
     let source = resolve(path); if (!this.store.documentForPath(source)) { try { source = await realpath(source); } catch {} }
-    const destination = await realpath(resolve(target));
-    this.store.locate(source, destination); return this.open(destination);
+    const document = this.store.documentForPath(source);
+    if (!document) throw new DocumentNotFoundError("The document record no longer exists.");
+    return this.relink(document.id, this.store.localMachineId, target);
   }
-  async deleteConversation(path: string, onlyWithoutConversation = false): Promise<boolean> {
-    let canonical = resolve(path); if (!this.store.documentForPath(canonical)) { try { canonical = await realpath(canonical); } catch {} }
-    return this.queue.run(canonical, async () => {
-      const document = this.store.documentForPath(canonical);
-      if (onlyWithoutConversation && document && this.store.db.query("SELECT 1 FROM annotation_events WHERE document_id=? AND type IN ('comment','reply') LIMIT 1").get(document.id)) throw Object.assign(new Error("This entry has conversation history. Archive it to keep the conversation."), { code: "conversation_present", status: 409 });
-      this.revokePath(canonical);
-      return this.store.deleteConversation(canonical);
+  async deleteConversation(reference: DocumentReference, onlyWithoutConversation = false): Promise<boolean> {
+    if (typeof reference === "string") {
+      let path = resolve(reference); if (!this.store.documentForPath(path)) { try { path = await realpath(path); } catch {} }
+      reference = path;
+    }
+    const document = this.store.document(reference);
+    if (!document) return false;
+    return this.queue.run(document.id, async () => {
+      if (onlyWithoutConversation && this.store.db.query("SELECT 1 FROM annotation_events WHERE document_id=? AND type IN ('comment','reply') LIMIT 1").get(document.id)) throw Object.assign(new Error("This entry has conversation history. Archive it to keep the conversation."), {code:"conversation_present",status:409});
+      for (const [id, session] of this.sessions) if (session.documentId === document.id) this.sessions.delete(id);
+      return this.store.deleteConversation({documentId:document.id});
     });
   }
   async exportReviews(sessions: Array<DocumentSession | string>): Promise<ReviewPackage> {
@@ -365,13 +430,14 @@ export class DocumentService {
     for (const session of sessions) {
       let path: string;
       let source: string;
+      let reference: DocumentReference;
       if (typeof session === "string") {
         path = await realpath(resolve(session));
         if (!isMarkdown(path)) throw new DocumentNotFoundError("Only .md and .markdown files can be exported.");
         source = await this.readText(path);
-        this.store.ensureDocument(path, this.now());
-      } else ({ path, source } = await this.readSource(session));
-      const threads = deriveAnnotationState(this.store.ledger(path, bodyRevision(source))).threads.filter((thread) => !thread.deleted && thread.status === "open");
+        this.store.ensureDocument(path, this.now()); reference = path;
+      } else ({ path, source, reference } = await this.readSource(session));
+      const threads = deriveAnnotationState(this.store.ledger(reference, bodyRevision(source))).threads.filter((thread) => !thread.deleted && thread.status === "open");
       const original = basename(path); const extension = extname(original); const stem = original.slice(0, -extension.length);
       let name = original;
       for (let suffix = 2; names.has(name.toLocaleLowerCase()); suffix++) name = `${stem} (${suffix})${extension}`;

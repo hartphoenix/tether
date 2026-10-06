@@ -38,6 +38,7 @@ import { createSelectionUi, reviewNoteIconSvg, type SelectionUiController } from
 import { createThemePicker } from "./themes";
 import { documentTabTitle, filenameStem } from "./document-title";
 import { DraftPersistence, recoverDraft } from "./draft-recovery";
+import { showHistoricalReviews } from "./historical-reviews";
 import { createReconnectLoop } from "./reconnect";
 import { installCmuxFindCompatibility } from "./hosts/cmux-find";
 import { initialReaderSelection } from "./initial-selection";
@@ -124,6 +125,13 @@ let annotationState: AnnotationState = {};
 let saveTimer: number | undefined;
 let saveInFlight = false;
 let saveAgain = false;
+let sharedReader = false;
+let currentLocationVersion: number | undefined;
+let unconfirmedSave: { body: string; markdown: string; baseRevision: string; frontmatter?: string } | null = null;
+let verifyingSave = false;
+const saveConfirmation = document.createElement("span");
+saveConfirmation.id = "save-confirmation";
+notice.after(saveConfirmation);
 let conflicted = false;
 let switching = false;
 let disconnected = false;
@@ -307,19 +315,23 @@ async function fetchResponse(pathname: string, init: RequestInit = {}): Promise<
     ...init,
     signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
     credentials: "same-origin",
-    headers: { ...(init.body === undefined ? {} : { "content-type": "application/json" }), ...init.headers },
+    headers: { ...(init.body === undefined ? {} : { "content-type": "application/json" }), ...(currentLocationVersion === undefined || pathname === "api/bootstrap" ? {} : { "x-tether-location-version": String(currentLocationVersion) }), ...init.headers },
   });
   if (!response.ok) {
     const text = await response.text();
-    const error = new Error(apiErrorMessage(text, response.statusText)) as Error & { status?: number };
+    const error = new Error(apiErrorMessage(text, response.statusText)) as Error & { status?: number; code?: string; details?: unknown };
     error.status = response.status;
+    try { const payload = JSON.parse(text); error.code = payload.error?.code; error.details = payload.error?.details; } catch {}
     throw error;
   }
   return response;
 }
 
 async function loadDocument(): Promise<DocumentResponse> {
-  const response = await fetch(apiPath("api/file"), { credentials: "same-origin", signal: AbortSignal.timeout(10_000) });
+  const response = await fetch(apiPath("api/file"), {
+    credentials: "same-origin", signal: AbortSignal.timeout(10_000),
+    headers: currentLocationVersion === undefined ? {} : { "x-tether-location-version": String(currentLocationVersion) },
+  });
   if (response.ok || response.status === 422) return await response.json() as DocumentResponse;
   const text = await response.text();
   throw new Error(text || response.statusText);
@@ -393,14 +405,15 @@ async function refreshAnnotations(generation = documentGeneration, path = curren
 }
 
 const draftPersistence = new DraftPersistence(async (mutation) => {
+  if (sharedReader) return;
   await api("api/draft", mutation.method === "DELETE"
     ? { method: "DELETE" }
     : { method: "POST", body: JSON.stringify(mutation.draft) });
 });
 function scheduleSave(): void {
-  if (readOnly || switching || initializing) return;
+  if (readOnly || switching || initializing || sharedReader && disconnected) return;
   void persistDraft();
-  if (currentMarkdown() === savedEditorMarkdown || conflicted || incomingReview) return;
+  if (currentMarkdown() === savedEditorMarkdown || conflicted || incomingReview || unconfirmedSave) return;
   if (saveTimer != null) clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => void save(), 600);
 }
@@ -415,19 +428,25 @@ async function persistDraft(strict = false): Promise<void> {
     scroll: canvas?.scroller.scrollTop ?? 0,
   }, strict);
 }
+function isUnconfirmedSaveFailure(failure: { status?: number; code?: string; details?: { outcome?: string } }): boolean {
+  return ((!failure.status || failure.status >= 500) && failure.details?.outcome !== "not_applied")
+    || failure.details?.outcome === "outcome_unknown"
+    || ["save_unconfirmed", "outcome_unknown"].includes(failure.code ?? "");
+}
 async function save(): Promise<boolean> {
   if (!crepe || !currentPath) return true;
   if (readOnly) return false;
-  if (conflicted || incomingReview) return false;
+  if (conflicted || incomingReview || unconfirmedSave) return false;
   if (saveInFlight) { saveAgain = true; return false; }
   const markdown = currentMarkdown();
   if (markdown === savedEditorMarkdown) return true;
   saveInFlight = true;
   let succeeded = true;
+  const attempted = { markdown, body: currentContent(markdown), baseRevision: currentBodyRevision };
   try {
     const result = await api<DocumentResponse>("api/file", {
       method: "PUT",
-      body: JSON.stringify({ content: currentContent(markdown), expectedBodyRevision: currentBodyRevision }),
+      body: JSON.stringify({ content: attempted.body, expectedBodyRevision: attempted.baseRevision, expectedLocationVersion: currentLocationVersion }),
     });
     currentBodyRevision = result.bodyRevision;
     diskBody = result.body;
@@ -438,13 +457,47 @@ async function save(): Promise<boolean> {
     if (currentMarkdown() === markdown) await draftPersistence.clear();
   } catch (error) {
     succeeded = false;
-    if ((error as Error & { status?: number }).status === 409) showConflict();
+    const failure = error as Error & { status?: number; code?: string; details?: {outcome?:string} };
+    if (sharedReader && isUnconfirmedSaveFailure(failure)) {
+      unconfirmedSave = attempted;
+      chrome.setNotice("Save not yet confirmed. Your edit is retained here.", 0);
+    } else if (failure.status === 409) showConflict();
     else chrome.setNotice(`Save failed: ${(error as Error).message}`, 0);
   } finally {
     saveInFlight = false;
-    if (saveAgain) { saveAgain = false; return await save(); }
+    if (saveAgain) { saveAgain = false; if (succeeded) return await save(); }
   }
   return succeeded;
+}
+
+async function verifyUnconfirmedSave(): Promise<void> {
+  if (!unconfirmedSave || verifyingSave) return;
+  verifyingSave = true;
+  const attempted = unconfirmedSave;
+  try {
+    const result = await api<{outcome:"matches_edit"|"matches_base"|"diverged";document:DocumentResponse}>("api/verify-save", {
+      method: "POST", body: JSON.stringify({ body: attempted.body, expectedBodyRevision: attempted.baseRevision }),
+    });
+    if (unconfirmedSave !== attempted) return;
+    saveConfirmation.replaceChildren();
+    if (result.outcome === "matches_edit") {
+      unconfirmedSave = null;
+      if (attempted.frontmatter !== undefined) currentFrontmatter = attempted.frontmatter;
+      currentBodyRevision = result.document.bodyRevision; diskBody = result.document.body;
+      currentLedgerRevision = result.document.ledgerRevision; savedEditorMarkdown = attempted.markdown;
+      applyAnnotationState(result.document.annotations);
+      chrome.setNotice("The current file matches your edit.");
+      scheduleSave();
+    } else if (result.outcome === "matches_base") {
+      chrome.setNotice("The file still matches your edit’s base. Retry when ready.", 0);
+      const retry = document.createElement("button"); retry.type = "button"; retry.textContent = "Retry save";
+      retry.onclick = () => { if (unconfirmedSave !== attempted) return; unconfirmedSave = null; currentBodyRevision = attempted.baseRevision; saveConfirmation.replaceChildren(); void save(); };
+      saveConfirmation.append(retry);
+    } else {
+      unconfirmedSave = null;
+      showConflict("The file differs from both versions. Your draft is retained; compare it before saving.");
+    }
+  } finally { verifyingSave = false; }
 }
 async function postAnnotation(pathname: string, body: Record<string, unknown>, generation: number, path: string): Promise<void> {
   if (generation !== documentGeneration || path !== currentPath) throw new Error("The document changed before the annotation was sent.");
@@ -509,7 +562,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       features: { [Crepe.Feature.TopBar]: true, [Crepe.Feature.BlockEdit]: false },
       featureConfigs: {
         [Crepe.Feature.CodeMirror]: { renderPreview: renderMermaidPreview, previewOnlyByDefault: true, previewLoading: "Rendering diagram…" },
-        [Crepe.Feature.ImageBlock]: { proxyDomURL: imageDisplayUrl },
+        [Crepe.Feature.ImageBlock]: { proxyDomURL: source => imageDisplayUrl(source, currentLocationVersion) },
         [Crepe.Feature.Placeholder]: { text: "..." },
         [Crepe.Feature.TopBar]: {
           headingOptions: [
@@ -667,13 +720,14 @@ async function saveReviewed(): Promise<void> {
   reviewSaving = true;
   const generation = documentGeneration;
   const review = incomingReview;
+  const markdown = currentMarkdown();
+  const attempted = { markdown, body: review.editorDoc && matchesIncomingDocument(crepe.editor, review.editorDoc) ? review.body : restoreMarkdown(markdown, review.frontmatter), baseRevision: review.bodyRevision, frontmatter: review.frontmatter };
   saveReviewButton.disabled = true;
   cancelReviewButton.disabled = true;
   try {
-    const markdown = currentMarkdown();
     const result = await api<DocumentResponse>("api/file", {
       method: "PUT",
-      body: JSON.stringify({ content: review.editorDoc && matchesIncomingDocument(crepe.editor, review.editorDoc) ? review.body : restoreMarkdown(markdown, review.frontmatter), expectedBodyRevision: review.bodyRevision }),
+      body: JSON.stringify({ content: attempted.body, expectedBodyRevision: attempted.baseRevision, expectedLocationVersion: currentLocationVersion }),
     });
     if (generation !== documentGeneration) return;
     currentFrontmatter = review.frontmatter;
@@ -687,6 +741,14 @@ async function saveReviewed(): Promise<void> {
     await refreshAnnotations();
   } catch (error) {
     if (generation !== documentGeneration) return;
+    const failure = error as Error & { status?: number; code?: string; details?: {outcome?:string} };
+    if (sharedReader && isUnconfirmedSaveFailure(failure)) {
+      unconfirmedSave = attempted;
+      currentFrontmatter = attempted.frontmatter;
+      clearConflict();
+      chrome.setNotice("Save not yet confirmed. Your reviewed edit is retained here.", 0);
+      return;
+    }
     incomingReview = null;
     chrome.setNotice(`Reviewed save failed: ${(error as Error).message}`, 0);
     showConflict("The disk changed again during review. Reload it before continuing.");
@@ -706,8 +768,9 @@ async function lease(generation = documentGeneration, path = currentPath, signal
       const view = getEditorView();
       document.title = view ? documentTabTitle(currentPath, view.state.doc) : filenameStem(currentPath);
     }
-    if (disconnected) { disconnected = false; chrome.setNotice(""); }
+    if (disconnected) { disconnected = false; editorRoot.hidden = false; annotationsRoot.hidden = false; document.getElementById("historical-reviews")?.remove(); chrome.setNotice(""); }
     if (!currentPath || saveInFlight) return;
+    if (unconfirmedSave) { await verifyUnconfirmedSave(); return; }
     if (readOnly && result.bodyRevision && result.bodyRevision !== currentBodyRevision) {
       const disk = await loadDocument();
       if (generation !== documentGeneration || path !== currentPath || !crepe) return;
@@ -739,13 +802,28 @@ async function lease(generation = documentGeneration, path = currentPath, signal
     }
     disconnected = true;
     chrome.setNotice(`Disconnected: ${(error as Error).message}`, 0);
+    if (sharedReader) {
+      const hasDraft = currentMarkdown() !== savedEditorMarkdown || !!unconfirmedSave;
+      editorRoot.hidden = !hasDraft; annotationsRoot.hidden = true;
+      if (hasDraft) chrome.setNotice("File unavailable. Your unsaved draft is retained here; saving is paused.", 0);
+      await showHistoricalReviews(query => api(`api/history${query ? `?${query}` : ""}`), document.body).catch(() => {});
+    }
     throw error;
   }
 }
 async function start(): Promise<void> {
   const bootstrap = await api<SessionBootstrap>("api/bootstrap");
+  sharedReader = bootstrap.sharedReader === true;
+  currentLocationVersion = sharedReader ? bootstrap.document.locationVersion : undefined;
+  document.getElementById("historical-reviews")?.remove();
+  editorRoot.hidden = false; annotationsRoot.hidden = false;
+  if (sharedReader) try {
+    const position = JSON.parse(localStorage.getItem(`tether.position:${location.pathname}`) ?? "null");
+    if (position && typeof position.scroll === "number" && position.scroll >= 0) bootstrap.scroll = position.scroll;
+    if (position && typeof position.zoom === "number" && position.zoom >= 75 && position.zoom <= 175) bootstrap.zoom = position.zoom;
+  } catch {}
   if (bootstrap.remoteReader && !document.getElementById("phone-comment")) {
-    document.documentElement.dataset.phoneReader = "true";
+    if (!sharedReader || matchMedia("(max-width: 700px)").matches) document.documentElement.dataset.phoneReader = "true";
     const button = document.createElement("button");
     button.id = "phone-comment"; button.type = "button"; button.innerHTML = iconSvg("pen-nib");
     button.setAttribute("aria-label", "Comment on selection");
@@ -771,7 +849,7 @@ async function start(): Promise<void> {
   if (bootstrap.updateControls && !updateMounted) { mountUpdates(); updateMounted = true; }
   pageOpensLinks = bootstrap.capabilities?.pageOpensLinks === true;
   revealAvailable = bootstrap.capabilities?.revealFile === true;
-  fileActions.update(revealAvailable, readOnly, bootstrap.directoryPicker === true);
+  fileActions.update(revealAvailable, readOnly || sharedReader, bootstrap.directoryPicker === true);
   stopFind?.();
   stopFind = bootstrap.capabilities?.pageFind ? installReaderFind(getEditorView) : undefined;
   initializing = true;
@@ -784,7 +862,7 @@ async function start(): Promise<void> {
       hideInheritance: bootstrap.remoteReader,
       inheritPaseoTheme: bootstrap.preferences.inheritPaseoTheme,
       customThemes: bootstrap.preferences.customThemes,
-      makerButton: bootstrap.remoteReader ? undefined : document.querySelector<HTMLButtonElement>("#theme-maker")!,
+      makerButton: bootstrap.remoteReader && !sharedReader ? undefined : document.querySelector<HTMLButtonElement>("#theme-maker")!,
       persist: (mutation) => api("api/preferences", { method: "PUT", body: JSON.stringify(mutation) }),
       onError: (message) => chrome.setNotice(message),
     });
@@ -819,6 +897,10 @@ let positionTimer: number | undefined;
 function persistPosition(keepalive = false): void {
   clearTimeout(positionTimer);
   if (!initialized || initializing) return;
+  if (sharedReader) {
+    try { localStorage.setItem(`tether.position:${location.pathname}`, JSON.stringify({ scroll: canvas?.scroller.scrollTop ?? 0, zoom: chrome.getZoom() })); } catch {}
+    return;
+  }
   void api("api/position", { method: "POST", body: JSON.stringify({ scroll: canvas?.scroller.scrollTop ?? 0, zoom: chrome.getZoom() }), keepalive }).catch(() => {});
 }
 addEventListener("scroll", (event) => {
@@ -895,16 +977,21 @@ editorRoot.addEventListener("click", (event) => {
   event.stopPropagation();
   if (pageOpensLinks && opensAsDocument(target)) {
     const opener = document.createElement("a");
-    opener.href = documentLinkPath(target);
+    opener.href = documentLinkPath(target) + (currentLocationVersion === undefined ? "" : `&locationVersion=${currentLocationVersion}`);
     opener.target = "_blank";
     opener.rel = "noopener";
     opener.click();
     return;
   }
-  void api("api/open", {
-    method: "POST",
-    body: JSON.stringify(target),
-  }).catch((error) => chrome.setNotice(`Could not open link: ${(error as Error).message}`, 0));
+  void (async () => {
+    try { await api("api/open", { method: "POST", body: JSON.stringify(target) }); }
+    catch (error) {
+      if ((error as Error & { code?: string }).code !== "restore_required") throw error;
+      if (confirm("This document has been archived. Restore it?")) {
+        await api("api/open", { method: "POST", body: JSON.stringify({ ...target, restoreArchived: true }) });
+      }
+    }
+  })().catch((error) => chrome.setNotice(`Could not open link: ${(error as Error).message}`, 0));
 }, true);
 addEventListener('hashchange', () => scrollToDocumentAnchor(editorRoot, location.hash));
 document.addEventListener("keydown", (event) => {
@@ -914,7 +1001,10 @@ const connection = createReconnectLoop({
   intervalMs: 1500,
   run: async signal => {
     if (document.hidden) return;
-    if (!initialized) await start();
+    if (!initialized) {
+      try { await start(); }
+      catch (error) { if (location.pathname.startsWith("/reader/d/")) await showHistoricalReviews(query => api(`api/history${query ? `?${query}` : ""}`), document.body).catch(() => {}); throw error; }
+    }
     else await lease(documentGeneration, currentPath, signal);
     // Retry the latest editor state, not an obsolete failed draft request.
     await persistDraft();

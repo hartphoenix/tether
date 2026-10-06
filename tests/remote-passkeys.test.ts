@@ -241,3 +241,34 @@ describe("FilePasskeys stored file", () => {
     throwsWith(() => new FilePasskeys({ file: join(directory, "passkey.json"), origin: ORIGIN, owner: OWNER }), "invalid-store");
   });
 });
+
+describe("FilePasskeys owner recovery", () => {
+  test("failed recovery preserves the old passkey and verified recovery replaces it", async () => {
+    const file = join(await scratch(), "passkey.json");
+    const { passkeys, authenticator: previous } = await enrolled(file);
+    const before = await readFile(file, "utf8"), replacement = new FakeAuthenticator();
+    const options = await passkeys.recoveryOptions();
+    await rejectsWith(passkeys.replace(options.challenge, replacement.register("wrong-challenge")), "verification-failed");
+    expect(await readFile(file, "utf8")).toBe(before);
+    await passkeys.authenticate("old-still-works", previous.assert("old-still-works"));
+    await passkeys.replace(options.challenge, replacement.register(options.challenge));
+    await rejectsWith(passkeys.authenticate("old-no-longer-works", previous.assert("old-no-longer-works")), "verification-failed");
+    const reloaded = new FilePasskeys({ file, origin: ORIGIN, owner: OWNER });
+    await reloaded.authenticate("new-works", replacement.assert("new-works"));
+    expect((await stat(file)).mode & 0o777).toBe(0o600);
+  });
+
+  test("explicit origin recovery preserves old bytes until new-origin registration verifies", async () => {
+    const file = join(await scratch(), "passkey.json"); await enrolled(file);
+    const before = await readFile(file, "utf8"), origin = "https://relocated.example.net", rpID = "relocated.example.net";
+    throwsWith(() => new FilePasskeys({ file, origin, owner: OWNER }), "identity-mismatch");
+    const recovery = new FilePasskeys({ file, origin, owner: OWNER, allowOriginRecovery: true });
+    expect(await readFile(file, "utf8")).toBe(before);
+    await rejectsWith(recovery.authenticationOptions(), "identity-mismatch");
+    const replacement = new FakeAuthenticator(), options = await recovery.recoveryOptions();
+    await recovery.replace(options.challenge, replacement.register(options.challenge, { origin, rpID }));
+    const reloaded = new FilePasskeys({ file, origin, owner: OWNER });
+    await reloaded.authenticate("relocated", replacement.assert("relocated", { origin, rpID }));
+    throwsWith(() => new FilePasskeys({ file, origin: ORIGIN, owner: OWNER }), "identity-mismatch");
+  });
+});

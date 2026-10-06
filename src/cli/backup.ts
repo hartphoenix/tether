@@ -7,7 +7,8 @@ import { statusDaemon } from "../server/lifecycle";
 
 type Manifest = { format: "tether-backup-v1"; files: Record<string, string> };
 const digest = (data: Uint8Array) => createHash("sha256").update(data).digest("hex");
-const allowed = (name: string) => ["tether.sqlite", "preferences.json", "launch.json", "recent-files.json", "updates.json"].includes(name) || /^documents\/[^/]+\.md$/.test(name);
+const stateFiles = ["preferences.json", "launch.json", "recent-files.json", "updates.json", "shared-profile.json", "owner-passkey.json"];
+const allowed = (name: string) => name === "tether.sqlite" || stateFiles.includes(name) || /^documents\/[^/]+\.md$/.test(name);
 
 /** A stopped daemon plus its startup lock prevents concurrent app writes. */
 export async function backupState(config: TetherConfig, output: string): Promise<{ directory: string; files: number }> {
@@ -29,7 +30,7 @@ export async function backupState(config: TetherConfig, output: string): Promise
     try { db.query("VACUUM INTO ?").run(join(directory, "tether.sqlite")); } finally { db.close(); }
     await chmod(join(directory, "tether.sqlite"), 0o600);
     manifest.files["tether.sqlite"] = digest(await readFile(join(directory, "tether.sqlite")));
-    for (const name of ["preferences.json", "launch.json", "recent-files.json", "updates.json"]) {
+    for (const name of stateFiles) {
       const path = join(config.configDir, name);
       const info = await lstat(path).catch(cause => { if (cause.code === "ENOENT") return null; throw cause; });
       if (info) { if (!info.isFile()) throw new Error(`Unsupported state file: ${name}`); await write(name, await readFile(path)); }
@@ -70,7 +71,8 @@ export async function restoreState(source: string, destination: string): Promise
   await mkdir(directory, { mode: 0o700 });
   for (const [name, data] of files) {
     await mkdir(dirname(join(directory, name)), { recursive: true, mode: 0o700 });
-    await writeFile(join(directory, name), data, { flag: "wx", mode: 0o600 });
+    const restored = name === "shared-profile.json" ? Buffer.from(JSON.stringify({ ...JSON.parse(data.toString("utf8")), active: false }) + "\n") : data;
+    await writeFile(join(directory, name), restored, { flag: "wx", mode: 0o600 });
   }
   return { directory, files: files.length };
 }
