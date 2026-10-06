@@ -34,7 +34,7 @@ export function headlessAssets(input: HeadlessInstall) {
   const label = `org.tether.source.${input.role}.${input.profile}`;
   const launcher = join(input.directory, "run");
   const command = input.role === "service"
-    ? [input.bun, "--no-env-file", join(input.checkout, "src/server/daemon.ts")]
+    ? [input.bun, "--no-env-file", join(input.checkout, "src/server/login.ts")]
     : [input.bun, "--no-env-file", join(input.checkout, "src/cli/public.ts"), "connector", "run", "--connection", input.connection!];
   const environment = [`export TETHER_PROFILE=${shell(input.profile)}`,
     ...(input.configDirectory ? [`export TETHER_CONFIG_DIR=${shell(input.configDirectory)}`] : []),
@@ -51,7 +51,7 @@ export async function installHeadless(input: HeadlessInstall) {
   const normalized = { ...input, checkout: await realpath(input.checkout), bun: await realpath(input.bun) };
   const assets = headlessAssets(normalized);
   await access(normalized.bun, constants.X_OK);
-  await access(join(normalized.checkout, "src/server/daemon.ts"));
+  await access(join(normalized.checkout, "src/server/login.ts"));
   await access(join(normalized.checkout, "src/cli/public.ts"));
   await access(join(normalized.checkout, "node_modules/typescript/package.json"));
   // Refuse to overwrite a previous deployment or follow an existing directory link.

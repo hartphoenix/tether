@@ -3,6 +3,8 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { headlessAssets, installHeadless } from "../scripts/install-headless";
+import { resolveConfig, readDiscovery } from "../src/server/config";
+import { startDaemon } from "../src/server/server";
 
 describe("headless source installation", () => {
   test("supervisors preserve paths and launch foreground roles", () => {
@@ -15,7 +17,7 @@ describe("headless source installation", () => {
     expect(mac.unit).toContain("&quot;quotes&quot;");
     expect(mac.unit).toContain("<key>KeepAlive</key><true/>");
     const service = headlessAssets({ ...input, role: "service", connection: undefined });
-    expect(service.script).toContain("'/source/src/server/daemon.ts'");
+    expect(service.script).toContain("'/source/src/server/login.ts'");
     expect(service.script).not.toContain("'connector'");
   });
 
@@ -33,7 +35,7 @@ describe("headless source installation", () => {
       await mkdir(join(checkout, "src/server"), { recursive: true });
       await mkdir(join(checkout, "src/cli"), { recursive: true });
       await mkdir(join(checkout, "node_modules/typescript"), { recursive: true });
-      for (const file of ["src/server/daemon.ts", "src/cli/public.ts", "node_modules/typescript/package.json"]) await writeFile(join(checkout, file), "");
+      for (const file of ["src/server/login.ts", "src/cli/public.ts", "node_modules/typescript/package.json"]) await writeFile(join(checkout, file), "");
       const argumentsPath = join(scratch, "arguments"), profilePath = join(scratch, "profile");
       await writeFile(runtime, `#!/bin/sh\nprintf '%s\\0' "$@" > '${argumentsPath}'\nprintf '%s' "$TETHER_PROFILE" > '${profilePath}'\n`, { mode: 0o700 });
       await chmod(runtime, 0o700);
@@ -53,4 +55,28 @@ describe("headless source installation", () => {
       await expect(installHeadless({ role: "service", platform: "linux", checkout, directory, bun: runtime, profile: "shared" })).rejects.toMatchObject({ code: "EEXIST" });
     } finally { await rm(scratch, { recursive: true, force: true }); }
   });
+
+  test("supervised service reuses an existing daemon without replacing its discovery", async () => {
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), "tether-headless-existing-")));
+    const config = resolveConfig({ profile: "headless-test", configDir: join(scratch, "config"), runtimeDir: join(scratch, "runtime") });
+    const daemon = await startDaemon({ config, keepAlive: true, persistentViews: false, web: () => new Response("reader") });
+    let child: Bun.Subprocess | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const before = await readDiscovery(config);
+      const installed = await installHeadless({ role: "service", platform: process.platform === "darwin" ? "darwin" : "linux",
+        checkout: join(import.meta.dir, ".."), directory: join(scratch, "installed"), bun: process.execPath,
+        profile: config.profile, configDirectory: config.configDir, runtimeDirectory: config.runtimeDir });
+      child = Bun.spawn([installed.launcher], { stdout: "pipe", stderr: "pipe" });
+      timeout = setTimeout(() => child?.kill(), 5000);
+      expect(await child.exited).toBe(0);
+      expect(await readDiscovery(config)).toEqual(before);
+      expect((await fetch(`${daemon.origin}/health`)).ok).toBe(true);
+    } finally {
+      clearTimeout(timeout);
+      if (child?.exitCode === null) { child.kill(); await child.exited; }
+      await daemon.stop();
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }, 10_000);
 });
