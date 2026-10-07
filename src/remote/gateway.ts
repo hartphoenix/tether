@@ -226,7 +226,7 @@ export class PhoneGateway {
       return Response.json(files);
     }
     const asset = isApplicationAsset(`/${resource}`) || /^(?:[A-Za-z0-9_-]+\.(?:js|css|woff2?|png)|(?:docs\/)?assets\/tether-banner(?:-tagline)?\.png)$/.test(resource);
-    const allowedGet = ["", "api/bootstrap", "api/file", "api/image", "api/annotations", "api/annotations/pending", "api/annotations/thread", "api/preferences"];
+    const allowedGet = ["", "api/bootstrap", "api/file", "api/machine", "api/image", "api/annotations", "api/annotations/pending", "api/annotations/thread", "api/preferences"];
     const allowedPost = ["api/changes", "api/lease", "api/release", "api/position", "api/annotations", "api/annotations/reply", "api/annotations/acknowledge"];
     if (!(request.method === "PUT" && resource === "api/preferences") && !(request.method === "GET" && (allowedGet.includes(resource) || asset)) && !(request.method === "POST" && (allowedPost.includes(resource) || resource === "api/diagrams" && this.options.diagrams))) return this.denied();
     if (scoped && resource !== "" && !asset) {

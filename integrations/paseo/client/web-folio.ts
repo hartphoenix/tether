@@ -2,7 +2,7 @@ import type { FolioView } from "../shared/contracts";
 
 // Experimental desktop adapter: Paseo has no public embedded-browser component.
 // Keep DOM access here, without adding DOM/Electron dependencies to the plugin.
-type GuestEvent = { url?: string; httpResponseCode?: number; isMainFrame?: boolean; isInPlace?: boolean; errorCode?: number };
+type GuestEvent = { preventDefault?: () => void; url?: string; httpResponseCode?: number; isMainFrame?: boolean; isInPlace?: boolean; errorCode?: number };
 type Listener = (event: GuestEvent) => void;
 type Guest = {
   style: { width: string; height: string; display: string; flex: string };
@@ -19,6 +19,7 @@ type MountOptions = {
   cacheKey: string;
   launch: () => Promise<FolioView>;
   onState: (state: FolioViewState) => void;
+  onDocument?: (url: string) => void;
   launchTimeoutMs?: number;
   loadTimeoutMs?: number;
 };
@@ -47,7 +48,7 @@ function localUrl(value: string): URL {
 function sessionUrl(value: string, origin: string): string {
   const url = localUrl(value);
   if (url.origin !== origin || !/^\/r\/[A-Za-z0-9_-]+\/$/.test(url.pathname)
-    || [...url.searchParams.keys()].some(key => key !== "instance")) throw new Error("Invalid Folio session");
+    || [...url.searchParams.keys()].some(key => key !== "instance" && key !== "embedded")) throw new Error("Invalid Folio session");
   return url.href;
 }
 
@@ -64,6 +65,7 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
   mounts.add(dispose);
 
   function begin(cached?: string): void {
+    let sharedOrigin: string | undefined;
     stopAttempt();
     options.onState("loading");
     let active = true;
@@ -92,19 +94,32 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
       if (cached) begin();
       else options.onState("failed");
     };
-    timer = setTimeout(fail, cached ? options.loadTimeoutMs ?? 5_000 : options.launchTimeoutMs ?? 15_000);
+    timer = setTimeout(fail, cached ? options.loadTimeoutMs ?? (sharedOrigin ? 120_000 : 5_000) : options.launchTimeoutMs ?? 15_000);
 
+    const sharedUrl = (value: string) => {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.origin !== sharedOrigin || url.username || url.password || url.hash
+        || !/^(?:\/folio\/?|\/settings\/?|\/auth\/login|\/reader\/d\/[a-f0-9-]{36}\/)$/.test(url.pathname)
+        || [...url.searchParams.keys()].some(key => key !== "next" && key !== "themeClient" && key !== "embedded")
+        || url.searchParams.has("themeClient") && !/^[a-f0-9-]{36}$/i.test(url.searchParams.get("themeClient")!)) throw new Error("Invalid shared Folio address");
+      if (url.searchParams.has("next")) {
+        const next = new URL(url.searchParams.get("next")!, sharedOrigin);
+        if (next.origin !== sharedOrigin || !/^\/(?:folio|settings)\/?$/.test(next.pathname) || [...next.searchParams.keys()].some(key => key !== "themeClient" && key !== "embedded") || next.hash) throw new Error("Invalid sign-in destination");
+      }
+      return url;
+    };
     const attach = (value: string) => {
       if (!live()) return;
       try {
-        const url = localUrl(value);
-        if (cached) sessionUrl(value, url.origin);
+        const url = sharedOrigin ? sharedUrl(value) : localUrl(value);
+        if (sharedOrigin) { if (url.pathname !== "/folio/") throw new Error("Invalid shared Folio launch"); }
+        else if (cached) sessionUrl(value, url.origin);
         else {
           const themeClient = url.searchParams.get("themeClient");
           if (url.pathname !== "/recents/launch" || url.searchParams.getAll("ticket").length !== 1 || !url.searchParams.get("ticket")
             || url.searchParams.getAll("themeClient").length > 1
             || (themeClient !== null && !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(themeClient))
-            || [...url.searchParams.keys()].some(key => key !== "ticket" && key !== "themeClient")) throw new Error("Invalid Folio launch");
+            || [...url.searchParams.keys()].some(key => key !== "ticket" && key !== "themeClient" && key !== "embedded")) throw new Error("Invalid Folio launch");
         }
         if (typeof document === "undefined" || !container || typeof (container as Container).appendChild !== "function") throw new Error("Webview unavailable");
         guest = document.createElement("webview");
@@ -115,22 +130,33 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
         const ready = () => {
           if (!live() || !domReady || !finalUrl) return;
           clearTimeout(timer);
-          sessions.set(options.cacheKey, finalUrl);
+          if (!sharedOrigin) sessions.set(options.cacheKey, finalUrl);
           committedUrl = finalUrl;
           options.onState("ready");
         };
+        listen("will-navigate", event => {
+          if (!event.url) return;
+          if (!sharedOrigin) {
+            try { const target = localUrl(event.url); if (finalUrl && target.origin === url.origin && target.pathname === new URL(finalUrl).pathname + "settings" && options.onDocument) { event.preventDefault?.(); options.onDocument(target.href); } } catch { event.preventDefault?.(); fail(); }
+            return;
+          }
+          try {
+            const target = sharedUrl(event.url);
+            if ((target.pathname.startsWith("/reader/") || target.pathname.startsWith("/settings")) && options.onDocument) { event.preventDefault?.(); options.onDocument(target.href); }
+          } catch { event.preventDefault?.(); fail(); }
+        });
         listen("did-start-navigation", event => {
           if (!live() || !event.isMainFrame || event.isInPlace) return;
           domReady = false;
           finalUrl = undefined;
           clearTimeout(timer);
-          timer = setTimeout(fail, options.loadTimeoutMs ?? 5_000);
+          timer = setTimeout(fail, options.loadTimeoutMs ?? (sharedOrigin ? 120_000 : 5_000));
         });
         listen("did-frame-navigate", event => {
           if (!live() || !event.isMainFrame) return;
           try {
             if (!event.httpResponseCode || event.httpResponseCode < 200 || event.httpResponseCode >= 300) throw new Error("Folio navigation failed");
-            finalUrl = sessionUrl(event.url ?? "", url.origin);
+            finalUrl = sharedOrigin ? sharedUrl(event.url ?? "").href : sessionUrl(event.url ?? "", url.origin);
             ready();
           } catch { fail(); }
         });
@@ -152,7 +178,7 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
         Object.assign(guest.style, { width: "100%", height: "100%", display: "flex", flex: "1" });
         guest.setAttribute("src", url.href);
         clearTimeout(timer);
-        timer = setTimeout(fail, options.loadTimeoutMs ?? 5_000);
+        timer = setTimeout(fail, options.loadTimeoutMs ?? (sharedOrigin ? 120_000 : 5_000));
         (container as Container).appendChild(guest);
       } catch { fail(); }
     };
@@ -162,6 +188,11 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
       void Promise.resolve().then(() => live() ? options.launch() : undefined).then(launch => {
         if (!live() || !launch) return;
         if (!Number.isFinite(launch.expiresAt) || launch.expiresAt <= Date.now()) { fail(); return; }
+        if (launch.sharedOrigin) {
+          const origin = new URL(launch.sharedOrigin);
+          if (origin.protocol !== "https:" || origin.origin !== launch.sharedOrigin) { fail(); return; }
+          sharedOrigin = origin.origin;
+        }
         attach(launch.url);
       }).catch(fail);
     }

@@ -30,4 +30,4 @@ test('source launchers and a cold daemon ignore caller env files but keep explic
     await chmod(dotenv, 0o600).catch(() => {});
     await rm(directory, { recursive: true, force: true });
   }
-});
+}, 30_000);

@@ -16,7 +16,7 @@ async function fixture() {
   return { directory, root, home, config, plist: join(home, "Library/LaunchAgents", `${startupLabel(config)}.plist`) };
 }
 
-test("enable writes a job that follows the current release, and a shell hook", async () => {
+test.skipIf(process.platform !== "darwin")("enable writes a job that follows the current release, and a shell hook", async () => {
   const f = await fixture(), commands: string[][] = [];
   const result = await enableStartup(f.config, { root: f.root, home: f.home, run: async args => { commands.push(args); return args[0] === "print" ? 1 : 0; } });
   const plist = await readFile(result.plist, "utf8");
@@ -28,7 +28,7 @@ test("enable writes a job that follows the current release, and a shell hook", a
   expect(commands.at(-1)?.[0]).toBe("bootstrap");
 });
 
-test("enabling again replaces the loaded job instead of failing", async () => {
+test.skipIf(process.platform !== "darwin")("enabling again replaces the loaded job instead of failing", async () => {
   const f = await fixture(), commands: string[][] = [];
   const run = async (args: string[]) => { commands.push(args); return 0; };
   await enableStartup(f.config, { root: f.root, home: f.home, run });
@@ -36,7 +36,7 @@ test("enabling again replaces the loaded job instead of failing", async () => {
   expect(commands.map(args => args[0])).toEqual(["print", "bootout", "bootstrap", "print", "bootout", "bootstrap"]);
 });
 
-test("disable unloads the job and removes the plist and hook", async () => {
+test.skipIf(process.platform !== "darwin")("disable unloads the job and removes the plist and hook", async () => {
   const f = await fixture();
   const enabled = await enableStartup(f.config, { root: f.root, home: f.home, run: async () => 0 });
   const result = await disableStartup(f.config, { home: f.home, run: async () => 0 });
@@ -79,7 +79,7 @@ test("status explains an enabled job that macOS did not load", async () => {
   expect(status.issue?.message).toContain("Allow in the Background");
 });
 
-test("the hook reattaches at a zsh prompt once the bridge is gone, at most every 30 seconds", async () => {
+test.skipIf(!Bun.which("zsh"))("the hook reattaches at a zsh prompt once the bridge is gone, at most every 30 seconds", async () => {
   const f = await fixture();
   const log = join(f.directory, "calls");
   await writeFile(join(f.root, "mdreview"), `#!/bin/sh\necho "$@" >> '${log}'\n`, { mode: 0o700 });
@@ -88,7 +88,7 @@ test("the hook reattaches at a zsh prompt once the bridge is gone, at most every
   await mkdir(f.config.runtimeDir, { recursive: true });
   await writeFile(f.config.cmuxBridgePath, "{}");
   const script = `. '${hook}'; . '${hook}'; print -r -- "$precmd_functions"; _tether_cmux_check; rm '${f.config.cmuxBridgePath}'; _tether_cmux_check; SECONDS=1000; _tether_cmux_check; sleep 0.3`;
-  const child = Bun.spawn(["/bin/zsh", "-f", "-c", script], { env: { PATH: "/usr/bin:/bin", CMUX_SOCKET_PATH: "/sock", CMUX_SOCKET_CAPABILITY: "cap" }, stdout: "pipe" });
+  const child = Bun.spawn([Bun.which("zsh")!, "-f", "-c", script], { env: { PATH: "/usr/bin:/bin", CMUX_SOCKET_PATH: "/sock", CMUX_SOCKET_CAPABILITY: "cap" }, stdout: "pipe" });
   expect((await new Response(child.stdout).text()).trim()).toBe("_tether_cmux_check");
   await child.exited;
   // Two sourced startups, then one prompt-time retry after the bridge vanished.

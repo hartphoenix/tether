@@ -1,3 +1,7 @@
+:root[data-phone-reader] .milkdown-top-bar { display: none !important; }
+:root:not([data-phone-reader]) :is(.wm-phone-controls,#phone-folio,#mobile-folio) { display: none; }
+:root:not([data-phone-reader]) #editor[data-readonly] .milkdown-top-bar { display: flex !important; }
+#editor[data-readonly] .top-bar-inner { display: none; }
 .wm-phone-controls {
   position: fixed;
   bottom: calc(16px + env(safe-area-inset-bottom, 0px));

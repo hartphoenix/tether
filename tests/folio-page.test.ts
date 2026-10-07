@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { JSDOM } from "jsdom";
 import { folioHtml, folioTheme } from "../src/web/folio-page";
 
-function runPage(snapshot: Record<string, unknown>, savedView?: string) {
-  const html = folioHtml({ pickerAvailable: true });
+function runPage(snapshot: Record<string, unknown>, savedView?: string, settingsOnly = false) {
+  const html = folioHtml({ pickerAvailable: true, settingsOnly });
   const dom = new JSDOM(html, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://127.0.0.1/r/test/" });
   Object.defineProperty(dom.window.HTMLDialogElement.prototype, "showModal", { configurable: true, value: function(this: HTMLDialogElement) { this.open = true; } });
   Object.defineProperty(dom.window.HTMLDialogElement.prototype, "close", { value: function(this: HTMLDialogElement) { this.open = false; this.dispatchEvent(new dom.window.Event("close")); } });
@@ -14,6 +14,7 @@ function runPage(snapshot: Record<string, unknown>, savedView?: string) {
   Object.defineProperty(dom.window, "setInterval", { value: () => 0 });
   Object.defineProperty(dom.window, "fetch", { configurable: true, value: async (input: string | URL, init?: RequestInit) => {
     const endpoint = String(input).split("/api/")[1] ?? "";
+    if (endpoint === "fly/status") return Response.json({ configured: false, enabled: false, machines: [], clients: [], attempts: [] });
     if (endpoint === "snapshot") return Response.json({ ...currentSnapshot, preferences: currentTheme });
     if (endpoint === "preferences") return Response.json(currentTheme);
     if (init?.body) requests.push({ endpoint, body: JSON.parse(String(init.body)) });
@@ -383,7 +384,7 @@ test("live theme colors preserve Folio controls and document elements", async ()
 });
 
 test("default document zoom is saved explicitly without previewing", async () => {
- const {dom,requests,refresh}=runPage({sequence:1,files:[]});
+ const {dom,requests,refresh}=runPage({sequence:1,files:[]}, undefined, true);
  await refresh();
  const doc=dom.window.document;
  doc.querySelector<HTMLButtonElement>('[data-app-action="settings"]')!.click();

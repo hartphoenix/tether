@@ -1,5 +1,5 @@
 import { useThemeReport } from "./use-theme-report";
-import { themedLaunch, intentBrowserUrl } from "./theme-sync";
+import { themedLaunch, intentBrowserUrl, themeClientId } from "./theme-sync";
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useTetherSettings } from "./use-tether-settings";
@@ -32,9 +32,12 @@ function EmbeddedFolio({ settings, cacheKey, generation, ...props }: PluginWorks
         launch: async () => {
           await themeReady.current;
           const result = await launch({ workspaceId, tetherPath, profile, generation });
-          return { ...result, url: themedLaunch(result.url) };
+          const url = new URL(result.sharedOrigin ? `${result.url}?themeClient=${themeClientId()}` : themedLaunch(result.url));
+          url.searchParams.set("embedded", "1");
+          return { ...result, url: url.href };
         },
         onState: setState,
+        onDocument: url => { void props.navigation?.openBrowser?.({ url, workspaceId }); },
       });
     }, () => { clearTimeout(timer); if (!disposed) setState("failed"); });
     return () => { disposed = true; clearTimeout(timer); cleanup(); };
@@ -77,5 +80,5 @@ export function FolioPanel(props: PluginWorkspacePanelProps) {
   if (settings.status === "loading") return <Text style={{ color: props.theme.colors.foregroundMuted, padding: 12 }}>Loading Folio…</Text>;
   if (connection.tetherPath !== settings.values.tetherPath || connection.profile !== settings.values.profile) return <Text style={{ color: props.theme.colors.foregroundMuted, padding: 12 }}>Connecting to Tether…</Text>;
   const key = folioViewKey(props.host.id, settings.values.tetherPath, settings.values.profile, props.workspaceId);
-  return <EmbeddedFolio key={`${key}:${connection.generation}`} cacheKey={key} generation={connection.generation} settings={settings.values} {...props} />;
+  return <EmbeddedFolio key={`${key}:${connection.generation}`} cacheKey={`${key}:${connection.generation}`} generation={connection.generation} settings={settings.values} {...props} />;
 }

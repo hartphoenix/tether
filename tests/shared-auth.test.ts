@@ -45,7 +45,7 @@ function fixture(input: { reader?: ReaderBackend; dispatch?: (operation: string,
     const result = await finish(await options({ action: "login", name: "Mac browser" }));
     expect(result.status).toBe(200); return result.headers.get("set-cookie")!;
   }
-  return { auth, gateway, db, send, options, finish, pair, approve, enroll, login, advance: (ms: number) => { time += ms; }, unenroll: () => { enrolled = false; }, generation: () => generation };
+  return { auth, gateway, db, passkeys, send, options, finish, pair, approve, enroll, login, advance: (ms: number) => { time += ms; }, unenroll: () => { enrolled = false; }, generation: () => generation };
 }
 
 test("public transport rejects wrong host/origin and ignores asserted proxy identity", async () => {
@@ -65,7 +65,7 @@ test("owner pairing issues one credential; bearer values are absent from the cen
   expect((await f.approve(pair)).status).toBe(200);
   const response = await f.send("/auth/pair/poll", { requestId: pair.requestId, pollSecret: pair.pollSecret });
   const credential = (await response.json()).credential;
-  expect((await f.send("/auth/pair/poll", { requestId: pair.requestId, pollSecret: pair.pollSecret })).status).toBe(403);
+  expect((await (await f.send("/auth/pair/poll", { requestId: pair.requestId, pollSecret: pair.pollSecret })).json()).credential).toEqual(credential);
   expect(JSON.stringify(f.db.query("SELECT * FROM shared_clients").all())).not.toContain(credential.token);
   expect(f.auth.client(credential.clientId)?.name).toBe("Ubuntu agent");
   const read = await f.send("/api/shared/document.read", { documentId: "doc", actor: "assistant" }, { authorization: `Bearer ${credential.token}` });
@@ -281,4 +281,57 @@ test("shared responses preserve restrictive image CSP without granting script no
   expect(response.headers.get("content-security-policy")).toBe(policy);
   expect(response.headers.get("x-content-type-options")).toBe("nosniff");
   expect(await response.text()).toBe(source);
+});
+
+
+test("approved pairing survives restart and recovers the same credential without plaintext storage", async () => {
+  const f = fixture(), pair = await f.pair(); await f.approve(pair);
+  const credential = (await (await f.send("/auth/pair/poll", { requestId: pair.requestId, pollSecret: pair.pollSecret })).json()).credential;
+  const restarted = new SharedAuth({ db: f.db, passkeys: f.passkeys, origin: ORIGIN });
+  const response = await restarted.handle(new Request(`${ORIGIN}/auth/pair/poll`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requestId: pair.requestId, pollSecret: pair.pollSecret }) }));
+  expect((await response!.json()).credential).toEqual(credential);
+  const stored = JSON.stringify(f.db.query("SELECT * FROM ceremonies").all());
+  for (const secret of [credential.token, pair.pollSecret, pair.code]) expect(stored).not.toContain(secret);
+  restarted.revoke(credential.clientId);
+  await expect(restarted.handle(new Request(`${ORIGIN}/auth/pair/poll`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requestId: pair.requestId, pollSecret: pair.pollSecret }) }))).rejects.toThrow();
+});
+
+test("global disable invalidates pending issuance and old sessions while retaining sign-in methods", async () => {
+  const f = fixture(), pair = await f.pair(); await f.approve(pair); const cookie = await f.login();
+  await f.auth.setPassword("a unique owner passphrase 9348");
+  f.auth.setEnabled(false);
+  expect(f.auth.password.configured()).toBe(true);
+  expect((await f.send("/auth/pair/poll", { requestId: pair.requestId, pollSecret: pair.pollSecret })).status).toBe(403);
+  f.auth.setEnabled(true);
+  expect((await f.send("/auth/pair/poll", { requestId: pair.requestId, pollSecret: pair.pollSecret })).status).toBe(403);
+  expect((await f.send("/api/shared/document.read", {}, { cookie, origin: ORIGIN })).status).toBe(401);
+});
+
+test("password fallback is owner-configured, throttled across restart, and issues distinct browser sessions", async () => {
+  const f = fixture(), password = "correct horse personal phrase 9482";
+  expect((await f.send("/auth/password/set", { password }, { origin: ORIGIN })).status).toBe(403);
+  const agent = await f.enroll();
+  expect((await f.send("/auth/password/set", { password }, { origin: ORIGIN, authorization: `Bearer ${agent.token}` })).status).toBe(403);
+  await f.auth.setPassword(password);
+  expect(JSON.stringify(f.db.query("SELECT * FROM owner_password").all())).not.toContain(password);
+  expect((await f.send("/auth/password/login", { password: "wrong" }, { origin: ORIGIN })).status).toBe(403);
+  expect((await f.send("/auth/password/login", { password }, { origin: ORIGIN })).status).toBe(429);
+  const restarted = new SharedAuth({ db: f.db, passkeys: f.passkeys, origin: ORIGIN });
+  await expect(restarted.password.verify(password)).rejects.toThrow("wait");
+  f.advance(2000);
+  const first = await f.send("/auth/password/login", { password, name: "Browser one" }, { origin: ORIGIN });
+  const second = await f.send("/auth/password/login", { password, name: "Browser two" }, { origin: ORIGIN });
+  expect(first.status).toBe(200); expect(second.status).toBe(200);
+  expect(first.headers.get("set-cookie")).not.toBe(second.headers.get("set-cookie"));
+  expect(first.headers.get("set-cookie")).toContain("Secure; HttpOnly; SameSite=Strict");
+});
+
+test("machine revocation includes explicitly associated agents without affecting browsers or another machine", async () => {
+  const f = fixture(), connector = await f.enroll("connector"), browser = await f.login(), independent = await f.enroll();
+  const pending = await (await f.send("/auth/pair", { kind: "agent", name: "Paseo", machineId: connector.machineId })).json(); await f.approve(pending);
+  const agent = (await (await f.send("/auth/pair/poll", { requestId: pending.requestId, pollSecret: pending.pollSecret })).json()).credential;
+  expect(f.auth.revokeMachine(connector.machineId!)).toEqual(expect.arrayContaining([connector.clientId, agent.clientId]));
+  expect(f.auth.client(independent.clientId)).not.toBeNull();
+  expect(f.auth.machines.get(connector.machineId!)).toBeDefined();
+  expect((await f.send("/api/shared/document.read", {}, { cookie: browser, origin: ORIGIN })).status).toBe(200);
 });

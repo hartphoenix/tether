@@ -9,11 +9,17 @@ export type SharedGatewayOptions = {
   reader?: ReaderBackend;
   extension?: (request: Request, client: SharedClient) => Promise<Response | null>;
   authJavaScript?: string;
+  setup?: (request: Request) => Promise<Response | null>;
 };
 function redirect(location: string) { return new Response(null, { status: 303, headers: { location } }); }
 function html(body: string, status = 200) { return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } }); }
-function authPage(path: string, requestId: string, destination: string): Response {
-  const next = /^\/reader\/d\/[A-Za-z0-9_-]+\/$/.test(destination) ? destination : "/folio";
+function authPage(path: string, requestId: string, destination: string, passwordConfigured = false): Response {
+  let next = "/folio";
+  try {
+    const candidate = new URL(destination, "https://return.invalid");
+    if (candidate.origin === "https://return.invalid" && /^(?:\/reader\/d\/[a-f0-9-]{36}\/|\/settings\/?|\/folio\/?)$/i.test(candidate.pathname)
+      && [...candidate.searchParams.keys()].every(key => ["embedded", "themeClient"].includes(key)) && !candidate.hash) next = candidate.pathname + candidate.search;
+  } catch {}
   let title = "Sign in to Tether", body = `<label>Device name <input id="name" value="Browser" maxlength="100"></label><button id="login" data-next="${escapeHtml(next)}">Verify with owner passkey</button>`;
   if (path === "/auth/enroll") {
     title = "Set up your owner passkey";
@@ -25,6 +31,7 @@ function authPage(path: string, requestId: string, destination: string): Respons
     title = "Authorized clients";
     body = '<p>Verify with your owner passkey to review authorized clients.</p><button id="list">Review clients</button>';
   }
+  if (path === "/auth/login" && passwordConfigured) body += `<details><summary>Use a password instead</summary><label>Password <input id="password" type="password" autocomplete="current-password" maxlength="128"></label><button id="password-login" data-next="${escapeHtml(next)}">Sign in</button></details>`;
   return html(page(title, `${body}<p id="status" role="status"></p><div id="clients"></div><p><a href="/folio">Open Folio</a> · <a href="/auth/clients">Authorized clients</a></p><script type="module" src="/auth/shared.js"></script>`));
 }
 
@@ -54,8 +61,10 @@ export class SharedGateway {
     headers.set("strict-transport-security", "max-age=31536000");
     let body: BodyInit | null = response.body, scriptPolicy = "'self'";
     const path = request ? new URL(request.url).pathname : "";
+    const themeClient = request ? new URL(request.url).searchParams.get("themeClient") : null;
+    if (themeClient && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(themeClient) && /^(?:\/(?:folio|settings)\/?|\/reader\/d\/[^/]+\/)$/.test(path)) headers.append("set-cookie", `__Host-tether-shared-theme=${themeClient}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=2592000`);
     // Only trusted application shells contain generated inline modules. Never nonce document content or asset responses.
-    if ((/^\/folio\/?$/.test(path) || /^\/reader\/d\/[^/]+\/$/.test(path)) && headers.get("content-type")?.startsWith("text/html")) {
+    if ((/^\/(?:folio|settings)\/?$/.test(path) || /^\/reader\/d\/[^/]+\/$/.test(path)) && headers.get("content-type")?.startsWith("text/html")) {
       const nonce = randomBytes(24).toString("base64url");
       body = (await response.text()).replaceAll('<script type="module">', `<script type="module" nonce="${nonce}">`);
       scriptPolicy += ` 'nonce-${nonce}'`; headers.delete("content-length");
@@ -82,11 +91,12 @@ export class SharedGateway {
     const requestOrigin = request.headers.get("origin");
     if (requestOrigin && requestOrigin !== expected.origin) throw new SharedAccessError("origin_mismatch", "The browser origin does not match this profile.");
     if (request.method === "GET" && url.pathname === "/auth/shared.js") return new Response(this.options.authJavaScript ?? "", { headers: { "content-type": "text/javascript" } });
-    if (request.method === "GET" && ["/auth/login", "/auth/enroll", "/auth/approve", "/auth/clients"].includes(url.pathname)) return authPage(url.pathname, url.searchParams.get("request") ?? "", url.searchParams.get("next") ?? "");
+    if (request.method === "GET" && ["/auth/login", "/auth/enroll", "/auth/approve", "/auth/clients"].includes(url.pathname)) return authPage(url.pathname, url.searchParams.get("request") ?? "", url.searchParams.get("next") ?? "", this.options.auth.password.configured());
     if (url.pathname.startsWith("/auth/")) return await this.options.auth.handle(request) ?? new Response(null, { status: 404 });
+    if (url.pathname.startsWith("/setup/") && this.options.auth.enabled()) return await this.options.setup?.(request) ?? new Response(null, { status: 404 });
     const client = this.options.auth.authenticate(request);
     if (!client) {
-      if (request.method === "GET" && (url.pathname === "/" || /^\/folio\/?$/.test(url.pathname) || /^\/reader\/d\/[^/]+\/$/.test(url.pathname))) return redirect(/^\/reader\//.test(url.pathname) ? `/auth/login?next=${encodeURIComponent(url.pathname)}` : "/auth/login");
+      if (request.method === "GET" && (url.pathname === "/" || /^\/(?:folio|settings)\/?$/.test(url.pathname) || /^\/reader\/d\/[^/]+\/$/.test(url.pathname))) return redirect(url.pathname === "/folio/" && !url.search || url.pathname === "/" ? "/auth/login" : `/auth/login?next=${encodeURIComponent(url.pathname + url.search)}`);
       throw new SharedAccessError("unauthorized", "Sign in or enroll this client to access the shared profile.", 401);
     }
     if (client.kind === "browser" && !["GET", "HEAD"].includes(request.method) && requestOrigin !== expected.origin) throw new SharedAccessError("origin_mismatch", "Browser mutations require the profile origin.");
@@ -145,7 +155,9 @@ export class SharedGateway {
       grants.add(documentId);
       if (!this.options.auth.client(client.id)) { this.closeClient(client.id); throw new SharedAccessError("unauthorized", "Client access has ended.", 401); }
       entry.lastUsed = Date.now();
-      const headers = new Headers(request.headers); headers.delete("authorization"); headers.delete("cookie");
+      const headers = new Headers(request.headers); headers.delete("authorization"); headers.delete("cookie"); headers.delete("x-tether-shared-theme");
+      const theme = (request.headers.get("cookie") ?? "").split(";").map(item => item.trim()).find(item => item.startsWith("__Host-tether-shared-theme="))?.split("=")[1];
+      if (theme && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(theme)) headers.set("x-tether-shared-theme", theme);
       entry.users++;
       let response: Response;
       try { response = await connection.request(`${resource}${url.search}`, new Request(request, { headers, signal: AbortSignal.any([request.signal, entry.abort.signal]) })); }

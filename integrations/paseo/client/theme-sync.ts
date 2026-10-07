@@ -44,7 +44,7 @@ export function intentBrowserUrl(intent: Intent): string {
   if (!intent.sharedReader) return themedLaunch(intent.url);
   const reader = sharedReaderSchema.parse(intent.sharedReader);
   if (reader.url !== intent.url) throw new Error('Mismatched shared reader address');
-  return reader.url;
+  return `${reader.url}?themeClient=${themeClientId()}`;
 }
 
 const reports = new Map<string, { theme: string | null; promise: Promise<unknown>; settled: boolean }>();

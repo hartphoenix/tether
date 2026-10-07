@@ -15,6 +15,20 @@ import { createDaemon, startDaemon, type TetherDaemon } from "../src/server/serv
 import { readSharedConfig, startSharedProfile, writeSharedConfig } from "../src/server/shared-profile";
 import { cookieVerifier, ViewStore } from "../src/server/view-store";
 import { PrivateStore } from "../src/storage/private-store";
+import { writeRemoteBinding } from "../src/remote/binding";
+
+test("a bound client profile cannot create a second authority through local management or daemon startup", async () => {
+  const directory = await mkdtemp("/tmp/tether-bound-profile-"); directories.push(directory);
+  const config = resolveConfig({ configDir: join(directory, "config"), runtimeDir: join(directory, "runtime") });
+  await writeRemoteBinding(config, { connection: join(directory, "private-connection.json"), receiver: "plugin" });
+  for (const args of [["shared", "manage", "status", "--input", "{}"], ["startup", "enable"], ["cmux", "attach"]]) {
+    const result = await runCli(args, { config });
+    expect(result.exitCode).not.toBe(0);
+    expect(JSON.stringify(result.response)).toContain("bound to a shared hub");
+  }
+  await expect(startDaemon({ config })).rejects.toThrow("cannot start a local library");
+  expect(await Bun.file(join(config.configDir, "tether.sqlite")).exists()).toBe(false);
+});
 
 const directories: string[] = [];
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
@@ -203,7 +217,7 @@ test("shared shutdown drains admitted dispatches before releasing reader resourc
       completed = true; return { completed: true };
     },
     reader: { open: async () => ({ request: async () => Response.json({ opened: true }), close: async () => { readerClosed = true; } }) },
-    page: async () => null,
+    page: async () => null, subscribe: () => () => {},
   } } as unknown as TetherDaemon;
   const shared = await startSharedProfile(daemon, { origin, port: 0, owner: "Test owner", active: true });
   const token = "c".repeat(43);

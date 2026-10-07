@@ -1,3 +1,6 @@
+import { DurableMap } from "../storage/durable-map";
+import { Machines } from "../storage/machines";
+import { OwnerPassword } from "./password";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { PasskeyProvider } from "./passkeys";
@@ -47,14 +50,16 @@ export async function sharedJson(request: Pick<Request, "headers" | "body">, lim
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new SharedAccessError("invalid_request", "A JSON object is required.", 400);
   return value as Record<string, any>;
 }
-type Pairing = { name: string; kind: "agent" | "connector"; machineId: string | null; code: string; pollHash: string; expires: number; attempts: number; approved: boolean };
+type Pairing = { name: string; kind: "agent" | "connector"; machineId: string | null; codeHash: string; clientId?: string; qualifyPaths?: boolean; machineName?: string; pollHash: string; expires: number; attempts: number; approved: boolean };
 type Challenge = { challenge: string; action: "login" | "approve" | "list" | "revoke" | "register" | "replace"; binding: string; expires: number; epoch: number; name?: string; target?: string };
 
 /** One owner authority and equal library access for individually revocable clients. */
 export class SharedAuth {
   readonly origin: string;
   private readonly now: () => number;
-  private readonly pairings = new Map<string, Pairing>();
+  private readonly pairings: DurableMap<Pairing>;
+  readonly machines: Machines;
+  readonly password: OwnerPassword;
   private readonly challenges = new Map<string, Challenge>();
   private readonly listeners = new Set<(clientId: string) => void>();
   private enrollment?: { hash: string; expires: number; replace: boolean; attempts: number };
@@ -62,18 +67,54 @@ export class SharedAuth {
   private rate = { window: 0, count: 0 };
   constructor(private readonly options: { db: Database; passkeys: PasskeyProvider; origin: string; localMachineId?: string; now?: () => number }) {
     this.origin = sharedOrigin(options.origin); this.now = options.now ?? Date.now;
+    this.pairings = new DurableMap(options.db, "pairings");
+    this.machines = new Machines(options.db);
+    this.password = new OwnerPassword(options.db, this.now);
+    options.db.exec("CREATE TABLE IF NOT EXISTS shared_state (key TEXT PRIMARY KEY,value TEXT NOT NULL)");
     options.db.exec(`CREATE TABLE IF NOT EXISTS shared_clients (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('browser','agent','connector')),
       machine_id TEXT, token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL,
       expires_at INTEGER NOT NULL, revoked_at INTEGER
     ); CREATE INDEX IF NOT EXISTS shared_clients_token ON shared_clients(token_hash);
-    CREATE UNIQUE INDEX IF NOT EXISTS shared_clients_machine ON shared_clients(machine_id) WHERE revoked_at IS NULL AND machine_id IS NOT NULL;`);
+    DROP INDEX IF EXISTS shared_clients_machine;
+    CREATE UNIQUE INDEX IF NOT EXISTS shared_connector_machine ON shared_clients(machine_id) WHERE revoked_at IS NULL AND machine_id IS NOT NULL AND kind='connector';`);
+  }
+  enabled(): boolean { return (this.options.db.query("SELECT value FROM shared_state WHERE key='enabled'").get() as {value:string} | null)?.value !== "false"; }
+  setEnabled(enabled: boolean): void {
+    if (!enabled) {
+      this.epoch++; this.challenges.clear(); this.pairings.clear(); this.enrollment = undefined;
+      for (const client of this.clients()) this.revoke(client.id);
+    }
+    this.options.db.query("INSERT OR REPLACE INTO shared_state(key,value) VALUES('enabled',?)").run(String(enabled));
+  }
+  revokeMachine(machineId: string): string[] {
+    const ids = this.clients().filter(client => client.machineId === machineId && client.revokedAt === null).map(client => client.id);
+    for (const [id, pair] of this.pairings) if (pair.machineId === machineId) this.pairings.delete(id);
+    for (const id of ids) this.revoke(id);
+    return ids;
+  }
+  associate(clientId: string, machineId: string): void {
+    const client = this.client(clientId);
+    if (!client || client.kind !== "agent" || !this.machines.get(machineId)) deny("Select an agent client and an existing file machine.");
+    this.options.db.query("UPDATE shared_clients SET machine_id=? WHERE id=?").run(machineId, clientId);
+  }
+  async setPassword(password: unknown, keepClient?: string): Promise<void> {
+    const epoch = this.epoch;
+    await this.password.set(password, () => epoch === this.epoch && (!keepClient || this.client(keepClient)?.kind === "browser"));
+    this.epoch++; this.challenges.clear();
+    // Changing a password ends other browser sessions, never file connectors.
+    for (const client of this.clients()) if (client.kind === "browser" && client.id !== keepClient) this.revoke(client.id);
+  }
+  private session(name: string): Response {
+    const credential = this.issue(name, "browser", null);
+    return Response.json({ authenticated: true, clientId: credential.clientId }, { headers: { "set-cookie": cookie(SESSION, credential.token, Math.floor((credential.expiresAt - this.now()) / 1000)) } });
   }
   client(id: string): SharedClient | null {
     return this.options.db.query(`${selectClients} WHERE id=? AND revoked_at IS NULL AND expires_at>?`).get(id, this.now()) as SharedClient | null;
   }
   clients(): SharedClient[] { return this.options.db.query(`${selectClients} ORDER BY created_at DESC,id`).all() as SharedClient[]; }
   authenticate(request: Request): SharedClient | null {
+    if (!this.enabled()) return null;
     const authorization = request.headers.get("authorization");
     const bearer = authorization?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
     if (authorization && !bearer) return null;
@@ -97,13 +138,13 @@ export class SharedAuth {
     this.enrollment = { hash: digest(code), expires: expiresAt, replace, attempts: 0 };
     return { code, expiresAt };
   }
-  private issue(name: string, kind: SharedClientKind, machineId: string | null): SharedCredential {
-    const token = secret(), clientId = randomUUID(), createdAt = this.now(), expiresAt = createdAt + (kind === "browser" ? 30 : 90) * DAY;
+  private issue(name: string, kind: SharedClientKind, machineId: string | null, token = secret()): SharedCredential {
+    const clientId = randomUUID(), createdAt = this.now(), expiresAt = createdAt + (kind === "browser" ? 30 : 90) * DAY;
     const replaced: string[] = [];
     this.options.db.transaction(() => {
       if (kind === "connector" && machineId) {
-        const previous = this.options.db.query("SELECT id FROM shared_clients WHERE machine_id=? AND revoked_at IS NULL").all(machineId) as { id: string }[];
-        this.options.db.query("UPDATE shared_clients SET revoked_at=? WHERE machine_id=? AND revoked_at IS NULL").run(createdAt, machineId);
+        const previous = this.options.db.query("SELECT id FROM shared_clients WHERE machine_id=? AND kind='connector' AND revoked_at IS NULL").all(machineId) as { id: string }[];
+        this.options.db.query("UPDATE shared_clients SET revoked_at=? WHERE machine_id=? AND kind='connector' AND revoked_at IS NULL").run(createdAt, machineId);
         replaced.push(...previous.map(client => client.id));
       }
       this.options.db.query("INSERT INTO shared_clients(id,name,kind,machine_id,token_hash,created_at,expires_at) VALUES(?,?,?,?,?,?,?)").run(clientId, name, kind, machineId, digest(token), createdAt, expiresAt);
@@ -134,28 +175,56 @@ export class SharedAuth {
     const url = new URL(request.url), path = url.pathname;
     if (!path.startsWith("/auth/")) return null;
     this.expire();
+    if (!this.enabled()) throw new SharedAccessError("fly_disabled", "Tether Fly is disabled. Enable it through the hub’s local Settings.", 403);
     if (request.method !== "POST") return null;
     const body = await sharedJson(request);
     if (path === "/auth/pair/poll") {
       const pair = this.pairings.get(body.requestId);
       if (!pair || typeof body.pollSecret !== "string" || digest(body.pollSecret) !== pair.pollHash) deny();
       if (!pair.approved) return Response.json({ status: "pending", expiresAt: pair.expires });
-      this.pairings.delete(body.requestId);
-      return Response.json({ status: "approved", credential: this.issue(pair.name, pair.kind, pair.machineId) });
+      const token = createHash("sha256").update(`tether-pair-v1:${body.requestId}:${body.pollSecret}`).digest("base64url");
+      let credential: SharedCredential;
+      if (pair.clientId) {
+        const client = this.client(pair.clientId); if (!client) deny();
+        credential = { origin: this.origin, clientId: client.id, machineId: client.machineId, expiresAt: client.expiresAt, token };
+      } else {
+        this.options.db.transaction(() => {
+          if (pair.kind === "connector" && pair.machineId) this.machines.set(pair.machineId, pair.machineName ?? this.machines.get(pair.machineId)?.name ?? pair.name, pair.qualifyPaths);
+          credential = this.issue(pair.name, pair.kind, pair.machineId, token);
+          pair.clientId = credential.clientId; this.pairings.set(body.requestId, pair);
+        })();
+      }
+      return Response.json({ status: "approved", credential: credential! });
     }
     this.limit();
     if (path === "/auth/pair") {
+      if (!this.options.passkeys.enrolled()) throw new SharedAccessError("owner_enrollment_required", "Establish the owner passkey at this HTTPS origin before pairing clients.", 409);
       if (this.pairings.size >= 32) throw new SharedAccessError("rate_limited", "Too many pending client requests.", 429);
       if (body.kind !== "agent" && body.kind !== "connector") throw new SharedAccessError("invalid_client", "Client kind must be agent or connector.", 400);
-      if (body.machineId !== undefined && (body.kind !== "connector" || typeof body.machineId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(body.machineId) || body.machineId === this.options.localMachineId)) throw new SharedAccessError("invalid_machine", "Choose an enrolled file-machine UUID; the service's own local machine cannot be paired.", 400);
+      if (body.machineId !== undefined && (typeof body.machineId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(body.machineId) || body.machineId === this.options.localMachineId)) throw new SharedAccessError("invalid_machine", "Choose an enrolled file-machine UUID; the service's own local machine cannot be paired.", 400);
+      if (body.kind === "agent" && body.machineId && !this.machines.get(body.machineId)) deny("Choose an existing file machine for this agent.");
+      if (body.qualifyPaths !== undefined && typeof body.qualifyPaths !== "boolean") deny();
       const name = label(body.name), requestId = secret(), pollSecret = secret(), code = randomBytes(5).toString("hex").toUpperCase(), expiresAt = this.now() + FIVE_MINUTES;
-      this.pairings.set(requestId, { name, kind: body.kind, machineId: body.kind === "connector" ? body.machineId ?? randomUUID() : null, code, pollHash: digest(pollSecret), expires: expiresAt, attempts: 0, approved: false });
+      this.pairings.set(requestId, { name, kind: body.kind, machineId: body.kind === "connector" ? body.machineId ?? randomUUID() : body.machineId ?? null, codeHash: digest(code), qualifyPaths: body.qualifyPaths, ...(body.machineName ? { machineName: label(body.machineName) } : {}), pollHash: digest(pollSecret), expires: expiresAt, attempts: 0, approved: false });
       return Response.json({ requestId, pollSecret, code, machineId: this.pairings.get(requestId)!.machineId, expiresAt, verificationUrl: `${this.origin}/auth/approve?request=${requestId}` });
     }
     if (request.headers.get("origin") !== this.origin) deny("The browser origin did not match this profile.");
+    if (path === "/auth/password/login") {
+      const epoch = this.epoch;
+      if (!await this.password.verify(body.password) || epoch !== this.epoch || !this.enabled()) deny("Sign-in failed. Check your password or use your passkey.");
+      return this.session(label(body.name ?? "Browser"));
+    }
+    if (path === "/auth/password/set") {
+      const client = this.authenticate(request); if (client?.kind !== "browser") deny();
+      await this.setPassword(body.password, client.id); return Response.json({ configured: true });
+    }
+    if (path === "/auth/session") {
+      const client = this.authenticate(request); if (client?.kind !== "browser") deny();
+      return Response.json({ client, clients: this.clients(), passwordConfigured: this.password.configured() });
+    }
     if (path === "/auth/pair/context") {
       const pair = this.pairings.get(body.requestId); if (!pair) deny();
-      return Response.json({ name: pair.name, kind: pair.kind, machineId: pair.machineId, replaces: pair.machineId ? this.clients().filter(client => client.machineId === pair.machineId && client.revokedAt === null).map(client => client.name) : [], expiresAt: pair.expires });
+      return Response.json({ name: pair.name, kind: pair.kind, machineId: pair.machineId, machineName: pair.machineName ?? this.machines.get(pair.machineId ?? "")?.name, qualifyPaths: pair.qualifyPaths ?? this.machines.get(pair.machineId ?? "")?.qualifyPaths ?? false, replaces: pair.kind === "connector" && pair.machineId ? this.clients().filter(client => client.kind === "connector" && client.machineId === pair.machineId && client.revokedAt === null).map(client => client.name) : [], expiresAt: pair.expires });
     }
     if (path === "/auth/options") {
       const binding = secret(); let result;
@@ -166,7 +235,8 @@ export class SharedAuth {
         result = await this.challenge(enrollment.replace ? "replace" : "register", binding);
       } else if (body.action === "approve") {
         const pair = this.pairings.get(body.requestId);
-        if (!pair || pair.approved || ++pair.attempts > 5 || typeof body.code !== "string" || body.code.toUpperCase().replaceAll("-", "") !== pair.code) deny("The client request or verification code is invalid or expired.");
+        if (pair) { pair.attempts++; this.pairings.set(body.requestId, pair); }
+        if (!pair || pair.approved || pair.attempts > 5 || typeof body.code !== "string" || digest(body.code.toUpperCase().replaceAll("-", "")) !== pair.codeHash) deny("The client request or verification code is invalid or expired.");
         result = await this.challenge("approve", binding, { target: body.requestId });
       } else if (body.action === "login") result = await this.challenge("login", binding, { name: label(body.name ?? "Browser") });
       else if (body.action === "list") result = await this.challenge("list", binding);
@@ -187,12 +257,11 @@ export class SharedAuth {
       if (challenge.epoch !== this.epoch || challenge.expires <= this.now()) deny();
       if (challenge.action === "approve") {
         const pair = this.pairings.get(challenge.target!); if (!pair || pair.expires <= this.now() || pair.approved) deny();
-        pair.approved = true; return Response.json({ approved: true });
+        pair.approved = true; this.pairings.set(challenge.target!, pair); return Response.json({ approved: true });
       }
       if (challenge.action === "list") return Response.json({ clients: this.clients() });
       if (challenge.action === "revoke") return Response.json({ revoked: this.revoke(challenge.target!), clients: this.clients() });
-      const credential = this.issue(challenge.name!, "browser", null);
-      return Response.json({ authenticated: true, clientId: credential.clientId }, { headers: { "set-cookie": cookie(SESSION, credential.token, Math.floor((credential.expiresAt - this.now()) / 1000)) } });
+      return this.session(challenge.name!);
     }
     if (path === "/auth/logout") {
       const client = this.authenticate(request); if (client?.kind === "browser") this.revoke(client.id);

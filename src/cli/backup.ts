@@ -7,14 +7,14 @@ import { statusDaemon } from "../server/lifecycle";
 
 type Manifest = { format: "tether-backup-v1"; files: Record<string, string> };
 const digest = (data: Uint8Array) => createHash("sha256").update(data).digest("hex");
-const stateFiles = ["preferences.json", "launch.json", "recent-files.json", "updates.json", "shared-profile.json", "owner-passkey.json"];
+const stateFiles = ["preferences.json", "launch.json", "recent-files.json", "updates.json", "shared-profile.json", "owner-passkey.json", "authority-transfer.json"];
 const allowed = (name: string) => name === "tether.sqlite" || stateFiles.includes(name) || /^documents\/[^/]+\.md$/.test(name);
 
 /** A stopped daemon plus its startup lock prevents concurrent app writes. */
-export async function backupState(config: TetherConfig, output: string): Promise<{ directory: string; files: number }> {
+export async function backupState(config: TetherConfig, output: string, alreadyLocked = false): Promise<{ directory: string; files: number }> {
   const directory = resolve(output);
   if (!relative(config.configDir, directory).startsWith("..")) throw new Error("Put backups outside the live configuration directory.");
-  const lock = await acquireStartupLock(config);
+  const lock = alreadyLocked ? null : await acquireStartupLock(config);
   try {
     if ((await statusDaemon(config)).running) throw new Error("Quit Tether before backup: tether daemon stop");
     const databasePath = join(config.configDir, "tether.sqlite");
@@ -46,7 +46,7 @@ export async function backupState(config: TetherConfig, output: string): Promise
     // Publish the manifest last; an incomplete directory is not a backup.
     await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", { flag: "wx", mode: 0o600 });
     return { directory, files: Object.keys(manifest.files).length };
-  } finally { await lock.release(); }
+  } finally { await lock?.release(); }
 }
 
 /** Restore into a new directory only. Live state and Markdown are never replaced. */

@@ -1,3 +1,4 @@
+import { localTransport, type LibraryTransport } from "./transport";
 import type { Connection, FolioEntry, HubStatus, Intent, Notice, PumpBatch } from "../shared/contracts";
 import { folioViewSchema, sharedReaderSchema, type SharedReader, type FolioView } from "../shared/contracts";
 import type { TetherRunner } from "./tether-cli";
@@ -16,7 +17,7 @@ type TetherIntent = {
   target?: Record<string, string>;
   expiresAt: number;
 };
-type WaitBatch = { cursor: number; folio: number; intents: TetherIntent[]; instanceId: string };
+export type WaitBatch = { libraryId?: string; origin?: string; cursor: number; folio: number; intents: TetherIntent[]; instanceId: string };
 
 /** The Paseo lookup the hub needs, supplied from a handler context. */
 export type PaseoLookup = {
@@ -25,6 +26,7 @@ export type PaseoLookup = {
 
 export type HubOptions = {
   run: TetherRunner;
+  transport?: LibraryTransport;
   connection?: Connection;
   now?: () => number;
   leaseMs?: number;
@@ -49,6 +51,7 @@ function fileName(path: string): string {
  * per-workspace notices. Focus moves only on a user's action.
  */
 export class Hub {
+  private readonly transport: LibraryTransport;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private running = false;
@@ -65,6 +68,7 @@ export class Hub {
   private status: HubStatus = { connected: false, tether: null, error: null };
 
   constructor(private readonly options: HubOptions) {
+    this.transport = options.transport ?? localTransport(options.run);
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   }
@@ -126,8 +130,12 @@ export class Hub {
   /** One `tether paseo wait` round: absorb intents, then refresh Folio if it changed. */
   async pullOnce(): Promise<void> {
     this.assertActive();
-    const batch = await this.options.run(["paseo", "wait", "--after", String(this.cursor), "--folio", String(this.folioVersion), "--timeout", String(this.options.waitSeconds ?? 20)]) as WaitBatch;
+    const batch = await this.transport.pull(this.cursor, this.folioVersion, this.options.waitSeconds ?? 20);
     this.assertActive();
+    if (this.options.connection?.shared && batch.libraryId && batch.origin) {
+      if (!/^[a-f0-9-]{36}$/i.test(batch.libraryId) || new URL(batch.origin).origin !== batch.origin || !batch.origin.startsWith("https://")) throw new Error("Invalid shared library identity.");
+      Object.assign(this.options.connection, { libraryId: batch.libraryId, sharedOrigin: batch.origin });
+    }
     if (batch.instanceId !== this.instanceId) {
       // A restarted daemon numbers intents and Folio versions from scratch.
       this.instanceId = batch.instanceId;
@@ -161,7 +169,7 @@ export class Hub {
     }
     this.cursor = Math.max(this.cursor, batch.cursor);
     for (let index = 0; index < acknowledged.length; index += 256) {
-      await this.options.run(["paseo", "ack", ...acknowledged.slice(index, index + 256)]);
+      await this.transport.acknowledge(acknowledged.slice(index, index + 256));
       this.assertActive();
     }
     if (batch.folio !== this.folioVersion) {
@@ -193,7 +201,7 @@ export class Hub {
   }
 
   private async refreshFolio(): Promise<void> {
-    const data = await this.options.run(["folio", "list", "--view", "active", "--sort", "opened"]) as { files: Array<Record<string, unknown>> };
+    const data = await this.transport.list();
     this.assertActive();
     const entries: FolioEntry[] = data.files.map(file => ({
       ...(typeof file.id === "string" ? { documentId: file.id } : {}),
@@ -260,7 +268,7 @@ export class Hub {
     for (let index = 0; index < done.length; index += 256) {
       const chunk = done.slice(index, index + 256);
       const daemonIds = chunk.filter(id => !this.held.get(id)?.local);
-      if (daemonIds.length) await this.options.run(["paseo", "ack", ...daemonIds]);
+      if (daemonIds.length) await this.transport.acknowledge(daemonIds);
       this.assertActive();
       for (const id of chunk) {
         const held = this.held.get(id);
@@ -281,7 +289,15 @@ export class Hub {
   /** Open a document for the user; the tab returns through `pump` as an intent. */
   async open(path: string, workspaceId: string): Promise<void> {
     this.assertActive();
-    await this.options.run(["open", path, "--host", "paseo"], { TETHER_PASEO_WORKSPACE_ID: workspaceId, TETHER_PASEO_ORIGIN: "user" });
+    const reader = await this.transport.open(path, workspaceId);
+    this.assertActive();
+    if (reader) {
+      sharedReaderSchema.parse(reader);
+      const id = crypto.randomUUID();
+      this.held.set(id, { intent: { id, url: reader.url, workspaceId, sharedReader: reader }, leaseUntil: 0, expiresAt: this.now() + 30_000,
+        notices: new Map([...this.notices].filter(([, notice]) => notice.sharedReader?.documentId === reader.documentId)), local: true });
+      this.changed();
+    }
   }
 
   /** Only the human's notice click creates a browser intent for a shared reader. */
@@ -298,20 +314,18 @@ export class Hub {
 
   async theme(clientId: string, theme: string | null): Promise<{ updated: boolean }> {
     this.assertActive();
-    await this.options.run(["paseo", "theme", clientId, theme ?? "unknown"]);
+    await this.transport.theme(clientId, theme);
     return { updated: true };
   }
 
   async pin(path: string, pinned: boolean): Promise<void> {
     this.assertActive();
-    await this.options.run(["folio", "pin", path, ...(pinned ? [] : ["--off"])]);
+    await this.transport.pin(path, pinned);
   }
 
   /** Mint a one-use Folio launch for this client; never share tickets between clients. */
   async folioView(workspaceId: string): Promise<FolioView> {
     this.assertActive();
-    return folioViewSchema.parse(await this.options.run(["folio", "--url", "--host", "paseo"], {
-      TETHER_PASEO_WORKSPACE_ID: workspaceId, TETHER_PASEO_ORIGIN: "user",
-    }));
+    return folioViewSchema.parse(await this.transport.folio(workspaceId));
   }
 }

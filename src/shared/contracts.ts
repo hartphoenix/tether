@@ -35,6 +35,7 @@ export type SerializableAnnotationState = {
 };
 
 export type DocumentSnapshot = {
+  machine?: import("./machine-path").FileMachine;
   documentId?: string;
   machineId?: string;
   locationVersion?: number;

@@ -21,7 +21,7 @@ function Connection({ theme }: Pick<PluginSurfaceProps, "theme">) {
 
 function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfaceProps["theme"] }) {
   // Text fields save together, against the revision they were drafted from.
-  const [draft, setDraft] = useState(() => ({ tetherPath: settings.values.tetherPath, profile: settings.values.profile, revision: settings.revision }));
+  const [draft, setDraft] = useState(() => ({ tetherPath: settings.values.tetherPath, profile: settings.values.profile, sharedConnection: settings.values.sharedConnection, revision: settings.revision }));
   const muted = useMemo(() => ({ color: theme.colors.foregroundMuted }), [theme]);
   return (
     <SettingsSection title="Tether">
@@ -52,11 +52,18 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
           error={settings.saveError}
           onChangeText={profile => setDraft(current => ({ ...current, profile }))}
         />
+        <SettingsInput
+          label="Shared library connection"
+          hint="Private connection file on this Paseo daemon’s machine; leave empty for a local profile."
+          initialValue={draft.sharedConnection}
+          disabled={settings.saving}
+          onChangeText={sharedConnection => setDraft(current => ({ ...current, sharedConnection }))}
+        />
         <SettingsAction
           label="Connection settings"
           actionLabel="Save"
           disabled={settings.saving}
-          onPress={() => { void settings.save({ ...settings.values, tetherPath: draft.tetherPath, profile: draft.profile }, draft.revision); }}
+          onPress={() => { void settings.save({ ...settings.values, tetherPath: draft.tetherPath, profile: draft.profile, sharedConnection: draft.sharedConnection }, draft.revision); }}
         />
       </SettingsCard>
       <Text style={muted}>Changes take effect on the next request to Tether.</Text>

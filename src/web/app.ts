@@ -1,3 +1,5 @@
+import { mountReaderLayout } from "./reader-layout";
+import { formatMachinePath, type FileMachine } from "../shared/machine-path";
 import { mountMobileFolio } from "./mobile-folio";
 import { createSourceEditor } from './source-editor';
 import { diagramViewer } from "./diagram-viewer";
@@ -163,7 +165,11 @@ const threadSizing = createThreadSizing(async value => {
 const fileActions = createFileActions({
   path: () => currentPath,
   notice: message => chrome.setNotice(message),
-  copy: async () => { await navigator.clipboard.writeText(currentPath); chrome.setNotice('File path copied.'); },
+  copy: async () => {
+    const { machine } = await api<{ machine?: FileMachine }>("api/machine");
+    if (!machine) throw new Error("The file machine’s copy preference is unavailable. Reconnect before copying its path.");
+    await navigator.clipboard.writeText(formatMachinePath(currentPath, machine)); chrome.setNotice('File path copied.');
+  },
   reveal: async () => { await api('api/file/reveal', { method: 'POST' }); },
   move: async target => {
     if (!(await save())) throw new Error('Save or resolve the current conflict before moving.');
@@ -542,6 +548,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     setMermaidPreviews(documentResponse.diagramPreviews, documentResponse.diagramPalette);
     ledgerReadOnly = Boolean(documentResponse.readOnly);
     readOnly = ledgerReadOnly || documentResponse.bodyEditable === false;
+    editorRoot.toggleAttribute("data-readonly", readOnly);
     fileActions.update(revealAvailable, readOnly);
     document.title = filenameStem(currentPath);
     const prepared = prepareMarkdown(documentResponse.body);
@@ -683,7 +690,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     applyAnnotationState(documentResponse.annotations);
     if (readOnly) {
       chrome.setNotice(documentResponse.bodyEditable === false && !documentResponse.readOnly
-        ? (document.documentElement.dataset.phoneReader ? "" : "Reading and commenting. Document editing is unavailable in this session.")
+        ? (document.documentElement.hasAttribute("data-phone-reader") ? "" : "Reading and commenting. Document editing is unavailable in this session.")
         : `Read-only: ${documentResponse.ledgerError ?? "Malformed annotation ledger."}`, 0);
     } else {
       chrome.setNotice("");
@@ -793,6 +800,8 @@ async function lease(generation = documentGeneration, path = currentPath, signal
   } catch (error) {
     if ((error as Error & { status?: number }).status === 422) {
       readOnly = true;
+      editorRoot.toggleAttribute("data-readonly", true);
+      crepe?.setReadonly(true);
       ledgerReadOnly = true;
       if (sourceEditor) sourceEditor.setReadOnly(true);
       fileActions.update(revealAvailable, true);
@@ -822,8 +831,7 @@ async function start(): Promise<void> {
     if (position && typeof position.scroll === "number" && position.scroll >= 0) bootstrap.scroll = position.scroll;
     if (position && typeof position.zoom === "number" && position.zoom >= 75 && position.zoom <= 175) bootstrap.zoom = position.zoom;
   } catch {}
-  if (bootstrap.remoteReader && !document.getElementById("phone-comment")) {
-    if (!sharedReader || matchMedia("(max-width: 700px)").matches) document.documentElement.dataset.phoneReader = "true";
+  if (!document.getElementById("phone-comment")) {
     const button = document.createElement("button");
     button.id = "phone-comment"; button.type = "button"; button.innerHTML = iconSvg("pen-nib");
     button.setAttribute("aria-label", "Comment on selection");
@@ -839,12 +847,11 @@ async function start(): Promise<void> {
     const controls = document.createElement("nav");
     controls.setAttribute("aria-label", "Reader comments");
     controls.className = "wm-phone-controls";
-    controls.append(button, commentButton);
+    controls.append(button);
     document.body.append(controls);
     const mobileTheme = themeButton.closest<HTMLElement>(".wm-theme-picker")!;
-    mobileTheme.classList.add("wm-phone-theme-picker");
-    document.body.append(mobileTheme);
-    mountMobileFolio({ list: () => api("api/folio"), beforeOpen: () => annotationUi?.setRailOpen(false) });
+    const folio = bootstrap.remoteReader ? mountMobileFolio({ settingsUrl: sharedReader ? "/settings/" : undefined, list: () => api("api/folio"), beforeOpen: () => annotationUi?.setRailOpen(false) }) : undefined;
+    mountReaderLayout({ controls, extras: [fileActions.root, sourceButton], comment: commentButton, theme: mobileTheme, closeFolio: () => folio?.close(false) });
   }
   if (bootstrap.updateControls && !updateMounted) { mountUpdates(); updateMounted = true; }
   pageOpensLinks = bootstrap.capabilities?.pageOpensLinks === true;
@@ -859,7 +866,7 @@ async function start(): Promise<void> {
   try {
     themePicker = createThemePicker(themeButton, themeMenu, editorRoot, {
       initialTheme: bootstrap.preferences.theme,
-      hideInheritance: bootstrap.remoteReader,
+      hideInheritance: bootstrap.remoteReader && !sharedReader,
       inheritPaseoTheme: bootstrap.preferences.inheritPaseoTheme,
       customThemes: bootstrap.preferences.customThemes,
       makerButton: bootstrap.remoteReader && !sharedReader ? undefined : document.querySelector<HTMLButtonElement>("#theme-maker")!,

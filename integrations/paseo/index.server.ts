@@ -1,3 +1,4 @@
+import { sharedTransport } from "./server/transport";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { Hub } from "./server/hub";
 import { paseoLookup } from "./server/paseo-lookup";
@@ -8,7 +9,7 @@ import { ackRpc, folioViewRpc, openRpc, openNoticeRpc, pinRpc, pumpRpc, themeRpc
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(tetherSettings);
   const pool = new ProcessPool();
-  type Session = { connection: Connection; controller: AbortController; hub: Hub };
+  type Session = { sharedConnection: string; connection: Connection; controller: AbortController; hub: Hub };
   let current: Session | null = null;
   let disposed = false, subscribed = false, buttons = true;
   const clear = () => {
@@ -22,19 +23,21 @@ export default function contribute(server: PluginServerContext) {
     if (state.status !== "ready") { clear(); return; }
     const values = state.values;
     buttons = values.buttons;
-    if (current?.connection.tetherPath === values.tetherPath && current.connection.profile === values.profile) {
+    if (current?.connection.tetherPath === values.tetherPath && current.connection.profile === values.profile && current.sharedConnection === values.sharedConnection) {
       current.hub.presentationChanged();
       return;
     }
     clear();
-    const connection = { generation: crypto.randomUUID(), tetherPath: values.tetherPath, profile: values.profile };
+    const connection = { generation: crypto.randomUUID(), tetherPath: values.tetherPath, profile: values.profile, shared: !!values.sharedConnection };
     const controller = new AbortController();
+    const run = createTetherRunner({ binary: () => resolveTether(connection.tetherPath), profile: () => connection.profile, signal: controller.signal, pool });
     const hub = new Hub({
       connection,
-      run: createTetherRunner({ binary: () => resolveTether(connection.tetherPath), profile: () => connection.profile, signal: controller.signal, pool }),
+      run,
+      ...(values.sharedConnection ? { transport: sharedTransport(run, values.sharedConnection) } : {}),
       buttons: () => buttons,
     });
-    current = { connection, controller, hub };
+    current = { connection, controller, hub, sharedConnection: values.sharedConnection };
     hub.start();
   };
   let initialized!: () => void;

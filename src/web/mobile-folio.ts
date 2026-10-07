@@ -2,7 +2,7 @@ import { iconSvg } from "./icons";
 import type { RemoteFolioEntry } from "../remote/contracts";
 
 /** Phone navigation uses opaque document IDs; file locations remain with the adapter. */
-export function mountMobileFolio(options: { list: () => Promise<RemoteFolioEntry[]>; beforeOpen: () => void }) {
+export function mountMobileFolio(options: { settingsUrl?: string; list: () => Promise<RemoteFolioEntry[]>; beforeOpen: () => void }) {
   const trigger = document.createElement("button");
   trigger.id = "phone-folio"; trigger.type = "button"; trigger.className = "wm-phone-folio-button";
   trigger.innerHTML = iconSvg("folder-open"); trigger.setAttribute("aria-label", "Open Folio");
@@ -17,6 +17,10 @@ export function mountMobileFolio(options: { list: () => Promise<RemoteFolioEntry
     <details><summary aria-label="Folio menu" title="Folio menu">${iconSvg("list")}</summary><div class="wm-folio-popover"><button type="button" class="wm-folio-refresh">Refresh Folio</button><button type="button" class="wm-folio-close">Close Folio</button></div></details></div></header>
     <section id="mobile-folio-filters" aria-label="Filters"><form class="wm-folio-filter-entry"><input type="search" aria-label="Filter documents" placeholder="filter"><button type="submit" aria-label="Save filter" title="Save filter">${iconSvg("plus")}</button><button type="button" class="wm-folio-clear" aria-label="Clear filter">${iconSvg("x")}</button></form><div class="wm-folio-filter-bank" aria-label="Saved filters"></div></section>
     <p role="status"></p><div class="wm-folio-files"></div>`;
+  if (options.settingsUrl) {
+    const settings = document.createElement("a"); settings.textContent = "Settings"; settings.href = options.settingsUrl; settings.target = "tether-settings";
+    drawer.querySelector(".wm-folio-close")!.before(settings);
+  }
   document.body.append(trigger, drawer);
   const filter = drawer.querySelector("input")!, sort = drawer.querySelector("select")!;
   const bank = drawer.querySelector<HTMLElement>(".wm-folio-filter-bank")!;

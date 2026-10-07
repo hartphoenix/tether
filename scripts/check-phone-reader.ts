@@ -123,6 +123,16 @@ try {
   await safariPage.locator(".wm-mermaid svg").waitFor();
   assert.equal(await safariPage.locator("#notice").isVisible(), false, "The permanent access notice must not cover the heading");
   assert(await safariPage.locator(".ProseMirror h1").isVisible());
+  await safariPage.setViewportSize({ width: 1100, height: 844 });
+  await safariPage.waitForFunction(() => !window.document.documentElement.hasAttribute("data-phone-reader"));
+  assert.equal(await safariPage.locator(".wm-phone-controls").isVisible(), false);
+  assert.equal(await safariPage.locator(".milkdown-top-bar").isVisible(), true);
+  assert.equal(await safariPage.locator("#phone-folio").isVisible(), false);
+  assert.equal(await safariPage.locator("#comment").count(), 1);
+  await safariPage.setViewportSize({ width: 390, height: 844 });
+  await safariPage.waitForFunction(() => window.document.documentElement.hasAttribute("data-phone-reader"));
+  assert.equal(await safariPage.locator(".milkdown-top-bar").isVisible(), false);
+  assert.equal(await safariPage.locator(".wm-phone-controls").isVisible(), true);
   const themeButton = safariPage.locator("#theme");
   const themeBounds = (await themeButton.boundingBox())!, folioButtonBounds = (await safariPage.locator("#phone-folio").boundingBox())!;
   assert(themeBounds.x + themeBounds.width < folioButtonBounds.x && Math.abs(themeBounds.y - folioButtonBounds.y) < 1);

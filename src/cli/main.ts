@@ -1,4 +1,5 @@
 #!/usr/bin/env -S bun --no-env-file
+import { readRemoteBinding } from "../remote/binding";
 import { remoteSetup, remoteAddress, remoteControl } from "./remote";
 import { readSharedCredential, sharedRequest } from "../remote/shared-client";
 import type { ReaderAnnouncement } from "../remote/reader-delivery";
@@ -163,9 +164,11 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     command = parsed.spec.name;
     if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage, ...(command === "setup" ? { agentSetup: agentSetupGuidance } : {}), reporting: reportingGuidance }), exitCode: 0 };
     const config = dependencies.config ?? resolveConfig();
+    const binding = await readRemoteBinding(config);
+    if (binding && (command.startsWith("shared.") || command.startsWith("relocate.") || ["startup.enable", "cmux.attach", "paseo.wait"].includes(command))) throw new Error("This profile is bound to a shared hub. Manage the authority in the hub’s local profile.");
     const setup = await remoteSetup(parsed, config);
     if (setup !== undefined) return { response: success(command, setup), exitCode: 0 };
-    const connectionPath = optionalFlag(parsed, "--connection");
+    const connectionPath = optionalFlag(parsed, "--connection") ?? process.env.TETHER_CONNECTION ?? binding?.connection;
     const connection = connectionPath ? await readSharedCredential(resolve(connectionPath)) : undefined;
     const requestControl: typeof controlRequest = async (localConfig, route, input = {}, options) => connection
       ? remoteControl(connection, parsed, route, input as Record<string, unknown>)
@@ -176,9 +179,11 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const address = remoteAddress(parsed.positionals[0]!, optionalFlag(parsed, "--machine") ?? connection.machineId ?? undefined);
       const result = address.documentId ? { documentId: address.documentId, url: `/reader/d/${address.documentId}/` }
         : await sharedRequest<{documentId:string;url:string}>(connection, "document.register", { ...address, restoreArchived: parsed.flags.has("--restore") });
-      const receiver = optionalFlag(parsed, "--receiver");
-      const announcement = receiver ? await sharedRequest(connection, "reader.announce", { documentId: result.documentId, clientId: receiver, host: optionalFlag(parsed, "--host") }) : undefined;
-      return { response: success(command, { ...result, url: new URL(result.url, connection.origin).href, opened: false, ...(announcement ? { announcement } : {}) }), exitCode: 0 };
+      const receiver = optionalFlag(parsed, "--receiver") ?? process.env.TETHER_RECEIVER ?? binding?.receiver;
+      const workspaceId = optionalFlag(parsed, "--workspace") ?? process.env.TETHER_PASEO_WORKSPACE_ID;
+      const host = optionalFlag(parsed, "--host") ?? (workspaceId || binding?.receiver ? "paseo" : undefined);
+      const announcement = receiver ? await sharedRequest(connection, "reader.announce", { documentId: result.documentId, clientId: receiver, host, workspaceId }) : undefined;
+      return { response: success(command, { ...result, url: new URL(result.url, connection.origin).href, opened: false, delivery: announcement ?? { delivered: false, reason: "receiver_required" } }), exitCode: 0 };
     }
     if (["document.history", "document.relink", "document.verify-save"].includes(command)) {
       if (!connection) usage("This command requires --connection.");

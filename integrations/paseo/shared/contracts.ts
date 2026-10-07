@@ -5,7 +5,7 @@ const pathSchema = z.string().min(1).max(32768);
 const idSchema = z.string().min(1).max(256);
 // Missing generations are accepted by validation only to return a useful reload error.
 const generationInput = { generation: z.string().max(128).optional() };
-export const connectionSchema = z.object({ generation: z.string(), tetherPath: z.string(), profile: z.string() });
+export const connectionSchema = z.object({ generation: z.string(), tetherPath: z.string(), profile: z.string(), shared: z.boolean().optional(), libraryId: z.string().uuid().optional(), sharedOrigin: z.string().url().optional() });
 export type Connection = z.infer<typeof connectionSchema>;
 
 /** The subset of a Tether Folio entry the plugin renders. */
@@ -98,7 +98,7 @@ export const pinRpc = defineRpc({
   output: z.object({ pinned: z.boolean() }),
 });
 
-export const folioViewSchema = z.object({ url: z.string().url(), expiresAt: z.number().finite() });
+export const folioViewSchema = z.object({ url: z.string().url(), expiresAt: z.number().finite(), sharedOrigin: z.string().url().optional() });
 export type FolioView = z.infer<typeof folioViewSchema>;
 
 /** Expected settings bind the launch to the client's cached connection, not a new executable. */
@@ -115,6 +115,7 @@ export const tetherSettings = defineSettings({
   schema: z.object({
     tetherPath: z.string().trim().max(32768).default(""),
     profile: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/, "Use 1–64 letters, numbers, underscores or hyphens").default("preview"),
+    sharedConnection: z.string().trim().max(32768).default(""),
     buttons: z.boolean().default(true),
   }),
 });

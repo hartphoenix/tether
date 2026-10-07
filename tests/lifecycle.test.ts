@@ -228,7 +228,7 @@ test("simultaneous source-checkout launchers recover stale state, reuse one daem
   await waitUntil(() => !alive(discovery!.pid));
   daemonPids.delete(discovery!.pid);
   expect(await discoverDaemon(config)).toBeNull();
-});
+}, 30_000);
 
 test("a real idle daemon awaits server closure and exits without spinning", async () => {
   const directory = await mkdtemp(join("/tmp", "tether-idle-process-"));

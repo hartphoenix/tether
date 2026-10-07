@@ -1,3 +1,5 @@
+import { assertAuthority } from "../cli/relocation";
+import { localFlySettings } from "./fly-settings";
 import { isApplicationAsset, type WebResponder } from "../web/bundle";
 import { createSharedLibrary } from "./shared-library";
 import { HostThemes, isThemeClient } from "./host-themes";
@@ -783,8 +785,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/bootstrap" && request.method === "GET") {
         const document = await service.read(session.grant);
         const basePreferences = await preferences();
-        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, sharedReader:session.shared === true, draft: session.shared ? null : views.draft(session.id), scroll: session.shared ? 0 : views.position(session.id), zoom: session.shared ? basePreferences.defaultDocumentZoom ?? 100 : views.zoom(session.id, basePreferences.defaultDocumentZoom ?? 100), document, directoryPicker: !session.shared && Boolean(pickMoveDirectory), capabilities: {...hostAdapter.capabilities(session.target),...(session.grant.machineId !== privateStore.localMachineId ? {revealFile:false} : {})}, updateControls: true, preferences: displayPreferences(await hostThemes.preferences(themeClient(request, session.target), basePreferences)), actor: options.actor ?? "assistant" });
+        return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, sharedReader:session.shared === true, draft: session.shared ? null : views.draft(session.id), scroll: session.shared ? 0 : views.position(session.id), zoom: session.shared ? basePreferences.defaultDocumentZoom ?? 100 : views.zoom(session.id, basePreferences.defaultDocumentZoom ?? 100), document: { ...document, machine: privateStore.machines.get(session.grant.machineId) }, directoryPicker: !session.shared && Boolean(pickMoveDirectory), capabilities: {...hostAdapter.capabilities(session.target),...(session.grant.machineId !== privateStore.localMachineId ? {revealFile:false} : {})}, updateControls: true, preferences: displayPreferences(await hostThemes.preferences(themeClient(request, session.target), basePreferences)), actor: options.actor ?? "assistant" });
       }
+      if (apiPath === "/machine" && request.method === "GET") return json({ machine: privateStore.machines.get(session.grant.machineId) });
       if (apiPath === "/history" && request.method === "GET") {
         const query: Record<string,unknown> = Object.fromEntries(new URL(request.url).searchParams);
         for (const key of ["limit","maxBytes","beforeSequence"]) if (query[key] !== undefined) query[key] = Number(query[key]);
@@ -1062,7 +1065,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       views.put({ id, kind: "folio", path: null, verifier: cookieVerifier(session.cookie), createdAt, target: session.target });
       const root = `/r/${encodeURIComponent(id)}/`;
       const headers = launchCookies(viewCookie("tether_recents", session.cookie, root), session.target, url.searchParams.get("themeClient"));
-      headers.set("location", `${root}?instance=${encodeURIComponent(daemon.instanceId)}`); headers.set("cache-control", "no-store"); headers.set("referrer-policy", "no-referrer");
+      headers.set("location", `${root}?instance=${encodeURIComponent(daemon.instanceId)}${url.searchParams.get("embedded") === "1" ? "&embedded=1" : ""}`); headers.set("cache-control", "no-store"); headers.set("referrer-policy", "no-referrer");
       return new Response(null, { status: 302, headers });
     }
     if (pathname.startsWith("/r/")) {
@@ -1072,9 +1075,13 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (!verifiesCookie(cookieValue(request, "tether_recents"), session.verifier ?? cookieVerifier(session.cookie))) return error("unauthorized", "A scoped Recents cookie is required.", 401);
       session.lastSeen = now();
       const suffix = `/${match![2]}`;
-      if (request.method === "GET" && suffix === "/") {
+      if (request.method === "POST" && suffix.startsWith("/api/fly/")) {
+        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "Local-owner Settings requires the daemon origin.", 403);
+        try { return json(await localFlySettings(daemon, suffix.slice("/api/fly/".length), await requestJson(request))); } catch (cause) { return controlError(cause); }
+      }
+      if (request.method === "GET" && (suffix === "/" || suffix === "/settings")) {
         const prefs = await hostThemes.preferences(themeClient(request, session.target), await preferences());
-        return new Response(folioHtml({ pageFind: hostAdapter.capabilities(session.target).pageFind, pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), uiScale: prefs.uiScale, defaultDocumentZoom: prefs.defaultDocumentZoom, commentTextSize: prefs.commentTextSize, theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+        return new Response(folioHtml({ settingsOnly: suffix === "/settings", embedded: url.searchParams.get("embedded") === "1", pageFind: hostAdapter.capabilities(session.target).pageFind, pickerAvailable: Boolean(pickFiles), locateFiles: Boolean(pickFiles), uiScale: prefs.uiScale, defaultDocumentZoom: prefs.defaultDocumentZoom, commentTextSize: prefs.commentTextSize, theme: prefs.theme, design: prefs.customThemes?.find(theme => theme.id === prefs.theme) }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
       if (request.method === 'GET' && suffix === '/api/preferences') {
         const value = displayPreferences(await hostThemes.preferences(themeClient(request, session.target), await preferences()));
@@ -1183,8 +1190,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (!expected || request.headers.get("authorization") !== `Bearer ${expected}`) return error("forbidden", "Control authorization is required.", 403);
       try {
         if (pathname.startsWith("/control/shared/") && request.method === "POST") {
-          if (!daemon.shared) throw Object.assign(new Error("The shared endpoint is not configured."), { code: "shared_not_configured", status: 409 });
-          return json(await daemon.shared.localControl(pathname.slice("/control/shared/".length), await requestJson(request)));
+          return json(await localFlySettings(daemon, pathname.slice("/control/shared/".length), await requestJson(request)));
         }
         if (pathname === "/control/activate" && request.method === "POST") { maintenanceEnabled = true; return json({ activated: true }); }
         if (pathname === "/control/recovery/views" && request.method === "POST") {
@@ -1372,7 +1378,16 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     config,
     service,
     library: createSharedLibrary({
-      service, recents, instanceId, documentOperation, preferences, saveAppearance,
+      service, recents, instanceId, documentOperation,
+      preferences: async client => displayPreferences(await hostThemes.preferences(client, await preferences())),
+      previewAppearance: previewScale,
+      observeTheme: async (client, theme) => { if (!isThemeClient(client)) throw invalidRequest("Invalid theme client."); await hostThemes.observe(client, theme); },
+      saveAppearance: async (body, client) => {
+        if (!client) return saveAppearance(body);
+        const { theme, inheritPaseoTheme, ...other } = body;
+        if (theme !== undefined || inheritPaseoTheme !== undefined) await hostThemes.select(client, { theme: theme as AppPreferences["theme"], inheritPaseoTheme: inheritPaseoTheme as boolean }, await preferences());
+        return hostThemes.preferences(client, Object.keys(other).length ? await saveAppearance(other) : await preferences());
+      },
       assets: request => options.webAssets?.(request) ?? options.web?.assets?.(request) ?? new Response("Application assets unavailable.", { status: 404 }),
       reader: grant => {
         const id = randomToken();
@@ -1490,6 +1505,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
 
 export async function startDaemon(options: DaemonOptions = {}): Promise<TetherDaemon> {
   const config = options.config ?? resolveConfig();
+  const { readRemoteBinding } = await import("../remote/binding");
+  if (await readRemoteBinding(config)) throw new Error("This profile is a client of a shared hub and cannot start a local library.");
+  await assertAuthority(config);
   await prepareConfig(config);
   const { readSharedConfig, startSharedProfile } = await import("./shared-profile");
   const sharedConfig = await readSharedConfig(config);

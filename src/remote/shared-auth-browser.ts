@@ -43,6 +43,23 @@ action("list", async () => { clients((await verify("list")).clients); status.tex
 const context = document.getElementById("context");
 if (context) {
   const requestId = context.dataset.request;
-  post("/auth/pair/context", { requestId }).then(request => { context.textContent = `${request.name} requests ${request.kind} access to this shared library. Check its name and code before approving.${request.machineId ? ` File machine: ${request.machineId}.` : ""}${request.replaces?.length ? ` Approval will replace the connector credential for ${request.replaces.join(", ")}.` : ""}`; }).catch(error => { context.textContent = error.message; });
+  post("/auth/pair/context", { requestId }).then(request => { context.textContent = `${request.name} requests ${request.kind} access to this shared library. Check its name and code before approving.${request.machineId ? ` File machine: ${request.machineName ?? request.machineId} (${request.machineId}). Copied paths: ${request.qualifyPaths ? "include machine name" : "plain paths"}.` : ""}${request.replaces?.length ? ` Approval will replace the connector credential for ${request.replaces.join(", ")}.` : ""}`; }).catch(error => { context.textContent = error.message; });
   action("approve", async () => { await verify("approve", { requestId, code: value("code") }); status.textContent = "Client approved. Return to the requesting machine."; });
+}
+
+action("password-login", async () => { await post("/auth/password/login", { name: value("name"), password: value("password") }); (document.getElementById("password") as HTMLInputElement).value = ""; location.assign(document.getElementById("password-login")!.dataset.next ?? "/folio"); });
+
+// The local owner transfers the short-lived enrollment ceremony through a checked
+// window relationship, never a query string, clipboard, or agent prompt.
+if (location.pathname === "/auth/enroll" && window.opener) {
+  const receive = (event: MessageEvent) => {
+    let origin: URL; try { origin = new URL(event.origin); } catch { return; }
+    if (event.source !== window.opener || origin.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(origin.hostname)
+      || event.data?.type !== "tether-enrollment" || typeof event.data.code !== "string") return;
+    (document.getElementById("code") as HTMLInputElement).value = event.data.code;
+    window.removeEventListener("message", receive);
+    status.textContent = "Local-owner authorization received. Create your passkey here, then return to Settings.";
+  };
+  window.addEventListener("message", receive);
+  window.opener.postMessage({ type: "tether-enrollment-ready" }, "*");
 }

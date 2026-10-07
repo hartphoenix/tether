@@ -50,6 +50,8 @@ test("uninstall reports the first removed launcher if removing the second fails"
     const realUnlink=fs.unlink;
     mock.module("node:fs/promises",()=>({...fs,unlink:async path=>{if(path===join(bin,"mdreview")) throw Object.assign(new Error("unlink denied"),{code:"EACCES",path,syscall:"unlink"});return realUnlink(path);}}));
     mock.module(modulePath("src/hosts/wave-launchers.ts"),()=>({waveInstallationDetected:async()=>false,syncWaveRecentLaunchers:async()=>{},waveLauncherStatus:async()=>({installed:[]}),installWaveLaunchers:async()=>{},uninstallWaveLaunchers:async()=>{throw new Error("Must not touch Wave");}}));
+    const startup = await import(modulePath("src/cli/startup.ts"));
+    mock.module(modulePath("src/cli/startup.ts"), () => ({ ...startup, disableStartup: async () => ({ enabled: false, unloaded: true }) }));
     const {runCli}=await import(modulePath("src/cli/main.ts"));
     const {resolveConfig}=await import(modulePath("src/server/config.ts"));
     const config=resolveConfig({runtimeDir:join(root,"runtime"),configDir:join(root,"config")});

@@ -32,8 +32,9 @@ try {
       await reader.goto(launch.url);
       await reader.locator('.ProseMirror').waitFor();
       await folio.goto((await controlRecentsLaunch(config)).url);
+      await folio.goto(new URL('settings', folio.url()).href);
       await folio.locator('#freshness').waitFor({ state: 'hidden' });
-      const openSettings = async () => { await folio.locator('#more').click(); await folio.locator('[data-app-action="settings"]').click(); };
+      const openSettings = async () => { await folio.locator('#settings-dialog').waitFor({ state: 'visible' }); };
       const scale = async (value: number) => folio.locator('#ui-scale').evaluate((el, value) => { (el as HTMLInputElement).value = String(value); el.dispatchEvent(new Event('input')); }, value);
       const bodySize = await reader.locator('.ProseMirror').evaluate(el => getComputedStyle(el).fontSize);
       await openSettings();
@@ -48,7 +49,7 @@ try {
       await reader.waitForFunction(() => getComputedStyle(document.documentElement).getPropertyValue('--wm-ui-scale') === '1');
       await openSettings(); await scale(145);
       await reader.waitForFunction(() => getComputedStyle(document.documentElement).getPropertyValue('--wm-ui-scale') === '1.45');
-      await folio.reload(); await folio.locator('#more').waitFor();
+      await folio.reload(); await folio.locator('#ui-scale').waitFor();
       await reader.waitForFunction(() => getComputedStyle(document.documentElement).getPropertyValue('--wm-ui-scale') === '1');
       await reader.locator('#comment').click();
       const resize = reader.getByRole('separator', { name: 'Threads width' });
@@ -60,11 +61,11 @@ try {
       check(await reader.getByRole('separator', { name: 'Threads width' }).getAttribute('aria-valuenow') === '316', 'rail restored after reload');
       await reader.locator('#comment').click();
       await openSettings(); await scale(125); await folio.locator('#settings-save').click();
-      await folio.locator('#settings-dialog').waitFor({ state: 'hidden' });
+      await folio.waitForFunction(() => !(document.querySelector('#settings-save') as HTMLButtonElement).disabled);
       check(JSON.parse(await readFile(config.preferencesPath, 'utf8')).uiScale === 1.25, 'scale persisted');
       await reader.reload(); await reader.locator('.ProseMirror').waitFor();
       check(await reader.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--wm-ui-scale')) === '1.25', 'reader restored scale');
-      await openSettings(); await scale(100); await folio.locator('#settings-save').click(); await folio.locator('#settings-dialog').waitFor({ state: 'hidden' });
+      await openSettings(); await scale(100); await folio.locator('#settings-save').click(); await folio.waitForFunction(() => !(document.querySelector('#settings-save') as HTMLButtonElement).disabled);
       // A crashed preview expires independently of any browser cleanup.
       await folio.evaluate(async () => { await fetch('api/preferences-preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ owner: 'crashed-test', uiScale: .7 }) }); });
       await reader.waitForFunction(() => getComputedStyle(document.documentElement).getPropertyValue('--wm-ui-scale') === '0.7');

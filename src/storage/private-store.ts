@@ -1,3 +1,5 @@
+import { hostname } from "node:os";
+import { Machines } from "./machines";
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -72,6 +74,7 @@ export class PrivateStore {
   readonly db: Database;
   readonly path: string;
   readonly localMachineId: string;
+  readonly machines: Machines;
 
   constructor(path = ":memory:") {
     this.path = path;
@@ -87,7 +90,14 @@ export class PrivateStore {
     }
     this.db.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     this.db.query("INSERT OR IGNORE INTO settings(key,value) VALUES ('local_machine_id',?)").run(crypto.randomUUID());
+    this.db.query("INSERT OR IGNORE INTO settings(key,value) VALUES ('library_id',?)").run(crypto.randomUUID());
     this.localMachineId = (this.db.query("SELECT value FROM settings WHERE key='local_machine_id'").get() as {value:string}).value;
+    this.machines = new Machines(this.db);
+    if (!this.machines.get(this.localMachineId)) {
+      let name = hostname(), suffix = 2;
+      while (this.machines.list().some(machine => machine.name.toLowerCase() === name.toLowerCase())) name = `${hostname()} (${suffix++})`;
+      this.machines.set(this.localMachineId, name);
+    }
     if (!/^[a-f0-9-]{36}$/i.test(this.localMachineId)) throw new Error("Invalid local machine identity.");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS documents (

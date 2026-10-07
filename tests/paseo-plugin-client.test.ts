@@ -8,7 +8,7 @@ const intent = (id: string): Delivery => ({ generation: "g1", source: sourceKey(
 test("public reader intents retain their credential-free authenticated URL without local launch parameters", () => {
   const documentId = crypto.randomUUID(), origin = "https://reader.example", url = `${origin}/reader/d/${documentId}/`;
   const publicIntent = { id: "shared", workspaceId: "w", url, sharedReader: { origin, documentId, url } };
-  expect(intentBrowserUrl(publicIntent)).toBe(url);
+  expect(intentBrowserUrl(publicIntent)).toStartWith(url + "?themeClient=");
   expect(() => intentBrowserUrl({ ...publicIntent, url: "https://unrelated.example/" })).toThrow("Mismatched");
   expect(() => intentBrowserUrl({ ...publicIntent, sharedReader: { ...publicIntent.sharedReader, url: url + "?token=secret" } })).toThrow();
   expect(() => intentBrowserUrl({ id: "untrusted", workspaceId: "w", url })).toThrow("Invalid Tether launch");

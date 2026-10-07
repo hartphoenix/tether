@@ -35,7 +35,7 @@ export async function writeSharedCredential(path: string, value: SharedCredentia
   try { await rename(temporary, path); } catch (cause) { await unlink(temporary).catch(() => {}); throw cause; }
 }
 
-const reads = new Set(["document.read", "document.outline", "document.context", "document.diff", "document.history", "document.verify-save", "review.pending", "review.thread", "review.threads", "review.event", "review.quote-candidates", "review.operation", "folio.list", "folio.member", "folio.export", "machines.list", "reader.receive"]);
+const reads = new Set(["document.read", "document.outline", "document.context", "document.diff", "document.history", "document.verify-save", "review.pending", "review.thread", "review.threads", "review.event", "review.quote-candidates", "review.operation", "folio.list", "folio.member", "folio.export", "machines.list", "reader.receive", "plugin.poll", "plugin.folio", "plugin.open"]);
 export type SharedRequestOptions = { signal?: AbortSignal; timeoutMs?: number; fetch?: typeof fetch };
 /** HTTPS certificate checking is provided by fetch; redirects never carry a credential elsewhere. */
 export async function sharedRequest<T = Record<string, unknown>>(connection: SharedCredential, operation: string, input: Record<string, unknown>, options: SharedRequestOptions = {}): Promise<T> {
@@ -66,11 +66,11 @@ export async function sharedRequest<T = Record<string, unknown>>(connection: Sha
 }
 
 export type PairingRequest = { requestId: string; pollSecret: string; code: string; machineId?: string | null; expiresAt: number; verificationUrl: string };
-export async function beginSharedPairing(origin: string, name: string, kind: "agent" | "connector", options: { machineId?: string; fetch?: typeof fetch } | typeof fetch = {}): Promise<PairingRequest> {
+export async function beginSharedPairing(origin: string, name: string, kind: "agent" | "connector", options: { machineId?: string; machineName?: string; qualifyPaths?: boolean; fetch?: typeof fetch } | typeof fetch = {}): Promise<PairingRequest> {
   const endpoint = sharedOrigin(origin);
   const request = typeof options === "function" ? options : options.fetch ?? fetch;
   const machineId = typeof options === "function" ? undefined : options.machineId;
-  const response = await request(`${endpoint}/auth/pair`, { method: "POST", redirect: "manual", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, kind, ...(machineId ? { machineId } : {}) }), signal: AbortSignal.timeout(15_000) });
+  const response = await request(`${endpoint}/auth/pair`, { method: "POST", redirect: "manual", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, kind, ...(machineId ? { machineId } : {}), ...(typeof options === "function" ? {} : { machineName: options.machineName, qualifyPaths: options.qualifyPaths }) }), signal: AbortSignal.timeout(15_000) });
   const result = await sharedJson(response);
   if (!response.ok) throw new SharedAccessError(result.error?.code ?? "pairing_failed", result.error?.message ?? "Pairing request failed.", response.status);
   if (typeof result.requestId !== "string" || typeof result.pollSecret !== "string" || typeof result.code !== "string" || typeof result.expiresAt !== "number" || typeof result.verificationUrl !== "string" || new URL(result.verificationUrl).origin !== endpoint) throw new SharedAccessError("invalid_response", "Invalid pairing response.", 502);
@@ -83,7 +83,7 @@ export async function pollSharedPairing(origin: string, pair: Pick<PairingReques
     response = await request(`${endpoint}/auth/pair/poll`, { method: "POST", redirect: "manual", headers: { "content-type": "application/json" }, body: JSON.stringify(pair), signal: AbortSignal.timeout(15_000) });
     result = await sharedJson(response);
   } catch {
-    throw new SharedAccessError("pairing_unconfirmed", "The pairing response was lost. If completion cannot be retrieved, enroll again with the same file-machine ID and review authorized clients.", 503, { outcome: "outcome_unknown" });
+    throw new SharedAccessError("pairing_unconfirmed", "The pairing response was lost. Retry completion with the same private connection file; the approved credential remains recoverable until the request expires.", 503, { outcome: "outcome_unknown" });
   }
   if (!response.ok) throw new SharedAccessError(result.error?.code ?? "pairing_failed", result.error?.message ?? "Pairing request expired or failed.", response.status);
   if (result.status === "pending") return null;

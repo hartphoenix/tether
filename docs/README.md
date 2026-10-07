@@ -11,6 +11,7 @@ Try your first comment exchange with the [getting-started guide](getting-started
 - [Installation and updates](guide/installation.md): package locations, updates, and uninstall.
 - [Recovery and backups](guide/recovery.md): reconnect saved views and restore private data.
 - [Shared profiles](guide/shared-profile.md): one library across file machines, authenticated readers, and headless source deployment.
+- [Tether Fly setup](guide/fly-setup.md): agent-assisted setup, shared Paseo connections, revocation, and relocation.
 
 ## Using the CLI
 

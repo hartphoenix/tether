@@ -46,6 +46,12 @@ Pass the `sha256:` revision you read; Tether rejects a save if it's stale. If yo
 
 See [shared-profile setup](../guide/shared-profile.md) for owner enrollment, client pairing, connectors, and supervised startup. Shared commands take `--connection <private-credential-file>`; use `id:<document-uuid>` for existing documents or a path with `--machine <machine-uuid>` to register a file on that machine. Credentials never belong in a document URL.
 
+[Tether Fly setup](../guide/fly-setup.md) describes the agent-assisted route. `remote bind --connection FILE --receiver CLIENT_ID` persists a profile’s hub connection for existing and new sessions, without a local library; explicit connection flags override it. The receiver is the Paseo plugin client. Use `--workspace WORKSPACE_ID` for existing sessions; new Paseo sessions receive that route automatically. Registration and `delivery` are separate results: missing receiver/workspace routing leaves a public browser link and `delivered:false`.
+
+`remote pair` accepts `--machine-name NAME --qualify-paths yes|no` and `--machine RETAINED_ID`. `remote complete --connection FILE --wait 300` polls approval and safely recovers a lost response against the same private file. `remote setup` and `remote report` use a separate expiring reporting capability; reports cannot approve clients or certify completion. `shared manage ACTION --input JSON` is local-owner management for setup, machine metadata, explicit client association, password creation and revocation. Never put credentials or passwords in shell history; browser Settings provides those inputs directly.
+
+`relocate prepare --output DIRECTORY --destination NAME --attempt SETUP_ID --confirm`, `relocate release --output PRIVATE_RECEIPT --confirm`, and `relocate activate --receipt PRIVATE_RECEIPT --confirm` implement a fenced cutover. `relocate rollback --confirm` is allowed only before source release. Restore uses `restore --source BACKUP --directory NEW_CONFIG`. Consult the setup guide before transferring an authority.
+
 Shared saves also require `--expected-location-version` from the preceding read. Keep both original revisions and the attempted text after an uncertain response:
 
 ```sh

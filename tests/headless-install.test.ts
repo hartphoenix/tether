@@ -52,7 +52,7 @@ describe("headless source installation", () => {
         const plist = Bun.spawn(["/usr/bin/plutil", "-lint", result.unit], { stdout: "pipe", stderr: "pipe" });
         expect(await plist.exited).toBe(0);
       }
-      await expect(installHeadless({ role: "service", platform: "linux", checkout, directory, bun: runtime, profile: "shared" })).rejects.toMatchObject({ code: "EEXIST" });
+      await expect(installHeadless({ role: "service", platform: "linux", checkout, directory, bun: runtime, profile: "shared" })).rejects.toThrow("different installation");
     } finally { await rm(scratch, { recursive: true, force: true }); }
   });
 

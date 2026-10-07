@@ -1,5 +1,6 @@
-import { access, chmod, mkdir, realpath, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, realpath, writeFile, lstat, readFile, rename, readdir } from "node:fs/promises";
 import { constants } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { validateProfile } from "../src/server/config";
 
@@ -13,6 +14,7 @@ export type HeadlessInstall = {
   connection?: string;
   configDirectory?: string;
   runtimeDirectory?: string;
+  supervise?: boolean;
 };
 
 const shell = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -54,13 +56,54 @@ export async function installHeadless(input: HeadlessInstall) {
   await access(join(normalized.checkout, "src/server/login.ts"));
   await access(join(normalized.checkout, "src/cli/public.ts"));
   await access(join(normalized.checkout, "node_modules/typescript/package.json"));
-  // Refuse to overwrite a previous deployment or follow an existing directory link.
-  await mkdir(normalized.directory, { mode: 0o700 });
-  await writeFile(assets.launcher, assets.script, { flag: "wx", mode: 0o700 });
-  await chmod(assets.launcher, 0o700);
+  const marker = join(normalized.directory, "installation.json");
+  await mkdir(normalized.directory, { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+  const info = await lstat(normalized.directory);
+  if (!info.isDirectory() || info.uid !== process.getuid?.() || info.mode & 0o077) throw new Error("The installation directory must be an owner-only directory, not a symlink.");
+  const previous = await readFile(marker, "utf8").then(text => JSON.parse(text)).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+  if (previous && ["role", "profile", "connection", "configDirectory", "runtimeDirectory"].some(key => previous[key] !== input[key as keyof HeadlessInstall])) throw new Error("This directory belongs to a different installation. Preserve its role, profile, connection and configuration/runtime directories.");
   const unitPath = join(normalized.directory, assets.unitName);
-  await writeFile(unitPath, assets.unit, { flag: "wx", mode: 0o600 });
-  return { role: normalized.role, profile: normalized.profile, checkout: normalized.checkout, launcher: assets.launcher, unit: unitPath, label: assets.label };
+  if (!previous) {
+    // Adopt only exact legacy assets or our own interrupted, empty installation.
+    for (const name of await readdir(normalized.directory)) {
+      const expected = name === "run" ? assets.script : name === assets.unitName ? assets.unit : null;
+      if (expected === null || !(await lstat(join(normalized.directory, name))).isFile() || await readFile(join(normalized.directory, name), "utf8") !== expected) throw new Error("Unrecognized installation contents; nothing has been replaced.");
+    }
+    await writeFile(marker, JSON.stringify({ role: input.role, profile: input.profile, connection: input.connection, configDirectory: input.configDirectory, runtimeDirectory: input.runtimeDirectory }) + "\n", { mode: 0o600, flag: "wx" });
+  }
+  for (const [destination, contents, mode] of [[assets.launcher, assets.script, 0o700], [unitPath, assets.unit, 0o600]] as const) {
+    const existing = await lstat(destination).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+    if (existing && (!existing.isFile() || existing.uid !== process.getuid?.())) throw new Error("Installation assets must be owned regular files.");
+    const temporary = `${destination}.${crypto.randomUUID()}.tmp`;
+    await writeFile(temporary, contents, { flag: "wx", mode }); await rename(temporary, destination);
+  }
+  if (input.supervise) await superviseHeadless(normalized, assets.unitName, assets.unit, assets.label);
+  return { role: normalized.role, profile: normalized.profile, checkout: normalized.checkout, launcher: assets.launcher, unit: unitPath, label: assets.label, repaired: !!previous, supervised: !!input.supervise };
+}
+
+async function supervisorCommand(args: string[], allowFailure = false) {
+  const child = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+  const [code] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  if (code && !allowFailure) throw new Error(`Supervisor operation ${args[0]} ${args[1]} failed; inspection may be restricted in this environment.`);
+}
+export async function superviseHeadless(input: HeadlessInstall, unitName: string, unit: string, label: string) {
+  const directory = input.platform === "darwin" ? join(homedir(), "Library/LaunchAgents") : join(homedir(), ".config/systemd/user");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const destination = join(directory, unitName);
+  const old = await lstat(destination).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+  if (old && (!old.isFile() || old.uid !== process.getuid?.() || !(await readFile(destination, "utf8")).includes(input.directory))) throw new Error("An unrelated supervisor already uses this profile. It has not been replaced.");
+  const temporary = `${destination}.${crypto.randomUUID()}.tmp`;
+  await writeFile(temporary, unit, { mode: 0o600, flag: "wx" }); await rename(temporary, destination);
+  if (input.platform === "darwin") {
+    const domain = `gui/${process.getuid!()}`;
+    await supervisorCommand(["launchctl", "bootout", `${domain}/${label}`], true);
+    await supervisorCommand(["launchctl", "bootstrap", domain, destination]);
+  } else {
+    await supervisorCommand(["systemctl", "--user", "daemon-reload"]);
+    await supervisorCommand(["systemctl", "--user", "enable", "--now", unitName]);
+    await supervisorCommand(["systemctl", "--user", "restart", unitName]);
+  }
+
 }
 
 if (import.meta.main) {
@@ -70,7 +113,7 @@ if (import.meta.main) {
       process.stdout.write("Usage: bun scripts/install-headless.ts --role service|connector --directory <new-directory> --profile <profile> [--connection <private-file>] [--checkout <checkout>] [--bun <bun>] [--config-directory <directory>] [--runtime-directory <directory>]\n");
     } else {
       const flags = new Map<string, string>();
-      const allowed = ["--role", "--directory", "--profile", "--connection", "--checkout", "--bun", "--config-directory", "--runtime-directory"];
+      const allowed = ["--role", "--directory", "--profile", "--connection", "--checkout", "--bun", "--config-directory", "--runtime-directory", "--supervise"];
       for (let index = 0; index < args.length; index += 2) {
         const name = args[index]!, value = args[index + 1];
         if (!allowed.includes(name) || !value || value.startsWith("--") || flags.has(name)) throw new Error("Invalid installation arguments; use --help.");
@@ -79,7 +122,7 @@ if (import.meta.main) {
       const role = flags.get("--role"), directory = flags.get("--directory"), profile = flags.get("--profile");
       if ((role !== "service" && role !== "connector") || !directory || !profile) throw new Error("--role, --directory, and --profile are required.");
       if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("Headless source deployment supports macOS and Linux.");
-      const result = await installHeadless({ role, platform: process.platform, directory: resolve(directory), profile,
+      const result = await installHeadless({ supervise: flags.get("--supervise") === "yes", role, platform: process.platform, directory: resolve(directory), profile,
         checkout: resolve(flags.get("--checkout") ?? dirname(import.meta.dir)), bun: resolve(flags.get("--bun") ?? process.execPath),
         ...(flags.has("--connection") ? { connection: resolve(flags.get("--connection")!) } : {}),
         ...(flags.has("--config-directory") ? { configDirectory: resolve(flags.get("--config-directory")!) } : {}),

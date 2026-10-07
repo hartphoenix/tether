@@ -14,13 +14,19 @@ type Options = {
   instanceId: string;
   documentOperation: (route: string, body: Record<string, unknown>) => Promise<unknown>;
   reader: (grant: DocumentSession) => ReaderConnection;
-  preferences: () => Promise<AppPreferences>;
-  saveAppearance: (body: Record<string, unknown>) => Promise<unknown>;
+  preferences: (themeClient?: string) => Promise<AppPreferences>;
+  previewAppearance?: (body: Record<string, unknown>) => void;
+  observeTheme?: (clientId: string, theme: unknown) => Promise<void>;
+  saveAppearance: (body: Record<string, unknown>, themeClient?: string) => Promise<unknown>;
   assets: (request: Request) => Response | Promise<Response>;
 };
 
 const fail = (code: string, message: string, status = 400) => Object.assign(new Error(message), { code, status });
 const json = (value: unknown) => Response.json(value, { headers: { "cache-control": "no-store" } });
+const sharedThemeClient = (request: Request): string | undefined => {
+  const value = request.headers.get("x-tether-shared-theme") ?? request.headers.get("cookie")?.split(";").map(item => item.trim()).find(item => item.startsWith("__Host-tether-shared-theme="))?.split("=")[1];
+  return value && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value) ? value : undefined;
+};
 const documentRoute = (id: string) => `/reader/d/${encodeURIComponent(id)}/`;
 
 /** Public library policy reuses the daemon's document operations and reader. */
@@ -36,7 +42,7 @@ export function createSharedLibrary(options: Options) {
     const grant = await service.openLocation(body.machineId, body.path, { restoreArchived: body.restoreArchived === true });
     try {
       const registration = await recents.recordDocument(grant.documentId!);
-      return { documentId: grant.documentId, machineId: grant.machineId, path: grant.path, url: documentRoute(grant.documentId!), registration };
+      return { documentId: grant.documentId, machineId: grant.machineId, path: grant.path, url: documentRoute(grant.documentId!), registration: { entry: registration.entry, hostSynchronized: registration.hostSynchronized, hostSyncStatus: registration.hostSyncStatus } };
     } finally { service.close(grant); }
   };
 
@@ -157,10 +163,14 @@ export function createSharedLibrary(options: Options) {
             } finally { service.close(destination); }
           }
           if (/^api\/(updates|file\/(move|reveal)|theme-events)/.test(pathname!)) throw fail("unsupported_operation", "This operation requires a local host.", 404);
+          if (pathname === "api/preferences") {
+            if (request.method === "GET") return json(await options.preferences(sharedThemeClient(request)));
+            if (request.method === "PUT") return json(await options.saveAppearance(await boundedBody(request), sharedThemeClient(request)));
+          }
           const response = await upstream.request(resource, request);
           if (pathname === "api/bootstrap" && response.ok) {
             const value = await response.json();
-            return json({ ...value, sharedReader: true, remoteReader: true, draft: null, directoryPicker: false, capabilities: { pageOpensLinks: true, pageFind: true }, updateControls: false, document: { ...value.document, documentId: id, machineId: grant.machineId, locationVersion: grant.locationVersion, bodyEditable: true } });
+            return json({ ...value, preferences: await options.preferences(sharedThemeClient(request)), sharedReader: true, remoteReader: true, draft: null, directoryPicker: false, capabilities: { pageOpensLinks: true, pageFind: true }, updateControls: false, document: { ...value.document, documentId: id, machineId: grant.machineId, locationVersion: grant.locationVersion, bodyEditable: true } });
           }
           return response;
         },
@@ -171,20 +181,22 @@ export function createSharedLibrary(options: Options) {
   async function page(request: Request): Promise<Response | null> {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/assets/") || url.pathname === "/favicon.png") return options.assets(request);
+    if (url.pathname === "/settings") return new Response(null, { status: 303, headers: { location: "/settings/" } });
     if (url.pathname === "/" || url.pathname === "/folio") return new Response(null, { status: 303, headers: { location: "/folio/" } });
-    if (url.pathname === "/folio/" && request.method === "GET") {
-      const prefs = await options.preferences();
-      return new Response(folioHtml({ apiBase: "/folio/api", shared: true, pickerAvailable: true, locateFiles: true, importPackages: false, exportPackages: true, serviceControls: false, ...prefs }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+    if (["/folio/", "/settings/"].includes(url.pathname) && request.method === "GET") {
+      const prefs = await options.preferences(sharedThemeClient(request));
+      return new Response(folioHtml({ settingsOnly: url.pathname === "/settings/", embedded: url.searchParams.get("embedded") === "1", apiBase: "/folio/api", shared: true, pickerAvailable: true, locateFiles: true, importPackages: false, exportPackages: true, serviceControls: false, ...prefs }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
     }
     if (!url.pathname.startsWith("/folio/api/")) return null;
     const action = url.pathname.slice("/folio/api/".length);
-    const prefs = async () => { const value = await options.preferences(); return { ...value, ...folioTheme({ theme: value.theme, design: value.customThemes?.find(t => t.id === value.theme) }) }; };
+    const prefs = async () => { const value = await options.preferences(sharedThemeClient(request)); return { ...value, ...folioTheme({ theme: value.theme, design: value.customThemes?.find(t => t.id === value.theme) }) }; };
     if (request.method === "GET" && action === "snapshot") return json({ ...await recents.folioSnapshot({ view: "all" }), instanceId: options.instanceId, preferences: await prefs() });
     if (request.method === "GET" && action === "preferences") return json(await prefs());
     if (request.method !== "POST") throw fail("unsupported_operation", "Unknown Folio operation.", 404);
     const body = await boundedBody(request);
-    if (action === "preferences") return json(await options.saveAppearance(body));
-    if (action === "preferences-preview" || action === "lease") return json({ ok: true });
+    if (action === "preferences") return json(await options.saveAppearance(body, sharedThemeClient(request)));
+    if (action === "preferences-preview") { options.previewAppearance?.(body); return json({ previewed: true }); }
+    if (action === "lease") return json({ ok: true });
     if (action === "filters") {
       if (!["save", "set-active", "delete"].includes(String(body.action)) || typeof body.text !== "string" || body.text.length > 1000 || !body.text.trim()) throw invalidRequest("Invalid saved filter.");
       return json(await recents.changeFilter(body.action as "save" | "set-active" | "delete", body.text, body.active as boolean));
@@ -201,7 +213,7 @@ export function createSharedLibrary(options: Options) {
     if (action === "settings" || action === "clear-unpinned") return json(await dispatch(`folio.${action}`, body));
     throw fail("unsupported_operation", "Unknown Folio operation.", 404);
   }
-  return { dispatch, reader, page };
+  return { dispatch, reader, page, observeTheme: options.observeTheme, subscribe: (listener: () => void) => recents.subscribeFolio(listener) };
 }
 
 async function boundedBody(request: Request): Promise<Record<string, unknown>> {

@@ -1,3 +1,5 @@
+import { Machines } from "../storage/machines";
+import type { FileMachine } from "../shared/machine-path";
 import type { DocumentReference, PrivateDocumentRow } from "../storage/private-store";
 import type { FileInspection } from "../documents/file-access";
 import { operationError } from "../shared/diagnostics";
@@ -23,6 +25,7 @@ export type FolioSort = "opened" | "modified" | "activity" | "added" | "created"
 export type FolioRetention = { mode: "days"; days: number } | { mode: "forever" } | { mode: "immediate" };
 
 export type FolioEntry = RecentEntry & {
+  machine?: FileMachine;
   id: string;
   name: string;
   directory: string;
@@ -440,7 +443,7 @@ export class RecentsRegistry {
       const needsAttention = attentionCount > 0;
       if (options.needsAttention !== undefined && options.needsAttention !== needsAttention) continue;
       result.push({
-        id: row.id, machineId: row.machine_id, locationVersion: row.location_version, path: row.path, createdAt: row.opened_at, name, directory, repository,
+        id: row.id, machine: new Machines(this.database).get(row.machine_id), machineId: row.machine_id, locationVersion: row.location_version, path: row.path, createdAt: row.opened_at, name, directory, repository,
         view, pinned: Boolean(row.pinned), missing, fileIssue: issue, hasConversation, needsAttention, attentionCount, addedAt: row.added_at,
         openedAt: row.opened_at, modifiedAt, activityAt: row.conversation_at,
         fileCreatedAt, archivedAt: row.archived_at, expiresAt: row.expires_at,
