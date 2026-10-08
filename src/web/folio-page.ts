@@ -13,6 +13,8 @@ import { builtInDesign, tetherDesign, type ThemeDesign, type ThemeId } from "../
 export type FolioPageOptions = {
   apiBase?: string;
   settingsOnly?: boolean;
+  /** Give setup questions stable URLs in the local feedback staging surface. */
+  settingsStepUrls?: boolean;
   embedded?: boolean;
   shared?: boolean;
   pageFind?: boolean;
@@ -258,7 +260,7 @@ export function folioHtml(options: FolioPageOptions = {}): string {
     settingsDialog.prepend(freshness);
     document.title='Tether Settings';settingsDialog.removeAttribute('aria-modal');settingsDialog.setAttribute('role','region');
     settingsDialog.classList.add('open');
-    (${mountFlySettings.toString()})(document.getElementById('fly-settings'),(action,body={})=>jsonPost('fly/'+action,body),!caps.shared);
+    (${mountFlySettings.toString()})(document.getElementById('fly-settings'),(action,body={})=>jsonPost('fly/'+action,body),!caps.shared,${options.settingsStepUrls === true});
   }
   </script></body></html>`;
 }

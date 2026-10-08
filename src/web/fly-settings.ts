@@ -1,6 +1,12 @@
 /** Self-contained so local and shared Settings use exactly the same application. */
-export function mountFlySettings(root: HTMLElement, request: (action: string, body?: unknown) => Promise<any>, localOwner: boolean) {
+export function mountFlySettings(root: HTMLElement, request: (action: string, body?: unknown) => Promise<any>, localOwner: boolean, stepUrls = false) {
   let state: any, timer: ReturnType<typeof setTimeout>, disposed = false, editing = false, inWizard = false;
+  let restoreStep: (() => void) | undefined;
+  const navigate = (hash: string) => {
+    if (!stepUrls || location.hash === hash) return;
+    history.pushState(null, "", location.pathname + location.search + hash);
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  };
   const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text = "") => { const element = document.createElement(tag); element.textContent = text; return element; };
   const error = node("p"); error.id = "fly-feedback"; error.setAttribute("role", "status");
   const content = node("section"); root.append(content, error);
@@ -64,10 +70,11 @@ export function mountFlySettings(root: HTMLElement, request: (action: string, bo
   };
   const wizard = (previous?: any, relocate = false) => {
     clearTimeout(timer); inWizard = true;
-    const draftKey = "tether.fly.draft";
+    const routeId = relocate ? "relocate" : previous?.id ?? "setup";
+    const draftKey = stepUrls ? "tether.fly.draft:" + location.pathname.split("/")[1] + ":" + routeId : "tether.fly.draft";
     let answers = previous ? { ...previous.answers } : { hub: state.machines?.find((machine: any) => machine.id === state.localMachineId)?.name ?? "This computer", machine: "", access: "paseo", qualifyPaths: false, internet: false };
-    if (!previous && !relocate) try { const saved = JSON.parse(localStorage.getItem(draftKey) ?? "null"); if (saved) answers = { ...answers, ...saved }; } catch {}
     if (relocate) answers = { ...answers, relocate: true, hub: "" };
+    if (stepUrls || !previous && !relocate) try { const saved = JSON.parse(localStorage.getItem(draftKey) ?? "null"); if (saved) answers = { ...answers, ...saved }; } catch {}
     let step = 0;
     const questions = () => [
       { key: "hub", title: "Which computer should be Tether’s hub?" },
@@ -77,6 +84,7 @@ export function mountFlySettings(root: HTMLElement, request: (action: string, bo
     ];
     const render = () => {
       const list = questions(), question = list[Math.min(step, list.length - 1)]!;
+      navigate(`#fly/${routeId}/${question.key}`);
       content.replaceChildren(node("h3", previous ? "Change setup" : relocate ? "Move your hub" : "Set up Tether Fly"), node("h4", question.title));
       const progress = hint(`Step ${step + 1} of ${list.length}`); progress.setAttribute("aria-label", `Question ${step + 1} of ${list.length}`); content.append(progress);
       const save = (value: unknown) => { answers[question.key] = value; try { localStorage.setItem(draftKey, JSON.stringify(answers)); } catch {} };
@@ -100,15 +108,22 @@ export function mountFlySettings(root: HTMLElement, request: (action: string, bo
         const { input } = field(question.title, answers[question.key]); input.setAttribute("aria-label", question.title); input.maxLength = 100; input.oninput = () => save(input.value); content.append(input);
       }
       const help = node("details"); help.append(node("summary", "About this choice"), node("p", question.key === "qualifyPaths" ? "Without the machine name, agents may need you to specify which machine the file is on." : question.key === "hub" ? "The hub must be available; moving it transfers the library while Markdown stays on its file machines." : question.key === "internet" ? "Your agent will configure HTTPS after your approval; enabling Tether Fly alone does not expose the hub." : "Setup uses an agent for installation and this page for your approvals.")); content.append(help);
-      content.append(actions(button(step ? "Back" : "Cancel", () => { if (step) { step--; render(); } else { inWizard = false; editing = false; renderSettings(); void poll(); } }), button(step === list.length - 1 ? "Prepare setup" : "Next", () => void run(async () => {
+      content.append(actions(button(step ? "Back" : "Cancel", () => { if (step) { step--; render(); } else { restoreStep = undefined; inWizard = false; navigate(""); editing = false; renderSettings(); void poll(); } }), button(step === list.length - 1 ? "Prepare setup" : "Next", () => void run(async () => {
         if (typeof answers[question.key] === "string" && !answers[question.key].trim()) throw new Error("Enter a computer name.");
         if (step < list.length - 1) { step++; render(); return; }
-        await request("attempt", { answers, ...(previous ? { id: previous.id } : {}) }); try { localStorage.removeItem(draftKey); } catch {} await refresh();
+        await request("attempt", { answers, ...(previous ? { id: previous.id } : {}) }); try { localStorage.removeItem(draftKey); } catch {} restoreStep = undefined; inWizard = false; navigate(""); await refresh();
       }))));
       const heading = content.querySelector("h4")!; heading.tabIndex = -1; heading.focus();
     };
+    restoreStep = () => {
+      if (location.hash.split("/")[1] !== routeId) { resumeWizard(); return; }
+      const index = questions().findIndex(question => question.key === location.hash.split("/")[2]);
+      if (index >= 0 && index !== step) { step = index; render(); }
+    };
+    if (stepUrls && location.hash.split("/")[1] === routeId) { const index = questions().findIndex(question => question.key === location.hash.split("/")[2]); if (index >= 0) step = index; }
     render();
   };
+  const resumeWizard = () => { const target = location.hash.split("/")[1]; wizard(state.attempts?.find((attempt: any) => attempt.id === target), target === "relocate"); };
   const renderSettings = () => {
     const expanded = new Set([...content.querySelectorAll("details[open]")].map(group => group.querySelector("summary")?.textContent));
     content.replaceChildren();
@@ -187,7 +202,9 @@ export function mountFlySettings(root: HTMLElement, request: (action: string, bo
   };
   async function refresh() {
     clearTimeout(timer); state = await request("status"); if (disposed) return;
-    editing = false; inWizard = false; renderSettings(); timer = setTimeout(() => void poll(), 3000);
+    editing = false; inWizard = false; renderSettings();
+    if (stepUrls && location.hash.startsWith("#fly/")) resumeWizard();
+    else timer = setTimeout(() => void poll(), 3000);
   }
   async function poll() {
     try { const next = await request("status"); if (!disposed && !inWizard && !editing && JSON.stringify(next) !== JSON.stringify(state) && !root.contains(document.activeElement)) { state = next; renderSettings(); } }
@@ -195,5 +212,10 @@ export function mountFlySettings(root: HTMLElement, request: (action: string, bo
     if (!disposed && !inWizard) timer = setTimeout(() => void poll(), document.hidden ? 10_000 : 3000);
   }
   window.addEventListener("pagehide", () => { disposed = true; clearTimeout(timer); });
+  if (stepUrls) window.addEventListener("hashchange", () => {
+    if (!state) return;
+    if (location.hash.startsWith("#fly/")) { if (restoreStep) restoreStep(); else resumeWizard(); }
+    else if (inWizard) { restoreStep = undefined; inWizard = false; editing = false; renderSettings(); void poll(); }
+  });
   void run(refresh);
 }

@@ -24,3 +24,5 @@ Start with [CONTRIBUTING.md](../CONTRIBUTING.md) to run Tether from source and c
 The experimental [phone reader](contributing/phone-reader.md) has a separate [CLI operations guide](contributing/phone-reader-operations.md) for supervision and source deployments.
 
 Use [local phone staging](contributing/phone-staging.md) to preview the phone reader in a Paseo browser tab with disposable state.
+
+Use [local Settings staging](contributing/settings-staging.md) for resettable Fly setup simulations and page-specific Agentation feedback.
