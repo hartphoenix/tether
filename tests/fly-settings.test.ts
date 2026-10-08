@@ -58,6 +58,9 @@ test("polling preserves unsaved machine edits and expanded sections", async () =
     await Bun.sleep(0);
     const group = [...f.dom.window.document.querySelectorAll('details')].find(item => item.textContent?.startsWith('File machines'))!;
     group.open = true;
+    expect(group.querySelector('form')).toBeNull();
+    expect(group.querySelectorAll('tbody tr')).toHaveLength(2);
+    (group.querySelector('[data-edit-machine="local"]') as HTMLButtonElement).click();
     const name = group.querySelector('input')!;
     name.value = 'Unfinished'; name.dispatchEvent(new f.dom.window.Event('input', { bubbles: true }));
     current.machines[1]!.name = 'Changed remotely';
@@ -67,6 +70,8 @@ test("polling preserves unsaved machine edits and expanded sections", async () =
     expect(f.calls.find(call => call.action === 'machine')?.body.name).toBe('Unfinished');
     expect([...f.dom.window.document.querySelectorAll('details')].find(item => item.textContent?.startsWith('File machines'))!.open).toBe(true);
     expect(f.dom.window.document.querySelector('[role=status]')?.textContent).toBe('Machine saved.');
+    expect(f.dom.window.document.querySelector('.machine-table')?.hasAttribute('hidden')).toBe(false);
+    expect(f.dom.window.document.activeElement?.getAttribute('data-edit-machine')).toBe('local');
   } finally { f.dom.window.close(); }
 });
 
@@ -81,6 +86,31 @@ test("verification choices still refresh after selecting a machine", async () =>
     await f.poll();
     expect(f.dom.window.document.querySelector('select[aria-label="Paseo client to verify"]')?.textContent).toBe('Paseo');
     expect(f.dom.window.document.querySelector('select[aria-label="Document to verify"]')?.textContent).toBe('/notes.md');
+  } finally { f.dom.window.close(); }
+});
+
+test("machine save failures retain the editor and Cancel discards only that machine's draft", async () => {
+  const current = structuredClone(state), f = fixture(current, async () => { throw new Error("Machine unavailable"); });
+  try {
+    await Bun.sleep(0);
+    const password = f.dom.window.document.querySelector<HTMLInputElement>('input[type="password"]')!;
+    password.value = 'An unfinished password'; password.dispatchEvent(new f.dom.window.Event('input', { bubbles: true }));
+    const table = f.dom.window.document.querySelector('table')!;
+    (table.querySelector('[data-edit-machine="remote"]') as HTMLButtonElement).click();
+    const form = f.dom.window.document.querySelector<HTMLFormElement>('form[aria-label="Edit Phoenix"]')!;
+    const name = form.querySelector('input')!;
+    expect(f.dom.window.document.querySelectorAll('.settings-section')).toHaveLength(1);
+    name.value = 'Unsaved machine'; name.dispatchEvent(new f.dom.window.Event('input', { bubbles: true }));
+    f.click('Save machine'); await Bun.sleep(0);
+    expect(form.isConnected).toBe(true); expect(table.hidden).toBe(true); expect(name.value).toBe('Unsaved machine');
+    expect(f.dom.window.document.querySelector('[role=status]')?.textContent).toBe('Machine unavailable');
+    f.click('Cancel');
+    expect(form.isConnected).toBe(false); expect(table.hidden).toBe(false);
+    expect(table.textContent).toContain('Phoenix'); expect(table.textContent).not.toContain('Unsaved machine');
+    expect(f.dom.window.document.activeElement?.getAttribute('data-edit-machine')).toBe('remote');
+    (f.dom.window.document.activeElement as HTMLElement).blur();
+    current.machines[0]!.name = 'Changed remotely'; await f.poll();
+    expect(password.isConnected).toBe(true); expect(password.value).toBe('An unfinished password');
   } finally { f.dom.window.close(); }
 });
 

@@ -10,7 +10,7 @@ export function mountFlySettings(root: HTMLElement, request: (action: string, bo
   const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text = "") => { const element = document.createElement(tag); element.textContent = text; return element; };
   const error = node("p"); error.id = "fly-feedback"; error.setAttribute("role", "status");
   const content = node("section"); root.append(content, error);
-  const protectDraft = (event: Event) => { if ((event.target as HTMLElement).closest("form")) editing = true; };
+  const protectDraft = (event: Event) => { const form = (event.target as HTMLElement).closest("form"); if (form) { form.dataset.dirty = "true"; editing = true; } };
   content.addEventListener("input", protectDraft);
   content.addEventListener("change", protectDraft);
   const run = async (action: () => Promise<void>) => { error.textContent = ""; try { await action(); } catch (cause) { error.textContent = (cause as Error).message; } };
@@ -159,20 +159,32 @@ export function mountFlySettings(root: HTMLElement, request: (action: string, bo
       passwordForm.append(password.element, passwordHelp, actions(savePassword)); security.append(passwordForm);
       const machines = disclosure(`File machines (${state.machines.length})`, content);
       machines.append(hint("Names identify your computers. Path preferences apply when copying a file path."));
-      for (const machine of state.machines) {
-        const group = node("form"); group.className = "settings-section"; group.append(node("h4", `${machine.name} · ${machine.connected ? "Available" : "Offline"}`));
+      const table = node("table"); table.className = "machine-table"; table.setAttribute("aria-label", "File machines");
+      const head = node("thead"), headings = node("tr"), rows = node("tbody");
+      for (const label of ["Machine", "Availability", "Copied paths", "Actions"]) { const cell = node("th", label); cell.scope = "col"; headings.append(cell); }
+      head.append(headings); table.append(head, rows); machines.append(table);
+      const focusEdit = (id: string) => [...content.querySelectorAll<HTMLButtonElement>("[data-edit-machine]")].find(button => button.dataset.editMachine === id)?.focus();
+      const editMachine = (machine: any) => {
+        editing = true; error.textContent = ""; table.hidden = true;
+        const group = node("form"); group.className = "settings-section"; group.setAttribute("aria-label", `Edit ${machine.name}`); group.append(node("h4", `${machine.name} · ${machine.connected ? "Available" : "Offline"}`));
         const name = field("Machine name", machine.name), qualify = field("Include machine name in copied paths", "", "checkbox"); qualify.input.checked = machine.qualifyPaths;
         const sample = state.verificationDocuments?.find((document: any) => document.machineId === machine.id)?.path;
         const path = sample ?? "/path/document.md";
         name.input.required = true; name.input.maxLength = 100;
         const preview = node("p"); preview.className = "machine-preview"; const show = () => { preview.textContent = `${sample ? "" : "Example: "}${qualify.input.checked ? `${name.input.value}:` : ""}${path}`; }; name.input.oninput = show; qualify.input.onchange = show; show();
         const saveMachine = button("Save machine", () => {}); saveMachine.type = "submit";
-        group.onsubmit = event => { event.preventDefault(); void run(async () => { saveMachine.disabled = true; try { await action("machine", { id: machine.id, name: name.input.value, qualifyPaths: qualify.input.checked }, "Machine saved."); } finally { saveMachine.disabled = false; } }); };
-        const machineActions = actions(saveMachine);
+        const cancelMachine = button("Cancel", () => { group.remove(); table.hidden = false; editing = !!content.querySelector("form[data-dirty]"); error.textContent = ""; focusEdit(machine.id); });
+        group.onsubmit = event => { event.preventDefault(); void run(async () => { saveMachine.disabled = cancelMachine.disabled = true; try { await action("machine", { id: machine.id, name: name.input.value, qualifyPaths: qualify.input.checked }, "Machine saved."); focusEdit(machine.id); } finally { saveMachine.disabled = cancelMachine.disabled = false; } }); };
+        const machineActions = actions(saveMachine, cancelMachine);
         group.append(name.element, qualify.element, preview, machineActions);
         const clients = state.clients.filter((client: any) => client.machineId === machine.id && client.revokedAt === null);
         if (clients.length) { const revoke = button(`Revoke access`, () => { if (confirm(`Revoke ${machine.name}?\n${clients.map((client: any) => `${client.name} (${client.kind})`).join("\n")}`)) void run(() => action("revoke-machine", { machineId: machine.id, clientIds: clients.map((client: any) => client.id), confirmed: true }, "Machine access revoked.")); }); revoke.className = "danger"; machineActions.append(revoke); }
-        machines.append(group);
+        machines.append(group); name.input.focus();
+      };
+      for (const machine of state.machines) {
+        const row = node("tr"), name = node("th", machine.name), edit = node("td"); name.scope = "row";
+        const editButton = button("Edit", () => editMachine(machine)); editButton.setAttribute("aria-label", `Edit ${machine.name}`); editButton.dataset.editMachine = machine.id; edit.append(editButton);
+        row.append(name, node("td", machine.connected ? "Available" : "Offline"), node("td", machine.qualifyPaths ? "Machine + path" : "Path only"), edit); rows.append(row);
       }
       const unassociated = state.clients.filter((client: any) => !client.machineId && client.revokedAt === null);
       const sessions = disclosure(`Browsers and other clients (${unassociated.length})`, content);

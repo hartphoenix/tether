@@ -8,13 +8,15 @@ import { startSettingsStage } from "./settings-stage";
 const directory = await mkdtemp(join(tmpdir(), "tether-settings-stage-check-"));
 const feedbackFile = join(directory, "feedback.json");
 const stage = await startSettingsStage({ port: 0, feedbackFile });
-async function annotate(page: Page, target: string, note: string) {
+async function annotate(page: Page, target: string, note: string, send = true) {
   await page.getByRole("button", { name: "Start feedback mode", exact: true }).click();
   await page.locator(target).click();
   await page.locator("[data-annotation-popup] textarea").fill(note);
   await page.getByRole("button", { name: "Add", exact: true }).click();
-  await page.getByRole("button", { name: "Send Annotations", exact: true }).click();
-  await page.getByText("Feedback saved locally for your agent.", { exact: true }).waitFor();
+  if (send) {
+    await page.getByRole("button", { name: "Send Annotations", exact: true }).click();
+    await page.getByText(/^Saved \d+ notes across \d+ pages for your agent\.$/).waitFor();
+  }
   await page.getByRole("button", { name: "Exit", exact: true }).click();
 }
 try {
@@ -30,11 +32,15 @@ try {
       await page.waitForURL("**/#fly/setup/hub");
       assert.equal(context.pages().length, 1, "Setup must stay in the Settings tab");
       await page.getByLabel("Which computer should be Tether’s hub?").fill("Staging Mac");
-      await annotate(page, "#fly-settings h4", "Hub question feedback");
+      await annotate(page, "#fly-settings h4", "Hub question feedback", false);
       await page.getByRole("button", { name: "Next", exact: true }).click();
       await page.waitForURL("**/#fly/setup/access");
       await annotate(page, "#fly-settings h4", "Access question feedback");
+      assert.equal(JSON.parse(await readFile(feedbackFile, "utf8"))["/fresh/settings/#fly/setup/hub"].annotations[0].comment, "Hub question feedback", "Send must include saved annotations from other pages");
+      await rm(feedbackFile);
       await page.reload();
+      await page.getByText("Saved 2 notes across 2 pages for your agent.", { exact: true }).waitFor();
+      assert.equal(JSON.parse(await readFile(feedbackFile, "utf8"))["/fresh/settings/#fly/setup/hub"].annotations[0].comment, "Hub question feedback", "Reload must import existing browser annotations");
       await page.getByText("Step 2 of 5", { exact: true }).waitFor();
       await page.goBack();
       await page.getByText("Step 1 of 5", { exact: true }).waitFor();
@@ -77,7 +83,7 @@ try {
       await page.getByRole("button", { name: "Reset to fresh install" }).click();
       await page.waitForURL("**/fresh/settings/");
       await page.getByRole("button", { name: "Set up Tether Fly", exact: true }).waitFor();
-      assert.deepEqual(JSON.parse(await readFile(feedbackFile, "utf8")), feedback, "Reset must keep submitted feedback");
+      assert.deepEqual(Object.keys(JSON.parse(await readFile(feedbackFile, "utf8"))), Object.keys(feedback), "Reset must keep submitted feedback");
       await page.getByRole("button", { name: "Set up Tether Fly", exact: true }).click();
       await page.getByRole("button", { name: "Next", exact: true }).click();
       await page.getByLabel("Where will you use Tether?").selectOption("browser");
@@ -103,10 +109,18 @@ try {
       assert.equal(await page.getByLabel("Which computer should be Tether’s hub?").inputValue(), "Relocated hub");
       await page.getByRole("button", { name: "Cancel", exact: true }).click();
       await page.getByText("File machines (3)", { exact: true }).click();
-      await page.getByRole("heading", { name: "Travel laptop · Offline" }).waitFor();
+      await page.getByRole("row", { name: /Travel laptop Offline Path only/ }).waitFor();
+      assert.equal(await page.getByLabel("Machine name", { exact: true }).count(), 0);
+      await page.getByRole("button", { name: "Edit Mac", exact: true }).click();
       await page.getByLabel("Machine name", { exact: true }).first().fill("Renamed Mac");
       await page.getByRole("button", { name: "Save machine", exact: true }).first().click();
       await page.getByText("Machine saved.", { exact: true }).waitFor();
+      await page.getByRole("row", { name: /Renamed Mac Available Path only/ }).waitFor();
+      assert.equal(await page.getByLabel("Machine name", { exact: true }).count(), 0);
+      await page.getByRole("button", { name: "Edit phoenix-bot", exact: true }).click();
+      await page.getByLabel("Machine name", { exact: true }).fill("Discard this edit");
+      await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      await page.getByRole("row", { name: /phoenix-bot Available Machine \+ path/ }).waitFor();
       await page.getByText("Browsers and other clients (3)", { exact: true }).click();
       await page.getByText(/Safari on iPhone/).waitFor();
       await page.getByRole("button", { name: "Sign out", exact: true }).click();
@@ -116,6 +130,7 @@ try {
       await page.getByText("File machines (3)", { exact: true }).click();
       await page.setViewportSize({ width: 375, height: 650 });
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Settings must fit narrow panes");
+      assert((await page.getByRole("button", { name: "Edit Renamed Mac", exact: true }).boundingBox())!.height < 40, "Edit labels must stay on one line in narrow panes");
       await page.mouse.move(180, 350); await page.mouse.wheel(0, 800);
       await page.waitForFunction(() => scrollY > 0);
       assert.deepEqual(errors, []);

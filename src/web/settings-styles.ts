@@ -42,6 +42,13 @@ body{display:block;height:auto;min-height:100dvh;overflow:visible;padding:28px 2
 #fly-settings form{margin-top:1em}
 #fly-settings textarea{resize:vertical;line-height:1.5}
 #fly-settings .machine-preview{font: .85em/1.5 ui-monospace,monospace;overflow-wrap:anywhere;color:var(--muted);margin:1em 0}
+#fly-settings .machine-table{width:100%;border-collapse:collapse;font-size:.9em}
+#fly-settings .machine-table :is(th,td){text-align:left;padding:.65em .5em;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+#fly-settings .machine-table th{font-weight:500}
+#fly-settings .machine-table thead{color:var(--muted);font-size:.9em}
+#fly-settings .machine-table :is(th,td):first-child{padding-left:0}
+#fly-settings .machine-table :is(th,td):last-child{padding-right:0;width:1%;white-space:nowrap}
+#fly-settings .machine-table button{min-height:34px;padding:.35em .65em;white-space:nowrap;overflow-wrap:normal}
 #fly-settings .client-row{display:flex;flex-wrap:wrap;align-items:center;gap:.7em;margin:1em 0}
 #fly-settings .client-row>span{flex:1;min-width:12em;overflow-wrap:anywhere}
 #fly-settings .client-row>select{flex-basis:100%}

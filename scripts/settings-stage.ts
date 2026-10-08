@@ -27,12 +27,19 @@ export async function startSettingsStage(options: { port?: number; proxyOrigin?:
     if (url.pathname === "/") return Response.redirect(url.origin + "/fresh/settings/", 302);
     try {
       if (url.pathname === "/feedback" && request.method === "POST") {
-        const feedback = await request.json();
-        const page = new URL(feedback.url);
-        if (page.origin !== url.origin || !Array.isArray(feedback.annotations) || typeof feedback.output !== "string") throw new Error("Invalid feedback");
+        const body = await request.json();
+        // Accept the former single-page payload from already-open staging tabs.
+        const pages = body.pages ?? [body];
+        if (!Array.isArray(pages)) throw new Error("Invalid feedback");
+        const feedback = pages.map(page => {
+          const target = new URL(page.url);
+          if (target.origin !== url.origin || !/^\/(fresh|existing)\//.test(target.pathname) || !Array.isArray(page.annotations)) throw new Error("Invalid feedback");
+          const key = target.pathname + target.hash;
+          return [key, { ...page, output: page.output ?? `## Page Feedback: ${key}\n\n` + page.annotations.map((note: any, index: number) => `### ${index + 1}. ${note.element}\n**Location:** ${note.elementPath}\n**Feedback:** ${note.comment}`).join("\n\n") }] as const;
+        });
         feedbackWrites = feedbackWrites.catch(() => {}).then(async () => {
           const saved = JSON.parse(await readFile(feedbackFile, "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return "{}"; throw error; }));
-          saved[page.pathname + page.hash] = feedback;
+          for (const [key, page] of feedback) saved[key] = page;
           await mkdir(join(feedbackFile, ".."), { recursive: true });
           await writeFile(feedbackFile, JSON.stringify(saved, null, 2) + "\n");
         });
@@ -76,7 +83,7 @@ export async function startSettingsStage(options: { port?: number; proxyOrigin?:
       if (!["settings/", "setup/agent/", "setup/sign-in/", "setup/verify/", "setup/complete/", "folio/"].includes(path)) return new Response("Not found", { status: 404 });
       browser.mode = mode;
       const signIn = path === "setup/sign-in/";
-      const ribbon = `<aside id="stage-controls" aria-label="Staging controls"><strong>Settings staging</strong><span>Simulation only · no installation or real credentials</span><nav><a href="/fresh/settings/" ${mode === "fresh" ? 'aria-current="page"' : ""}>Fresh install</a><a href="/existing/settings/" ${mode === "existing" ? 'aria-current="page"' : ""}>Existing setup</a><button data-stage-action="reset">${mode === "fresh" ? "Reset to fresh install" : "Reset existing setup"}</button></nav>${state.phase === "agent" ? '<button data-stage-action="install">Run simulated installation</button><span>Approve the agent below, then run the simulation.</span>' : ""}${state.phase === "verify" ? '<span>All checks below are simulated; select and confirm them to finish.</span>' : ""}<span id="stage-feedback" role="status">Use Agentation at bottom right; Send saves feedback locally. Reset keeps annotations.</span></aside>`;
+      const ribbon = `<aside id="stage-controls" aria-label="Staging controls"><strong>Settings staging</strong><span>Simulation only · no installation or real credentials</span><nav><a href="/fresh/settings/" ${mode === "fresh" ? 'aria-current="page"' : ""}>Fresh install</a><a href="/existing/settings/" ${mode === "existing" ? 'aria-current="page"' : ""}>Existing setup</a><button data-stage-action="reset">${mode === "fresh" ? "Reset to fresh install" : "Reset existing setup"}</button></nav>${state.phase === "agent" ? '<button data-stage-action="install">Run simulated installation</button><span>Approve the agent below, then run the simulation.</span>' : ""}${state.phase === "verify" ? '<span>All checks below are simulated; select and confirm them to finish.</span>' : ""}<span id="stage-feedback" role="status">Use Agentation at bottom right; Send includes saved notes from every page. Reset keeps annotations.</span><button id="stage-send-feedback">Send all feedback</button></aside>`;
       let html = folioHtml({ settingsOnly: true, settingsStepUrls: true, apiBase: `/${mode}/api`, shared: true, serviceControls: false, theme: "tether" });
       // Install the navigation bridge before the real Settings script issues requests.
       html = html.replace("<head>", `<head><script>const stageFetch=window.fetch.bind(window);window.fetch=async(...args)=>{const response=await stageFetch(...args);const next=response.headers.get('x-stage-navigate');if(next&&response.ok)setTimeout(()=>location.assign(next),0);return response};</script>`);

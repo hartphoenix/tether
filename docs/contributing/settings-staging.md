@@ -15,8 +15,8 @@ State survives page reloads while the server runs. Restarting the server resets 
 
 ## Give feedback
 
-Activate Agentation at bottom right, select an element, and add a note. **Send Annotations** saves that page’s feedback to `.local/settings-stage/feedback.json` for an agent to read. Copy remains available for pasting feedback into a conversation.
+Activate Agentation at bottom right, select an element, and add a note. **Send Annotations** or **Send all feedback** saves notes from every staging page in this browser, grouped by page URL, to `.local/settings-stage/feedback.json` for an agent to read. Copy remains available for pasting feedback into a conversation.
 
-Wizard questions have distinct hash URLs; installation, sign-in, verification, and completion have distinct paths. Agentation uses hash-aware storage so each page keeps independent notes. Saved annotations survive navigation, reloads, and simulation resets. Feedback that has only been added remains in that browser until sent.
+Wizard questions have distinct hash URLs; installation, sign-in, verification, and completion have distinct paths. Agentation uses hash-aware storage so each page keeps independent notes. Saved annotations survive navigation, reloads, and simulation resets. Reloading staging also imports accumulated browser notes automatically. Notes on other pages do not need to be submitted one page at a time.
 
 Run `bun run check:settings-stage` to verify both installation variants, Agentation submission and page separation, reset, history, draft recovery, sign-out, and scrolling in Chromium and WebKit.
