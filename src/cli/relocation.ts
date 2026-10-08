@@ -9,7 +9,7 @@ import { statusDaemon, stopDaemon } from "../server/lifecycle";
 import { readSharedConfig, writeSharedConfig } from "../server/shared-profile";
 import { backupState } from "./backup";
 
-type Transfer = { id: string; destination: string; sourceMachineId: string; releaseHash: string; backup: string; attemptId?: string };
+type Transfer = { id: string; destination: string; sourceMachineId: string; destinationMachineId?: string; releaseHash: string; backup: string; attemptId?: string };
 type Fence = Transfer & { phase: "prepared" | "released"; secret: string };
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const fencePath = (config: TetherConfig) => join(config.configDir, "authority-fence.json");
@@ -48,22 +48,27 @@ export async function relocate(config: TetherConfig, action: string, input: { ou
     if (fence && (fence.backup !== output || fence.destination !== input.destination || fence.attemptId !== input.attemptId)) throw new Error("A different transfer is already in progress.");
     if (!fence) {
       const db = new Database(join(config.configDir, "tether.sqlite"), { readonly: true });
-      let sourceMachineId: string;
+      let sourceMachineId: string, destinationMachineId: string | undefined;
       try {
         sourceMachineId = (db.query("SELECT value FROM settings WHERE key='local_machine_id'").get() as {value:string}).value;
         if (input.attemptId) {
           const row = db.query("SELECT answers,expires_at,phase FROM setup_attempts WHERE id=?").get(input.attemptId) as {answers:string;expires_at:number;phase:string} | null;
           const answers = row && JSON.parse(row.answers);
           if (!row || row.expires_at <= Date.now() || row.phase === "cancelled" || !answers.relocate || answers.hub !== input.destination) throw new Error("Select the current relocation attempt and its chosen destination.");
+          if (answers.machineId) {
+            const machine = db.query("SELECT name FROM file_machines WHERE id=?").get(answers.machineId) as {name:string} | null;
+            if (!machine || machine.name !== input.destination || answers.machineId === sourceMachineId) throw new Error("Choose a different connected computer as the destination.");
+            destinationMachineId = answers.machineId;
+          }
         }
       } finally { db.close(); }
       const secret = randomBytes(32).toString("base64url");
-      fence = { id: randomUUID(), destination: input.destination, sourceMachineId, releaseHash: hash(secret), secret, phase: "prepared", backup: output, attemptId: input.attemptId };
+      fence = { id: randomUUID(), destination: input.destination, sourceMachineId, destinationMachineId, releaseHash: hash(secret), secret, phase: "prepared", backup: output, attemptId: input.attemptId };
       await writePrivate(path, fence, true);
     }
     if (fence.phase === "released") throw new Error("The old authority has been released; activate or repair the destination.");
     if ((await statusDaemon(config)).running) await stopDaemon(config);
-    const transfer: Transfer = { id: fence.id, destination: fence.destination, sourceMachineId: fence.sourceMachineId, releaseHash: fence.releaseHash, backup: output, attemptId: fence.attemptId };
+    const transfer: Transfer = { id: fence.id, destination: fence.destination, sourceMachineId: fence.sourceMachineId, destinationMachineId: fence.destinationMachineId, releaseHash: fence.releaseHash, backup: output, attemptId: fence.attemptId };
     await writePrivate(join(config.configDir, "authority-transfer.json"), transfer);
     const exists = await lstat(output).catch(error => { if (error.code === "ENOENT") return null; throw error; });
     if (!exists) {
@@ -118,7 +123,7 @@ export async function relocate(config: TetherConfig, action: string, input: { ou
       try {
         const current = (db.query("SELECT value FROM settings WHERE key='local_machine_id'").get() as {value:string}).value;
         if (current === transfer.sourceMachineId) db.transaction(() => {
-          db.query("UPDATE settings SET value=? WHERE key='local_machine_id'").run(randomUUID());
+          db.query("UPDATE settings SET value=? WHERE key='local_machine_id'").run(transfer.destinationMachineId ?? randomUUID());
           for (const table of ["reader_views", "ceremonies"]) if (db.query("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)) db.exec(`DELETE FROM ${table}`);
           // The destination requires fresh authorization at its final origin.
           db.query("UPDATE shared_clients SET revoked_at=? WHERE revoked_at IS NULL").run(Date.now());

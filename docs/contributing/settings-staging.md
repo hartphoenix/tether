@@ -6,10 +6,11 @@ The preview renders the real Settings interface against a disposable simulation.
 
 ## Try the flow
 
-1. Choose **Fresh install**, then **Set up Tether Fly**. Answer the setup questions in the same tab.
+1. Choose **Fresh install**, then **Set up Tether Fly**. Setup fills the same tab and starts with this computer; choose Paseo, cmux, Wave or Browser. Use **← Settings** to return without losing answers.
 2. Prepare setup, allow the simulated agent’s progress reports, then select **Run simulated installation** above the panel.
 3. Select **Simulate passkey sign-in**, confirm the simulated checks, and verify setup.
-4. Use **Reset to fresh install** to repeat. **Existing setup** has three file machines, including one offline, two browsers, and an unassociated Paseo client. Each mode keeps separate state.
+4. Use **Connect a machine or browser** to add more computers, then **All my computers are connected** to choose the hub. The current hub is bold and initially selected; the viewing computer is labeled **(this machine)**. Moving the simulated hub preserves both computers and their documents.
+5. Use **Reset to fresh install** to repeat. **Existing setup** has three file machines, including one offline, two browsers, and an unassociated Paseo client. Each mode keeps separate state.
 
 State survives page reloads while the server runs. Restarting the server resets simulations; it preserves submitted feedback. Settings controls change only simulated state, and passwords are never retained.
 
@@ -19,4 +20,4 @@ Activate Agentation at bottom right, select an element, and add a note. **Send A
 
 Wizard questions have distinct hash URLs; installation, sign-in, verification, and completion have distinct paths. Agentation uses hash-aware storage so each page keeps independent notes. Saved annotations survive navigation, reloads, and simulation resets. Reloading staging also imports accumulated browser notes automatically. Notes on other pages do not need to be submitted one page at a time.
 
-Run `bun run check:settings-stage` to verify both installation variants, Agentation submission and page separation, reset, history, draft recovery, sign-out, and scrolling in Chromium and WebKit.
+Run `bun run check:settings-stage` to verify all four app choices, connecting multiple computers before hub selection, relocation editing and reload, Agentation submission and page separation, reset, history, draft recovery, sign-out, and scrolling in Chromium and WebKit.

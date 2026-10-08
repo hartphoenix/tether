@@ -125,7 +125,7 @@ export async function startSharedProfile(daemon: TetherDaemon, config: SharedPro
     } };
   } };
   const manage = async (action: string, body: Record<string, unknown>, browserId?: string): Promise<unknown> => {
-    if (action === "status") return { configured: true, sourceRevision: revision, libraryId, enabled: auth.enabled(), origin: config.origin, localPort: server.port, localMachineId: daemon.service.store.localMachineId,
+    if (action === "status") return { configured: true, sourceRevision: revision, libraryId, enabled: auth.enabled(), origin: config.origin, localPort: server.port, localMachineId: daemon.service.store.localMachineId, hubMachineId: daemon.service.store.localMachineId, viewerMachineId: browserId ? auth.client(browserId)?.machineId ?? null : daemon.service.store.localMachineId,
       passwordConfigured: auth.password.configured(), machines: auth.machines.list().map(machine => ({ ...machine, connected: machine.id === daemon.service.store.localMachineId || broker.connected(machine.id) })), clients: auth.clients(), attempts: attempts.list(), verificationDocuments: daemon.service.store.db.query("SELECT id,path,machine_id AS machineId FROM documents WHERE active=1 ORDER BY added_at DESC LIMIT 50").all() };
     if (action === "verify-attempt") {
       if (!browserId || auth.client(browserId)?.kind !== "browser") throw new Error("Verify this setup in the hub’s HTTPS Settings after signing in.");
@@ -141,6 +141,7 @@ export async function startSharedProfile(daemon: TetherDaemon, config: SharedPro
       if (attempt.answers.machineId && attempt.answers.machineId !== machineId) throw new Error("Select a document from this setup’s retained file machine.");
       if (machineId !== daemon.service.store.localMachineId && !broker.connected(machineId)) throw new Error("The selected file machine is offline.");
       let pluginClientId: string | undefined;
+      if (attempt.answers.access !== "browser" && (body.machineId !== machineId || body.nativeConfirmed !== true)) throw new Error("Select this setup’s file machine and confirm the checks in your chosen app.");
       if (attempt.answers.access === "paseo") {
         if (body.machineId !== machineId) throw new Error("Explicitly select the file machine whose document and Paseo client you verified.");
         const client = auth.client(String(body.clientId));

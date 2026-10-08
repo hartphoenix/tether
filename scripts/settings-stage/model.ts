@@ -16,7 +16,7 @@ export function createSimulation(existing = false) {
   ];
   return {
     phase: existing ? "complete" : "settings",
-    configured: existing, enabled: existing, passwordConfigured: existing, localMachineId: "mac",
+    configured: existing, enabled: existing, passwordConfigured: existing, localMachineId: "mac", hubMachineId: "mac", viewerMachineId: "mac",
     machines: existing ? machines : machines.slice(0, 1), clients: existing ? clients : [],
     verificationDocuments: existing ? machines.map(machine => ({ id: machine.id + "-doc", machineId: machine.id, path: `/notes/${machine.id}.md` })) : [],
     attempts: [] as any[],
@@ -28,7 +28,7 @@ export function simulate(state: Simulation, action: string, body: any): string |
   const attempt = state.attempts.find(item => item.id === body.id) ?? state.attempts.at(-1);
   switch (action) {
     case "attempt":
-      state.attempts = [{ id: "attempt-1", answers: body.answers, phase: "waiting", contact: { name: "Simulated setup agent", code: "DEMO", approved: false } }];
+      state.attempts = state.attempts.filter(item => item.id !== body.id).concat({ id: body.id ?? `attempt-${state.attempts.length + 1}`, answers: body.answers, phase: "waiting", contact: { name: "Simulated setup agent", code: "DEMO", approved: false } });
       return state.phase = "agent";
     case "approve-reporting":
       attempt.contact.approved = true;
@@ -38,16 +38,16 @@ export function simulate(state: Simulation, action: string, body: any): string |
       if (!attempt?.contact?.approved) throw new Error("Approve the setup agent’s progress reports first.");
       const answers = attempt.answers;
       state.configured = state.enabled = true;
-      state.machines[0]!.name = answers.hub;
-      if (answers.access === "paseo") {
+      if (answers.relocate) state.hubMachineId = state.localMachineId = answers.machineId;
+      if (answers.access !== "browser") {
         let machine = state.machines.find(item => item.id === answers.machineId);
-        if (!machine) { machine = { id: "connected", name: answers.machine, qualifyPaths: answers.qualifyPaths, connected: true }; state.machines.push(machine); }
+        if (!machine) { machine = { id: `connected-${state.machines.length}`, name: answers.machine, qualifyPaths: answers.qualifyPaths, connected: true }; state.machines.push(machine); }
         answers.machineId = machine.id;
-        machine.connected = true;
-        state.clients.push({ id: machine.id + "-paseo", name: machine.name + " Paseo", kind: "agent", machineId: machine.id, revokedAt: null, expiresAt: Date.now() + 30 * 86400000 });
+        machine.connected = true; machine.qualifyPaths = answers.qualifyPaths;
+        if (answers.access === "paseo" && !state.clients.some(client => client.id === machine.id + "-paseo" && client.revokedAt === null)) state.clients.push({ id: machine.id + "-paseo", name: machine.name + " Paseo", kind: "agent", machineId: machine.id, revokedAt: null, expiresAt: Date.now() + 30 * 86400000 });
       }
       state.verificationDocuments = state.machines.map(machine => ({ id: machine.id + "-doc", machineId: machine.id, path: `/notes/${machine.id}.md` }));
-      attempt.report = "Simulated hub, HTTPS, file connector and Paseo plugin are ready. Sign in to verify.";
+      attempt.report = "Simulated installation is ready. Sign in to verify the chosen app and file access.";
       return state.phase = "sign-in";
     }
     case "sign-in":
@@ -55,7 +55,8 @@ export function simulate(state: Simulation, action: string, body: any): string |
       return state.phase = attempt && attempt.phase !== "verified" ? "verify" : "settings";
     case "verify-attempt":
       if (!state.configured || state.phase !== "verify") throw new Error("Complete simulated sign-in first.");
-      if (!body.documentId || attempt.answers.access === "paseo" && (!body.machineId || !body.clientId || !body.nativeConfirmed)) throw new Error("Choose a file machine, document and Paseo client, then confirm the simulated native checks.");
+      if (attempt.answers.machineId && !state.verificationDocuments.some(document => document.id === body.documentId && document.machineId === attempt.answers.machineId)) throw new Error("Choose a document from this setup’s computer.");
+      if (!body.documentId || attempt.answers.access !== "browser" && (!body.machineId || !body.nativeConfirmed) || attempt.answers.access === "paseo" && !body.clientId) throw new Error("Choose this setup’s file machine and document, then confirm the checks in your chosen app.");
       if (attempt.answers.internet && !body.internetConfirmed) throw new Error("Confirm the simulated public browser check.");
       attempt.phase = "verified"; attempt.verification = true;
       return state.phase = "complete";

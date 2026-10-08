@@ -9,14 +9,18 @@ import { restoreState } from "../src/cli/backup";
 import { SharedAuth } from "../src/remote/shared-auth";
 import { SetupAttempts } from "../src/remote/setup-attempts";
 
-test("relocation resumes a fenced backup, requires release, retains file identity, and forbids late rollback", async () => {
+test.each([false, true])("relocation (existing destination: %s) resumes a fenced backup, requires release, retains file identity, and forbids late rollback", async (existing) => {
   const directory = await mkdtemp("/tmp/tether-relocate-");
   const source = resolveConfig({ configDir: join(directory, "source"), runtimeDir: join(directory, "runtime") });
   try {
     await prepareConfig(source);
     const store = new PrivateStore(join(source.configDir, "tether.sqlite"));
     const machineId = store.localMachineId, document = store.ensureDocument(join(directory, "document.md"));
-    const attempt = new SetupAttempts(store.db).save({ hub: "new hub", machine: "", access: "browser", qualifyPaths: false, internet: false, relocate: true });
+    const destinationId = crypto.randomUUID();
+    const destinationDocument = store.ensureDocument(join(directory, "destination.md"));
+    store.machines.set(destinationId, "new hub");
+    store.db.query("UPDATE documents SET machine_id=? WHERE id=?").run(destinationId, destinationDocument.id);
+    const attempt = new SetupAttempts(store.db).save({ hub: "new hub", machine: "", access: "browser", qualifyPaths: false, internet: false, relocate: true, ...(existing ? { machineId: destinationId } : {}) });
     new SharedAuth({ db: store.db, origin: "https://old.example.test", passkeys: { enrolled: () => false, registrationOptions: async () => { throw 0; }, authenticationOptions: async () => { throw 0; }, register: async () => {}, authenticate: async () => {} } });
     store.close();
     await writeSharedConfig(source, { origin: "https://old.example.test", port: 18420, owner: "Owner", active: true });
@@ -37,11 +41,16 @@ test("relocation resumes a fenced backup, requires release, retains file identit
     await expect(relocate(source, "rollback", {})).rejects.toThrow("irreversible");
     await relocate(destination, "activate", { receipt });
     const copy = new PrivateStore(join(destination.configDir, "tether.sqlite"));
-    expect(copy.localMachineId).not.toBe(machineId);
+    const activatedId = copy.localMachineId;
+    expect(activatedId).not.toBe(machineId);
+    if (existing) expect(activatedId).toBe(destinationId);
+    expect(copy.documentById(destinationDocument.id)?.machine_id).toBe(destinationId);
     expect(copy.documentById(document.id)?.machine_id).toBe(machineId);
     expect(new SetupAttempts(copy.db).get(attempt.id).phase).toBe("awaiting verification");
     copy.close();
     await relocate(destination, "activate", { receipt });
+    const resumed = new PrivateStore(join(destination.configDir, "tether.sqlite"));
+    expect(resumed.localMachineId).toBe(activatedId); resumed.close();
     await expect(assertAuthority(source)).rejects.toThrow("fenced");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

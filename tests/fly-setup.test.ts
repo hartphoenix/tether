@@ -4,6 +4,20 @@ import { SetupAttempts } from "../src/remote/setup-attempts";
 import { Machines } from "../src/storage/machines";
 import { formatMachinePath } from "../src/shared/machine-path";
 
+test("setup records cmux and Wave choices without weakening file-machine requirements", () => {
+  const db = new Database(":memory:");
+  try {
+    const attempts = new SetupAttempts(db), machineId = crypto.randomUUID();
+    for (const access of ["cmux", "wave"] as const) {
+      const answers = { hub: "Mac", machine: "Mac", machineId, access, qualifyPaths: true, internet: false, initialSetup: true };
+      const attempt = attempts.save(answers);
+      expect(attempt.answers).toEqual(answers);
+      expect(() => attempts.save({ ...answers, machine: "" })).toThrow("selected file machine");
+      expect(attempts.verified(attempt.id, { machineId }).answers.machineId).toBe(machineId);
+    }
+  } finally { db.close(); }
+});
+
 test("setup reporting requires a bound owner approval and cannot self-certify readiness", async () => {
   const db = new Database(":memory:");
   try {

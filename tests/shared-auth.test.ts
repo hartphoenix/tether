@@ -8,7 +8,7 @@ import type { ReaderBackend } from "../src/remote/contracts";
 const ORIGIN = "https://library.example.test";
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-function fixture(input: { reader?: ReaderBackend; dispatch?: (operation: string, body: Record<string, unknown>) => Promise<unknown> } = {}) {
+function fixture(input: { localMachineId?: string; reader?: ReaderBackend; dispatch?: (operation: string, body: Record<string, unknown>) => Promise<unknown> } = {}) {
   const db = new Database(":memory:"); cleanups.push(() => db.close());
   let time = Date.now(), enrolled = true, generation = 0, index = 0;
   const passkeys: PasskeyProvider = {
@@ -20,7 +20,7 @@ function fixture(input: { reader?: ReaderBackend; dispatch?: (operation: string,
     authenticationOptions: async () => ({ challenge: `owner-${generation}-${++index}` } as any),
     authenticate: async (challenge, response) => { if ((response as any)?.proof !== challenge || !challenge.startsWith(`owner-${generation}-`)) throw new Error("bad proof"); },
   };
-  const auth = new SharedAuth({ db, passkeys, origin: ORIGIN, now: () => time });
+  const auth = new SharedAuth({ db, passkeys, origin: ORIGIN, localMachineId: input.localMachineId, now: () => time });
   const gateway = new SharedGateway({ auth, dispatch: input.dispatch ?? (async (operation, body) => ({ operation, body })), reader: input.reader });
   cleanups.push(() => gateway.close());
   async function send(path: string, body?: unknown, headers: Record<string, string> = {}, method = body === undefined ? "GET" : "POST") {
@@ -88,6 +88,19 @@ test("connector enrollment assigns a machine identity and owner-approved reenrol
   const next = (await (await f.send("/auth/pair/poll", { requestId: pending.requestId, pollSecret: pending.pollSecret })).json()).credential;
   expect(next.machineId).toBe(credential.machineId); expect(next.clientId).not.toBe(credential.clientId);
   expect(f.auth.client(credential.clientId)).toBeNull(); expect(f.auth.clients()).toHaveLength(2);
+});
+
+test("the hub can enroll its own agent client but cannot pair a connector to itself", async () => {
+  const machineId = crypto.randomUUID(), f = fixture({ localMachineId: machineId });
+  f.auth.machines.set(machineId, "Hub");
+  expect((await f.send("/auth/pair", { name: "Hub files", kind: "connector", machineId })).status).toBe(400);
+  const pending = await f.send("/auth/pair", { name: "Hub Paseo", kind: "agent", machineId });
+  expect(pending.status).toBe(200);
+  const pair = await pending.json();
+  expect((await (await f.send("/auth/pair/poll", { requestId: pair.requestId, pollSecret: pair.pollSecret })).json()).status).toBe("pending");
+  await f.approve(pair);
+  const credential = (await (await f.send("/auth/pair/poll", { requestId: pair.requestId, pollSecret: pair.pollSecret })).json()).credential;
+  expect(f.auth.client(credential.clientId)).toMatchObject({ kind: "agent", machineId });
 });
 
 test("pairing attempts and request lifetime are bounded", async () => {

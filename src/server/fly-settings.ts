@@ -19,6 +19,6 @@ export async function localFlySettings(daemon: TetherDaemon, action: string, bod
   }
   if (daemon.shared) return daemon.shared.localControl(action, body);
   if (action === "status") return { configured: false, sourceRevision: await sourceRevision(), enabled: false, origin: (await readSharedConfig(daemon.config))?.origin ?? null,
-    localMachineId: daemon.service.store.localMachineId, machines: daemon.service.store.machines.list(), clients: [], attempts: attempts.list() };
+    localMachineId: daemon.service.store.localMachineId, viewerMachineId: daemon.service.store.localMachineId, machines: daemon.service.store.machines.list(), clients: [], attempts: attempts.list() };
   throw Object.assign(new Error("Configure the hub’s HTTPS endpoint through the setup agent first."), { code: "shared_not_configured", status: 409 });
 }

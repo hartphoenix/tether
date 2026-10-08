@@ -21,20 +21,40 @@ function fixture(state: any, request?: (action: string) => Promise<any>, localOw
 }
 const state = { configured: true, enabled: true, origin: "https://hub.example", localMachineId: "local", machines: [{ id: "local", name: "Mac", qualifyPaths: false }, { id: "remote", name: "Phoenix", qualifyPaths: true }], clients: [], attempts: [] };
 
-test("setup keeps relocation intent and existing machine copy preference through Back", async () => {
+test("hub selection uses enrolled machines and retains the chosen identity", async () => {
   const f = fixture(state);
   try {
-    await Bun.sleep(0); f.click("Disable Tether Fly…"); f.click("Disable this machine and relocate Tether to a different one");
-    const hub = f.dom.window.document.querySelector<HTMLInputElement>('input[aria-label="Which computer should be Tether’s hub?"]')!;
-    expect(hub.value).toBe(""); hub.value = "New hub"; hub.dispatchEvent(new f.dom.window.Event("input"));
-    f.click("Next"); f.click("Next");
-    const machine = f.dom.window.document.querySelector<HTMLSelectElement>('select[aria-label="File machine"]')!;
-    machine.value = "remote"; machine.dispatchEvent(new f.dom.window.Event("change"));
-    f.click("Next");
-    expect(f.dom.window.document.querySelector('select')!.value).toBe("true");
-    f.click("Back"); expect(f.dom.window.document.querySelector('select')!.value).toBe("remote");
-    f.click("Next"); f.click("Next"); f.click("Prepare setup"); await Bun.sleep(0);
-    expect(f.calls.find(call => call.action === "attempt")?.body.answers).toMatchObject({ relocate: true, hub: "New hub", machineId: "remote", qualifyPaths: true });
+    await Bun.sleep(0); f.click("All my computers are connected");
+    const picker = f.dom.window.document.querySelector('.hub-picker')!;
+    expect(picker.querySelector('summary strong')?.textContent).toBe('Mac (this machine)');
+    expect(picker.querySelector('input:checked')?.getAttribute('value')).toBe('local');
+    const remote = picker.querySelector<HTMLInputElement>('input[value="remote"]')!;
+    remote.checked = true; remote.dispatchEvent(new f.dom.window.Event('change'));
+    f.click('Continue'); await Bun.sleep(0);
+    expect(f.calls.find(call => call.action === 'attempt')?.body.answers).toMatchObject({ relocate: true, hub: 'Phoenix', machineId: 'remote', qualifyPaths: true });
+  } finally { f.dom.window.close(); }
+});
+
+test("editing a relocation retains its selected destination", async () => {
+  const attempt = { id: "move", phase: "awaiting agent", answers: { hub: "Phoenix", machine: "Phoenix", machineId: "remote", access: "browser", qualifyPaths: true, internet: false, relocate: true } };
+  const f = fixture({ ...state, attempts: [attempt] });
+  try {
+    await Bun.sleep(0); f.click("Change answers");
+    expect(f.dom.window.document.querySelector('.hub-picker summary')?.textContent).toBe("Phoenix");
+    f.click("Continue"); await Bun.sleep(0);
+    expect(f.calls.find(call => call.action === "attempt")?.body).toEqual({ id: "move", answers: attempt.answers });
+  } finally { f.dom.window.close(); }
+});
+
+test("first setup uses this computer and postpones hub and machine selection", async () => {
+  const f = fixture({ ...state, configured: false });
+  try {
+    await Bun.sleep(0); f.click('Set up Tether Fly');
+    const select = f.dom.window.document.querySelector('select')!;
+    expect([...select.options].map(option => option.textContent)).toEqual(['Paseo','cmux','Wave','Browser']);
+    expect(f.dom.window.document.querySelector('h4')?.textContent).toBe('Where will you primarily use Tether?');
+    f.click('Next'); f.click('Next'); f.click('Prepare setup'); await Bun.sleep(0);
+    expect(f.calls.find(call => call.action === 'attempt')?.body.answers).toMatchObject({ initialSetup: true, hub: 'Mac', machine: 'Mac', machineId: 'local' });
   } finally { f.dom.window.close(); }
 });
 
@@ -130,7 +150,7 @@ test("setup cancellation is immediate even when the hub is offline", async () =>
 test("successful setup leaves the wizard even when draft storage is unavailable", async () => {
   const f = fixture(state);
   try {
-    await Bun.sleep(0); f.click('Connect a machine or browser'); f.click('Next');
+    await Bun.sleep(0); f.click('Connect a machine or browser');
     const select = f.dom.window.document.querySelector('select')!;
     select.value = 'browser'; select.dispatchEvent(new f.dom.window.Event('change'));
     f.click('Next');

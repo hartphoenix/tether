@@ -201,7 +201,7 @@ export class SharedAuth {
       if (!this.options.passkeys.enrolled()) throw new SharedAccessError("owner_enrollment_required", "Establish the owner passkey at this HTTPS origin before pairing clients.", 409);
       if (this.pairings.size >= 32) throw new SharedAccessError("rate_limited", "Too many pending client requests.", 429);
       if (body.kind !== "agent" && body.kind !== "connector") throw new SharedAccessError("invalid_client", "Client kind must be agent or connector.", 400);
-      if (body.machineId !== undefined && (typeof body.machineId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(body.machineId) || body.machineId === this.options.localMachineId)) throw new SharedAccessError("invalid_machine", "Choose an enrolled file-machine UUID; the service's own local machine cannot be paired.", 400);
+      if (body.machineId !== undefined && (typeof body.machineId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(body.machineId) || body.kind === "connector" && body.machineId === this.options.localMachineId)) throw new SharedAccessError("invalid_machine", "Choose an enrolled file-machine UUID; the service's own local machine cannot use a connector.", 400);
       if (body.kind === "agent" && body.machineId && !this.machines.get(body.machineId)) deny("Choose an existing file machine for this agent.");
       if (body.qualifyPaths !== undefined && typeof body.qualifyPaths !== "boolean") deny();
       const name = label(body.name), requestId = secret(), pollSecret = secret(), code = randomBytes(5).toString("hex").toUpperCase(), expiresAt = this.now() + FIVE_MINUTES;

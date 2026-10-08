@@ -32,6 +32,17 @@ test("setup completion requires a verified browser and observed file access, not
     const result = await verified.json();
     expect(result).toMatchObject({ phase: "verified", verification: { documentId: document.documentId, ownerConfirmedInternet: true, ownerConfirmedNative: false } });
     expect(result.verification.bodyRevision).toMatch(/^sha256:/);
+    const ownerStatus = await (await post("/folio/api/fly/status", {})).json();
+    expect(ownerStatus.hubMachineId).toBe(daemon.service.store.localMachineId);
+    expect(ownerStatus.viewerMachineId).toBeNull(); // A signed-in browser does not identify its computer.
+    for (const access of ["cmux", "wave"]) {
+      const hostAttempt = await shared.localControl("attempt", { answers: { hub: "Mac", machine: "Mac", machineId: daemon.service.store.localMachineId, access, qualifyPaths: false, internet: false } }) as {id:string};
+      const hostInput = { id: hostAttempt.id, documentId: document.documentId, machineId: daemon.service.store.localMachineId };
+      expect((await post("/folio/api/fly/verify-attempt", hostInput)).status).not.toBe(200);
+      const hostVerified = await post("/folio/api/fly/verify-attempt", { ...hostInput, nativeConfirmed: true });
+      expect(hostVerified.status).toBe(200);
+      expect((await hostVerified.json()).verification.ownerConfirmedNative).toBe(true);
+    }
     const clientId = crypto.randomUUID(), token = "a".repeat(43), machineId = daemon.service.store.localMachineId;
     daemon.service.store.db.query("INSERT INTO shared_clients(id,name,kind,machine_id,token_hash,created_at,expires_at) VALUES(?,?,'agent',?,?,?,?)")
       .run(clientId, "Paseo fixture", machineId, createHash("sha256").update(token).digest("hex"), Date.now(), Date.now() + 60_000);

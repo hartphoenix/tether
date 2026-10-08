@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 
-export type SetupAnswers = { hub: string; machine: string; access: "paseo" | "browser"; qualifyPaths: boolean; internet: boolean; relocate?: boolean; machineId?: string };
+export type SetupAnswers = { hub: string; machine: string; access: "paseo" | "cmux" | "wave" | "browser"; qualifyPaths: boolean; internet: boolean; relocate?: boolean; machineId?: string; initialSetup?: boolean };
 type Contact = { name: string; hash: string; code: string; approved: boolean; expiresAt: number };
 export type SetupAttempt = { id: string; answers: SetupAnswers; createdAt: number; expiresAt: number; phase: string; report?: string; verification?: Record<string, unknown>; contact?: Omit<Contact, "hash"> };
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -30,11 +30,11 @@ export class SetupAttempts {
   list(): SetupAttempt[] { return (this.db.query("SELECT id FROM setup_attempts ORDER BY created_at DESC LIMIT 20").all() as {id:string}[]).map(row => this.get(row.id)); }
   save(input: unknown, id?: string): SetupAttempt {
     const value = input as SetupAnswers;
-    if (!value || !["paseo", "browser"].includes(value.access) || typeof value.internet !== "boolean" || typeof value.qualifyPaths !== "boolean"
+    if (!value || !["paseo", "cmux", "wave", "browser"].includes(value.access) || typeof value.internet !== "boolean" || typeof value.qualifyPaths !== "boolean"
       || [value.hub, value.machine].some(name => typeof name !== "string" || name.length > 100 || /[\p{Cc}]/u.test(name))) throw fail("Complete the setup questions.");
     if (value.machineId !== undefined && (typeof value.machineId !== "string" || !/^[a-f0-9-]{36}$/i.test(value.machineId))) throw fail("Select a retained file machine.");
-    const answers: SetupAnswers = { hub: value.hub.trim(), machine: value.machine.trim(), access: value.access, qualifyPaths: value.qualifyPaths, internet: value.internet, ...(value.relocate === true ? { relocate: true } : {}), ...(value.machineId ? { machineId: value.machineId } : {}) };
-    if (!answers.hub || answers.access === "paseo" && !answers.machine) throw fail("Name the hub and selected file machine.");
+    const answers: SetupAnswers = { hub: value.hub.trim(), machine: value.machine.trim(), access: value.access, qualifyPaths: value.qualifyPaths, internet: value.internet, ...(value.relocate === true ? { relocate: true } : {}), ...(value.machineId ? { machineId: value.machineId } : {}), ...(value.initialSetup === true ? { initialSetup: true } : {}) };
+    if (!answers.hub || answers.access !== "browser" && !answers.machine) throw fail("Name the hub and selected file machine.");
     const createdAt = this.now();
     if (id) {
       this.row(id);
@@ -56,7 +56,7 @@ export class SetupAttempts {
   verified(id: string, observations: Record<string, unknown>): SetupAttempt {
     const attempt = this.get(id);
     if (attempt.expiresAt <= this.now() || attempt.phase === "cancelled") throw fail("Resume this setup before verifying it.", 410);
-    const answers = { ...attempt.answers, ...(attempt.answers.access === "paseo" ? { machineId: observations.machineId } : {}) };
+    const answers = { ...attempt.answers, ...(attempt.answers.access !== "browser" ? { machineId: observations.machineId } : {}) };
     this.db.query("UPDATE setup_attempts SET phase='verified',contact=NULL,answers=?,verification=? WHERE id=?").run(JSON.stringify(answers), JSON.stringify({ ...observations, verifiedAt: this.now() }), id);
     return this.get(id);
   }

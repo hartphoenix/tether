@@ -31,6 +31,16 @@ body{display:block;height:auto;min-height:100dvh;overflow:visible;padding:28px 2
 #settings-dialog .dialog-actions,.settings-actions{display:flex;align-items:center;flex-wrap:wrap;gap:.6em;margin:1em 0 0}
 #settings-feedback{margin-right:auto;color:var(--muted);font-size:.9em}
 #fly-settings{margin-top:2.5em;padding-top:2em;border-top:1px solid var(--line)}
+.fly-setup-page #general-settings,.fly-setup-page #settings-title{display:none}
+.fly-setup-page>.setup-back{display:none}
+.fly-setup-page #fly-settings{margin:0;padding:0;border:0}
+#settings-dialog .setup-back{display:inline-block;margin-bottom:1.5em;font-size:.9em}
+#fly-settings .setup-help{border:0;padding-top:0}
+#fly-settings .hub-picker{position:relative;padding:0;border:1px solid var(--line);border-radius:7px;background:var(--bg);margin:.5em 0 1em}
+#fly-settings .hub-picker>summary{padding:.65em .8em;margin:0}
+#fly-settings .hub-options{position:absolute;top:100%;left:0;right:0;z-index:10;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:.5em;box-shadow:0 4px 12px #0002}
+#fly-settings .hub-options label{display:flex;align-items:center;gap:.65em;padding:.5em;cursor:pointer;font-weight:400}
+#fly-settings .hub-options label:has(:disabled){opacity:.6;cursor:default}
 #fly-settings .settings-actions{margin-bottom:1em}
 #fly-settings a{color:var(--accent);overflow-wrap:anywhere}
 #fly-settings details{border-top:1px solid var(--line);padding:1em 0}
