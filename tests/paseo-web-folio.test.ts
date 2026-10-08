@@ -250,3 +250,93 @@ test("only local launch URLs and same-origin session navigations are accepted", 
     expect(invalid.states.at(-1)).toBe("failed");
   }
 });
+
+test("Settings requests open a browser pane without navigating or replacing the Folio guest", async () => {
+  const { JSDOM } = await import("jsdom");
+  const { folioHtml, folioTheme } = await import("../src/web/folio-page");
+  for (const shared of [false, true]) {
+    const root = shared ? "https://hub.example/folio/?embedded=1" : session + "&embedded=1";
+    const opened: string[] = [];
+    const current = mount({ cacheKey: root, onOpenBrowser: url => opened.push(url), ...(shared ? {
+      launch: async () => ({ url: root, sharedOrigin: "https://hub.example", expiresAt: Date.now() + 30_000 }),
+    } : {}) });
+    await tick();
+    const guest = guests.at(-1)!; guest.ready(root);
+    const dom = new JSDOM(folioHtml({ embedded: true, shared }), { url: root, runScripts: "outside-only", pretendToBeVisual: true });
+    Object.assign(dom.window, {
+      fetch: async () => Response.json({ sequence: 1, files: [], preferences: folioTheme(), retention: { mode: "forever" } }),
+      setInterval: () => 0,
+    });
+    dom.window.console.info = (message: string) => guest.emit("console-message", { message, sourceId: dom.window.location.href });
+    try {
+      dom.window.eval(dom.window.document.querySelector("script")!.textContent!);
+      await tick();
+      const settings = dom.window.document.querySelector<HTMLButtonElement>('[data-app-action="settings"]')!;
+      settings.click(); settings.click();
+      const expected = shared ? "https://hub.example/settings/" : `${origin}/r/view-a/settings`;
+      expect(opened).toEqual([expected, expected]);
+      expect(dom.window.location.href).toBe(root);
+      expect(current.states).toEqual(["loading", "ready"]);
+      expect(guest.removed).toBe(false);
+      if (shared) {
+        const reader = `https://hub.example/reader/d/${crypto.randomUUID()}/`;
+        let archived = false;
+        dom.window.fetch = async (input, init) => {
+          const endpoint = String(input).split("/").at(-1);
+          if (endpoint === "machines") return Response.json([{ id: "machine", name: "Files" }]);
+          if (endpoint === "pick") {
+            if (archived && !JSON.parse(String(init?.body)).restoreArchived) return Response.json({ error: { code: "restore_required", message: "Archived" } }, { status: 409 });
+            return Response.json({ url: reader });
+          }
+          return Response.json({ sequence: 1, files: [], retention: { mode: "forever" } });
+        };
+        for (const restore of [false, true]) {
+          archived = restore;
+          dom.window.document.querySelector<HTMLButtonElement>('#add')!.click(); await tick();
+          expect(dom.window.document.querySelector('#path-dialog')!.classList.contains('open')).toBe(true);
+          dom.window.document.querySelector<HTMLInputElement>('#path-value')!.value = '/notes.md';
+          dom.window.document.querySelector<HTMLFormElement>('#path-form')!.requestSubmit(); await tick();
+          if (restore) {
+            expect(dom.window.document.querySelector('#confirm-dialog')!.classList.contains('open')).toBe(true);
+            dom.window.document.querySelector<HTMLButtonElement>('#confirm-action')!.click(); await tick();
+          }
+          expect(opened.at(-1)).toBe(reader);
+          expect(dom.window.location.href).toBe(root);
+          expect(guest.removed).toBe(false);
+        }
+        expect(opened).toEqual([expected, expected, reader, reader]);
+      }
+    } finally { dom.window.close(); current.dispose(); }
+  }
+});
+
+test("browser requests are restricted to the loaded Folio and approved destinations", async () => {
+  const opened: string[] = [];
+  const current = mount({ onOpenBrowser: url => opened.push(url) });
+  await tick(); const guest = guests[0]!;
+  const message = (url: string, sourceId = session) => guest.emit("console-message", { message: "tether:open-browser:" + url, sourceId });
+  message(`${origin}/r/view-a/settings`); // Not ready yet.
+  guest.ready();
+  message(`${origin}/r/view-a/settings`, "https://elsewhere.example/");
+  for (const target of ["https://elsewhere.example/settings", `${origin}/r/other/settings`, `${origin}/control/stop`, `${origin}/r/view-a/settings?extra=1`]) message(target);
+  expect(opened).toEqual([]);
+  message(`${origin}/r/view-a/settings`);
+  expect(opened).toEqual([`${origin}/r/view-a/settings`]);
+  expect(current.states.at(-1)).toBe("ready");
+  current.dispose(); message(`${origin}/r/view-a/settings`);
+  expect(opened).toHaveLength(1);
+});
+
+test("shared document requests use the same pane opener and leave Folio ready", async () => {
+  const opened: string[] = [];
+  const root = "https://hub.example/folio/?embedded=1";
+  const current = mount({ launch: async () => ({ url: root, sharedOrigin: "https://hub.example", expiresAt: Date.now() + 30_000 }), onOpenBrowser: url => opened.push(url) });
+  await tick(); const guest = guests[0]!; guest.ready(root);
+  const reader = `https://hub.example/reader/d/${crypto.randomUUID()}/`;
+  for (const target of ["https://elsewhere.example/settings/", "https://hub.example/auth/login", "https://hub.example/settings/?next=/folio/", "https://hub.example/folio/"]) {
+    guest.emit("console-message", { message: "tether:open-browser:" + target, sourceId: root });
+  }
+  expect(opened).toEqual([]);
+  guest.emit("console-message", { message: "tether:open-browser:" + reader, sourceId: root });
+  expect(opened).toEqual([reader]); expect(current.states.at(-1)).toBe("ready"); expect(guest.removed).toBe(false);
+});

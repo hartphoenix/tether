@@ -2,7 +2,7 @@ import type { FolioView } from "../shared/contracts";
 
 // Experimental desktop adapter: Paseo has no public embedded-browser component.
 // Keep DOM access here, without adding DOM/Electron dependencies to the plugin.
-type GuestEvent = { preventDefault?: () => void; url?: string; httpResponseCode?: number; isMainFrame?: boolean; isInPlace?: boolean; errorCode?: number };
+type GuestEvent = { message?: string; sourceId?: string; url?: string; httpResponseCode?: number; isMainFrame?: boolean; isInPlace?: boolean; errorCode?: number };
 type Listener = (event: GuestEvent) => void;
 type Guest = {
   style: { width: string; height: string; display: string; flex: string };
@@ -19,7 +19,7 @@ type MountOptions = {
   cacheKey: string;
   launch: () => Promise<FolioView>;
   onState: (state: FolioViewState) => void;
-  onDocument?: (url: string) => void;
+  onOpenBrowser?: (url: string) => void;
   launchTimeoutMs?: number;
   loadTimeoutMs?: number;
 };
@@ -134,16 +134,21 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
           committedUrl = finalUrl;
           options.onState("ready");
         };
-        listen("will-navigate", event => {
-          if (!event.url) return;
-          if (!sharedOrigin) {
-            try { const target = localUrl(event.url); if (finalUrl && target.origin === url.origin && target.pathname === new URL(finalUrl).pathname + "settings" && options.onDocument) { event.preventDefault?.(); options.onDocument(target.href); } } catch { event.preventDefault?.(); fail(); }
-            return;
-          }
+        // webview will-navigate cannot be cancelled. The page emits a bounded
+        // console-message request instead; no preload or Node access is needed.
+        listen("console-message", event => {
+          const prefix = "tether:open-browser:";
+          if (!live() || !domReady || !committedUrl || !options.onOpenBrowser || !event.message?.startsWith(prefix)) return;
           try {
-            const target = sharedUrl(event.url);
-            if ((target.pathname.startsWith("/reader/") || target.pathname.startsWith("/settings")) && options.onDocument) { event.preventDefault?.(); options.onDocument(target.href); }
-          } catch { event.preventDefault?.(); fail(); }
+            const current = new URL(committedUrl), source = new URL(event.sourceId ?? "");
+            if (source.origin !== current.origin || source.pathname !== current.pathname) return;
+            const target = sharedOrigin ? sharedUrl(event.message.slice(prefix.length)) : localUrl(event.message.slice(prefix.length));
+            if (sharedOrigin) {
+              if (current.pathname !== "/folio/" || !(target.pathname === "/settings/" || target.pathname.startsWith("/reader/")) || target.searchParams.has("next")) return;
+              target.searchParams.delete("embedded");
+            } else if (target.origin !== current.origin || target.pathname !== current.pathname + "settings" || target.search) return;
+            options.onOpenBrowser(target.href);
+          } catch { /* Ignore unrelated or invalid guest messages without replacing Folio. */ }
         });
         listen("did-start-navigation", event => {
           if (!live() || !event.isMainFrame || event.isInPlace) return;

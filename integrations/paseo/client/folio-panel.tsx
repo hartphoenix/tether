@@ -37,7 +37,7 @@ function EmbeddedFolio({ settings, cacheKey, generation, ...props }: PluginWorks
           return { ...result, url: url.href };
         },
         onState: setState,
-        onDocument: url => { void props.navigation?.openBrowser?.({ url, workspaceId }); },
+        onOpenBrowser: url => { void props.navigation?.openBrowser?.({ url, workspaceId }); },
       });
     }, () => { clearTimeout(timer); if (!disposed) setState("failed"); });
     return () => { disposed = true; clearTimeout(timer); cleanup(); };
