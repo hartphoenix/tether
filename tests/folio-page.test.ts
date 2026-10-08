@@ -413,3 +413,18 @@ test("default document zoom is saved explicitly without previewing", async () =>
  expect(slider.value).toBe('125');
  dom.window.close();
 });
+
+test("Escape preserves standalone Settings drafts; Discard explicitly restores saved preferences", async () => {
+  const { dom, refresh } = runPage({ sequence: 1, files: [] }, undefined, true);
+  try {
+    await refresh();
+    const input = dom.window.document.querySelector<HTMLInputElement>('#default-document-zoom')!;
+    input.value = '150'; input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(input.value).toBe('150');
+    expect(dom.window.document.querySelector('#settings-feedback')?.textContent).toBe('Unsaved changes');
+    dom.window.document.querySelector<HTMLButtonElement>('#settings-cancel')!.click();
+    expect(input.value).toBe('100');
+    expect(dom.window.document.querySelector('#settings-feedback')?.textContent).toBe('Changes discarded.');
+  } finally { dom.window.close(); }
+});

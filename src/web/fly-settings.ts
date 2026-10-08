@@ -1,22 +1,30 @@
 /** Self-contained so local and shared Settings use exactly the same application. */
 export function mountFlySettings(root: HTMLElement, request: (action: string, body?: unknown) => Promise<any>, localOwner: boolean) {
-  let state: any, timer: ReturnType<typeof setTimeout>, disposed = false;
+  let state: any, timer: ReturnType<typeof setTimeout>, disposed = false, editing = false, inWizard = false;
   const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text = "") => { const element = document.createElement(tag); element.textContent = text; return element; };
-  const error = node("p"); error.setAttribute("role", "status");
+  const error = node("p"); error.id = "fly-feedback"; error.setAttribute("role", "status");
   const content = node("section"); root.append(content, error);
+  const protectDraft = (event: Event) => { if ((event.target as HTMLElement).closest("form")) editing = true; };
+  content.addEventListener("input", protectDraft);
+  content.addEventListener("change", protectDraft);
   const run = async (action: () => Promise<void>) => { error.textContent = ""; try { await action(); } catch (cause) { error.textContent = (cause as Error).message; } };
   const button = (label: string, action: () => void) => { const element = node("button", label); element.type = "button"; element.onclick = action; return element; };
   const field = (label: string, value: string, type = "text") => {
     const element = node("label", label), input = node("input"); input.type = type; input.value = value; element.append(input); return { element, input };
   };
-  const action = async (name: string, body: unknown = {}) => { await request(name, body); await refresh(); };
+  const action = async (name: string, body: unknown = {}, message = "Changes saved.") => { await request(name, body); await refresh(); error.textContent = message; };
+  const actions = (...items: HTMLElement[]) => { const group = node("div"); group.className = "settings-actions"; group.append(...items); return group; };
+  const disclosure = (title: string, parent: HTMLElement) => { const group = node("details"); group.append(node("summary", title)); parent.append(group); return group; };
+  const hint = (text: string) => { const p = node("p", text); p.className = "settings-hint"; return p; };
   const prompt = (attempt: any) => {
     const destination = !state.configured || attempt.answers.access === "browser" ? "the hub" : attempt.answers.machine;
     const revision = state.sourceRevision ?? "the tested source revision supplied with this build";
     return `${attempt.answers.relocate ? `Relocate the existing Tether hub to ${attempt.answers.hub} using the prepare, release and activate procedure (pass --attempt ${attempt.id} to prepare); preserve the former hub as a file machine. Begin with an agent on the current hub and coordinate the destination before cutover.` : `Set up Tether Fly on ${destination}.`} Use https://github.com/hartphoenix/tether at ${revision}. Read docs/guide/shared-profile.md and docs/guide/fly-setup.md at that revision. Preserve the existing library and Markdown; do not create another authority. Hub: ${attempt.answers.hub}. HTTPS origin: ${state.origin ?? "establish a stable HTTPS origin on the hub first"}. Access: ${attempt.answers.access}. File machine: ${attempt.answers.machine || "browser only"}. Retained machine ID: ${attempt.answers.machineId ?? "select a new identity only for a new file machine"}. Qualify copied paths: ${attempt.answers.qualifyPaths ? "yes" : "no"}. Internet access explicitly requested: ${attempt.answers.internet ? "yes" : "no"}. Setup attempt: ${attempt.id}. Request owner approval for the scoped reporting capability; report progress automatically and poll approvals. Verify service observations before declaring completion. Use the source installer and preserve existing machine IDs when re-pairing. Additional requirements are welcome; report unsupported configurations before changing the plan.`;
   };
   const showAttempt = (attempt: any) => {
-    const section = node("section"); section.append(node("h4", `Setup · ${attempt.phase}`));
+    const section = attempt.phase === "verified" ? disclosure("Completed setup", content) : node("section");
+    section.className = "settings-section";
+    section.append(node("h4", attempt.phase === "verified" ? "Setup verified" : "Continue setup"));
     if (attempt.verification && attempt.phase === "verified") {
       section.append(node("p", "Verified: browser sign-in and file access, with the selected live checks confirmed by you."));
       content.append(section); return;
@@ -55,9 +63,9 @@ export function mountFlySettings(root: HTMLElement, request: (action: string, bo
     content.append(section);
   };
   const wizard = (previous?: any, relocate = false) => {
-    clearTimeout(timer);
+    clearTimeout(timer); inWizard = true;
     const draftKey = "tether.fly.draft";
-    let answers = previous?.answers ?? { hub: state.machines?.find((machine: any) => machine.id === state.localMachineId)?.name ?? "This computer", machine: "", access: "paseo", qualifyPaths: false, internet: false };
+    let answers = previous ? { ...previous.answers } : { hub: state.machines?.find((machine: any) => machine.id === state.localMachineId)?.name ?? "This computer", machine: "", access: "paseo", qualifyPaths: false, internet: false };
     if (!previous && !relocate) try { const saved = JSON.parse(localStorage.getItem(draftKey) ?? "null"); if (saved) answers = { ...answers, ...saved }; } catch {}
     if (relocate) answers = { ...answers, relocate: true, hub: "" };
     let step = 0;
@@ -69,8 +77,8 @@ export function mountFlySettings(root: HTMLElement, request: (action: string, bo
     ];
     const render = () => {
       const list = questions(), question = list[Math.min(step, list.length - 1)]!;
-      content.replaceChildren(node("p", "Tether Fly lets you collaborate on docs with agents running on remote computers."), node("h4", question.title));
-      const progress = node("p", list.map((_, index) => index === step ? "●" : "○").join(" ")); progress.setAttribute("aria-label", `Question ${step + 1} of ${list.length}`); content.append(progress);
+      content.replaceChildren(node("h3", previous ? "Change setup" : relocate ? "Move your hub" : "Set up Tether Fly"), node("h4", question.title));
+      const progress = hint(`Step ${step + 1} of ${list.length}`); progress.setAttribute("aria-label", `Question ${step + 1} of ${list.length}`); content.append(progress);
       const save = (value: unknown) => { answers[question.key] = value; try { localStorage.setItem(draftKey, JSON.stringify(answers)); } catch {} };
       if (question.key === "machine" && state.machines?.length) {
         const select = node("select"); select.setAttribute("aria-label", "File machine");
@@ -91,23 +99,28 @@ export function mountFlySettings(root: HTMLElement, request: (action: string, bo
       } else {
         const { input } = field(question.title, answers[question.key]); input.setAttribute("aria-label", question.title); input.maxLength = 100; input.oninput = () => save(input.value); content.append(input);
       }
-      const help = node("details"); help.append(node("summary", "More"), node("p", question.key === "qualifyPaths" ? "Without the machine name, agents may need you to specify which machine the file is on." : question.key === "hub" ? "The hub must be available; moving it transfers the library while Markdown stays on its file machines." : question.key === "internet" ? "Your agent will configure HTTPS after your approval; enabling Tether Fly alone does not expose the hub." : "Setup uses an agent for installation and this page for your approvals.")); content.append(help);
-      content.append(button("Back", () => { if (step) { step--; render(); } else void refresh(); }), button(step === list.length - 1 ? "Prepare setup" : "Next", () => void run(async () => {
+      const help = node("details"); help.append(node("summary", "About this choice"), node("p", question.key === "qualifyPaths" ? "Without the machine name, agents may need you to specify which machine the file is on." : question.key === "hub" ? "The hub must be available; moving it transfers the library while Markdown stays on its file machines." : question.key === "internet" ? "Your agent will configure HTTPS after your approval; enabling Tether Fly alone does not expose the hub." : "Setup uses an agent for installation and this page for your approvals.")); content.append(help);
+      content.append(actions(button(step ? "Back" : "Cancel", () => { if (step) { step--; render(); } else { inWizard = false; editing = false; renderSettings(); void poll(); } }), button(step === list.length - 1 ? "Prepare setup" : "Next", () => void run(async () => {
         if (typeof answers[question.key] === "string" && !answers[question.key].trim()) throw new Error("Enter a computer name.");
         if (step < list.length - 1) { step++; render(); return; }
-        await request("attempt", { answers, ...(previous ? { id: previous.id } : {}) }); await refresh();
-      })));
+        await request("attempt", { answers, ...(previous ? { id: previous.id } : {}) }); try { localStorage.removeItem(draftKey); } catch {} await refresh();
+      }))));
+      const heading = content.querySelector("h4")!; heading.tabIndex = -1; heading.focus();
     };
     render();
   };
-  const render = () => {
+  const renderSettings = () => {
+    const expanded = new Set([...content.querySelectorAll("details[open]")].map(group => group.querySelector("summary")?.textContent));
     content.replaceChildren();
-    if (!state.configured && !state.attempts?.length) { content.append(button("Enable Tether Fly", () => wizard())); return; }
-    content.append(node("h3", "Tether Fly"), node("p", state.enabled ? `Hub: ${state.origin}` : "Tether Fly is not accepting connections."));
-    if (state.origin) { const link = node("a", "Open hub"); link.href = state.origin + "/folio/"; link.target = "_blank"; link.rel = "noopener"; content.append(link); }
-    content.append(button("Connect a machine or browser", () => wizard()), button("Internet access", () => wizard()));
+    content.append(node("h3", "Tether Fly"), hint("Use one library across your computers and browsers."));
+    if (!state.configured && !state.attempts?.length) { content.append(button("Set up Tether Fly", () => wizard())); return; }
+    const connection = node("p", state.enabled ? "Connections enabled" : "Connections disabled");
+    if (state.origin) { const link = node("a", "Open hub"); link.href = state.origin + "/folio/"; link.target = "_blank"; link.rel = "noopener"; connection.append(" · ", link); }
+    content.append(connection, actions(button("Connect a machine or browser", () => wizard())));
+    for (const attempt of state.attempts ?? []) if (attempt.phase !== "cancelled") showAttempt(attempt);
+    const security = state.configured ? disclosure("Sign-in and security", content) : content;
     if (state.configured && localOwner) {
-      content.append(button("Set up or recover owner passkey", () => void run(async () => {
+      security.append(hint("Passkeys sign you in securely on the hub. Recovery replaces your owner sign-in credential."), button("Set up or recover owner passkey", () => void run(async () => {
         const child = window.open("about:blank", "tether-owner-enrollment");
         if (!child) throw new Error("Allow this Settings page to open the enrollment page, then retry.");
         let result: any;
@@ -123,21 +136,34 @@ export function mountFlySettings(root: HTMLElement, request: (action: string, bo
     }
     if (state.configured) {
       const password = field(state.passwordConfigured ? "Change fallback password" : "Create fallback password", "", "password"); password.input.autocomplete = "new-password"; password.input.maxLength = 128;
-      content.append(password.element, button("Save password", () => void run(async () => { await request("password", { password: password.input.value }); password.input.value = ""; await refresh(); })));
+      const passwordForm = node("form");
+      password.input.required = true; password.input.minLength = 15;
+      const passwordHelp = hint("Use a unique password or passphrase of 15–128 characters if you cannot use a passkey."); passwordHelp.id = "password-help"; password.input.setAttribute("aria-describedby", passwordHelp.id);
+      const savePassword = button("Save password", () => {}); savePassword.type = "submit";
+      passwordForm.onsubmit = event => { event.preventDefault(); void run(async () => { savePassword.disabled = true; try { await action("password", { password: password.input.value }, "Password saved."); } finally { savePassword.disabled = false; } }); };
+      passwordForm.append(password.element, passwordHelp, actions(savePassword)); security.append(passwordForm);
+      const machines = disclosure(`File machines (${state.machines.length})`, content);
+      machines.append(hint("Names identify your computers. Path preferences apply when copying a file path."));
       for (const machine of state.machines) {
-        const group = node("section"); group.append(node("h4", `${machine.name} · ${machine.connected ? "available" : "offline"}`));
+        const group = node("form"); group.className = "settings-section"; group.append(node("h4", `${machine.name} · ${machine.connected ? "Available" : "Offline"}`));
         const name = field("Machine name", machine.name), qualify = field("Include machine name in copied paths", "", "checkbox"); qualify.input.checked = machine.qualifyPaths;
         const sample = state.verificationDocuments?.find((document: any) => document.machineId === machine.id)?.path;
         const path = sample ?? "/path/document.md";
-        const preview = node("p"), show = () => { preview.textContent = `${sample ? "" : "Example: "}${qualify.input.checked ? `${name.input.value}:` : ""}${path}`; }; name.input.oninput = show; qualify.input.onchange = show; show();
-        group.append(name.element, qualify.element, preview, button("Save machine", () => void run(() => action("machine", { id: machine.id, name: name.input.value, qualifyPaths: qualify.input.checked }))));
+        name.input.required = true; name.input.maxLength = 100;
+        const preview = node("p"); preview.className = "machine-preview"; const show = () => { preview.textContent = `${sample ? "" : "Example: "}${qualify.input.checked ? `${name.input.value}:` : ""}${path}`; }; name.input.oninput = show; qualify.input.onchange = show; show();
+        const saveMachine = button("Save machine", () => {}); saveMachine.type = "submit";
+        group.onsubmit = event => { event.preventDefault(); void run(async () => { saveMachine.disabled = true; try { await action("machine", { id: machine.id, name: name.input.value, qualifyPaths: qualify.input.checked }, "Machine saved."); } finally { saveMachine.disabled = false; } }); };
+        const machineActions = actions(saveMachine);
+        group.append(name.element, qualify.element, preview, machineActions);
         const clients = state.clients.filter((client: any) => client.machineId === machine.id && client.revokedAt === null);
-        if (clients.length) group.append(button(`Revoke ${machine.name}`, () => { if (confirm(`Revoke ${machine.name}?\n${clients.map((client: any) => `${client.name} (${client.kind})`).join("\n")}`)) void run(() => action("revoke-machine", { machineId: machine.id, clientIds: clients.map((client: any) => client.id), confirmed: true })); }));
-        content.append(group);
+        if (clients.length) { const revoke = button(`Revoke access`, () => { if (confirm(`Revoke ${machine.name}?\n${clients.map((client: any) => `${client.name} (${client.kind})`).join("\n")}`)) void run(() => action("revoke-machine", { machineId: machine.id, clientIds: clients.map((client: any) => client.id), confirmed: true }, "Machine access revoked.")); }); revoke.className = "danger"; machineActions.append(revoke); }
+        machines.append(group);
       }
-      content.append(node("h4", "Browser sessions and unassociated clients"));
-      for (const client of state.clients.filter((client: any) => !client.machineId && client.revokedAt === null)) {
-        const row = node("p", `${client.name} (${client.kind}) · expires ${new Date(client.expiresAt).toLocaleDateString()} `);
+      const unassociated = state.clients.filter((client: any) => !client.machineId && client.revokedAt === null);
+      const sessions = disclosure(`Browsers and other clients (${unassociated.length})`, content);
+      if (!unassociated.length) sessions.append(hint("No active browser sessions or unassociated clients."));
+      for (const client of unassociated) {
+        const row = node("div"); row.className = "client-row"; row.append(node("span", `${client.name} (${client.kind}) · expires ${new Date(client.expiresAt).toLocaleDateString()}`));
         if (client.kind === "agent") {
           const select = node("select"); select.setAttribute("aria-label", `File machine for ${client.name}`);
           select.append(node("option", "Choose a file machine")); select.firstElementChild!.setAttribute("value", "");
@@ -147,24 +173,26 @@ export function mountFlySettings(root: HTMLElement, request: (action: string, bo
             await action("associate", { clientId: client.id, machineId: select.value });
           })));
         }
-        row.append(button("Revoke", () => { if (confirm(`Revoke ${client.name}?`)) void run(() => action("revoke", { clientId: client.id, confirmed: true })); })); content.append(row);
+        const revoke = button("Revoke access", () => { if (confirm(`Revoke ${client.name}?`)) void run(() => action("revoke", { clientId: client.id, confirmed: true }, "Access revoked.")); }); revoke.className = "danger"; row.append(revoke); sessions.append(row);
       }
-      if (state.enabled) content.append(button("Disable Tether Fly…", () => {
-        const dialog = node("dialog"); dialog.append(node("p", "Disable this hub?"), button("Disable all Tether Fly connections", () => { dialog.close(); dialog.remove(); void run(() => action("enabled", { enabled: false, confirmed: true })); }), button("Disable this machine and relocate Tether to a different one", () => { dialog.close(); dialog.remove(); wizard(undefined, true); }), button("Cancel", () => { dialog.close(); dialog.remove(); })); document.body.append(dialog); dialog.showModal();
+      const advanced = disclosure("Hub controls", content);
+      advanced.append(hint("Configure internet access, disconnect clients, or move the hub to another computer."), button("Internet access", () => wizard()));
+      if (state.enabled) advanced.append(button("Disable Tether Fly…", () => {
+        const dialog = node("dialog"); dialog.className = "settings-confirm"; dialog.setAttribute("aria-label", "Disable Tether Fly"); dialog.append(node("p", "Disable this hub?"), button("Disable all Tether Fly connections", () => { dialog.close(); dialog.remove(); void run(() => action("enabled", { enabled: false, confirmed: true })); }), button("Disable this machine and relocate Tether to a different one", () => { dialog.close(); dialog.remove(); wizard(undefined, true); }), button("Cancel", () => { dialog.close(); dialog.remove(); })); document.body.append(dialog); dialog.showModal();
       }));
-      else if (localOwner) content.append(button("Enable Tether Fly again", () => void run(() => action("enabled", { enabled: true, confirmed: true }))));
+      else if (localOwner) advanced.append(button("Enable Tether Fly again", () => void run(() => action("enabled", { enabled: true, confirmed: true }))));
       if (!localOwner) content.append(button("Sign out", () => void run(async () => { await fetch("/auth/logout", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); location.assign("/auth/login?next=/settings/"); })));
     }
-    for (const attempt of state.attempts ?? []) if (attempt.phase !== "cancelled") showAttempt(attempt);
+    for (const group of content.querySelectorAll("details")) if (expanded.has(group.querySelector("summary")?.textContent)) group.open = true;
   };
   async function refresh() {
     clearTimeout(timer); state = await request("status"); if (disposed) return;
-    render(); timer = setTimeout(() => void poll(), 3000);
+    editing = false; inWizard = false; renderSettings(); timer = setTimeout(() => void poll(), 3000);
   }
   async function poll() {
-    try { const next = await request("status"); if (JSON.stringify(next) !== JSON.stringify(state) && !root.contains(document.activeElement)) { state = next; render(); } }
+    try { const next = await request("status"); if (!disposed && !inWizard && !editing && JSON.stringify(next) !== JSON.stringify(state) && !root.contains(document.activeElement)) { state = next; renderSettings(); } }
     catch { error.textContent = "Waiting for the hub; this page will reconnect."; }
-    if (!disposed) timer = setTimeout(() => void poll(), document.hidden ? 10_000 : 3000);
+    if (!disposed && !inWizard) timer = setTimeout(() => void poll(), document.hidden ? 10_000 : 3000);
   }
   window.addEventListener("pagehide", () => { disposed = true; clearTimeout(timer); });
   void run(refresh);
