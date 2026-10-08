@@ -4,6 +4,8 @@ Open **Folio → Settings → Enable Tether Fly**, answer the questions, and pas
 
 The hub holds the library; file machines hold Markdown. Browser-only access installs no connector. Paseo access uses a connector and a separately enrolled agent/plugin client on the daemon machine. The browser signs in separately at the hub’s HTTPS origin, using a passkey or configured fallback password. Browser sessions last 30 days; agent and connector credentials last 90 days.
 
+The reader’s theme picker includes **Desktop** and **Mobile**. The choice stays in that browser’s storage for the current Tether origin, independently of shared themes or other browsers. Until you choose, touch-first input, a mobile browser hint, or a mobile user-agent selects Mobile; otherwise Desktop is used. Resizing never changes the selected interface.
+
 ## Agent procedure
 
 These are agent operations; the owner should only need the Settings and approval pages. Use the exact reviewed source commit named in the prompt, Bun 1.3.9, root `bun.lock`, and `integrations/paseo/package-lock.json`. Never claim native Paseo compatibility from a successful build alone. The desktop embedding remains experimental.

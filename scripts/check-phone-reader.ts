@@ -98,6 +98,13 @@ try {
   });
   await page.waitForURL(`${READER}/reader/`);
   await page.locator(".ProseMirror").waitFor();
+  assert.equal(await page.locator('html').getAttribute('data-phone-reader'), null, 'Narrow desktop browsers keep desktop controls');
+  const chooseReaderMode = async (target: import('playwright').Page, mode: 'Desktop' | 'Mobile') => {
+    await target.locator('#theme').click();
+    await target.getByRole('menuitemradio', { name: mode, exact: true }).click();
+    assert.equal(await target.locator(`[data-reader-mode="${mode.toLowerCase()}"]`).getAttribute('aria-checked'), 'true');
+  };
+  await chooseReaderMode(page, 'Mobile');
   assert.equal(await page.locator(".ProseMirror").getAttribute("contenteditable"), "false");
   await page.locator(".wm-mermaid svg").waitFor();
   await profile("cold-browser-cold-diagram");
@@ -105,6 +112,16 @@ try {
   assert.equal(requestCounts.preferences ?? 0, 0, 'Appearance is included in revision checks');
   const cold = await page.evaluate(async () => { await window.document.fonts.ready; return { readyMs: performance.now(), assets: performance.getEntriesByType('resource').filter(r => new URL(r.name).pathname.startsWith('/assets/')).map(r => ({ name: new URL(r.name).pathname.split('/').at(-1), bytes: (r as PerformanceResourceTiming).transferSize })) }; });
   console.log('LOAD cold', JSON.stringify(cold));
+  await page.reload();
+  await page.locator('.ProseMirror').waitFor();
+  assert.equal(await page.locator('.wm-phone-controls').isVisible(), true, 'Browser preference survives reload');
+  const independentBrowser = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 390, height: 844 } });
+  await independentBrowser.addCookies(await page.context().cookies());
+  const independentPage = await independentBrowser.newPage();
+  await independentPage.goto(`${READER}/reader/`);
+  await independentPage.locator('.ProseMirror').waitFor();
+  assert.equal(await independentPage.locator('.wm-phone-controls').isVisible(), false, 'The same account in another browser keeps its own preference');
+  await independentBrowser.close();
   proxy.on("connect", (_request, client, head) => {
     const upstream = connect(listener!.port!, "127.0.0.1", () => { client.write("HTTP/1.1 200 Connection Established\r\n\r\n"); if (head.length) upstream.write(head); client.pipe(upstream); upstream.pipe(client); });
     client.on("error", () => upstream.destroy()); upstream.on("error", () => client.destroy());
@@ -124,12 +141,18 @@ try {
   assert.equal(await safariPage.locator("#notice").isVisible(), false, "The permanent access notice must not cover the heading");
   assert(await safariPage.locator(".ProseMirror h1").isVisible());
   await safariPage.setViewportSize({ width: 1100, height: 844 });
+  assert.equal(await safariPage.locator('.wm-phone-controls').isVisible(), true, 'Touch-first clients stay mobile at wide widths');
+  await chooseReaderMode(safariPage, 'Desktop');
   await safariPage.waitForFunction(() => !window.document.documentElement.hasAttribute("data-phone-reader"));
   assert.equal(await safariPage.locator(".wm-phone-controls").isVisible(), false);
   assert.equal(await safariPage.locator(".milkdown-top-bar").isVisible(), true);
   assert.equal(await safariPage.locator("#phone-folio").isVisible(), false);
   assert.equal(await safariPage.locator("#comment").count(), 1);
   await safariPage.setViewportSize({ width: 390, height: 844 });
+  await safariPage.reload();
+  await safariPage.locator('.ProseMirror').waitFor();
+  assert.equal(await safariPage.locator('.wm-phone-controls').isVisible(), false, 'Explicit desktop preference overrides mobile detection and survives resizing/reload');
+  await chooseReaderMode(safariPage, 'Mobile');
   await safariPage.waitForFunction(() => window.document.documentElement.hasAttribute("data-phone-reader"));
   assert.equal(await safariPage.locator(".milkdown-top-bar").isVisible(), false);
   assert.equal(await safariPage.locator(".wm-phone-controls").isVisible(), true);

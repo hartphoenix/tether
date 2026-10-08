@@ -1,4 +1,6 @@
 const frame = document.querySelector('#phone');
+// This preview runs inside a desktop browser; start it in mobile mode unless explicitly changed.
+try { if (!localStorage.getItem('tether.readerMode')) localStorage.setItem('tether.readerMode', 'mobile'); } catch {}
 const launchMode = document.querySelector('#launch-mode');
 const preset = document.querySelector('#preset');
 const width = document.querySelector('#width'), height = document.querySelector('#height');

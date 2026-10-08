@@ -26,6 +26,9 @@
 }
 
 .wm-theme-menu { right: 0; display: grid; min-width: calc(134px * var(--wm-ui-scale, 1)); }
+.milkdown .milkdown-top-bar:has(#theme-menu:not([hidden])) { z-index: 41; }
+.wm-theme-menu [role="group"] { display: grid; grid-template-columns: 1fr 1fr; }
+.wm-theme-menu hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid var(--crepe-color-outline); opacity: .3; }
 .wm-theme-menu[hidden],
 .wm-tool-overflow-menu[hidden] { display: none; }
 .wm-theme-menu button {

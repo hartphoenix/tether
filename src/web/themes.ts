@@ -2,6 +2,7 @@ import { chipRing, builtInThemes, colorKeys, fontSlots, metrics, preferencesFrom
 import { createThemeMaker } from './theme-maker';
 import { iconSvg } from './icons';
 import { createFontLoader } from './theme-fonts';
+import type { mountReaderLayout, ReaderMode } from './reader-layout';
 export type CrepeTheme = ThemeId;
 
 export function applyDesign(editorRoot: HTMLElement, base: BuiltInTheme, design?: ThemeDesign): void {
@@ -30,6 +31,7 @@ export function createThemePicker(
   options: {
     initialTheme?: ThemeId; customThemes?: CustomTheme[]; makerButton?: HTMLButtonElement; inheritPaseoTheme?: boolean;
     hideInheritance?: boolean;
+    readerLayout?: ReturnType<typeof mountReaderLayout>;
     onChange?: (theme: ThemeId) => void;
     persist?: (mutation: ThemeMutation) => Promise<ThemePreferences>;
     onError?: (message: string) => void;
@@ -124,6 +126,22 @@ export function createThemePicker(
       edit.addEventListener('click', () => { if (busy || maker.isOpen()) return; close(); maker.open(custom); });
       row.append(item, edit); return row;
     }));
+    if (options.readerLayout) {
+      const group = document.createElement('div'); group.setAttribute('role', 'group'); group.setAttribute('aria-label', 'Reader layout');
+      for (const mode of ['desktop', 'mobile'] as ReaderMode[]) {
+        const item = document.createElement('button'); item.type = 'button'; item.dataset.readerMode = mode;
+        item.textContent = mode === 'desktop' ? 'Desktop' : 'Mobile'; item.setAttribute('role', 'menuitemradio');
+        item.addEventListener('click', () => {
+          close();
+          try { options.readerLayout!.select(mode); }
+          catch { options.onError?.('Reader layout changed, but this browser could not remember it.'); }
+          updateReaderMode(); button.focus();
+        });
+        group.append(item);
+      }
+      const separator = document.createElement('hr'); separator.setAttribute('role', 'separator');
+      menu.prepend(group, separator); updateReaderMode();
+    }
     if (inherited !== undefined && !options.hideInheritance) {
       const item = document.createElement('button'); item.type = 'button'; item.dataset.inheritPaseo = 'true';
       item.textContent = 'Inherit Paseo theme'; item.setAttribute('role', 'menuitemradio');
@@ -132,14 +150,20 @@ export function createThemePicker(
         close(); void persist({ inheritPaseoTheme: true }).catch(error => options.onError?.(`Theme preference failed: ${(error as Error).message}`));
       });
       const separator = document.createElement('hr'); separator.setAttribute('role', 'separator');
-      separator.style.cssText = 'width:100%;margin:4px 0;border:0;border-top:1px solid var(--crepe-color-outline);opacity:.3';
       menu.prepend(item, separator);
     }
+  }
+  function updateReaderMode() {
+    menu.querySelectorAll<HTMLButtonElement>('[data-reader-mode]').forEach(item => {
+      const active = item.dataset.readerMode === options.readerLayout?.mode();
+      item.setAttribute('aria-checked', String(active)); item.classList.toggle('is-active', active);
+    });
   }
   menu.setAttribute('role', 'menu');
   const toggle = (event: Event) => {
     event.stopPropagation();
     if (maker?.isOpen()) return;
+    updateReaderMode();
     menu.hidden = !menu.hidden; button.setAttribute('aria-expanded', String(!menu.hidden));
   };
   const outside = (event: Event) => { if (!(event.target instanceof Node) || (!menu.contains(event.target) && !button.contains(event.target))) close(); };

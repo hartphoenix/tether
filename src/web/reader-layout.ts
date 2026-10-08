@@ -1,4 +1,10 @@
-/** One viewport policy, independent of where the file or service lives. */
+export type ReaderMode = "desktop" | "mobile";
+
+export function mobileClient(client: { userAgent: string; userAgentData?: { mobile: boolean } }, touchFirst: boolean): boolean {
+  return touchFirst || client.userAgentData?.mobile === true || /Android|iPhone|iPad|iPod|Mobile/i.test(client.userAgent);
+}
+
+/** Browser-local preference; viewport width never selects the interface. */
 export function mountReaderLayout(options: {
   controls: HTMLElement;
   comment: HTMLElement;
@@ -6,14 +12,21 @@ export function mountReaderLayout(options: {
   extras?: HTMLElement[];
   closeFolio: () => void;
 }) {
-  const query = window.matchMedia("(max-width: 700px)");
+  const key = "tether.readerMode";
+  const query = window.matchMedia("(pointer: coarse) and (hover: none)");
+  const readPreference = (): ReaderMode | null => {
+    try { const value = window.localStorage.getItem(key); return value === "desktop" || value === "mobile" ? value : null; }
+    catch { return null; }
+  };
+  let preferred = readPreference();
+  const mode = (): ReaderMode => preferred ?? (mobileClient(window.navigator, query.matches) ? "mobile" : "desktop");
   const commentHome = document.createComment("comment control");
   const themeHome = document.createComment("theme control");
   options.comment.before(commentHome);
   options.theme.before(themeHome);
   const extras = (options.extras ?? []).map(element => { const home = document.createComment("reader action"); element.before(home); return { element, home }; });
   const update = () => {
-    const compact = query.matches;
+    const compact = mode() === "mobile";
     document.documentElement.toggleAttribute("data-phone-reader", compact);
     options.controls.hidden = !compact;
     options.controls.inert = !compact;
@@ -28,6 +41,12 @@ export function mountReaderLayout(options: {
     }
   };
   query.addEventListener("change", update);
+  const storage = (event: StorageEvent) => { if (event.key === key || event.key === null) { preferred = readPreference(); update(); } };
+  window.addEventListener("storage", storage);
   update();
-  return () => { query.removeEventListener("change", update); };
+  return {
+    mode,
+    select(value: ReaderMode) { preferred = value; update(); window.localStorage.setItem(key, value); },
+    destroy() { query.removeEventListener("change", update); window.removeEventListener("storage", storage); },
+  };
 }

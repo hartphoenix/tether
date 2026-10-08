@@ -154,6 +154,7 @@ const chrome = createChromeControls({
   },
 });
 let themePicker: ReturnType<typeof createThemePicker> | null = null;
+let readerLayout: ReturnType<typeof mountReaderLayout> | undefined;
 const changesInspector = createChangesInspector();
 let appearanceRevision = "";
 let updateMounted = false;
@@ -851,7 +852,7 @@ async function start(): Promise<void> {
     document.body.append(controls);
     const mobileTheme = themeButton.closest<HTMLElement>(".wm-theme-picker")!;
     const folio = bootstrap.remoteReader ? mountMobileFolio({ settingsUrl: sharedReader ? "/settings/" : undefined, list: () => api("api/folio"), beforeOpen: () => annotationUi?.setRailOpen(false) }) : undefined;
-    mountReaderLayout({ controls, extras: [fileActions.root, sourceButton], comment: commentButton, theme: mobileTheme, closeFolio: () => folio?.close(false) });
+    readerLayout = mountReaderLayout({ controls, extras: [fileActions.root, sourceButton], comment: commentButton, theme: mobileTheme, closeFolio: () => folio?.close(false) });
   }
   if (bootstrap.updateControls && !updateMounted) { mountUpdates(); updateMounted = true; }
   pageOpensLinks = bootstrap.capabilities?.pageOpensLinks === true;
@@ -865,6 +866,7 @@ async function start(): Promise<void> {
   themePicker?.destroy();
   try {
     themePicker = createThemePicker(themeButton, themeMenu, editorRoot, {
+      readerLayout,
       initialTheme: bootstrap.preferences.theme,
       hideInheritance: bootstrap.remoteReader && !sharedReader,
       inheritPaseoTheme: bootstrap.preferences.inheritPaseoTheme,
@@ -1038,6 +1040,7 @@ addEventListener("pagehide", event => {
   toolbarLabelObserver?.disconnect();
   overflowCleanup?.();
   themePicker?.destroy();
+  readerLayout?.destroy();
   chrome.destroy();
   threadSizing.destroy();
   fileActions.destroy();
