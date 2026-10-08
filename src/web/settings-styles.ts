@@ -2,7 +2,7 @@
 export const settingsStyles = `
 body>.top,body>.folio-scroll{display:none!important}
 html{height:auto;overflow:auto}
-body{display:block;height:auto;min-height:100dvh;overflow:auto;padding:28px 24px;max-width:calc(760px * var(--wm-ui-scale));font-size:calc(14px * var(--wm-ui-scale));line-height:1.5}
+body{display:block;height:auto;min-height:100dvh;overflow:visible;padding:28px 24px;max-width:calc(760px * var(--wm-ui-scale));font-size:calc(14px * var(--wm-ui-scale));line-height:1.5}
 #settings-dialog{position:static;transform:none;width:100%;max-height:none;display:block;box-shadow:none;border:0;background:transparent;padding:0;font-size:inherit;color:var(--text);overflow:visible}
 #settings-title{font-size:1.8em;letter-spacing:-.03em;margin:0 0 1.25em}
 #settings-dialog h3{font-size:1.15em;margin:0 0 1em;font-weight:600}
