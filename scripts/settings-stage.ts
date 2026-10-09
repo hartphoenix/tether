@@ -5,10 +5,12 @@ import { folioHtml, folioTheme } from "../src/web/folio-page";
 import { createSimulation, simulate } from "./settings-stage/model";
 
 export async function startSettingsStage(options: { port?: number; proxyOrigin?: string; feedbackFile?: string } = {}) {
-  const build = await Bun.build({ entrypoints: [join(import.meta.dir, "settings-stage/client.ts")], target: "browser", minify: true, define: { "process.env.NODE_ENV": JSON.stringify("production") } });
+  const feedbackFile = options.feedbackFile ?? join(import.meta.dir, "../.local/settings-stage/feedback.json");
+  // A reset marker invalidates saved browser notes as well as already-open tabs.
+  const feedbackGeneration = await readFile(feedbackFile + ".reset", "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return ""; throw error; });
+  const build = await Bun.build({ entrypoints: [join(import.meta.dir, "settings-stage/client.ts")], target: "browser", minify: true, define: { "process.env.NODE_ENV": JSON.stringify("production"), SETTINGS_FEEDBACK_GENERATION: JSON.stringify(feedbackGeneration) } });
   if (!build.success) throw new AggregateError(build.logs, "Settings staging build failed");
   const javascript = await build.outputs[0]!.text();
-  const feedbackFile = options.feedbackFile ?? join(import.meta.dir, "../.local/settings-stage/feedback.json");
   const proxy = options.proxyOrigin && new URL(options.proxyOrigin);
   if (proxy && (proxy.protocol !== "http:" || !proxy.hostname.endsWith(".localhost") || proxy.origin !== options.proxyOrigin)) throw new Error("Expected a local Paseo service origin.");
   const sessions = new Map<string, { mode: string; modes: Map<string, ReturnType<typeof fresh>> }>();
@@ -28,6 +30,7 @@ export async function startSettingsStage(options: { port?: number; proxyOrigin?:
     try {
       if (url.pathname === "/feedback" && request.method === "POST") {
         const body = await request.json();
+        if ((body.generation ?? "") !== feedbackGeneration) return json({ error: { message: "Feedback was reset. Reload this page before adding new notes." } }, 409);
         // Accept the former single-page payload from already-open staging tabs.
         const pages = body.pages ?? [body];
         if (!Array.isArray(pages)) throw new Error("Invalid feedback");

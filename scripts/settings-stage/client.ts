@@ -1,6 +1,19 @@
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { Agentation, getStorageKey, loadAnnotations, type Annotation, type AgentationProps } from "agentation";
+import { Agentation, getStorageKey, loadAnnotations, saveAnnotations, type Annotation, type AgentationProps } from "agentation";
+
+declare const SETTINGS_FEEDBACK_GENERATION: string;
+const prefix = getStorageKey("");
+const currentNotes = (notes: Annotation[]) => SETTINGS_FEEDBACK_GENERATION ? notes.filter(note => note.timestamp > Number(SETTINGS_FEEDBACK_GENERATION)) : notes;
+function savedNotes(path: string) {
+  const saved = loadAnnotations(path), notes = currentNotes(saved);
+  if (notes.length !== saved.length) { if (notes.length) saveAnnotations(path, notes); else localStorage.removeItem(getStorageKey(path)); }
+  return notes;
+}
+// Prune every page before Agentation reads its initial state.
+for (const key of Object.keys(localStorage)) {
+  if (key.startsWith(prefix) && /^\/(fresh|existing)\//.test(key.slice(prefix.length))) savedNotes(key.slice(prefix.length));
+}
 
 const mode = location.pathname.split("/")[1]!;
 const request = async (action: string) => {
@@ -18,18 +31,20 @@ document.querySelectorAll<HTMLButtonElement>("[data-stage-action]").forEach(butt
 });
 const root = document.createElement("div"); document.body.append(root);
 async function sendFeedback(current?: { url: string; output: string; annotations: Annotation[] }) {
-  const prefix = getStorageKey("");
   const pages = new Map<string, { url: string; output?: string; annotations: Annotation[] }>();
   for (const key of Object.keys(localStorage)) {
     if (!key.startsWith(prefix)) continue;
     const path = key.slice(prefix.length);
     if (!/^\/(fresh|existing)\//.test(path)) continue;
-    const annotations = loadAnnotations(path);
+    const annotations = savedNotes(path);
     if (annotations.length) pages.set(path, { url: new URL(path, location.origin).href, annotations });
   }
-  if (current) { const url = new URL(current.url); pages.set(url.pathname + url.hash, current); }
-  if (!pages.size) return;
-  const response = await fetch("/feedback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pages: [...pages.values()] }) });
+  if (current) {
+    const url = new URL(current.url), annotations = currentNotes(current.annotations);
+    if (annotations.length) pages.set(url.pathname + url.hash, { url: current.url, annotations, ...(annotations.length === current.annotations.length ? { output: current.output } : {}) });
+  }
+  if (!pages.size) { document.querySelector("#stage-feedback")!.textContent = "No feedback saved for this pass."; return; }
+  const response = await fetch("/feedback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ generation: SETTINGS_FEEDBACK_GENERATION, pages: [...pages.values()] }) });
   if (!response.ok) throw new Error("Could not save feedback. Please retry Send all feedback.");
   const count = [...pages.values()].reduce((sum, page) => sum + page.annotations.length, 0);
   document.querySelector("#stage-feedback")!.textContent = `Saved ${count} notes across ${pages.size} pages for your agent.`;

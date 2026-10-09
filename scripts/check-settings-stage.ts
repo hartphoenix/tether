@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, webkit, type Page } from "playwright";
+import { getStorageKey } from "agentation";
 import { startSettingsStage } from "./settings-stage";
 
 const directory = await mkdtemp(join(tmpdir(), "tether-settings-stage-check-"));
@@ -171,5 +172,45 @@ try {
     } finally { await browser.close(); }
   }
   assert.equal((await fetch(stage.url + "/fresh/api/stage/reset", { method: "POST", headers: { origin: "https://elsewhere.invalid" }, body: "{}" })).status, 403);
+  await stage.close();
+  const resetAt = Date.now();
+  await writeFile(feedbackFile + ".reset", String(resetAt));
+  await writeFile(feedbackFile, "{}\n");
+  const resetStage = await startSettingsStage({ port: 0, feedbackFile });
+  try {
+    for (const engine of [chromium, webkit]) {
+      const browser = await engine.launch();
+      try {
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        page.on("dialog", dialog => void dialog.accept());
+        await page.goto(resetStage.url);
+        await page.getByText("No feedback saved for this pass.", { exact: true }).waitFor();
+        const staleTab = await page.context().newPage();
+        await staleTab.goto(resetStage.url);
+        const restoreOldNotes = () => staleTab.evaluate(({ prefix, timestamp }) => {
+          const old = JSON.stringify([{ id: "old", comment: "Prior pass", timestamp }]);
+          localStorage.setItem(prefix + "/fresh/settings/#fly/setup/access", old);
+          localStorage.setItem(prefix + "/existing/settings/", old);
+          localStorage.setItem("unrelated-preference", "keep");
+        }, { prefix: getStorageKey(""), timestamp: resetAt - 1 });
+        await restoreOldNotes();
+        await page.reload();
+        await page.getByText("No feedback saved for this pass.", { exact: true }).waitFor();
+        assert.deepEqual(await page.evaluate(prefix => Object.keys(localStorage).filter(key => key.startsWith(prefix)), getStorageKey("")), []);
+        assert.equal(await page.evaluate(() => localStorage.getItem("unrelated-preference")), "keep");
+        await restoreOldNotes(); // An old tab can repopulate shared storage after another tab reloads.
+        await page.getByRole("button", { name: "Send all feedback", exact: true }).click();
+        await page.getByText("No feedback saved for this pass.", { exact: true }).waitFor();
+        assert.deepEqual(await page.evaluate(prefix => Object.keys(localStorage).filter(key => key.startsWith(prefix)), getStorageKey("")), []);
+        const stale = await fetch(resetStage.url + "/feedback", { method: "POST", headers: { origin: resetStage.url, "content-type": "application/json" }, body: JSON.stringify({ pages: [] }) });
+        assert.equal(stale.status, 409, "Old tabs cannot restore cleared notes");
+        await annotate(page, "#settings-title", "New pass feedback");
+        await page.reload();
+        await page.getByText("Saved 1 notes across 1 pages for your agent.", { exact: true }).waitFor();
+        assert.equal(JSON.parse(await readFile(feedbackFile, "utf8"))["/fresh/settings/"].annotations[0].comment, "New pass feedback");
+      } finally { await browser.close(); }
+    }
+  } finally { await resetStage.close(); }
   console.log("Settings staging passed: Chromium/WebKit, full-page setup, all four app choices, multiple computers then hub selection, drafts/history, cross-page feedback, reset, machine editing and narrow scrolling.");
 } finally { await stage.close(); await rm(directory, { recursive: true, force: true }); }
