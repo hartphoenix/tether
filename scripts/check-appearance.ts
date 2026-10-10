@@ -51,7 +51,7 @@ try {
       await reader.locator('#comment').click();
       const resize = reader.getByRole('separator', { name: 'Threads width' });
       await resize.focus(); const resized = reader.waitForResponse(response => response.url().endsWith('api/preferences') && response.request().method() === 'PUT'); await reader.keyboard.press('ArrowLeft');
-      await reader.waitForFunction(() => document.querySelector('[role="separator"]')?.getAttribute('aria-valuenow') === '316');
+      await reader.waitForFunction(() => document.querySelector('.wm-rail-resizer')?.getAttribute('aria-valuenow') === '316');
       await resized;
       check(JSON.parse(await readFile(config.preferencesPath, 'utf8')).railWidth === 316, 'rail width persisted');
       await reader.reload(); await reader.locator('#comment').click();
