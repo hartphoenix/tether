@@ -1162,9 +1162,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const sessionRoot = sessionRoutes(session.id).root;
       const suffix = pathname.slice(sessionRoot.length - 1);
       // Bundled documentation artwork only; this grants no arbitrary file access.
-      if (request.method === "GET" && /^\/(?:docs\/)?assets\/tether-banner(?:-tagline)?\.png$/.test(suffix)) {
+      if (request.method === "GET" && /^\/(?:docs\/)?assets\/tether-banner(?:(?:-tagline)?\.png|-dark\.webp)$/.test(suffix)) {
         return new Response(await readFile(resolve(runtimeRoot(), "docs/assets", suffix.split("/").at(-1)!)), {
-          headers: { "content-type": "image/png", "cache-control": "public, max-age=3600", "x-content-type-options": "nosniff" },
+          headers: { "content-type": suffix.endsWith(".webp") ? "image/webp" : "image/png", "cache-control": "public, max-age=3600", "x-content-type-options": "nosniff" },
         });
       }
       const updateResponse = await updateRequest(request, suffix);

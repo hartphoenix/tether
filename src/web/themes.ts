@@ -134,6 +134,13 @@ export function createThemePicker(
       separator.style.cssText = 'width:100%;margin:4px 0;border:0;border-top:1px solid var(--crepe-color-outline);opacity:.3';
       menu.prepend(item, separator);
     }
+    // The theme maker opens from the bottom of the menu, under a separator.
+    if (options.makerButton) {
+      const separator = document.createElement('hr'); separator.setAttribute('role', 'separator');
+      separator.style.cssText = 'width:100%;margin:4px 0;border:0;border-top:1px solid var(--crepe-color-outline);opacity:.3';
+      options.makerButton.setAttribute('role', 'menuitem');
+      menu.append(separator, options.makerButton);
+    }
   }
   menu.setAttribute('role', 'menu');
   const toggle = (event: Event) => {
@@ -144,9 +151,12 @@ export function createThemePicker(
   const outside = (event: Event) => { if (!(event.target instanceof Node) || (!menu.contains(event.target) && !button.contains(event.target))) close(); };
   const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
   button.addEventListener('click', toggle); document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape);
+  const closeForMaker = () => close();
+  options.makerButton?.addEventListener('click', closeForMaker);
   renderMenu(); apply(selected);
   return { update: receive, destroy() {
     destroyed = true; maker?.destroy(); fonts.destroy();
     button.removeEventListener('click', toggle); document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape);
+    options.makerButton?.removeEventListener('click', closeForMaker);
   } };
 }

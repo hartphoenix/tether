@@ -11,9 +11,9 @@ export const tetherThemes = [
       "background": "#f5f3ee",
       "foreground": "#343a40",
       "raised": "#eeece6",
-      "control": "#e7ebe9",
-      "border": "#e1e5e3",
-      "accent": "#486575",
+      "control": "#e4ece8",
+      "border": "#dde8e4",
+      "accent": "#1b6b68",
       "mutedForeground": "#62676b",
       "ring": "#818580"
     }
@@ -26,9 +26,9 @@ export const tetherThemes = [
       "background": "#20252b",
       "foreground": "#c9cdd1",
       "raised": "#292f36",
-      "control": "#2c353f",
-      "border": "#333e48",
-      "accent": "#a3bccb",
+      "control": "#26343a",
+      "border": "#283a3e",
+      "accent": "#6cc6be",
       "mutedForeground": "#a0a8b1",
       "ring": "#717c88"
     }

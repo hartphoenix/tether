@@ -28,7 +28,8 @@ if (!web.success) throw new Error(web.logs.map(String).join("\n"));
 await copyFile("src/web/favicon.png", join(destination, "dist/favicon.png"));
 await mkdir(join(destination, "docs"));
 await copyFile("docs/getting-started.md", join(destination, "docs/getting-started.md"));
-await cp("docs/assets", join(destination, "docs/assets"), { recursive: true });
+// Brand source files (docs/assets/brand) are for design work, not the runtime.
+await cp("docs/assets", join(destination, "docs/assets"), { recursive: true, filter: source => basename(source) !== "brand" });
 await cp("integrations", join(destination, "integrations"), {
   recursive: true,
   // Plugin development dependencies contain symlinks and do not belong in the runtime archive.

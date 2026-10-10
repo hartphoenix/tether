@@ -1,4 +1,4 @@
-![1.00](assets/tether-banner.png)
+![1.00](assets/tether-banner-dark.webp)
 
 # getting started with **tether**
 
