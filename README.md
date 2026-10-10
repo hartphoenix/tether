@@ -1,4 +1,7 @@
-![1.00](docs/assets/tether-banner-tagline.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tether-banner-dark.webp">
+  <img alt="Tether: harness your attention" src="docs/assets/tether-banner-light.webp">
+</picture>
 
 # Tether
 

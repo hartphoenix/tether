@@ -300,3 +300,8 @@
 :root[data-wm-theme$="-dark"] .wm-comment-popover,
 :root[data-wm-theme$="-dark"] .wm-thread-popover { color: #eee8df; background: #28231e; border-color: #514940; }
 :root[data-wm-theme$="-dark"] .wm-annotation-count { color: #f2d28b; background: #28231e; }
+
+/* The new comment window can be dragged; the selection tooltip steps aside while it's open. */
+.wm-comment-popover.wm-draggable { cursor: move; }
+.wm-comment-popover.wm-draggable textarea { cursor: auto; }
+body:has(> .wm-annotation-composer) .milkdown .milkdown-toolbar { display: none; }

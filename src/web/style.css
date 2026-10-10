@@ -292,14 +292,16 @@ body {
 .wm-rail-resizer:focus-visible { outline: 2px solid var(--wm-color-primary); outline-offset: -2px; }
 @media (max-width: 640px) { .wm-rail-resizer { display: none; } }
 
-.milkdown .milkdown-top-bar .top-bar-heading-button { font-size: calc(14px * var(--wm-ui-scale)); padding: calc(2px * var(--wm-ui-scale)) calc(8px * var(--wm-ui-scale)); }
-.milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-heading-label { min-width: calc(24px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-heading-button { font-size: calc(14px * var(--wm-ui-scale)); padding: calc(2px * var(--wm-ui-scale)) calc(6px * var(--wm-ui-scale)); gap: calc(3px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-heading-label { min-width: calc(18px * var(--wm-ui-scale)); }
 .milkdown .milkdown-top-bar .top-bar-heading-button svg { width: calc(20px * var(--wm-ui-scale)); height: calc(20px * var(--wm-ui-scale)); }
 .milkdown .milkdown-top-bar .top-bar-inner { padding: 0; }
 .milkdown .milkdown-top-bar { padding-inline: calc(12px * var(--wm-ui-scale)); }
 .milkdown .milkdown-top-bar .top-bar-heading-label,
 .milkdown .milkdown-top-bar .top-bar-heading-option { font-size: calc(14px * var(--wm-ui-scale)); line-height: calc(20px * var(--wm-ui-scale)); }
-.milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-chevron { width: calc(24px * var(--wm-ui-scale)); height: calc(24px * var(--wm-ui-scale)); }
+/* A small chevron tucked against the style label keeps the Block style button narrow. */
+.milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-chevron { width: calc(9px * var(--wm-ui-scale)); height: calc(9px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-chevron svg { width: calc(9px * var(--wm-ui-scale)); height: calc(9px * var(--wm-ui-scale)); }
 .milkdown .milkdown-top-bar .top-bar-heading-dropdown { min-width: calc(160px * var(--wm-ui-scale)); padding: calc(8px * var(--wm-ui-scale)) calc(4px * var(--wm-ui-scale)) calc(4px * var(--wm-ui-scale)); }
 .milkdown .milkdown-top-bar .top-bar-heading-option { padding: calc(8px * var(--wm-ui-scale)) calc(12px * var(--wm-ui-scale)); }
 
