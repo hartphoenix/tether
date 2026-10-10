@@ -545,15 +545,15 @@ describe("session API", () => {
     daemons.push(daemon);
     await daemon.ready;
     const session = await exchange(daemon, file.path);
-    for (const path of ["assets/tether-banner.png", "docs/assets/tether-banner.png", "assets/tether-banner-tagline.png", "docs/assets/tether-banner-tagline.png"]) {
+    for (const path of ["assets/tether-banner.png", "docs/assets/tether-banner.png", "assets/tether-banner-tagline.png", "docs/assets/tether-banner-tagline.png", "assets/tether-banner-dark.webp", "docs/assets/tether-banner-dark.webp"]) {
       const response = await sessionFetch(daemon, session.location, session.cookie, path);
       expect(response.status).toBe(200);
-      expect(response.headers.get("content-type")).toBe("image/png");
+      expect(response.headers.get("content-type")).toBe(path.endsWith(".webp") ? "image/webp" : "image/png");
       expect(Buffer.from(await response.arrayBuffer())).toEqual(await readFile(`docs/assets/${path.split("/").at(-1)}`));
     }
     const icon = await fetch(`${daemon.origin}/favicon.png`);
     expect(icon.status).toBe(200);
-    expect(Buffer.from(await icon.arrayBuffer())).toEqual(await readFile("docs/assets/tether-logo.png"));
+    expect(Buffer.from(await icon.arrayBuffer())).toEqual(await readFile("src/web/favicon.png"));
   });
 
   test("opens wikilinks in a new view, persists preferences, and survives reload release", async () => {
