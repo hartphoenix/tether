@@ -22,7 +22,7 @@ export function smoothScroll(node: HTMLElement, top: number, left = node.scrollL
 /** Self-contained so Folio can embed the same implementation. */
 export function installMenuMotion(doc: Document): () => void {
   const win = doc.defaultView!;
-  const selector = '.wm-theme-menu,.wm-zoom-menu,.wm-tool-overflow-menu,.top-bar-heading-dropdown,.language-picker,.organization-panel,#row-menu,#app-menu';
+  const selector = '.wm-theme-menu,.wm-zoom-menu,.wm-file-menu,.wm-comment-popover,.wm-thread-popover,.wm-tool-overflow-menu,.top-bar-heading-dropdown,.language-picker,.organization-panel,#row-menu,#app-menu';
   const visible = new WeakSet<Element>();
   const animations = new Map<Element, Animation>();
   const scan = () => {

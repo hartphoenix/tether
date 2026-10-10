@@ -144,7 +144,7 @@
 .wm-zoom-menu[hidden] { display: none; }
 .wm-file-actions { position: relative; display: inline-flex; }
 .wm-file-menu {
-  position: absolute; right: 0; top: 100%; z-index: 32; min-width: max-content;
+  position: fixed; z-index: 50; min-width: max-content;
   padding: calc(6px * var(--wm-ui-scale, 1)); border: 1px solid var(--wm-color-outline);
   border-radius: calc(7px * var(--wm-ui-scale, 1)); background: var(--wm-color-surface);
   color: var(--wm-color-on-surface-variant); box-shadow: var(--wm-shadow);
@@ -155,7 +155,7 @@
 .wm-move-dialog { width: min(calc(460px * var(--wm-ui-scale, 1)), 90vw); padding: 1.2em; border: 1px solid var(--wm-color-outline); border-radius: .6em; background: var(--wm-color-surface); color: var(--wm-color-on-surface); box-shadow: var(--wm-shadow); font: calc(14px * var(--wm-ui-scale, 1))/1.5 system-ui; }
 .wm-move-dialog input { display: block; box-sizing: border-box; width: 100%; margin-top: .6em; padding: .6em; font: inherit; }
 .wm-move-dialog form > div { display: flex; justify-content: flex-end; gap: .8em; }
-.wm-source-mode .wm-document-scroll, .wm-source-mode .top-bar-inner { display: none; }
+.wm-source-mode .wm-document-scroll, .wm-source-mode .top-bar-inner > :not(#source) { display: none; }
 .milkdown > .wm-source-editor {
   flex: 1; min-height: 0; width: 100%;
   background: var(--crepe-color-surface); color: var(--crepe-color-on-background);

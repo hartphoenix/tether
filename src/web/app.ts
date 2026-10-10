@@ -160,7 +160,6 @@ const fileActions = createFileActions({
   },
   export: exportReview,
 });
-toolbarControls.prepend(fileActions.root);
 let appearance: { uiScale?: number; railWidth?: number; commentTextSize?: number } = {};
 function applyAppearance(value: typeof appearance) {
   appearance = value;
@@ -237,6 +236,8 @@ function compactTopBar(): void {
     });
     menu.append(code);
   }
+  // Edit Markdown source sits with the formatting tools, after the overflow trigger.
+  if (overflow.nextElementSibling !== sourceButton) overflow.after(sourceButton);
   const tools = [...inner.children].filter((element) => element.classList.contains("top-bar-item") || element.classList.contains("top-bar-divider"));
   if (tools.length) menu.append(...tools);
   const inlineCode = menu.querySelectorAll(".top-bar-item")[topBarLabels.indexOf("Inline code")];
@@ -549,6 +550,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     nextAnnotationUi = createAnnotationUi({
       root: annotationsRoot,
       sizingControl: threadSizing.root,
+      fileControl: fileActions.root,
       editorRoot,
       getEditorView,
       onNotice: (message) => chrome.setNotice(message),

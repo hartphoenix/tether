@@ -6,9 +6,11 @@ export function createFileActions(options: {
 }) {
   const root = document.createElement('span');
   root.className = 'wm-file-actions';
-  root.innerHTML = `<button type="button" class="wm-comment-button" title="File actions" aria-label="File actions" aria-expanded="false">${iconSvg('file-code')}</button><span class="wm-file-menu" hidden></span>`;
+  // Lives in the Threads panel header; the menu is fixed to the viewport so the panel can't clip it.
+  root.innerHTML = `<button type="button" class="wm-rail-button" title="File actions" aria-label="File actions" aria-expanded="false">${iconSvg('file-code')}</button><span class="wm-file-menu" data-wm-menu-origin="right top" hidden></span>`;
   const trigger = root.querySelector('button')!;
   const menu = root.querySelector<HTMLElement>('.wm-file-menu')!;
+  document.body.append(menu);
   let dialog: HTMLDialogElement | undefined;
   let nativeMove = false;
   const close = () => { menu.hidden = true; trigger.setAttribute('aria-expanded', 'false'); };
@@ -42,9 +44,17 @@ export function createFileActions(options: {
     document.body.append(dialog); dialog.showModal(); input.focus();
   });
   add('Export with annotations', 'file-arrow-down', options.export);
-  trigger.onclick = () => { menu.hidden = !menu.hidden; trigger.setAttribute('aria-expanded', String(!menu.hidden)); };
-  const outside = (event: Event) => { if (event.target instanceof Node && !root.contains(event.target)) close(); };
+  trigger.onclick = () => {
+    if (!menu.hidden) { close(); return; }
+    menu.hidden = false; trigger.setAttribute('aria-expanded', 'true');
+    // Right-aligned under its button, which sits near the panel's right edge. (placeOverlay keeps menus
+    // below the document toolbar, but the Threads header shares the toolbar's row.)
+    const box = trigger.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(box.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${box.bottom + 4}px`;
+  };
+  const outside = (event: Event) => { if (event.target instanceof Node && !root.contains(event.target) && !menu.contains(event.target)) close(); };
   const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
-  document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape);
-  return { root, update(revealAvailable: boolean, readOnly: boolean, pickerAvailable = nativeMove) { reveal.hidden = !revealAvailable; move.disabled = readOnly; nativeMove = pickerAvailable; }, destroy() { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); root.remove(); dialog?.remove(); } };
+  document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape); window.addEventListener('resize', close);
+  return { root, update(revealAvailable: boolean, readOnly: boolean, pickerAvailable = nativeMove) { reveal.hidden = !revealAvailable; move.disabled = readOnly; nativeMove = pickerAvailable; }, destroy() { close(); document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); window.removeEventListener('resize', close); root.remove(); menu.remove(); dialog?.remove(); } };
 }

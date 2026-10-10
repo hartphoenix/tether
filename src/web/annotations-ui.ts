@@ -60,6 +60,7 @@ export interface ReplyDraft {
 
 export interface AnnotationUiOptions {
   sizingControl?: HTMLElement;
+  fileControl?: HTMLElement;
   /** Element into which the controller mounts its narrow rail. */
   root: HTMLElement;
   /** The rendered editor root, used for selecting anchors and footnotes. */
@@ -466,6 +467,9 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       document.body.append(composer);
       syncDecorations();
       positionPopover(composer, composerAnchor);
+      // Once placed, the new comment window stays where it is (or where it's dragged) while the page scrolls.
+      placements.get(composer)?.(); placements.delete(composer);
+      makeDraggable(composer);
       composer.querySelector<HTMLTextAreaElement>("textarea")?.focus();
     },
     openThread(threadId, trigger) {
@@ -533,19 +537,37 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   const placements = new WeakMap<HTMLElement, () => void>();
   function positionPopover(node: HTMLElement, anchor?: AnnotationAnchor, trigger?: HTMLElement): void {
     placements.get(node)?.();
-    placements.set(node, placeOverlay(node, {
-      root: editorRoot,
-      policy: 'pin',
-      reference: () => {
-        if (trigger?.isConnected) return trigger.getBoundingClientRect();
-        const view = currentView();
-        if (!view) return null;
-        const resolved = anchor ? resolveAnchor(view.state.doc, anchor) : null;
-        if (anchor && !resolved) return null;
-        const position = resolved?.ranges.at(-1)?.to ?? view.state.selection.to;
-        return view.coordsAtPos(position);
-      },
-    }));
+    const reference = () => {
+      if (trigger?.isConnected) return trigger.getBoundingClientRect();
+      const view = currentView();
+      if (!view) return null;
+      const resolved = anchor ? resolveAnchor(view.state.doc, anchor) : null;
+      if (anchor && !resolved) return null;
+      const position = resolved?.ranges.at(-1)?.to ?? view.state.selection.to;
+      return view.coordsAtPos(position);
+    };
+    placements.set(node, placeOverlay(node, { root: editorRoot, policy: 'pin', reference }));
+    // The opening animation (motion.ts) grows from the edge nearest the passage.
+    let ref = null; try { ref = reference(); } catch {}
+    node.dataset.wmMenuOrigin = `left ${ref && node.getBoundingClientRect().top < ref.top ? 'bottom' : 'top'}`;
+  }
+
+  // Drag from anywhere on the window except its controls; it stays inside the viewport.
+  function makeDraggable(node: HTMLElement): void {
+    node.classList.add("wm-draggable");
+    node.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || (event.target as Element).closest("textarea, input, button, a, select")) return;
+      event.preventDefault();
+      const start = node.getBoundingClientRect(), dx = event.clientX - start.left, dy = event.clientY - start.top;
+      const clamp = (value: number, max: number) => Math.max(0, Math.min(value, max));
+      node.setPointerCapture(event.pointerId);
+      const move = (next: PointerEvent) => {
+        node.style.left = `${clamp(next.clientX - dx, window.innerWidth - start.width)}px`;
+        node.style.top = `${clamp(next.clientY - dy, window.innerHeight - start.height)}px`;
+      };
+      const end = () => { node.removeEventListener("pointermove", move); node.removeEventListener("pointerup", end); node.removeEventListener("pointercancel", end); };
+      node.addEventListener("pointermove", move); node.addEventListener("pointerup", end); node.addEventListener("pointercancel", end);
+    });
   }
 
   function showThreadPopover(thread: AnnotationThread, trigger?: HTMLElement): void {
@@ -958,6 +980,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     });
     const controls = createElement("div", "wm-annotation-rail-controls");
     if (options.sizingControl) controls.append(options.sizingControl);
+    if (options.fileControl) controls.append(options.fileControl);
     const hide = createElement("button", "wm-hide-threads");
     hide.type = "button";
     hide.title = "Hide threads";

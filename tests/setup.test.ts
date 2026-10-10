@@ -12,8 +12,8 @@ test("onboarding preserves edits and agent setup refuses a differing existing sk
   const path = await seedWelcome(config);
   expect(await readFile(path, "utf8")).toContain(path);
   expect(await readFile(path, "utf8")).not.toContain("{{DOCUMENT_PATH}}");
-  const banner = join(config.configDir, "documents/assets/tether-banner.png");
-  expect(await readFile(banner)).toEqual(await readFile("docs/assets/tether-banner.png"));
+  const banner = join(config.configDir, "documents/assets/tether-banner-dark.webp");
+  expect(await readFile(banner)).toEqual(await readFile("docs/assets/tether-banner-dark.webp"));
   await writeFile(banner, "User artwork");
   await writeFile(path, "My edited welcome\n");
   expect(await seedWelcome(config)).toBe(path);
