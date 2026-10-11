@@ -119,7 +119,7 @@ export function createThemePicker(
       const row = document.createElement('div'); row.className = 'wm-theme-row'; row.setAttribute('role', 'none');
       const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'wm-theme-edit';
       edit.dataset.editTheme = value; edit.setAttribute('role', 'menuitem');
-      edit.title = `Edit ${label}`; edit.setAttribute('aria-label', edit.title); edit.innerHTML = iconSvg('pencil-simple-line');
+      edit.title = `Edit ${label}`; edit.setAttribute('aria-label', edit.title); edit.innerHTML = iconSvg('pencil-line');
       edit.addEventListener('click', () => { if (busy || maker.isOpen()) return; close(); maker.open(custom); });
       row.append(item, edit); return row;
     }));

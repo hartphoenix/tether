@@ -184,7 +184,7 @@ function compactTopBar(): void {
     const trigger = document.createElement("button");
     trigger.type = "button";
     trigger.className = "wm-overflow-trigger";
-    trigger.innerHTML = iconSvg("text-aa");
+    trigger.innerHTML = iconSvg("type");
     trigger.title = "More formatting tools";
     trigger.setAttribute("aria-label", trigger.title);
     trigger.setAttribute("aria-expanded", "false");
@@ -224,7 +224,7 @@ function compactTopBar(): void {
     code.type = "button";
     code.dataset.insertCode = "true";
     code.className = "wm-comment-button";
-    code.innerHTML = iconSvg("code-block");
+    code.innerHTML = iconSvg("square-code");
     code.title = "Insert code block";
     code.setAttribute("aria-label", code.title);
     code.addEventListener("pointerdown", event => event.preventDefault());
@@ -249,8 +249,7 @@ function compactTopBar(): void {
     decrease.type = "button";
     decrease.dataset.decreaseQuote = "true";
     decrease.className = "wm-comment-button";
-    decrease.innerHTML = iconSvg("quotes");
-    decrease.querySelector("svg")!.style.transform = "rotate(180deg)";
+    decrease.innerHTML = iconSvg("indent-decrease");
     labelIconButton(decrease, "Decrease quote level");
     decrease.addEventListener("pointerdown", event => event.preventDefault());
     decrease.addEventListener("click", () => {

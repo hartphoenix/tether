@@ -10,6 +10,7 @@
   },
   "scripts": {
     "test": "bun test",
+    "icons:pick": "bun scripts/icon-picker/server.ts",
     "check": "bun test && bunx tsc --noEmit && bun run check:reader && bun run build:web",
     "check:reader": "bun scripts/check-reader-model.ts && bun scripts/check-reader-workflows.ts",
     "check:geometry": "bun scripts/check-geometry.ts && bun scripts/check-code-block-lifecycle.ts",
@@ -38,6 +39,7 @@
     "@types/jsdom": "^27.0.0",
     "@types/retry": "0.12.5",
     "jsdom": "^29.1.1",
+    "lucide-static": "^1.53.0",
     "playwright": "1.62.1",
     "type-fest": "5.10.0",
     "typescript": "^5.9.2"

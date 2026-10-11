@@ -5,7 +5,7 @@ type Sizing = { uiScale?: number; commentTextSize?: number };
 export function createThreadSizing(change: (value: Sizing) => Promise<unknown>, notice: (message: string) => void) {
   const root = document.createElement('span');
   root.className = 'wm-thread-sizing';
-  root.innerHTML = `<button type="button" class="wm-rail-button" title="Thread zoom" aria-label="Thread zoom" aria-expanded="false">${iconSvg('magnifying-glass-plus')}</button><span class="wm-thread-sizing-menu" hidden></span>`;
+  root.innerHTML = `<button type="button" class="wm-rail-button" title="Thread zoom" aria-label="Thread zoom" aria-expanded="false">${iconSvg('zoom-in')}</button><span class="wm-thread-sizing-menu" hidden></span>`;
   const button = root.querySelector('button')!;
   const menu = root.querySelector<HTMLElement>('.wm-thread-sizing-menu')!;
   document.body.append(menu);

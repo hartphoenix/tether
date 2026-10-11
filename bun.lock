@@ -26,6 +26,7 @@
         "@types/jsdom": "^27.0.0",
         "@types/retry": "0.12.5",
         "jsdom": "^29.1.1",
+        "lucide-static": "^1.53.0",
         "playwright": "1.62.1",
         "type-fest": "5.10.0",
         "typescript": "^5.9.2",
@@ -527,6 +528,8 @@
     "longest-streak": ["longest-streak@3.1.0", "", {}, "sha512-9Ri+o0JYgehTaVBBDoMqIl8GXtbWg711O3srftcHhZ0dqnETqLaoIK0x17fUw9rFSlK/0NlsKe0Ahhyl5pXE2g=="],
 
     "lru-cache": ["lru-cache@11.5.2", "", {}, "sha512-4pfM1Ff0x50o0tQwb5ucw/RzNyD0/YJME6IVcStalZuMWxdt3sR3huStTtxz4PUmvZfRguvDejasvQ2kifR11g=="],
+
+    "lucide-static": ["lucide-static@1.53.0", "", {}, "sha512-xddbAP/qViJOeURl46uiTwmX6hn79PcaHW4xDQcM/bCiO1wd1eYE6hIVXr1dko14aK5HAadZNmAqaEWusc8q1A=="],
 
     "magic-string": ["magic-string@0.30.21", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.5" } }, "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ=="],
 
