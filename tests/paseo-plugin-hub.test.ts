@@ -43,7 +43,7 @@ describe("plugin hub", () => {
     const viewer = await hub.pump(0, false);
     expect(viewer.intents).toEqual([]);
     const first = await hub.pump(0, true);
-    expect(first.intents).toEqual([{ id: "i1", url: "http://127.0.0.1:1/launch?ticket=i1", workspaceId: "ws-a" }]);
+    expect(first.intents).toEqual([{ id: "i1", url: "http://127.0.0.1:1/launch?ticket=i1", workspaceId: "ws-a", path: "/w/a/doc.md" }]);
     expect((await hub.pump(first.revision, true)).intents).toEqual([]);
     now += 10_001;
     expect((await hub.pump(first.revision, true)).intents.map(item => item.id)).toEqual(["i1"]);
@@ -160,6 +160,16 @@ describe("plugin hub", () => {
     tether.push({ cursor: 1, folio: 0, intents: [intent("a1", 1, { origin: "agent" })], instanceId: "d1" });
     await settle();
     expect((await hub.pump(0, false)).notices).toEqual({});
+    hub.stop();
+  });
+
+  test("the reader-panel setting is read on every pump", async () => {
+    let panels = false;
+    const tether = fakeTether();
+    const hub = new Hub({ run: tether.run, pumpMs: 20, readerPanels: () => panels });
+    expect((await hub.pump(0, false)).readerPanels).toBe(false);
+    panels = true;
+    expect((await hub.pump(0, false)).readerPanels).toBe(true);
     hub.stop();
   });
 
