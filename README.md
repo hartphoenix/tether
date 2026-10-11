@@ -1,7 +1,5 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tether-banner-dark.webp">
-  <img alt="Tether: harness your attention" src="docs/assets/tether-banner-light.webp">
-</picture>
+![Tether: harness your attention](docs/assets/tether-banner-dark.webp#gh-dark-mode-only)
+![Tether: harness your attention](docs/assets/tether-banner-light.webp#gh-light-mode-only)
 
 # Tether
 
