@@ -22,9 +22,9 @@ export function createFileActions(options: {
     button.addEventListener('click', () => void run(action)); menu.append(button);
     return button;
   };
-  add('Copy file path', 'file-code', options.copy);
-  const reveal = add('Reveal in Finder', 'folder-open', options.reveal);
-  const move = add('Move file…', 'folder-simple-dashed', async () => {
+  add('Copy file path', 'route', options.copy);
+  const reveal = add('Reveal in Finder', 'folder-search', options.reveal);
+  const move = add('Move file…', 'folder-input', async () => {
     if (nativeMove) { await options.move(); return; }
     dialog?.remove();
     dialog = document.createElement('dialog'); dialog.className = 'wm-move-dialog';
@@ -43,7 +43,7 @@ export function createFileActions(options: {
     };
     document.body.append(dialog); dialog.showModal(); input.focus();
   });
-  add('Export with annotations', 'file-arrow-down', options.export);
+  add('Export with annotations', 'file-down', options.export);
   trigger.onclick = () => {
     if (!menu.hidden) { close(); return; }
     menu.hidden = false; trigger.setAttribute('aria-expanded', 'true');

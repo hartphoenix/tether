@@ -193,7 +193,7 @@ describe("browser launch authorization", () => {
     expect(Buffer.from(await icon.arrayBuffer())).toEqual(Buffer.from(await Bun.file("src/web/favicon.png").arrayBuffer()));
     expect(page).toContain("Reveal in Finder");
     expect(page.includes("Open in Default App")).toBe(true);
-    expect(page.includes('data-action="archive">Archive</button>')).toBe(true);
+    expect(page).toMatch(/data-action="archive"><svg[^]*?<span class="menu-label">Archive<\/span><\/button>/);
     expect(page).toContain("Move to Trash");
     expect((await action(file.other, "reveal")).status).toBe(200);
     expect((await action(file.other, "default")).status).toBe(200);

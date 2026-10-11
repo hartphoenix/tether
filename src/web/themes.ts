@@ -106,9 +106,16 @@ export function createThemePicker(
     remove: async (id) => persist({ deleteTheme: id }),
   }) : undefined;
   function renderMenu() {
+    const labelButton = (item: HTMLButtonElement, label: string, icon?: Parameters<typeof iconSvg>[0]) => {
+      item.classList.add('wm-theme-choice');
+      const slot = document.createElement('span'); slot.className = 'wm-theme-icon'; slot.setAttribute('aria-hidden', 'true');
+      if (icon) slot.innerHTML = iconSvg(icon);
+      const text = document.createElement('span'); text.className = 'wm-theme-label'; text.textContent = label;
+      item.replaceChildren(slot, text);
+    };
     menu.replaceChildren(...[...builtInThemes, ...state.customThemes.map(t => ({ value: t.id, label: t.name }))].map(({ value, label }) => {
       const item = document.createElement('button'); item.type = 'button'; item.dataset.theme = value;
-      item.setAttribute('role', 'menuitemradio'); item.textContent = label;
+      item.setAttribute('role', 'menuitemradio'); labelButton(item, label);
       item.addEventListener('click', () => {
         if (busy || maker?.isOpen()) return;
         const previous = selected; apply(value); close();
@@ -119,13 +126,13 @@ export function createThemePicker(
       const row = document.createElement('div'); row.className = 'wm-theme-row'; row.setAttribute('role', 'none');
       const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'wm-theme-edit';
       edit.dataset.editTheme = value; edit.setAttribute('role', 'menuitem');
-      edit.title = `Edit ${label}`; edit.setAttribute('aria-label', edit.title); edit.innerHTML = iconSvg('pencil-simple-line');
+      edit.title = `Edit ${label}`; edit.setAttribute('aria-label', edit.title); edit.innerHTML = iconSvg('pencil-line');
       edit.addEventListener('click', () => { if (busy || maker.isOpen()) return; close(); maker.open(custom); });
       row.append(item, edit); return row;
     }));
     if (inherited !== undefined) {
       const item = document.createElement('button'); item.type = 'button'; item.dataset.inheritPaseo = 'true';
-      item.textContent = 'Inherit Paseo theme'; item.setAttribute('role', 'menuitemradio');
+      labelButton(item, 'Inherit Paseo theme', 'layers-arrow-down'); item.setAttribute('role', 'menuitemradio');
       item.addEventListener('click', () => {
         if (busy || maker?.isOpen()) return;
         close(); void persist({ inheritPaseoTheme: true }).catch(error => options.onError?.(`Theme preference failed: ${(error as Error).message}`));
@@ -139,6 +146,7 @@ export function createThemePicker(
       const separator = document.createElement('hr'); separator.setAttribute('role', 'separator');
       separator.style.cssText = 'width:100%;margin:4px 0;border:0;border-top:1px solid var(--crepe-color-outline);opacity:.3';
       options.makerButton.setAttribute('role', 'menuitem');
+      labelButton(options.makerButton, 'Theme maker…', 'layers-plus');
       menu.append(separator, options.makerButton);
     }
   }

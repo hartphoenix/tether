@@ -302,7 +302,7 @@ body {
 /* A small chevron tucked against the style label keeps the Block style button narrow. */
 .milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-chevron { width: calc(9px * var(--wm-ui-scale)); height: calc(9px * var(--wm-ui-scale)); }
 .milkdown .milkdown-top-bar .top-bar-heading-button .top-bar-chevron svg { width: calc(9px * var(--wm-ui-scale)); height: calc(9px * var(--wm-ui-scale)); }
-.milkdown .milkdown-top-bar .top-bar-heading-dropdown { min-width: calc(160px * var(--wm-ui-scale)); padding: calc(8px * var(--wm-ui-scale)) calc(4px * var(--wm-ui-scale)) calc(4px * var(--wm-ui-scale)); }
+.milkdown .milkdown-top-bar .top-bar-heading-dropdown { width: max-content; min-width: 0; padding: calc(8px * var(--wm-ui-scale)) calc(4px * var(--wm-ui-scale)) calc(4px * var(--wm-ui-scale)); }
 .milkdown .milkdown-top-bar .top-bar-heading-option { padding: calc(8px * var(--wm-ui-scale)) calc(12px * var(--wm-ui-scale)); }
 
 .wm-thread-card { box-sizing: border-box; overflow: clip; flex-shrink: 0; }

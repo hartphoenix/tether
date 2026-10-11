@@ -37,7 +37,7 @@ await cp("integrations", join(destination, "integrations"), {
 });
 await copyFile("LICENSE", join(destination, "LICENSE"));
 await mkdir(join(destination, "licenses"));
-await copyFile("licenses/phosphor-icons-LICENSE.txt", join(destination, "licenses/phosphor-icons-LICENSE.txt"));
+await copyFile("licenses/lucide-icons-LICENSE.txt", join(destination, "licenses/lucide-icons-LICENSE.txt"));
 await copyFile(`licenses/bun-${Bun.version}-LICENSE.md`, join(destination, "licenses/Bun-LICENSE.md"));
 for await (const path of new Bun.Glob("**/{LICENSE,LICENSE.md,LICENSE.txt,license,license.md,OFL.txt}").scan({ cwd: "node_modules", followSymlinks: true })) {
   const target = join(destination, "licenses", path);

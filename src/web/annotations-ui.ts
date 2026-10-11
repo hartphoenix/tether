@@ -359,7 +359,7 @@ function showFootnotePopover(root: HTMLElement, reference: FootnoteReference, vi
     edit.type = "button";
     edit.title = "Edit footnote";
     edit.setAttribute("aria-label", "Edit footnote");
-    edit.innerHTML = iconSvg("pencil-simple-line");
+    edit.innerHTML = iconSvg("pencil-line");
     edit.addEventListener("click", () => {
       if (!view.editable) return;
       let position: number | undefined;
@@ -973,7 +973,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     filter.title = "Show resolved";
     filter.setAttribute("aria-label", "Show resolved");
     filter.setAttribute("aria-pressed", String(showResolved));
-    filter.innerHTML = iconSvg("check-square-offset");
+    filter.innerHTML = iconSvg("square-check");
     filter.addEventListener("click", () => {
       showResolved = !showResolved; renderRail(); syncDecorations();
       rail.querySelector<HTMLButtonElement>(".wm-unresolved-filter")?.focus();
@@ -994,7 +994,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       exportButton.type = "button";
       exportButton.title = "Export with annotations";
       exportButton.setAttribute("aria-label", "Export with annotations");
-      exportButton.innerHTML = iconSvg("download-simple");
+      exportButton.innerHTML = iconSvg("file-down");
       exportButton.addEventListener("click", () => { void options.onExport!(); });
       controls.append(exportButton);
     }
@@ -1003,7 +1003,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       copyPath.type = "button";
       copyPath.title = "Copy file path";
       copyPath.setAttribute("aria-label", "Copy file path");
-      copyPath.innerHTML = iconSvg("file-code");
+      copyPath.innerHTML = iconSvg("route");
       copyPath.addEventListener("click", () => { void options.onCopyFilePath!(); });
       controls.append(copyPath);
     }

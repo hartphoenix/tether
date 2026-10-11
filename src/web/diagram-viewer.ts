@@ -53,10 +53,10 @@ export function openDiagramViewer(svg: SVGSVGElement, trigger: HTMLElement): () 
     controls.append(button);
     return button;
   }
-  button("Zoom out", "magnifying-glass-minus", () => setZoom(zoom / 1.25));
+  button("Zoom out", "zoom-out", () => setZoom(zoom / 1.25));
   controls.append(output);
-  button("Zoom in", "magnifying-glass-plus", () => setZoom(zoom * 1.25));
-  button("Fit", "corners-in", () => { zoom = 1; resize(); });
+  button("Zoom in", "zoom-in", () => setZoom(zoom * 1.25));
+  button("Fit", "minimize", () => { zoom = 1; resize(); });
   const close = button("Close", "x", () => dialog.close());
   stage.append(svg); viewport.append(stage); dialog.append(controls, viewport); document.body.append(dialog);
   function resize() {

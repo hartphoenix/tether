@@ -184,7 +184,7 @@ function compactTopBar(): void {
     const trigger = document.createElement("button");
     trigger.type = "button";
     trigger.className = "wm-overflow-trigger";
-    trigger.innerHTML = iconSvg("text-aa");
+    trigger.innerHTML = iconSvg("type");
     trigger.title = "More formatting tools";
     trigger.setAttribute("aria-label", trigger.title);
     trigger.setAttribute("aria-expanded", "false");
@@ -224,7 +224,7 @@ function compactTopBar(): void {
     code.type = "button";
     code.dataset.insertCode = "true";
     code.className = "wm-comment-button";
-    code.innerHTML = iconSvg("code-block");
+    code.innerHTML = iconSvg("square-code");
     code.title = "Insert code block";
     code.setAttribute("aria-label", code.title);
     code.addEventListener("pointerdown", event => event.preventDefault());
@@ -236,8 +236,8 @@ function compactTopBar(): void {
     });
     menu.append(code);
   }
-  // Edit Markdown source sits with the formatting tools, after the overflow trigger.
-  if (overflow.nextElementSibling !== sourceButton) overflow.after(sourceButton);
+  // Edit Markdown source leads, then the overflow trigger, then Crepe's Block style.
+  if (inner.firstElementChild !== sourceButton || sourceButton.nextElementSibling !== overflow) inner.prepend(sourceButton, overflow);
   const tools = [...inner.children].filter((element) => element.classList.contains("top-bar-item") || element.classList.contains("top-bar-divider"));
   if (tools.length) menu.append(...tools);
   const inlineCode = menu.querySelectorAll(".top-bar-item")[topBarLabels.indexOf("Inline code")];
@@ -249,8 +249,7 @@ function compactTopBar(): void {
     decrease.type = "button";
     decrease.dataset.decreaseQuote = "true";
     decrease.className = "wm-comment-button";
-    decrease.innerHTML = iconSvg("quotes");
-    decrease.querySelector("svg")!.style.transform = "rotate(180deg)";
+    decrease.innerHTML = iconSvg("indent-decrease");
     labelIconButton(decrease, "Decrease quote level");
     decrease.addEventListener("pointerdown", event => event.preventDefault());
     decrease.addEventListener("click", () => {

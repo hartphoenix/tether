@@ -84,7 +84,7 @@
   cursor: pointer;
 }
 
-.tether-icon { width: calc(20px * var(--wm-ui-scale, 1)); height: calc(20px * var(--wm-ui-scale, 1)); flex-shrink: 0; fill: currentColor; stroke: none; }
+.tether-icon { width: calc(20px * var(--wm-ui-scale, 1)); height: calc(20px * var(--wm-ui-scale, 1)); flex-shrink: 0; fill: none; stroke: currentColor; }
 .wm-comment-button:hover { background: var(--crepe-color-hover); }
 .wm-comment-button.is-active, .wm-comment-button[aria-pressed="true"] { color: var(--crepe-color-primary); background: var(--crepe-color-selected); }
 .wm-overflow-trigger:focus-visible,
