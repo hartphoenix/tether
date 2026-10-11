@@ -545,7 +545,7 @@ describe("session API", () => {
     daemons.push(daemon);
     await daemon.ready;
     const session = await exchange(daemon, file.path);
-    for (const path of ["assets/tether-banner.png", "docs/assets/tether-banner.png", "assets/tether-banner-tagline.png", "docs/assets/tether-banner-tagline.png", "assets/tether-banner-dark.webp", "docs/assets/tether-banner-dark.webp"]) {
+    for (const path of ["assets/tether-banner.png", "docs/assets/tether-banner.png", "assets/tether-banner-tagline.png", "docs/assets/tether-banner-tagline.png", "assets/tether-banner-dark.webp", "docs/assets/tether-banner-dark.webp", "assets/tether-banner-light.webp", "docs/assets/tether-banner-light.webp"]) {
       const response = await sessionFetch(daemon, session.location, session.cookie, path);
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toBe(path.endsWith(".webp") ? "image/webp" : "image/png");

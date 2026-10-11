@@ -326,6 +326,11 @@ body {
 .milkdown .milkdown-table-block :is(th, td) { padding: 3.2px 12.8px; border-width: 0.8px; }
 .milkdown .milkdown-image-block > .image-wrapper { min-width: 80px; }
 .milkdown .milkdown-image-block > .image-wrapper img { min-height: 80px; }
+/* GitHub's mode-only image fragments, keyed to the reader theme rather than the OS. */
+html[data-wm-scheme="dark"] :is(.milkdown-image-block, .milkdown-image-inline):has(img[src$="#gh-light-mode-only"]),
+html[data-wm-scheme="light"] :is(.milkdown-image-block, .milkdown-image-inline):has(img[src$="#gh-dark-mode-only"]),
+html[data-wm-scheme="dark"] img[src$="#gh-light-mode-only"],
+html[data-wm-scheme="light"] img[src$="#gh-dark-mode-only"] { display: none; }
 
 /* Browser table defaults use 16px rather than inheriting the body font size. */
 .milkdown .ProseMirror table { font-size: 12.8px; }
