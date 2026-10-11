@@ -93,7 +93,7 @@
 :root[data-wm-designed] .wm-dialog-title { color: var(--wm-color-on-background); }
 :root[data-wm-designed] .wm-annotation-count { background: var(--wm-color-surface); color: var(--wm-color-primary); }
 
-.wm-theme-menu { max-height: 70vh; overflow-y: auto; max-width: min(300px, 90vw); }
+.wm-theme-menu { width: max-content; min-width: 0; max-width: 50vw; box-sizing: border-box; max-height: 70vh; overflow-y: auto; }
 .wm-making-theme #workspace { margin-right: calc(360px * var(--wm-ui-scale, 1)); }
 .wm-theme-maker {
   position: fixed; z-index: 35; inset: 0 0 0 auto;
@@ -162,6 +162,10 @@
 :root[data-wm-designed] .wm-thread-card.is-active { border-color: var(--wm-color-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--wm-color-primary), transparent 80%); }
 
 .wm-theme-row { display: flex; align-items: stretch; }
+.wm-theme-menu .wm-theme-choice { display: grid; grid-template-columns: calc(16px * var(--wm-ui-scale, 1)) minmax(0, 1fr); align-items: center; column-gap: calc(8px * var(--wm-ui-scale, 1)); }
+.wm-theme-icon { display: grid; place-items: center; width: calc(16px * var(--wm-ui-scale, 1)); height: calc(16px * var(--wm-ui-scale, 1)); }
+.wm-theme-menu .wm-theme-icon .tether-icon { width: 100%; height: 100%; }
+.wm-theme-label { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .wm-theme-row > button[data-theme] { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .wm-theme-menu .wm-theme-edit { flex: 0 0 32px; display: grid; place-items: center; padding: 0; }
 .wm-theme-edit .tether-icon { width: 14px; height: 14px; }

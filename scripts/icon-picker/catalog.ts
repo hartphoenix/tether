@@ -1,15 +1,25 @@
 import { iconSvg } from './phosphor-icons';
+import { iconSvg as lucideSvg } from '../../src/web/icons';
 
 type Phosphor = Parameters<typeof iconSvg>[0];
 // Rows identify controls, not just glyphs: shared glyphs may get different replacements.
 function row(id: string, label: string, area: string, source: string, phosphor: Phosphor | null, size: number, suggestions: string[], rotate = false, note = '', targets: string[] = []) {
-  return { id, label, area, source, phosphor, size, suggestions, svg: phosphor ? iconSvg(phosphor) : '', rotate, note, targets };
+  return { id, label, area, source, phosphor, lucide: null as string | null, size, suggestions, svg: phosphor ? iconSvg(phosphor) : '', rotate, note, targets };
+}
+function themeAction(id: string, label: string, icon: Parameters<typeof lucideSvg>[0], suggestions: string[], target: string) {
+  return { ...row(id, label, 'Theme menu', 'src/web/themes.ts', null, 16, suggestions, false, '', [target]), lucide: icon, svg: lucideSvg(icon) };
+}
+function contextAction(action: string, label: string, suggestions: string[]) {
+  return row(`folio-context-${action}`, label, 'Folio right-click menu', 'src/web/folio-page.ts', null, 16, suggestions, false,
+    'Add an icon to the left of the label.', [`#row-menu [data-action="${action}"]`]);
 }
 const rail = 20 * 9 / 11;
 export const rows = [
   row('source', 'Edit Markdown source', 'Reader', 'src/web/index.html', 'code', 16, ['code', 'code-xml', 'file-code']),
   row('document-zoom', 'Document zoom', 'Reader', 'src/web/index.html', 'magnifying-glass-plus', 16, ['zoom-in', 'search', 'scan']),
   row('theme', 'Theme', 'Reader', 'src/web/index.html', 'paint-brush', 16, ['paintbrush', 'palette', 'swatch-book']),
+  themeAction('theme-inherit', 'Inherit Paseo theme', 'layers-arrow-down', ['layers-arrow-down', 'layers', 'download'], '#theme-menu [data-inherit-paseo]'),
+  themeAction('theme-maker', 'Theme maker…', 'layers-plus', ['layers-plus', 'palette', 'paintbrush'], '#theme-maker'),
   row('threads', 'Show threads', 'Reader', 'src/web/index.html', 'chat', 16, ['message-square', 'messages-square', 'panel-right']),
   row('formatting', 'More formatting tools', 'Formatting', 'src/web/app.ts', 'text-aa', 16, ['case-sensitive', 'type', 'text-cursor-input']),
   row('code-block', 'Insert code block', 'Formatting', 'src/web/app.ts', 'code-block', 16, ['square-code', 'code-xml', 'file-code']),
@@ -39,6 +49,18 @@ export const rows = [
   row('folio-settings', 'Settings', 'Folio menu', 'src/web/folio-page.ts', null, 16, ['settings', 'sliders-horizontal', 'settings-2'], false, 'Add an icon to the left of the label.', ['#app-menu [data-app-action="settings"]']),
   row('folio-restart', 'Restart service', 'Folio menu', 'src/web/folio-page.ts', null, 16, ['rotate-cw', 'refresh-cw', 'power'], false, 'Add an icon to the left of the label.', ['#app-menu [data-app-action="restart"]']),
   row('folio-quit', 'Quit Tether', 'Folio menu', 'src/web/folio-page.ts', null, 16, ['power', 'log-out', 'circle-x'], false, 'Add an icon to the left of the label.', ['#app-menu [data-app-action="quit"]']),
+  contextAction('pin', 'Pin', ['pin', 'bookmark', 'map-pin']),
+  contextAction('unpin', 'Unpin', ['pin-off', 'bookmark-minus', 'bookmark-x']),
+  contextAction('copy-path', 'Copy file path', ['route', 'copy', 'clipboard-copy']),
+  contextAction('reveal', 'Reveal in Finder', ['folder-search', 'folder-open', 'search']),
+  contextAction('default', 'Open in Default App', ['external-link', 'app-window', 'square-arrow-out-up-right']),
+  contextAction('export', 'Export with annotations', ['file-down', 'download', 'file-output']),
+  contextAction('locate', 'Locate file', ['file-search', 'folder-search', 'search']),
+  contextAction('archive', 'Archive', ['archive', 'folder-archive', 'archive-restore']),
+  contextAction('restore', 'Restore to active', ['archive-restore', 'rotate-ccw', 'undo-2']),
+  contextAction('remove-entry', 'Remove from Folio', ['list-minus', 'circle-minus', 'x']),
+  contextAction('delete-conversation', 'Delete conversation', ['message-square-x', 'message-circle-x', 'trash-2']),
+  contextAction('trash', 'Move file to Trash', ['trash-2', 'trash', 'file-x']),
   row('clear-filter', 'Clear filter', 'Folio', 'src/web/folio-page.ts', 'x', 20, ['x', 'circle-x', 'list-x']),
   row('delete-filter', 'Delete saved filter', 'Folio', 'src/web/folio-page.ts', 'x', 13, ['x', 'trash-2', 'circle-minus']),
   row('pin', 'Pin selected documents', 'Folio', 'src/web/folio-page.ts', 'map-pin-simple', 20, ['pin', 'map-pin', 'bookmark']),

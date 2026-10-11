@@ -101,8 +101,9 @@ function renderChoices(row) {
   const choice = state.rows[row.id]; const view = rowViews.get(row.id);
   view.current.replaceChildren(); view.candidates.replaceChildren();
   if (choice.showCurrent) {
-    const {wrapper,button} = iconButton(row.phosphor ?? 'No icon · text only',row.svg,`Current: ${row.phosphor ?? row.label}`);
-    if (!row.phosphor) { button.textContent = row.label; button.classList.add('text-current'); }
+    const currentIcon = row.lucide ?? row.phosphor;
+    const {wrapper,button} = iconButton(currentIcon ?? 'No icon · text only',row.svg,`Current: ${currentIcon ?? row.label}`);
+    if (!currentIcon) { button.textContent = row.label; button.classList.add('text-current'); }
     if (row.rotate) button.classList.add('rotated');
     context(button, () => { choice.showCurrent = false; renderChoices(row); changed(); view.current.querySelector('button').focus(); });
     view.current.append(wrapper);

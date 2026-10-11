@@ -236,8 +236,8 @@ function compactTopBar(): void {
     });
     menu.append(code);
   }
-  // Edit Markdown source sits with the formatting tools, after the overflow trigger.
-  if (overflow.nextElementSibling !== sourceButton) overflow.after(sourceButton);
+  // Edit Markdown source leads, then the overflow trigger, then Crepe's Block style.
+  if (inner.firstElementChild !== sourceButton || sourceButton.nextElementSibling !== overflow) inner.prepend(sourceButton, overflow);
   const tools = [...inner.children].filter((element) => element.classList.contains("top-bar-item") || element.classList.contains("top-bar-divider"));
   if (tools.length) menu.append(...tools);
   const inlineCode = menu.querySelectorAll(".top-bar-item")[topBarLabels.indexOf("Inline code")];

@@ -19,7 +19,7 @@ export async function startPicker(options: { port?: number; statePath?: string }
   const catalog = rows.map(row => ({ ...row, suggestions: row.suggestions.filter(name => names.has(name)) }));
   let state: PickerState = {
     version: 1, revision: 0, updatedAt: new Date().toISOString(), theme: preferences.theme, scale: 1,
-    rows: Object.fromEntries(catalog.map(row => [row.id, { candidates: row.suggestions, selected: null, showCurrent: true, draft: '' }])),
+    rows: Object.fromEntries(catalog.map(row => [row.id, { candidates: row.suggestions, selected: row.lucide, showCurrent: true, draft: '' }])),
   };
   function validate(value: unknown): asserts value is PickerState {
     if (!value || typeof value !== 'object') throw new Error('Invalid preferences');
@@ -39,7 +39,7 @@ export async function startPicker(options: { port?: number; statePath?: string }
   async function persist(next: PickerState) {
     await mkdir(dirname(statePath), { recursive: true });
     const record = { ...next, library: 'lucide-static', libraryVersion: (await Bun.file(join(assets, '../package.json')).json()).version,
-      controls: catalog.map(({ id, label, area, source, phosphor, size, note, targets }) => ({ id, label, area, source, phosphor, defaultSize: size, note, targets })) };
+      controls: catalog.map(({ id, label, area, source, phosphor, lucide, size, note, targets }) => ({ id, label, area, source, phosphor, lucide, defaultSize: size, note, targets })) };
     await writeFile(`${statePath}.tmp`, JSON.stringify(record, null, 2) + '\n');
     await rename(`${statePath}.tmp`, statePath);
   }
