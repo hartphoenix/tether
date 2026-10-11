@@ -1,4 +1,6 @@
-![1.00](assets/tether-banner-dark.webp)
+![1.00](assets/tether-banner-dark.webp#gh-dark-mode-only)
+
+![1.00](assets/tether-banner-light.webp#gh-light-mode-only)
 
 # getting started with **tether**
 

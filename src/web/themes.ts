@@ -12,7 +12,7 @@ export function applyDesign(editorRoot: HTMLElement, base: BuiltInTheme, design?
   for (const slot of fontSlots) html.style.removeProperty(`--wm-font-${slot}`);
   for (const key of Object.keys(metrics)) html.style.removeProperty(`--wm-${key}`);
   html.style.removeProperty('--wm-page-background'); html.style.removeProperty('--wm-page-color');
-  html.style.colorScheme = base.endsWith('-dark') ? 'dark' : 'light';
+  html.style.colorScheme = html.dataset.wmScheme = base.endsWith('-dark') ? 'dark' : 'light';
   if (!design) return;
   for (const key of ['annotation', 'selected'] as const) html.style.setProperty(`--wm-${key}-ring`, chipRing(design.colors, design.colors[key]));
   for (const key of colorKeys) html.style.setProperty(`--wm-color-${key}`, design.colors[key]);
