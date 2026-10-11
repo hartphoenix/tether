@@ -28,6 +28,7 @@ function EmbeddedFolio({ settings, cacheKey, generation, ...props }: PluginWorks
       if (disposed) return;
       cleanup = mountFolioWebview(container.current, {
         cacheKey,
+        workspaceId,
         launch: async () => {
           await themeReady.current;
           const result = await launch({ workspaceId, tetherPath, profile, generation });

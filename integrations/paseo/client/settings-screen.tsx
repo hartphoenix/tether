@@ -33,6 +33,13 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
           disabled={settings.saving}
           onValueChange={buttons => { void settings.save({ ...settings.values, buttons }, settings.revision); }}
         />
+        <SettingsSwitch
+          label="Open readers in panels"
+          hint="Experimental, desktop only. Readers open as Paseo tabs without an address bar. Turn off to use browser tabs."
+          value={settings.values.readerPanels}
+          disabled={settings.saving}
+          onValueChange={readerPanels => { void settings.save({ ...settings.values, readerPanels }, settings.revision); }}
+        />
       </SettingsCard>
       <SettingsCard>
         <SettingsInput

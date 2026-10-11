@@ -10,7 +10,7 @@ export default function contribute(server: PluginServerContext) {
   const pool = new ProcessPool();
   type Session = { connection: Connection; controller: AbortController; hub: Hub };
   let current: Session | null = null;
-  let disposed = false, subscribed = false, buttons = true;
+  let disposed = false, subscribed = false, buttons = true, readerPanels = false;
   const clear = () => {
     const previous = current;
     current = null;
@@ -22,6 +22,7 @@ export default function contribute(server: PluginServerContext) {
     if (state.status !== "ready") { clear(); return; }
     const values = state.values;
     buttons = values.buttons;
+    readerPanels = values.readerPanels;
     if (current?.connection.tetherPath === values.tetherPath && current.connection.profile === values.profile) {
       current.hub.presentationChanged();
       return;
@@ -33,6 +34,7 @@ export default function contribute(server: PluginServerContext) {
       connection,
       run: createTetherRunner({ binary: () => resolveTether(connection.tetherPath), profile: () => connection.profile, signal: controller.signal, pool }),
       buttons: () => buttons,
+      readerPanels: () => readerPanels,
     });
     current = { connection, controller, hub };
     hub.start();
@@ -42,7 +44,7 @@ export default function contribute(server: PluginServerContext) {
   const unsubscribe = settings.subscribe(state => { subscribed = true; apply(state); initialized(); });
   void settings.read().then(state => { if (!subscribed) apply(state); initialized(); }, () => { initialized(); });
   const unavailable = (error = "Tether connection settings are unavailable. Check plugin settings."): PumpBatch => ({
-    connection: null, revision: -1, folio: null, intents: [], notices: {}, buttons,
+    connection: null, revision: -1, folio: null, intents: [], notices: {}, buttons, readerPanels,
     status: { connected: false, tether: null, error },
   });
   const attach = (session: Session, { paseo }: PluginHandlerContext) => session.hub.attach(paseoLookup(paseo));
