@@ -15,6 +15,8 @@ class Guest {
   navigate(url = session, status = 200) { this.emit("did-frame-navigate", { isMainFrame: true, url, httpResponseCode: status }); }
   ready(url = session) { this.navigate(url); this.emit("dom-ready"); }
   get src() { return this.attributes.find(([name]) => name === "src")?.[1]; }
+  webContentsId = 40;
+  getWebContentsId() { return this.webContentsId; }
 }
 const origin = "http://127.0.0.1:3456";
 const session = `${origin}/r/view-a/?instance=daemon-a`;
@@ -304,4 +306,41 @@ test("reader and Folio launches are not interchangeable", async () => {
   await tick();
   guests.at(-1)!.ready(`${origin}/r/folio-view/`);
   expect(reader.states.at(-1)).toBe("failed");
+});
+
+test("each attachment registers the guest with Paseo's browser bridge under one stable ID", async () => {
+  const registrations: Array<{ browserId: string; workspaceId: string; webContentsId: number }> = [];
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { paseoDesktop: { browser: { registerAttachedBrowser: async (input: any) => { registrations.push(input); } } } } });
+  try {
+    const reader = mount({ kind: "reader", cacheKey: "reader-shortcuts", workspaceId: "w1", launch: async () => ({ url: `${origin}/launch?ticket=x`, expiresAt: Date.now() + 30_000 }) });
+    await tick();
+    const guest = guests.at(-1)!;
+    guest.emit("did-attach");
+    guest.webContentsId = 41;
+    guest.emit("did-attach");
+    expect(registrations).toHaveLength(2);
+    expect(registrations[0]).toMatchObject({ workspaceId: "w1", webContentsId: 40 });
+    expect(registrations[0]!.browserId).toMatch(/^tether-reader-[a-z0-9]+-\d+$/);
+    expect(registrations[1]).toEqual({ ...registrations[0]!, webContentsId: 41 });
+    reader.dispose();
+    guest.emit("did-attach");
+    expect(registrations).toHaveLength(2);
+
+    // No workspace, no registration; a missing bridge is not an error.
+    const folio = mount({ cacheKey: "folio-shortcuts" });
+    await tick();
+    guests.at(-1)!.emit("did-attach");
+    expect(registrations).toHaveLength(2);
+    folio.dispose();
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
+    const bare = mount({ cacheKey: "folio-bare", workspaceId: "w1" });
+    await tick();
+    guests.at(-1)!.emit("did-attach");
+    guests.at(-1)!.ready();
+    expect(bare.states.at(-1)).toBe("ready");
+  } finally {
+    if (windowDescriptor) Object.defineProperty(globalThis, "window", windowDescriptor);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
 });

@@ -35,18 +35,20 @@ function memoryStorage(initial: Record<string, unknown> = {}) {
 
 function fakeClient() {
   const panels: Registration[] = [];
+  const componentsSeen: unknown[] = [];
   const opened: Array<{ id: string; workspaceId: string; location?: string }> = [];
   const acked: string[][] = [];
   const client = {
     addWorkspacePanel: (contribution: any) => {
       const registration: Registration = { id: contribution.id, title: contribution.title, icon: contribution.icon, locations: contribution.locations, removed: false };
       panels.push(registration);
+      componentsSeen.push(contribution.Component);
       return () => { registration.removed = true; };
     },
     openPanel: (id: string, options: { workspaceId: string; location?: string }) => { opened.push({ id, ...options }); },
     rpc: async (_contract: unknown, input: any) => { acked.push(input.ids); return { acknowledged: input.ids.length }; },
   };
-  return { client, panels, opened, acked };
+  return { client, panels, opened, acked, componentsSeen };
 }
 
 const component = () => () => null;
@@ -71,7 +73,7 @@ test("in panel mode, a document intent registers one titled panel and opens it",
 
   expect(runOrHold(delivery("a", "/w/doc.md"), () => {})).toBe(true);
   const id = readers.readerPanelId("/w/doc.md");
-  expect(panels).toEqual([{ id, title: "Doc title", icon: "FileText", locations: ["workspace"], removed: false }]);
+  expect(panels).toEqual([{ id, title: "Doc title", icon: "Dna", locations: ["workspace"], removed: false }]);
   expect(opened).toEqual([{ id, workspaceId: "w1", location: "workspace" }]);
   expect(readers.takeLaunch(id, "w1")).toBe("http://127.0.0.1:1/launch?ticket=a");
   expect(readers.takeLaunch(id, "w1")).toBeUndefined();
@@ -82,6 +84,24 @@ test("in panel mode, a document intent registers one titled panel and opens it",
   expect(panels).toHaveLength(1);
   expect(opened).toHaveLength(2);
   expect(acked).toEqual([]);
+});
+
+test("a tab follows Folio's name for its document without replacing its component", () => {
+  const { client, panels, componentsSeen } = fakeClient();
+  const storage = memoryStorage();
+  stop = readers.startReaderPanels(client, component, storage);
+  acceptBatch(batch(true, []));
+  runOrHold(delivery("named", "/w/linked.md"), () => {});
+  const id = readers.readerPanelId("/w/linked.md");
+  expect(panels.map(panel => [panel.title, panel.removed])).toEqual([["linked", false]]);
+  // The launch records the document; Folio then names it by its first heading.
+  acceptBatch(batch(true, [{ path: "/w/linked.md", name: "Linked Heading", directory: "/w", repository: null, pinned: false, missing: false, attentionCount: 0, openedAt: 2 }]));
+  expect(panels.map(panel => [panel.title, panel.removed])).toEqual([["linked", true], ["Linked Heading", false]]);
+  expect(componentsSeen[1]).toBe(componentsSeen[0]);
+  expect(readers.readerDocument(id)).toEqual({ path: "/w/linked.md", name: "Linked Heading" });
+  expect(storage.read("tether.reader-panels.v1")[id].name).toBe("Linked Heading");
+  acceptBatch(batch(true, [{ path: "/w/linked.md", name: "Linked Heading", directory: "/w", repository: null, pinned: false, missing: false, attentionCount: 0, openedAt: 3 }]));
+  expect(panels).toHaveLength(2);
 });
 
 test("intents without a path, or with the setting off, use the Folio's browser opener", () => {

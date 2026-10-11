@@ -20,12 +20,15 @@ export type ReaderDocument = { path: string; name: string };
 export type ReaderComponent = (panelId: string) => ComponentType<PluginWorkspacePanelProps>;
 
 const PANELS_KEY = "tether.reader-panels.v1";
-const SESSIONS_KEY = "tether.reader-sessions.v1";
+// v2 discards sessions saved before restored views kept their panel surface; those open links as browser tabs.
+const SESSIONS_KEY = "tether.reader-sessions.v2";
 const MAX_SAVED = 100;
 const RELAUNCH_MS = 30_000;
 
 const documents = new Map<string, ReaderDocument>();
 const removals = new Map<string, () => void>();
+// One component per panel, reused when a rename re-registers it, so the open reader isn't remounted.
+const components = new Map<string, ComponentType<PluginWorkspacePanelProps>>();
 // Launch URLs for panels that haven't mounted yet, by panel and workspace.
 const pending = new Map<string, string>();
 // Mounted panels waiting for a fresh launch they requested.
@@ -61,11 +64,26 @@ export function readerPanelId(path: string): string {
 export function readerDocument(panelId: string): ReaderDocument | undefined { return documents.get(panelId); }
 
 function register(panelId: string, document: ReaderDocument): void {
-  if (!host || !component || documents.has(panelId)) return;
+  if (!host || !component) return;
+  removals.get(panelId)?.();
+  const Component = components.get(panelId) ?? component(panelId);
+  components.set(panelId, Component);
   removals.set(panelId, host.addWorkspacePanel({
-    id: panelId, title: document.name, icon: "FileText", context: "workspace", locations: ["workspace"], Component: component(panelId),
+    id: panelId, title: document.name, icon: "Dna", context: "workspace", locations: ["workspace"], Component,
   }));
   documents.set(panelId, document);
+}
+
+/** A tab's title is fixed at registration; Folio names documents by their first heading, so follow it. */
+function followFolioNames(): void {
+  const folio = getState().folio;
+  if (!folio) return;
+  let renamed = false;
+  for (const [panelId, document] of documents) {
+    const name = folio.find(entry => entry.path === document.path)?.name;
+    if (name && name !== document.name) { register(panelId, { ...document, name }); renamed = true; }
+  }
+  if (renamed) saveDocuments();
 }
 
 function saveDocuments(): void {
@@ -175,6 +193,7 @@ export function startReaderPanels(client: PanelHost, makeComponent: ReaderCompon
     const wanted = getState().readerPanels && isDesktop();
     if (wanted && !release) release = setPanelOpener(openReader, acknowledge);
     if (!wanted && release) { release(); release = undefined; }
+    followFolioNames();
   };
   sync();
   const unsubscribe = subscribeState(sync);
@@ -182,7 +201,7 @@ export function startReaderPanels(client: PanelHost, makeComponent: ReaderCompon
     unsubscribe();
     release?.();
     for (const remove of removals.values()) remove();
-    for (const map of [documents, removals, pending, waiters, relaunching, mounted]) map.clear();
+    for (const map of [documents, removals, components, pending, waiters, relaunching, mounted]) map.clear();
     host = component = storage = null;
   };
 }

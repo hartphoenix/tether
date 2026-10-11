@@ -1,4 +1,5 @@
 import { HostThemes, isThemeClient } from "./host-themes";
+import { themedReaderHtml } from "./reader-theme";
 import { ImageAssets } from "../documents/image-assets";
 import { linkFragment } from '../shared/link-fragment';
 import { version as sourceVersion } from "../../package.json";
@@ -1186,7 +1187,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const updateResponse = await updateRequest(request, suffix);
       if (updateResponse) return updateResponse;
       if (suffix.startsWith("/api/")) return sessionApi(request, session, pathname);
-      if (options.web) return options.web(request, session);
+      if (options.web) {
+        const response = await options.web(request, session);
+        if (suffix !== "/" || !response.headers.get("content-type")?.includes("text/html")) return response;
+        return themedReaderHtml(response, await hostThemes.preferences(themeClient(request, session.target), await preferences()));
+      }
       if (suffix === "/" || suffix === "") return new Response(fallbackHtml, { headers: { "content-type": "text/html; charset=utf-8" } });
       return error("not_found", "Session resource not found.", 404);
     }

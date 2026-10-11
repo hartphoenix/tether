@@ -48,6 +48,7 @@ function ReaderView({ panelId, document, connection, cacheKey, ...props }: ViewP
       cleanup = mountFolioWebview(container.current, {
         kind: "reader",
         cacheKey,
+        workspaceId,
         saved: savedSession(cacheKey),
         onSession: url => saveSession(cacheKey, url),
         // A link to a heading replaces the session; otherwise the cached session keeps its scroll position.

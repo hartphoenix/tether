@@ -10,8 +10,12 @@ type Guest = {
   addEventListener(name: string, listener: Listener): void;
   removeEventListener(name: string, listener: Listener): void;
   remove(): void;
+  getWebContentsId?(): number;
+  dispatchEvent?(event: Event): boolean;
 };
 declare const document: { createElement(name: "webview"): Guest } | undefined;
+type BrowserRegistration = { browserId: string; workspaceId: string; webContentsId: number };
+declare const window: { paseoDesktop?: { browser?: { registerAttachedBrowser?: (input: BrowserRegistration) => unknown } } } | undefined;
 
 type Container = { appendChild(guest: Guest): unknown };
 export type FolioViewState = "loading" | "ready" | "failed";
@@ -20,6 +24,8 @@ export type ViewKind = "folio" | "reader";
 type MountOptions = {
   kind?: ViewKind;
   cacheKey: string;
+  /** Lets Paseo forward its shortcuts from this view; see `registerShortcuts`. */
+  workspaceId?: string;
   launch: () => Promise<FolioView>;
   onState: (state: FolioViewState) => void;
   /** A session saved by the caller, tried when this client has none cached. */
@@ -76,6 +82,20 @@ function launchUrl(value: string, kind: ViewKind): URL {
     || surfaces.length > 1 || surfaces.some(surface => surface !== "panel")
     || [...url.searchParams.keys()].some(key => !allowed.includes(key))) throw new Error("Invalid Tether launch");
   return url;
+}
+
+// Paseo forwards its app shortcuts, and reloads the view on ⌘R, only for webviews registered as its
+// browsers. Its private bridge accepts any webview in its window using its browser profile, and drops
+// the registration when the webview is destroyed. Without it, the view keeps every shortcut and ⌘R
+// reloads the whole app. Registration also lists the view in agents' browser tools, as Paseo's own
+// browser tabs already are.
+const browserNonce = Math.random().toString(36).slice(2, 10);
+let browserCount = 0;
+function registerShortcuts(guest: Guest, browserId: string, workspaceId: string | undefined): void {
+  const register = typeof window === "undefined" ? undefined : window.paseoDesktop?.browser?.registerAttachedBrowser;
+  if (!workspaceId || typeof register !== "function" || typeof guest.getWebContentsId !== "function") return;
+  try { void Promise.resolve(register({ browserId, workspaceId, webContentsId: guest.getWebContentsId() })).catch(() => {}); }
+  catch {}
 }
 
 /** One guest per mount; cache only authenticated final URLs, never consumable tickets. */
@@ -170,6 +190,14 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
           }
         });
         listen("render-process-gone", fail);
+        // A reattached guest gets a new WebContents, so each attachment registers again under the same ID.
+        const browserId = `tether-${kind}-${browserNonce}-${++browserCount}`;
+        listen("did-attach", () => { if (live()) registerShortcuts(guest!, browserId, options.workspaceId); });
+        // Paseo marks a pane focused on a bubbling `focusin`; focusing a guest doesn't produce one, so focus mode
+        // and pane commands would act on the previously focused pane. Paseo's browser tabs mark their pane themselves.
+        const markPaneFocused = () => { if (live()) guest!.dispatchEvent?.(new Event("focusin", { bubbles: true })); };
+        listen("focus", markPaneFocused);
+        listen("mousedown", markPaneFocused);
         listen("destroyed", fail);
         guest.setAttribute("partition", "persist:paseo-browser");
         Object.assign(guest.style, { width: "100%", height: "100%", display: "flex", flex: "1" });
