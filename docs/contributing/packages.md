@@ -20,13 +20,17 @@ Use `x64` instead of `arm64` for an Intel build. The builder uses the local Mac'
 
 The builder won't overwrite an existing destination or archive. In the candidate directory, it writes the app, an archive for the build architecture, a SHA-256 checksum file, and a bootstrap installer pinned to that version. After the destination, its optional second argument sets the version; its optional third argument names a directory containing public `update-root.json` and `update-trust.json` files. Never put private publisher material in a candidate.
 
-The app includes Bun, the CLI, daemon and host bridges, web assets, the welcome guide, the optional review skill, and license notices. Users don't need to build anything during installation.
+The app includes Bun, the CLI, daemon and host bridges, web assets, the welcome guide, both optional agent skills, the compiled Paseo plugin and its theme/attribution assets, and license notices. Users don't need to build anything during installation.
 
 ## What the checks establish
 
-`check-release.ts` runs with an isolated profile and minimal PATH. It checks setup, skill installation, Folio, reader assets, private review, and backup/restore, then stops its test daemon and leaves its evidence directory available for inspection.
+`check-release.ts` runs with an isolated profile and minimal PATH. It checks both skills, the compiled plugin payload/themes/notices, absence of personal workspace-migration code, setup, skill installation, Folio, reader assets, private review, and backup/restore, then stops its test daemon and leaves its evidence directory available for inspection.
 
 `check-startup.ts` runs the packaged login entry with the environment the generated job gives launchd, in disposable directories. It verifies that the job follows `current`, that a second start reuses the running daemon, that SIGTERM stops it cleanly, that a crash does not block the next start, and that disable removes the job and hook. It mocks launchctl and never registers a real login job.
+
+`check-paseo-package.ts <candidate-directory> <paseo-cli>` exercises the compiled plugin with Paseo 0.11.2 in a disposable home and daemon. It verifies directory registration, disabled-state preservation, runtime compilation/loading, following the current-release pointer, explicit reload, and removal. It does not verify desktop UI interactions.
+
+`check-verified-update.ts <0.1.3-archive> <0.1.4-archive>` rehearses CLI, reader, and Folio updates from the published baseline using the supplied binaries. It replaces only their public trust files in disposable copies, signs those copies with ephemeral test keys, and verifies draft/review recovery and skill migration. The original archives and production publisher state are untouched.
 
 `check-install.ts` checks that installation rejects a wrong checksum, works repeatedly and with paths containing spaces, sets up Wave widgets, and uninstalls without removing private data or unrelated widgets. [.github/workflows/check.yml](../../.github/workflows/check.yml) runs these checks on macOS without publishing.
 

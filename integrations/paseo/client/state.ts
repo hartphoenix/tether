@@ -1,6 +1,5 @@
 import { useSyncExternalStore } from "react";
 import type { Connection, FolioEntry, HubStatus, Intent, Notice, PumpBatch } from "../shared/contracts";
-import type { Restore } from "./tab-restore";
 
 export type Delivery = Intent & { generation: string; source: string };
 export type Opener = (intent: Delivery) => void;
@@ -10,8 +9,6 @@ export type TetherState = {
   connection: Connection | null;
   folio: FolioEntry[] | null;
   notices: Readonly<Record<string, Notice>>;
-  /** Browser tabs offered after a workspace move, by target workspace. */
-  restores: Readonly<Record<string, Restore>>;
   buttons: boolean;
   /** Readers open as plugin panels instead of browser tabs. */
   readerPanels: boolean;
@@ -25,7 +22,6 @@ let state: TetherState = {
   connection: null,
   folio: null,
   notices: {},
-  restores: {},
   buttons: true,
   readerPanels: false,
   status: { connected: false, tether: null, error: null },

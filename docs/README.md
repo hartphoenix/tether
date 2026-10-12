@@ -16,6 +16,10 @@ Try your first comment exchange with the [getting-started guide](getting-started
 
 Use the [CLI reference](reference/cli.md) to review comments and work with files. For pagination, diagnostics, limits, and write guarantees, see [protocol details](reference/protocol.md). Run `tether <command> --help` for exact arguments.
 
+## Release notes
+
+- [Tether 0.1.4](releases/0.1.4.md)
+
 ## Contributing
 
 Start with [CONTRIBUTING.md](../CONTRIBUTING.md) to run Tether from source and check your changes. The [architecture and code map](contributing/architecture.md) helps you find your way through the code; [package verification](contributing/packages.md) covers builds and installation checks. Agents working on a checkout should read [AGENTS.md](../AGENTS.md).

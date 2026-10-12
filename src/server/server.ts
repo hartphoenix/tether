@@ -10,7 +10,7 @@ import { preferencesFrom, storedPreferencesFrom, updatePreferences } from "../sh
 import { runtimeRoot } from "../runtime-paths";
 import { seedWelcome } from "../onboarding";
 import { UpdateService } from "./updates";
-import { listAgentSkillReviews, readAgentSkillReview, decideAgentSkillReview } from "../cli/agent-skills";
+import { listAgentSkillReviews, readAgentSkillReview, decideAgentSkillReview, decideTetherballOffer } from "../cli/agent-skills";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
 import { PrivateStore, type MutationReceipt } from "../storage/private-store";
@@ -547,7 +547,22 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     throw invalidRequest("Unknown Folio action.");
   }
 
-  async function updateRequest(request: Request, suffix: string): Promise<Response | undefined> {
+  async function updateRequest(request: Request, suffix: string, target?: HostTarget): Promise<Response | undefined> {
+      if (request.method === "POST" && ["/api/updates/tetherball/decide", "/api/updates/tetherball/open"].includes(suffix)) {
+        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
+        try {
+          if (suffix.endsWith("/decide")) {
+            await decideTetherballOffer(config, process.env.TETHER_INSTALL_ROOT, await requestJson(request));
+          } else {
+            // A fixed bundled document, never a caller-supplied filesystem path.
+            const grant = await service.open(resolve(runtimeRoot(), "integrations/agents/tetherball/SKILL.md"));
+            const launch = mintTicket(grant, target);
+            try { await hostAdapter.openView({ url: launch.url, path: grant.realPath, kind: "document", focus: true, target }); }
+            catch (cause) { discardTicket(launch.ticket); throw cause; }
+          }
+          return json({ ok: true });
+        } catch (cause) { return codedError(cause, "tetherball_offer_failed", 409); }
+      }
       if (request.method === "GET" && suffix === "/api/updates/skills") return json(await listAgentSkillReviews(config), { headers: { "cache-control": "no-store" } });
       if (request.method === "POST" && ["/api/updates/skills/read", "/api/updates/skills/decide"].includes(suffix)) {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
@@ -913,7 +928,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         } catch (cause) { return controlError(cause); }
       }
       if (request.method === "GET" && suffix === "/api/files") return json(await recents.files());
-      const updateResponse = await updateRequest(request, suffix);
+      const updateResponse = await updateRequest(request, suffix, session.target);
       if (updateResponse) return updateResponse;
       if (request.method === "GET" && suffix === "/api/snapshot") return json({ ...await recents.folioSnapshot({ view: "all" }), instanceId });
       if (request.method === "GET" && suffix === "/api/events") return recentsEventStream(request, themeClient(request, session.target));
@@ -1190,7 +1205,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           headers: { "content-type": suffix.endsWith(".webp") ? "image/webp" : "image/png", "cache-control": "public, max-age=3600", "x-content-type-options": "nosniff" },
         });
       }
-      const updateResponse = await updateRequest(request, suffix);
+      const updateResponse = await updateRequest(request, suffix, session.target);
       if (updateResponse) return updateResponse;
       if (suffix.startsWith("/api/")) return sessionApi(request, session, pathname);
       if (options.web) {

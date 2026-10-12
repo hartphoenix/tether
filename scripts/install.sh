@@ -84,5 +84,8 @@ if [ -f "$destination/lib/update-agent-skills.js" ]; then
 fi
 echo "Installed Tether: $destination"
 echo "Launcher: $install_root/current/Open Tether.command"
+if [ -f "$install_root/paseo-installation.json" ]; then
+  echo 'Paseo plugin updated on disk. Reload Tether in Paseo Settings > Plugins when ready; disabled plugins remain disabled.'
+fi
 case ":$PATH:" in *":$bin_directory:"*) ;; *) echo "To use tether in this shell: export PATH=\"$bin_directory:\$PATH\"" ;; esac
 if [ "$open_setup" = 1 ]; then "$install_root/current/tether" setup; fi

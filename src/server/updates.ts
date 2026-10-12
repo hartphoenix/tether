@@ -1,4 +1,4 @@
-import { pendingAgentSkillReviews } from "../cli/agent-skills";
+import { pendingAgentSkillReviews, tetherballOffer, type TetherballOffer } from "../cli/agent-skills";
 import { readFile, writeFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import type { TetherConfig } from "./config";
@@ -10,7 +10,7 @@ const interval = 6 * 60 * 60 * 1000;
 const prolonged = 48 * 60 * 60 * 1000;
 export type AvailableUpdate = { version: string; tag: string; notes: string };
 type UpdateState = { dismissed?: string | null; failed?: boolean; lastAttempt?: number; lastSuccess?: number; failureSince?: number | null };
-export type UpdateStatus = { agentSkillReviewNeeded: boolean; managed: boolean; available: AvailableUpdate | null; installing: boolean; failed: boolean; lastAttempt?: number; lastSuccess?: number; checkFailed: boolean; prolongedFailure: boolean;
+export type UpdateStatus = { tetherballOffer?: TetherballOffer | null; agentSkillReviewNeeded: boolean; managed: boolean; available: AvailableUpdate | null; installing: boolean; failed: boolean; lastAttempt?: number; lastSuccess?: number; checkFailed: boolean; prolongedFailure: boolean;
   /** Why this installation cannot check at all; not a failure that retrying fixes. */
   unavailableReason: string | null; checkError: string | null; version: string | null };
 const writes = new Map<string, Promise<void>>();
@@ -79,7 +79,7 @@ export class UpdateService {
   async status(force = false): Promise<UpdateStatus> {
     await this.check(force);
     const saved = await state(this.options.config);
-    return { agentSkillReviewNeeded: (await pendingAgentSkillReviews(this.options.config)).length > 0, managed: Boolean(this.options.root), available: saved.dismissed === this.available?.tag ? null : this.available, installing: this.installing, failed: saved.failed === true,
+    return { tetherballOffer: await tetherballOffer(this.options.config, this.options.root), agentSkillReviewNeeded: (await pendingAgentSkillReviews(this.options.config)).length > 0, managed: Boolean(this.options.root), available: saved.dismissed === this.available?.tag ? null : this.available, installing: this.installing, failed: saved.failed === true,
       lastAttempt: saved.lastAttempt, lastSuccess: saved.lastSuccess, checkFailed: saved.failureSince != null,
       prolongedFailure: saved.failureSince != null && (this.options.now ?? Date.now)() - saved.failureSince >= prolonged,
       unavailableReason: this.unavailableReason, checkError: saved.failureSince != null ? this.checkError ?? "Tether couldn't check for updates." : null, version: await this.version() };

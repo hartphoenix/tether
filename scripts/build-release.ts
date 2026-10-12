@@ -1,5 +1,6 @@
 import { chmod, copyFile, cp, mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { buildPaseoPlugin } from "./build-paseo-plugin";
 import { buildBootstrap } from "./build-bootstrap";
 import { version as packageVersion } from "../package.json";
 const version = process.argv[3] ?? packageVersion;
@@ -30,11 +31,8 @@ await mkdir(join(destination, "docs"));
 await copyFile("docs/getting-started.md", join(destination, "docs/getting-started.md"));
 // Brand source files (docs/assets/brand) are for design work, not the runtime.
 await cp("docs/assets", join(destination, "docs/assets"), { recursive: true, filter: source => basename(source) !== "brand" });
-await cp("integrations", join(destination, "integrations"), {
-  recursive: true,
-  // Plugin development dependencies contain symlinks and do not belong in the runtime archive.
-  filter: source => basename(source) !== "node_modules",
-});
+await cp("integrations/agents", join(destination, "integrations/agents"), { recursive: true });
+await buildPaseoPlugin(join(destination, "integrations/paseo"), version);
 await copyFile("LICENSE", join(destination, "LICENSE"));
 await mkdir(join(destination, "licenses"));
 await copyFile("licenses/lucide-icons-LICENSE.txt", join(destination, "licenses/lucide-icons-LICENSE.txt"));

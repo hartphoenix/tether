@@ -963,3 +963,25 @@ test('appearance preview reaches ordinary readers without persistence and cancel
     expect((await fetch(recentsUrl(daemon, folio.location, 'api/preferences'), { method: 'POST', headers: { origin: daemon.origin }, body: '{}' })).status).toBe(401);
   }
 });
+
+test("reader and Folio open only the bundled Tetherball skill through authenticated same-origin requests", async () => {
+  const file = await fixture();
+  const opened: string[] = [];
+  const daemon = createDaemon({ config: file.config, opener: async url => { opened.push(url); } });
+  daemons.push(daemon); await daemon.ready;
+  const reader = await exchange(daemon, file.path), folio = await exchangeRecents(daemon, file.config);
+  for (const view of [reader, folio]) {
+    const url = new URL("api/updates/tetherball/open", `${daemon.origin}${view.location}`);
+    expect((await fetch(url, { method: "POST" })).status).toBe(401);
+    expect((await fetch(url, { method: "POST", headers: { cookie: view.cookie, origin: "http://other.invalid" } })).status).toBe(403);
+    const before = opened.length;
+    expect((await fetch(url, { method: "POST", headers: { cookie: view.cookie, origin: daemon.origin, "content-type": "application/json" }, body: JSON.stringify({ path: file.other }) })).status).toBe(200);
+    expect(opened.length).toBe(before + 1);
+    const launch = await fetch(opened.at(-1)!, { redirect: "manual" });
+    const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
+    const bootstrap = await fetch(new URL("api/bootstrap", `${daemon.origin}${launch.headers.get("location")}`), { headers: { cookie } });
+    expect(await bootstrap.text()).toContain("tetherball/SKILL.md");
+    const decide = new URL("api/updates/tetherball/decide", `${daemon.origin}${view.location}`);
+    expect((await fetch(decide, { method: "POST", headers: { cookie: view.cookie, origin: "http://other.invalid" } })).status).toBe(403);
+  }
+});

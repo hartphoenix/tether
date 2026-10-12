@@ -39,7 +39,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   "startup.status": { name: "startup.status", usage: "tether startup status", min: 0, max: 0 },
   "startup.enable": { name: "startup.enable", usage: "tether startup enable", min: 0, max: 0 },
   "startup.disable": { name: "startup.disable", usage: "tether startup disable", min: 0, max: 0 },
-  setup: { name: "setup", usage: "tether setup [--host auto|browser|wave|cmux|paseo] [--wave] [--agent-directory <skills-directory>] [--no-open]", min: 0, max: 0, flags: { "--host": { value: true }, "--wave": {}, "--agent-directory": { value: true }, "--no-open": {} } },
+  setup: { name: "setup", usage: "tether setup [--host auto|browser|wave|cmux|paseo] [--wave] [--paseo] [--skills tether-review|tetherball|tether-review,tetherball] [--agent-directory <skills-directory>] [--no-open]", min: 0, max: 0, flags: { "--host": { value: true }, "--wave": {}, "--paseo": {}, "--skills": { value: true }, "--agent-directory": { value: true }, "--no-open": {} } },
   "skills.list": { name: "skills.list", usage: "tether skills list", min: 0, max: 0 },
   "skills.read": { name: "skills.read", usage: "tether skills read <id>", min: 1, max: 1 },
   "skills.merge": { name: "skills.merge", usage: "tether skills merge <id> --expected-revision <source-revision> --body-file <file> --confirm", min: 1, max: 1, flags: { "--expected-revision": { value: true }, "--body-file": { value: true }, "--confirm": {} }, required: ["--expected-revision", "--body-file", "--confirm"] },
@@ -134,6 +134,7 @@ export function parseCommand(argv: string[]): ParsedCommand {
     }
     if (positionals.length < spec.min || positionals.length > spec.max) usage(spec.usage);
     for (const name of spec.required ?? []) if (!flags.has(name)) usage(`${name} is required. ${spec.usage}`);
+    if (flags.has("--skills") && !flags.has("--agent-directory")) usage("--skills requires --agent-directory.");
     if (flags.has("--check") && flags.has("--version")) usage("--check and --version cannot be used together.");
     if (flags.has("--focus") && flags.has("--no-focus")) usage("--focus and --no-focus cannot be used together.");
     if (flags.has("--candidate-id") && !flags.has("--expected-body-revision")) usage("--candidate-id requires --expected-body-revision.");

@@ -122,3 +122,11 @@ Inside Paseo, `tether open` picks the `paseo` host automatically when the plugin
 `tether paseo chat <json-file|->` is the plugin’s internal storage channel. A request contains `host`, `agent` and `operation`; `-` reads bounded JSON from stdin. It calls the authenticated Tether daemon, which alone owns the chat tables in its private SQLite database. The result is `{ drafts, submission }`.
 
 Operations are `read`, `save` (draft), `remove` (draft ID), `capture` (batch ID, prose, attachment metadata), `dispatch` (batch ID, native message ID, text, wire options), `accepted` (matching batch/message IDs), `cancelPrepared` (batch ID) and `deleteChat`. Captured drafts are immutable; dispatch precedes transport, and acceptance deletes only that batch. `cancelPrepared` rejects uncertain delivery. `deleteChat` is reserved for confirmed permanent chat deletion and fences subsequent stale writes. Validation and state conflicts return `chat_state`. Requests are scoped by daemon and agent, independently of document paths and review ledgers.
+
+## Installer setup
+
+`tether setup --no-open` reports host discovery, update-channel configuration, and optional integration guidance while preserving focus. A configured update channel is not a live connectivity check; use `tether update --check` for that.
+
+`--agent-directory /absolute/skills` keeps its existing review-skill behavior. Add `--skills tetherball` to accept both skills, or `--skills tether-review,tetherball` explicitly. Setup reports `agents` with each identity/path/result and retains the legacy `agent` field for the review skill. Neither skill is installed without the directory flag.
+
+`--paseo` accepts installation of the packaged plugin into the local Paseo daemon. It preserves unmanaged installations and the global plugin switch. `hosts` distinguishes installation, version, active environment, and known connection state; `null` means a connection was not probed. `warnings` reports optional integration steps that need attention even when core setup succeeds.
