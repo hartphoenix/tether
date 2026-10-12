@@ -194,6 +194,12 @@ function createElement<K extends keyof HTMLElementTagNameMap>(tag: K, className?
   return element;
 }
 
+/** Moves only misplaced children; a removed node loses its running transitions. */
+function reconcileChildren(parent: HTMLElement, children: readonly HTMLElement[]): void {
+  for (const child of [...parent.children]) if (!children.includes(child as HTMLElement)) child.remove();
+  children.forEach((child, index) => { if (parent.children[index] !== child) parent.insertBefore(child, parent.children[index] ?? null); });
+}
+
 function setBusy(button: HTMLButtonElement, busy: boolean): void {
   button.disabled = busy;
   button.toggleAttribute("aria-busy", busy);
@@ -409,6 +415,8 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   let threadPopover: HTMLElement | null = null;
   let railOpen = false;
   let showResolved = false;
+  let batchResolving = false;
+  const batchSelection = new Set<string>();
   const messageBodies = new WeakMap<HTMLElement, string>();
   const submittingMessages = new WeakMap<HTMLElement, string>();
   const cards = new Map<string, { card: HTMLElement; signature: string }>();
@@ -423,7 +431,13 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   scroller.append(content);
   rail.append(scroller);
   const stopEndRecovery = keepContentEndVisible(content, scroller);
-  let stopHeaderOverlay = () => {};
+  // Cards keep their parents across renders so CSS transitions can run.
+  const orphanGroup = createElement("section", "wm-orphan-group");
+  const orphanHeading = createElement("h3");
+  orphanHeading.textContent = "Orphaned threads";
+  const railHeader = createRailHeader();
+  rail.prepend(railHeader.header);
+  const stopHeaderOverlay = overlayScrollHeader(scroller, railHeader.header);
 
   const controller: AnnotationUiController & AnnotationUiControllerLike = {
     plugin: undefined as unknown as ReturnType<typeof createAnnotationPlugin>,
@@ -487,6 +501,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     },
     setRailOpen(open) {
       if (railOpen === open) return;
+      if (!open) setBatchResolving(false);
       rail.ownerDocument.dispatchEvent(new rail.ownerDocument.defaultView!.Event("wm-before-rail-layout"));
       railOpen = open;
       threadPopover?.remove();
@@ -862,6 +877,17 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     expandedTitle.textContent = "Conversation";
     labels.append(count);
     summary.append(identity, expandedTitle, labels, excerpt);
+    if (!thread.resolved) {
+      const select = createElement("input", "wm-thread-select");
+      select.type = "checkbox";
+      select.checked = batchSelection.has(thread.id);
+      select.setAttribute("aria-label", `Select thread started by ${thread.actor}`);
+      select.addEventListener("change", () => {
+        if (select.checked) batchSelection.add(thread.id); else batchSelection.delete(thread.id);
+        renderRail();
+      });
+      card.append(select);
+    }
     card.append(summary);
 
     const details = renderThreadDetails(thread, orphaned);
@@ -899,6 +925,20 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     }
     cards.set(thread.id, { card, signature });
     return card;
+  }
+
+  function setBatchResolving(on: boolean): void {
+    if (batchResolving === on) return;
+    batchResolving = on;
+    batchSelection.clear();
+    rail.classList.toggle("is-batch", on);
+    renderRail();
+  }
+
+  async function resolveSelectedThreads(): Promise<void> {
+    const selected = state.threads.filter(thread => batchSelection.has(thread.id));
+    setBatchResolving(false);
+    for (const thread of selected) await onResolve(thread);
   }
 
   function updateExpansion(alignId?: string): void {
@@ -951,38 +991,34 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     drawerAnimation.onfinish = () => { rail.hidden = !railOpen; drawerAnimation = undefined; };
   }
 
-  function renderRail(): void {
-    const nextContent: HTMLElement[] = [];
-    const allThreads = state.threads.filter((thread) => !thread.deleted);
-    const threads = visibleThreads().sort(threadSort);
-    const view = currentView();
-    const resolved = new Map<string, boolean>();
-    for (const thread of threads) {
-      // A rail can render before Milkdown has mounted. Only classify by
-      // resolver when a view exists; the decoration plugin will resolve again
-      // once the host attaches it.
-      resolved.set(thread.id, Boolean(thread.orphaned || (view && !resolveAnchor(view.state.doc, thread.anchor))));
-    }
-    const validThreads = threads.filter((thread) => !resolved.get(thread.id));
-    const orphanedThreads = threads.filter((thread) => resolved.get(thread.id));
+  function createRailHeader() {
     const header = createElement("header", "wm-annotation-rail-header");
+    const heading = createElement("div", "wm-rail-heading");
+    const selectAll = createElement("input", "wm-thread-select wm-select-all");
+    selectAll.type = "checkbox";
+    selectAll.setAttribute("aria-label", "Select all threads");
+    selectAll.addEventListener("change", () => {
+      if (selectAll.checked) for (const id of selectAll.dataset.ids?.split(" ").filter(Boolean) ?? []) batchSelection.add(id);
+      else batchSelection.clear();
+      renderRail();
+    });
     const title = createElement("h2");
     title.textContent = "Threads";
-    const badge = createElement("span", "wm-pending-badge");
-    const pending = attentionCount();
-    badge.textContent = `${pending} ${pending === 1 ? "needs" : "need"} attention`;
-    badge.hidden = pending === 0;
-    badge.setAttribute("aria-label", `${pending} open ${pending === 1 ? "thread needs" : "threads need"} your attention`);
+    heading.append(selectAll, title);
+    const badge = createElement("button", "wm-pending-badge");
+    badge.type = "button";
+    badge.addEventListener("click", () => {
+      if (!batchResolving) { setBatchResolving(true); return; }
+      resolveSelectedThreads().catch((reason: unknown) => {
+        onNotice(reason instanceof Error ? reason.message : "Threads could not be resolved.");
+      });
+    });
     const filter = createElement("button", "wm-rail-button wm-unresolved-filter");
     filter.type = "button";
     filter.title = "Show resolved";
     filter.setAttribute("aria-label", "Show resolved");
-    filter.setAttribute("aria-pressed", String(showResolved));
     filter.innerHTML = iconSvg("square-check");
-    filter.addEventListener("click", () => {
-      showResolved = !showResolved; renderRail(); syncDecorations();
-      rail.querySelector<HTMLButtonElement>(".wm-unresolved-filter")?.focus();
-    });
+    filter.addEventListener("click", () => { showResolved = !showResolved; renderRail(); syncDecorations(); });
     const controls = createElement("div", "wm-annotation-rail-controls");
     if (options.sizingControl) controls.append(options.sizingControl);
     if (options.fileControl) controls.append(options.fileControl);
@@ -1013,11 +1049,50 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       controls.append(copyPath);
     }
     controls.append(hide);
-    header.append(title, controls, badge);
-    rail.querySelector(".wm-annotation-rail-header")?.remove();
-    rail.prepend(header);
-    stopHeaderOverlay();
-    stopHeaderOverlay = overlayScrollHeader(scroller, header);
+    header.append(heading, controls, badge);
+    return { header, selectAll, badge, filter };
+  }
+
+  /** Updates the persistent header in place so its transitions can run. */
+  function renderRailHeader(selectableIds: readonly string[]): void {
+    const { selectAll, badge, filter } = railHeader;
+    const selected = selectableIds.filter(id => batchSelection.has(id)).length;
+    selectAll.dataset.ids = selectableIds.join(" ");
+    selectAll.checked = selected > 0 && selected === selectableIds.length;
+    selectAll.indeterminate = selected > 0 && selected < selectableIds.length;
+    selectAll.disabled = !selectableIds.length;
+    for (const select of content.querySelectorAll<HTMLInputElement>(".wm-thread-card > .wm-thread-select")) {
+      select.checked = batchSelection.has(select.closest<HTMLElement>(".wm-thread-card")!.dataset.threadId!);
+    }
+    const pending = attentionCount();
+    if (batchResolving) {
+      badge.textContent = `Resolve ${batchSelection.size} ${batchSelection.size === 1 ? "thread" : "threads"}`;
+      badge.removeAttribute("title");
+      badge.setAttribute("aria-label", badge.textContent);
+    } else {
+      badge.textContent = `${pending} ${pending === 1 ? "needs" : "need"} attention`;
+      badge.title = "Select threads to resolve";
+      badge.setAttribute("aria-label", `${pending} open ${pending === 1 ? "thread needs" : "threads need"} your attention`);
+    }
+    badge.hidden = !batchResolving && pending === 0;
+    filter.setAttribute("aria-pressed", String(showResolved));
+  }
+
+  function renderRail(): void {
+    const nextContent: HTMLElement[] = [];
+    const allThreads = state.threads.filter((thread) => !thread.deleted);
+    const threads = visibleThreads().sort(threadSort);
+    const view = currentView();
+    const resolved = new Map<string, boolean>();
+    for (const thread of threads) {
+      // A rail can render before Milkdown has mounted. Only classify by
+      // resolver when a view exists; the decoration plugin will resolve again
+      // once the host attaches it.
+      resolved.set(thread.id, Boolean(thread.orphaned || (view && !resolveAnchor(view.state.doc, thread.anchor))));
+    }
+    const validThreads = threads.filter((thread) => !resolved.get(thread.id));
+    const orphanedThreads = threads.filter((thread) => resolved.get(thread.id));
+    for (const id of batchSelection) if (!threads.some(thread => thread.id === id && !thread.resolved)) batchSelection.delete(id);
     if (threads.length === 0) {
       const empty = createElement("p", "wm-empty-comments");
       empty.textContent = allThreads.length ? "No open threads." : "No threads.";
@@ -1025,15 +1100,11 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     }
     for (const thread of validThreads) nextContent.push(renderThread(thread, false));
     if (orphanedThreads.length > 0) {
-      const group = createElement("section", "wm-orphan-group");
-      const heading = createElement("h3");
-      heading.textContent = "Orphaned threads";
-      group.append(heading);
-      for (const thread of orphanedThreads) group.append(renderThread(thread, true));
-      nextContent.push(group);
+      reconcileChildren(orphanGroup, [orphanHeading, ...orphanedThreads.map(thread => renderThread(thread, true))]);
+      nextContent.push(orphanGroup);
     }
-    for (const child of [...content.children]) if (!nextContent.includes(child as HTMLElement)) child.remove();
-    nextContent.forEach((child, index) => { if (content.children[index] !== child) content.insertBefore(child, content.children[index] ?? null); });
+    reconcileChildren(content, nextContent);
+    renderRailHeader(threads.filter(thread => !thread.resolved).map(thread => thread.id));
     for (const id of cards.keys()) if (!threads.some(thread => thread.id === id)) cards.delete(id);
     renderRailVisibility();
   }

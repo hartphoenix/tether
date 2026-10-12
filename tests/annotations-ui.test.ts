@@ -247,6 +247,46 @@ test("an open drawer expands threads inline while a closed drawer uses a canvas-
   ui.destroy();
 });
 
+test("the attention pill toggles batch resolve for checked threads", async () => {
+  installDom();
+  const root = document.createElement("div");
+  document.body.append(root);
+  const resolved: string[] = [];
+  const ui = createAnnotationUi({ root, localActor: "hart", onResolve: (value) => { resolved.push(value.id); } });
+  const agentReply = [{ id: "r-1", actor: "assistant", createdAt: "2026-08-28T12:05:00.000Z", body: "Done." }];
+  ui.setState({ threads: [thread({ id: "c-1", replies: agentReply }), thread({ id: "c-2", replies: agentReply }), thread({ id: "c-3", resolved: true })] });
+  ui.setRailOpen(true);
+  const rail = root.querySelector<HTMLElement>(".wm-annotation-rail")!;
+  const pill = () => root.querySelector<HTMLButtonElement>(".wm-pending-badge")!;
+  expect(pill().textContent).toBe("2 need attention");
+  pill().click();
+  expect(rail.classList.contains("is-batch")).toBe(true);
+  expect(pill().textContent).toBe("Resolve 0 threads");
+  root.querySelector<HTMLInputElement>('[data-thread-id="c-1"] .wm-thread-select')!.click();
+  expect(pill().textContent).toBe("Resolve 1 thread");
+  const selectAll = root.querySelector<HTMLInputElement>(".wm-select-all")!;
+  expect(selectAll.indeterminate).toBe(true);
+  selectAll.click();
+  expect(pill().textContent).toBe("Resolve 2 threads");
+  expect(root.querySelector<HTMLInputElement>('[data-thread-id="c-2"] .wm-thread-select')!.checked).toBe(true);
+  selectAll.click();
+  expect(pill().textContent).toBe("Resolve 0 threads");
+  root.querySelector<HTMLInputElement>('[data-thread-id="c-1"] .wm-thread-select')!.click();
+  pill().click();
+  await Promise.resolve();
+  expect(resolved).toEqual(["c-1"]);
+  expect(rail.classList.contains("is-batch")).toBe(false);
+  expect(root.querySelector<HTMLInputElement>('[data-thread-id="c-1"] .wm-thread-select')!.checked).toBe(false);
+
+  pill().click();
+  root.querySelector<HTMLInputElement>('[data-thread-id="c-2"] .wm-thread-select')!.click();
+  ui.setRailOpen(false);
+  expect(rail.classList.contains("is-batch")).toBe(false);
+  expect(pill().textContent).toBe("2 need attention");
+  expect(resolved).toEqual(["c-1"]);
+  ui.destroy();
+});
+
 test("annotation refresh does not reopen a thread after hiding the drawer", () => {
   installDom();
   const root = document.createElement('div');
