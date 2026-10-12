@@ -125,22 +125,20 @@ function commandName(argv: string[]): string {
   return argv[0] ?? "unknown";
 }
 
-const reportingGuidance = "For user-facing summaries, report what completed, what did not, and any decision needed in plain language. Omit diagnostic codes, host implementation names, and internal paths unless the user asks for technical diagnosis. Keep these details for your own recovery decisions. A warning does not undo a completed operation.";
-
 export async function runCli(argv = process.argv.slice(2), dependencies: CliDependencies = {}): Promise<{ response: ProtocolResponse; exitCode: number }> {
   let command = commandName(argv);
   const completed: Array<{ step: string; path?: string }> = [];
   try {
     if (argv.length === 1 && argv[0] === "--help") {
-      return { response: success("help", { usage: usageText, reporting: reportingGuidance, commands: Object.values(commandSpecs).map(({ name, usage }) => ({ name, usage })) }), exitCode: 0 };
+      return { response: success("help", { usage: usageText, commands: [...new Set(Object.keys(commandSpecs).map(name => name.split(".")[0]))] }), exitCode: 0 };
     }
     if (argv.length === 2 && argv[1] === "--help") {
       const commands = Object.values(commandSpecs).filter(spec => spec.name.startsWith(`${argv[0]}.`)).map(({ name, usage }) => ({ name, usage }));
-      if (commands.length) return { response: success("help", { command: argv[0], usage: commandSpecs[argv[0]!]?.usage ?? `mdreview ${argv[0]} <command> [arguments] [flags]`, commands, reporting: reportingGuidance }), exitCode: 0 };
+      if (commands.length) return { response: success("help", { command: argv[0], usage: commandSpecs[argv[0]!]?.usage ?? `mdreview ${argv[0]} <command> [arguments] [flags]`, commands }), exitCode: 0 };
     }
     const parsed = parseCommand(argv);
     command = parsed.spec.name;
-    if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage, ...(command === "setup" ? { agentSetup: agentSetupGuidance } : {}), reporting: reportingGuidance }), exitCode: 0 };
+    if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage, ...(command === "setup" ? { agentSetup: agentSetupGuidance } : {}) }), exitCode: 0 };
     const config = dependencies.config ?? resolveConfig();
     if (command === "startup.status") return { response: success(command, await startupStatus(config)), exitCode: 0 };
     if (command === "startup.enable") return { response: success(command, await enableStartup(config)), exitCode: 0 };

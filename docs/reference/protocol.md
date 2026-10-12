@@ -26,6 +26,30 @@ If a recorded daemon can't be reached, Tether reports a reachability error. It d
 
 ## Pagination and bounded reads
 
+### Review results
+
+Ordinary review commands return the following bounded data inside the protocol-v1 envelope. The CLI and daemon ship together; update both when adopting this contract. Host/Folio results and browser snapshots keep their existing shapes.
+
+| Command | Data |
+| --- | --- |
+| `pending` | `bodyRevision`, `acknowledgedBodyRevision`, `reviewState`, indexed `events`, `cursor`, `throughSequence`, `continuation` |
+| `thread` | `bodyRevision`, `thread: {id, status, sequence}`, complete `messages`, `continuation` |
+| `threads` | `bodyRevision`, summaries in `threads`, `continuation` |
+| Annotation mutations | `mutation: {operationId, appliedEventId, appliedSequence, replayed}` |
+| `operation` | `operationId`, `outcome`, canonical `receipt` or null |
+| `document save` | `path`, resulting `bodyRevision` |
+| `help` | Command names/groups at top level, group syntax, or focused syntax; no repeated reporting guidance |
+
+Warnings and additional outcome information are preserved. Other commands pass through unchanged, including raw `event`, document reads/context/diffs, host operations, launch results, diagnostics, and partial import outcomes. Stored receipts and browser snapshots remain unchanged; agent control responses use the canonical fields above.
+
+An indexed event has `id`, `seq`, `type`, `actor`, `threadId`, and `targetId` for edits/deletions. A root comment's `threadId` is its own ID. Bodies, anchors, and timestamps remain available through thread/context/event reads. Index construction occurs before byte budgeting, so long comment bodies do not inflate the index. Unusually long metadata can still fragment losslessly under the rules below. Do not treat seeing an index entry as reviewing its content.
+
+Pending continuations bind actor/consumer and document state. Old raw-event continuation tokens cannot be reused for index reads; restart the read if a continuation is rejected.
+
+`acknowledgedBodyRevision` is null before the first acknowledgement. `reviewState` is `never_reviewed`, `current`, or `changed`, independently of whether events are pending. Review relevant body changes before acknowledging their revision. Thread reads can observe events newer than the pending snapshot; acknowledge only the pending cursor actually handled.
+
+### Pages and fragments
+
 `pending`, `thread`, and `threads` default to 50 items and 16 KiB of serialized result data. Use `--limit` for 1–200 items and `--max-bytes` for 2–64 KiB. The small CLI envelope adds to that size.
 
 The `threads` command returns summaries; `thread` returns current messages. To read another page, pass the returned `--continuation` with the same document and actor/consumer or thread/filter settings. The `--before-sequence` bound includes only sequences below the value you specify. Continuations keep the annotation snapshot from the original read and reject a read if the Markdown has changed.

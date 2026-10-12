@@ -1,47 +1,62 @@
 ---
 name: tether-review
-description: Use Tether to prepare documents for responses with multiple independently reviewable items, edit local Markdown, handle comments or review notes, and register and open documents for review. Read this skill when first using Tether in a session; reuse these instructions (without rereading) for subsequent actions. Reread *only* if they are no longer available in context, including after compaction.
+description: Use Tether to create or revise Markdown documents, respond to document comments, and register/edit files for review. Use whenever Tether is requested, but not when a brief chat answer suffices.
 ---
 
-Use the installed `tether` CLI with actor `assistant`, in the same user account and profile as the reader. A source checkout also provides `mdreview`. Commands return one JSON envelope; inspect `ok` and the exit code. Use focused `--help` for exact flags.
+Use `tether` (`./mdreview` in a source checkout), actor `assistant`, and the reader's OS account and `TETHER_PROFILE`. Preserve the configured host. Inspect `ok`, exit status, and warnings; partial success can accompany an error. Use focused help, such as `tether reply --help`, for unfamiliar flags.
 
-Report partial success accurately; distinguish completed actions from warnings and failures.
+## Documents and attention
 
-## Choosing chat or a document
+Use Tether for work the user may discuss, decide, or track in separate parts. Reuse the relevant document and its comment threads; use a linked companion for a separate purpose. Keep proposals distinct from accepted decisions. After substantive revisions, replace the short “Current review” section near the top with changed sections and remaining decisions. Preserve unresolved content and active anchors.
 
-Prefer Tether when a response contains multiple substantive items the user may need to discuss, decide, or track independently. Use chat for brief answers, status, and isolated questions. Judge by the review work required, not a rigid word count or bullet count; a response approaching a page should prompt this assessment. Honor the user's requested response format.
+Register finished documents without opening a view:
 
-Reuse the relevant document in context when the response serves its existing purpose. Continue existing comment threads for passage-specific discussion. Incorporate authorized changes in the appropriate sections; keep proposals visibly distinct from accepted decisions. Create a linked companion document when the material has a separate purpose or would obscure the original document's use; link back to the original.
+```sh
+tether recents add /absolute/path/document.md
+```
 
-Make new work easy to find. For substantive body changes, maintain a short “Current review” section near the top identifying changed sections and remaining decisions. Replace stale summaries rather than accumulating updates. Preserve unresolved content and active comment anchors.
+Bare `recents` opens Folio. Use `folio list` to discover registered documents. Never steal focus or bypass agent-origin safeguards; open/refresh only when focus is preserved or the user requests a focus change. Report unsupported placement. Keep chat to a document link and review location.
 
-Never steal UI focus or interrupt the user’s work. Register documents and provide links; open or refresh views only when doing so preserves focus or the user explicitly requests a focus change. Never bypass agent-origin safeguards.
+## Review comments
 
-Use the reader’s configured profile and host. Keep chat to a brief handoff with the document link and exact review location; don't duplicate the document.
+Replace uppercase placeholders with returned values:
 
-## Reviewing and editing
+```sh
+tether pending FILE --actor assistant
+tether thread FILE THREAD_ID
+```
 
-For comment review, start with `tether pending <file> --actor assistant`, then fetch each relevant thread with `tether thread <file> <thread-id>`. Follow all continuation pages before acknowledging; after every event is handled or has a clear next owner, acknowledge the last fully reviewed page’s cursor. Do not fetch a fresh pending snapshot merely to obtain a newer cursor. Continuation tokens are not acknowledgement cursors.
+Pending is an event index, not reviewed content. Follow every `continuation` using the same command, actor/consumer and `--continuation TOKEN`. Read each affected thread once when current text is needed, following its pages too. Handle every indexed event or give it a clear next owner. Resolution/deletion metadata can suffice when no text-dependent action remains. A thread may contain newer events than the pending snapshot.
 
-Prefer `document context`, `outline`, or `diff` over a full read; after context loss, rediscover the document and fetch current review state.
+For historical text, `event FILE EVENT_ID` returns that immutable event. An edit includes its new text; a deletion only identifies its target. `event FILE TARGET_ID` retrieves the original message, not subsequent edits; inspect relevant edit events when those versions matter.
 
-Reply using `reply <file> <thread-id> --actor assistant --body-file <text-file> --operation-id <unique-id>`. Use returned thread sequences with `--expected-thread-sequence` for stale-write protection. Retry an uncertain mutation with the same operation ID and identical inputs, or inspect `operation <file> --operation-id <id>`. A missing receipt does not prove nonapplication.
+Check `reviewState` even when `events` is empty. For `changed`, inspect `document diff FILE --from-revision ACKNOWLEDGED_BODY_REVISION`; if unavailable or insufficient, read relevant body/context. For `never_reviewed`, inspect relevant document content. Leave the cursor unacknowledged if necessary review remains.
 
-Keep passage-specific replies in their threads. Put substantive global synthesis and cross-thread decisions in the relevant document; use chat for brief handoffs, blockers, and verification. Resolve only when the human no longer needs to read or act on the thread. Answered questions stay open for the human to read. Orphaned threads remain replyable. Acknowledgement and resolution are independent.
+```sh
+tether reply FILE THREAD_ID --actor assistant --body-file /tmp/reply.txt --operation-id UNIQUE_ID --expected-thread-sequence THREAD_SEQUENCE
+tether acknowledge FILE --actor assistant --cursor REVIEWED_CURSOR --operation-id ANOTHER_UNIQUE_ID
+```
 
-Body saves require `document save <file> --expected-body-revision <revision> --body-file <file>`. Review data lives in private SQLite; never edit it directly or add annotation footers to Markdown. Use `document move` when deliberately moving an active Tether document. After uncertain file operations, inspect current state before retrying.
+Acknowledge the last fully handled pending page's cursor after handling that page and preceding pages, including body review. Never fetch fresh pending merely for a newer cursor. Continuation tokens are not acknowledgement cursors. Reading alone does not acknowledge anything.
 
-Use `tether recents add <file>` to register a document without opening a view. A shortcut-update warning does not undo successful registration; inspect `data.warnings` separately. Bare `tether recents` opens the Recents view and is not a registration check.
+If a page contains `fragment`, join `fragment.text` in offset order across continuation pages and parse the reconstructed JSON; do not treat fragments as complete events/messages. For `event` fragments, use `--offset NEXT_OFFSET` until `nextOffset` is null.
 
-Use ordinary Markdown links with GitHub-style heading anchors: `[Section](#section)` or `[Section](other.md#section)`. Add links where they help the reader follow a reference, find supporting detail, or continue related work; routine mentions need no link. Prefer a specific section when useful, and verify the destination against the current document. These are editorial defaults, not restrictions on document structure.
+Keep passage-specific replies in threads and broader synthesis in the document. Acknowledgement records review; resolution closes human attention. Leave answers/results open when the human still needs to read, decide, or act. Resolve completed instructions only when no review remains. Orphaned threads remain replyable.
 
-`document outline` returns each heading’s `anchor`. Resolve document paths relative to the containing document. Tether wikilinks (`[[../path/file.md|Label]]`) also work; keep spaces literal. Local non-Markdown links use the host’s file handling (native open in cmux, file reveal where supported elsewhere).
+## Safe edits and recovery
 
-Keep formatting readable in Tether:
+Use `thread.sequence` for guarded writes. Retry uncertain annotation mutations with the same operation ID and identical inputs, or inspect `operation FILE --operation-id ID`. A missing receipt means `outcome_unknown`. A replayed receipt's `appliedSequence` is historical; refresh the thread before the next guarded write.
 
-- Math is not currently supported in Tether. Write every literal dollar sign as `\$` in document bodies and replies (`\$20`, not `$20`); an unescaped pair of dollar signs garbles the text between them.
-- Do not use Mermaid code blocks for diagrams; Milkdown renders them as plain text.
-- Do not use tables or code blocks in thread replies; use prose, lists, or inline code instead.
-- Use at most four columns in tables in document bodies to keep them readable.
+Prefer `document context FILE THREAD_ID`, `outline`, or `diff` for bounded reading. Before replacing the body, obtain current content and `bodyRevision` with `document read FILE`, then save:
 
-Opening starts the service and follows the configured host; honor focus requests and report unsupported placement rather than substituting another host.
+```sh
+tether document save FILE --expected-body-revision BODY_REVISION --body-file /tmp/revised.md
+```
+
+On conflict, reread and reconcile; never overwrite intervening edits. After uncertain file operations, inspect actual state before retrying. Review data is private SQLite: never edit it directly or add annotation footers. Use `document move SOURCE DESTINATION` when moving an active Tether document to keep its conversation.
+
+## Rendering
+
+Document links resolve relative to their file: `[Section](other.md#heading)` or `[[../path/file.md|Label]]`. Use `document outline` for heading anchors; keep spaces literal in wikilinks. Local non-Markdown links use the host's file handling. Documents support Mermaid and math; escape literal dollar signs (`\$20`). Replies support Markdown tables/code, but not rendered Mermaid/math or document-relative link navigation. Prefer narrow tables for readability.
+
+Read this skill once per session and reuse its instructions throughout. Reread only when they are no longer in context, including after compaction.
