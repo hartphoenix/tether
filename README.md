@@ -76,3 +76,5 @@ Run `tether doctor` for installation and service diagnostics. [Host setup](docs/
 Report problems in [GitHub Issues](https://github.com/hartphoenix/tether/issues), including your macOS and host/browser versions, what you tried, and what happened. See the [documentation map](docs/README.md) for guides and references, or [CONTRIBUTING.md](CONTRIBUTING.md) for source setup and checks.
 
 Tether is maintained by [Hart the Phoenix](https://github.com/hartphoenix) and released under the [MIT license](LICENSE).
+
+The Paseo chat annotation adapter adapts selection/Markdown recovery, composer editing and send-capture patterns from [Annotations by neunzig-zehn](https://github.com/neunzig-zehn/paseo-annotations), including inherited [Quote](https://github.com/keefeere/paseo-quote) work; see its [notices](integrations/paseo/chat/NOTICE.md).

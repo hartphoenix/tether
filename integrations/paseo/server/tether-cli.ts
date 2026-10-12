@@ -8,7 +8,7 @@ import { TetherError } from "./errors";
 export { TetherError } from "./errors";
 
 /** Runs one Tether command and returns its protocol-v1 `data`, or throws a coded error. */
-export type TetherRunner = (args: string[], env?: Record<string, string>) => Promise<unknown>;
+export type TetherRunner = (args: string[], env?: Record<string, string>, stdin?: string) => Promise<unknown>;
 
 // The plugin server inherits the Paseo daemon's environment, which may not
 // carry the login shell's PATH. Tether's launchers need `bun` for source checkouts.
@@ -54,6 +54,7 @@ export function childEnvironment(profile: string, overrides: Record<string, stri
 }
 
 const messages: Record<string, string> = {
+  chat_state: "Annotation state changed. Refresh annotations before retrying.",
   usage: "This Tether command is unsupported. Update Tether and reload the plugin.",
   host_not_connected: "Paseo is not connected to Tether. Reopen Folio and try again.",
   daemon_unreachable: "Tether could not be reached. Check the connection in plugin settings.",
@@ -78,7 +79,7 @@ export type RunnerOptions = {
 
 export function createTetherRunner(options: RunnerOptions): TetherRunner {
   const pool = options.pool ?? new ProcessPool();
-  return async (args, extra = {}) => {
+  return async (args, extra = {}, stdin) => {
     const controller = new AbortController();
     let failure = new TetherError("tether_cancelled", "Tether connection changed. The command may already have completed.");
     const cancel = () => controller.abort();
@@ -95,8 +96,10 @@ export function createTetherRunner(options: RunnerOptions): TetherRunner {
       if (signal.aborted) throw failure;
       const releaseChild = release;
       const result = new Promise<unknown>((resolve, reject) => {
-        const child = spawn(binary, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(binary, args, { env, stdio: ["pipe", "pipe", "pipe"] });
         release = undefined; // Retain capacity until the process exits AND its output is settled.
+        child.stdin.on("error", () => {});
+        child.stdin.end(stdin);
         let exited = false, settled = false;
         let killTimer: ReturnType<typeof setTimeout> | undefined;
         let stdoutSize = 0, stderrSize = 0;

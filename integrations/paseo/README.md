@@ -2,6 +2,10 @@
 
 A [Paseo](https://paseo.sh) plugin that puts Tether's Folio in Paseo's Explorer sidebar and opens Tether readers in Paseo browser tabs. See [host setup](../../docs/guide/hosts.md#paseo-experimental) for installation and use.
 
+## Current review
+
+Desktop chat annotations are integrated for Paseo 0.11.2; actual desktop acceptance is pending. See the [chat guide](../../docs/guide/paseo-chat.md) and [remaining live checks](prototype/README.md).
+
 ## How it works
 
 Paseo's **Settings → Appearance** includes **Tether Light**, **Tether Dark**, **Light Treason**, and **Dark Academia**, in the same order as Tether's theme menu. At the top of a Paseo reader’s theme picker, **Inherit Paseo theme** makes readers and Folio follow matching Paseo palettes. All seven bundled Paseo palettes and the four Tether contributions have matches; an unknown palette keeps the last theme. Choosing a named theme turns inheritance off. This preference belongs to the Paseo client and leaves other hosts unchanged. Detection runs while a header button, Folio panel or settings surface is mounted, using Paseo’s supplied theme colors; the current palette is synchronized before Folio loads. Tether retains its reading fonts.
@@ -45,3 +49,7 @@ paseo plugin logs tether
 ```
 
 Tests run from the repository root with `bun test tests/paseo-*.test.ts`. They cover the hub, the client handoff, and the hub against a real Tether daemon.
+
+Chat annotations use `chat/` for selection, cards, native delivery and read-only receipt recovery, with SQLite owned by Tether’s daemon through `tether paseo chat -`. Run `bun scripts/stage-paseo-chat.ts` from the repository root to stage the complete plugin without installing or reloading it. Verify with `bun scripts/check-paseo-chat.ts`; `bun scripts/check-paseo-chat-native.ts /path/to/pinned/paseo` exercises the reviewed release’s source functions. Disable the separate delivery prototype before activating this integration.
+
+Selection/Markdown recovery, composer editing and capture/replay adapt [Annotations by neunzig-zehn](https://github.com/neunzig-zehn/paseo-annotations), including inherited Quote work; [MIT notices](chat/NOTICE.md) identify the adopted portions.

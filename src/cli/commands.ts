@@ -55,6 +55,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   "daemon.status": { name: "daemon.status", usage: "mdreview daemon status", min: 0, max: 0 },
   "daemon.stop": { name: "daemon.stop", usage: "mdreview daemon stop", min: 0, max: 0 },
   "cmux.status": { name: "cmux.status", usage: "mdreview cmux status", min: 0, max: 0 },
+  "paseo.chat": { name: "paseo.chat", usage: "tether paseo chat <json-file|->", min: 1, max: 1 },
   "paseo.theme": { name: "paseo.theme", usage: "tether paseo theme <client-id> <theme-id|unknown>", min: 2, max: 2 },
   "paseo.status": { name: "paseo.status", usage: "tether paseo status", min: 0, max: 0 },
   "paseo.wait": { name: "paseo.wait", usage: "tether paseo wait [--after <cursor>] [--folio <version>] [--timeout <seconds>]", min: 0, max: 0, flags: { "--after": { value: true }, "--folio": { value: true }, "--timeout": { value: true } } },

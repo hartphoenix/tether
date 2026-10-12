@@ -1,3 +1,4 @@
+import { registerChat, runChat } from "./chat/server";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { Hub } from "./server/hub";
 import { paseoLookup } from "./server/paseo-lookup";
@@ -84,6 +85,17 @@ export default function contribute(server: PluginServerContext) {
   server.handle(pinRpc, input => operate(input, async ({ hub }) => { await hub.pin(input.path, input.pinned); return { pinned: input.pinned }; }));
   server.handle(themeRpc, input => operate(input, ({ hub }) => hub.theme(input.clientId, input.theme)));
   server.handle(folioViewRpc, input => operate(input, ({ hub }) => hub.folioView(input.workspaceId)));
+
+  registerChat(server, async input => {
+    await loaded;
+    const session = current;
+    if (!session) throw new Error("Tether connection settings are unavailable.");
+    const run = createTetherRunner({ binary: () => resolveTether(session.connection.tetherPath), profile: () => session.connection.profile, signal: session.controller.signal, pool });
+    if (input.generation !== session.connection.generation) throw new Error("Tether connection changed. Reload Paseo before editing annotations.");
+    const result = await runChat(run, input);
+    if (current !== session) throw new Error("Tether connection changed; refresh before retrying.");
+    return result;
+  });
 
   server.before("agent.session_open", ({ request }) => request.workspaceId
     ? { ...request, env: { ...request.env, TETHER_PASEO_WORKSPACE_ID: request.workspaceId } }

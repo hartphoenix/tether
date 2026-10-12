@@ -1,3 +1,6 @@
+import { createComposerCollections } from "./chat/pill";
+import { getState } from "./client/state";
+import { startChatAnnotations } from "./chat/client";
 import { clearThemeReports } from "./client/theme-sync";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { FolioPanel } from "./client/folio-panel";
@@ -19,10 +22,12 @@ export default function contribute(client: PluginClientContext) {
   const stopPump = startPump(client);
   const stopButtons = startHeaderButtons(client);
   const stopRestore = startTabRestore(client);
+  const stopChat = startChatAnnotations(client, () => getState().connection?.generation ?? null, createComposerCollections(client));
   return () => {
     for (const removeTheme of removeThemes) removeTheme();
     disposeFolioViews();
     clearThemeReports();
+    stopChat();
     stopRestore();
     stopButtons();
     stopPump();

@@ -112,3 +112,9 @@ The Tether plugin for Paseo uses these commands. Paseo can't be driven from outs
 - `tether paseo theme <client-id> <theme-id|unknown>`: report the mounted desktop client’s palette for optional theme inheritance. The client ID is a persistent UUID, not an authorization token; unknown palettes preserve the last inherited theme.
 
 Inside Paseo, `tether open` picks the `paseo` host automatically when the plugin is connected, or explicitly with `--host paseo`. Opens that the plugin makes for the user open a reader tab. Any other open, such as an agent's, only lights the workspace's Tether button and reports `notified: true`, so Tether never moves your focus. `tether recents add` does the same inside Paseo and reports `announced: true`. Links clicked in a Paseo reader open as new tabs directly from the reader.
+
+### Chat annotation storage
+
+`tether paseo chat <json-file|->` is the plugin’s internal storage channel. A request contains `host`, `agent` and `operation`; `-` reads bounded JSON from stdin. It calls the authenticated Tether daemon, which alone owns the chat tables in its private SQLite database. The result is `{ drafts, submission }`.
+
+Operations are `read`, `save` (draft), `remove` (draft ID), `capture` (batch ID, prose, attachment metadata), `dispatch` (batch ID, native message ID, text, wire options), `accepted` (matching batch/message IDs), `cancelPrepared` (batch ID) and `deleteChat`. Captured drafts are immutable; dispatch precedes transport, and acceptance deletes only that batch. `cancelPrepared` rejects uncertain delivery. `deleteChat` is reserved for confirmed permanent chat deletion and fences subsequent stale writes. Validation and state conflicts return `chat_state`. Requests are scoped by daemon and agent, independently of document paths and review ledgers.

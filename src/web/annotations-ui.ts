@@ -1,3 +1,4 @@
+import { commentWindowCss } from "../shared/comment-window";
 import { smoothScroll } from "./motion";
 import { placeOverlay } from './overlay';
 import { iconSvg } from "./icons";
@@ -595,12 +596,14 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   }
 
   function createCommentComposer(anchor?: AnnotationAnchor): HTMLElement {
-    const section = createElement("section", "wm-annotation-composer wm-comment-popover");
-    const heading = createElement("h2", "wm-annotation-composer-title");
-    heading.textContent = "New comment";
+    if (!document.getElementById("tether-comment-window-style")) {
+      const style = document.createElement("style"); style.id = "tether-comment-window-style"; style.textContent = commentWindowCss; document.head.append(style);
+    }
+    const section = createElement("section", "wm-annotation-composer wm-comment-popover tether-comment-window");
+    section.setAttribute("aria-label", "Comment");
     const textarea = createElement("textarea", "wm-annotation-textarea");
     textarea.rows = 3;
-    textarea.placeholder = "Comment on the selected passage…";
+    textarea.placeholder = "Comment...";
     textarea.setAttribute("aria-label", "Comment");
     const error = createElement("p", "wm-annotation-error");
     error.hidden = true;
@@ -611,9 +614,11 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     const submit = createElement("button", "wm-button wm-button-primary");
     submit.type = "submit";
     submit.textContent = "Comment";
+    actions.classList.add("tether-comment-actions");
+    submit.dataset.primary = "";
     actions.append(cancel, submit);
     const form = createElement("form", "wm-annotation-form");
-    form.append(heading, textarea, error, actions);
+    form.append(textarea, error, actions);
     section.append(form);
     const close = () => {
       // An older in-flight save must not clear a newer composer's highlight.

@@ -10,7 +10,8 @@
     "index.server.tsx",
     "client/",
     "server/",
-    "shared/"
+    "shared/",
+    "chat/"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit"

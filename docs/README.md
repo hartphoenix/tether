@@ -7,6 +7,7 @@ Try your first comment exchange with the [getting-started guide](getting-started
 - [Markdown rendering](guide/markdown-support.md): supported syntax and current rendering limitations.
 - [Folio and sharing](guide/folio.md): organize documents, preserve conversations, and share reviews.
 - [Host setup](guide/hosts.md): choose cmux, Wave, or a separate browser.
+- [Paseo chat annotations](guide/paseo-chat.md): comment on passages and deliver batches through the native composer.
 - [Agent setup](guide/agent-setup.md): install and maintain the optional review skill.
 - [Installation and updates](guide/installation.md): package locations, updates, and uninstall.
 - [Recovery and backups](guide/recovery.md): reconnect saved views and restore private data.
