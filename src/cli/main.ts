@@ -299,6 +299,10 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       }
       return { response: success(command, { expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" && !notified, ...(notified ? { notified: true } : {}) }), exitCode: 0 };
     }
+    if (command === "paseo.chat") {
+      const input = JSON.parse(await readBoundedInput(parsed.positionals[0]!, 32 * 1024 * 1024));
+      return { response: success(command, await controlRequest(config, "/control/chat", input)), exitCode: 0 };
+    }
     if (command === "paseo.theme") {
       return { response: success(command, await controlRequest(config, `/control/hosts/${PASEO_HOST}/theme`, { clientId: parsed.positionals[0], theme: parsed.positionals[1] === "unknown" ? null : parsed.positionals[1] })), exitCode: 0 };
     }

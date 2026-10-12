@@ -1,3 +1,5 @@
+import { ChatStateError } from "../../integrations/paseo/chat/model";
+import { ChatStore } from "../chat/store";
 import { HostThemes, isThemeClient } from "./host-themes";
 import { themedReaderHtml } from "./reader-theme";
 import { ImageAssets } from "../documents/image-assets";
@@ -247,6 +249,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   const pickMoveDirectory = options.pickMoveDirectory ?? (process.platform === 'darwin' ? chooseMoveDirectory : undefined);
   const pullQueue = new PullQueue({ now, ttlMs: ticketMs });
   const browserHost = createBrowserHost({ open: options.opener });
+  const chatStore = new ChatStore(privateStore.db);
   const paseoHost = new PaseoHostAdapter({ origin: "user", fallback: browserHost, enqueue: async (intent) => pullQueue.enqueue(PASEO_HOST, intent) });
   const hostAdapter = options.hostAdapter ?? new HostGateway(config, browserHost, paseoHost);
   const recents = new RecentsService(options.recents ?? new RecentsRegistry({ path: config.recentsPath, now, database: privateStore.db, deletePrivateData: async (path: string, onlyWithoutConversation?: boolean) => {
@@ -996,6 +999,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       const expected = await readControlToken(config);
       if (!expected || request.headers.get("authorization") !== `Bearer ${expected}`) return error("forbidden", "Control authorization is required.", 403);
       try {
+        if (pathname === "/control/chat" && request.method === "POST") {
+          try { return json(chatStore.operate(await requestJson(request))); }
+          catch (cause) { if (cause instanceof ChatStateError) return error("chat_state", cause.message, 409); throw cause; }
+        }
         if (pathname === "/control/activate" && request.method === "POST") { maintenanceEnabled = true; return json({ activated: true }); }
         if (pathname === "/control/recovery/views" && request.method === "POST") {
           const inventory = [
