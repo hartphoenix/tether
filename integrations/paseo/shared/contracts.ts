@@ -100,7 +100,7 @@ export const tetherSettings = defineSettings({
     tetherPath: z.string().trim().max(32768).default(""),
     profile: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/, "Use 1–64 letters, numbers, underscores or hyphens").default("preview"),
     buttons: z.boolean().default(true),
-    readerPanels: z.boolean().default(false),
+    readerPanels: z.boolean().default(true),
   }),
 });
 export type TetherSettings = z.infer<typeof tetherSettings.schema>;

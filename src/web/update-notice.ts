@@ -138,6 +138,75 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
     element.toggleAttribute("data-update-popover", Boolean(state.available || state.installing));
     if (!state.available && !state.installing) closePopup();
   };
+  let offerElement: HTMLElement | undefined;
+  let offerKey = "";
+  let offerBusy = false;
+  element.addEventListener("tether-notice-mounted", () => { if (offerElement) element.after(offerElement); });
+  const renderOffer = (state: any) => {
+    if (offerBusy) return;
+    const offer = state.installing ? null : state.tetherballOffer;
+    if (!offer) { offerElement?.remove(); offerElement = undefined; offerKey = ""; return; }
+    if (offerElement && offerKey === offer.revision) return;
+    offerElement?.remove();
+    offerKey = offer.revision;
+    const card = document.createElement("section"); offerElement = card;
+    card.dataset.tetherballOffer = "";
+    card.setAttribute("aria-label", "Optional Tetherball skill");
+    card.style.cssText = "margin:12px auto;padding:20px 24px;box-sizing:border-box;width:calc(100% - 32px);max-height:45vh;overflow:auto;flex-shrink:0;border:1px solid var(--wm-color-outline,var(--line,GrayText));border-radius:12px;background:var(--wm-color-surface,var(--panel,Canvas));color:var(--wm-page-color,var(--text,CanvasText));font:14px/1.6 system-ui;max-width:660px;text-align:left;white-space:normal";
+    const title = document.createElement("h2"); title.textContent = "Think together with Tetherball"; title.style.cssText = "font-size:20px;margin:0 0 8px";
+    const description = document.createElement("p");
+    description.textContent = "An agent skill for developing ideas together in a shared document that gets clearer, not longer, as you progress.";
+    const destination = document.createElement("select"); destination.setAttribute("aria-label", "Skills directory");
+    for (const item of offer.destinations) {
+      const option = document.createElement("option"); option.value = item.id; option.textContent = item.directory; destination.append(option);
+    }
+    const location = document.createElement("p");
+    location.textContent = offer.destinations.length ? "Install alongside tether-review:" : "Ask your agent to help choose where to install it.";
+    card.append(title, description, location);
+    if (offer.destinations.length > 1) card.append(destination);
+    else if (offer.destinations.length) {
+      const path = document.createElement("code"); path.textContent = `${offer.destinations[0].directory}/tetherball`; path.style.overflowWrap = "anywhere"; card.append(path);
+    }
+    if (offer.destinations.length) {
+      const preserved = document.createElement("p"); preserved.textContent = "Your existing review skill and customizations stay intact."; card.append(preserved);
+    }
+    const actions = document.createElement("div"); actions.style.cssText = "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:16px";
+    destination.style.cssText = "max-width:100%;font:inherit;color:inherit;background:transparent";
+    const status = document.createElement("p"); status.setAttribute("role", "status");
+    const install = document.createElement("button"); install.textContent = offer.destinations.length ? "Install Tetherball" : "Copy setup prompt";
+    const dismiss = document.createElement("button"); dismiss.textContent = "Not now";
+    const read = document.createElement("a"); read.textContent = "Read the SKILL.md"; read.href = "#tetherball-skill";
+    const request = async (action: string, body: unknown) => {
+      const response = await fetch(`${api}/updates/tetherball/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      if (!response.ok) { const result = await response.json(); throw new Error(result.error?.message ?? "Could not complete the request."); }
+    };
+    const decide = async (action: "install" | "dismiss") => {
+      offerBusy = true; install.disabled = dismiss.disabled = true; status.textContent = "";
+      try {
+        await request("decide", { action, revision: offer.revision, destination: destination.value });
+        // The next successful status read removes the completed offer in every view.
+        card.remove(); offerElement = undefined; offerKey = "";
+        if (action === "install") {
+          const done = document.createElement("p"); done.setAttribute("role", "status"); done.textContent = "Tetherball is installed. Ask your agent to use /tetherball to think through a question together.";
+          const close = document.createElement("button"); close.textContent = "Done"; close.onclick = () => done.remove(); done.append(" ", close); element.after(done);
+        }
+      } catch (cause) { status.textContent = (cause as Error).message; }
+      finally { offerBusy = false; install.disabled = dismiss.disabled = false; void check(); }
+    };
+    install.onclick = () => {
+      if (offer.destinations.length) { void decide("install"); return; }
+      const prompt = "Help me install the optional Tetherball skill bundled with Tether. Run tether setup --help, help me choose my agent skills directory, and preserve my existing skill customizations.";
+      if (!navigator.clipboard?.writeText) { status.textContent = prompt; return; }
+      void navigator.clipboard.writeText(prompt).then(() => { status.textContent = "Copied. Paste this into your agent chat."; }, () => { status.textContent = prompt; });
+    };
+    dismiss.onclick = () => void decide("dismiss");
+    read.onclick = event => { event.preventDefault(); void request("open", {}).catch(cause => { status.textContent = (cause as Error).message; }); };
+    for (const button of [install, dismiss]) button.style.cssText = "font:inherit;color:inherit;background:transparent;border:1px solid currentColor;border-radius:7px;padding:7px 12px;cursor:pointer";
+    install.style.background = "var(--wm-color-primary,var(--accent,#287e7b))";
+    install.style.color = "var(--wm-color-on-primary,#fff)";
+    read.style.color = "inherit";
+    actions.append(install, dismiss, read); card.append(actions, status); element.after(card);
+  };
   const render = (state: any, force: boolean) => {
     clearTimeout(hideTimer);
     if (!state) { element.hidden = true; element.replaceChildren(); return; }
@@ -209,6 +278,7 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
       if (!response.ok) throw new Error("Unavailable");
       const state = await response.json();
       last = state;
+      renderOffer(state);
       if (!state.agentSkillReviewNeeded) finishReview?.();
       if (menuCheck) menuCheck.hidden = !state.managed;
       // A queued manual check renders its own, fresher answer.

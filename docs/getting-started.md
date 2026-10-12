@@ -30,6 +30,7 @@ Your Markdown stays in its original file. Comments are kept separate as private 
 Tether comes with an organizer called **folio**. The folio is built to help you focus on active work, keep projects separate, and access docs and features with ease. Its main purpose is to **launch a document into the current workspace with a click**. To access the folio:
 
 * in **cmux**, use the hotkey `⌘-⌥-B` to hide/show folio. (The first time you use it, you may have to enable the **dock** in **settings > beta features > dock**, then navigate to **dock > Tether Folio**. If the folio tab gets closed or quits unexpectedly, open a cmux terminal and type `tether folio` to reopen)
+* in **Paseo**, accept the bundled integration with `tether setup --paseo --no-open`, then use the Tether workspace button for Folio. Its four themes are available in Appearance.
 * in **Wave Terminal**, the Tether installation adds a Tether Folio sidebar widget. Simply click it to open the folio in the focused workspace. Use `⌘-W` when focused to close it.
 
 &#x20;The folio includes these tools to make your work smoother:
@@ -58,6 +59,8 @@ To get even more out of Tether:
    ```
    Install Tether’s bundled tether-review skill for this agent. Run `tether setup --help`, find your skills directory, then use `tether setup --agent-directory <skills-directory> --no-open` under the same OS account and Tether profile as this guide. This installs the skill and registers it for package updates. If existing instructions differ, preserve them and help me review the differences before replacing them.
    ```
+   For sustained research, learning, or deliberation, optionally ask your agent to install **Tetherball** too. Use `--skills tetherball` with the same setup command; it includes the review skill and registers both for updates.
+
 2. **Resolve finished threads & Archive old docs**
 
    To keep your own attention focused:

@@ -31,7 +31,7 @@ try {
   const plain = JSON.parse(await cli("setup", "--no-open", "--host", "browser"));
   if (!plain.data.agentSetup?.includes("After consent")) throw new Error("Setup omitted the agent-led skill opt-in guidance.");
   if (await lstat(join(env.TETHER_CONFIG_DIR, "agent-skills.json")).catch(() => null)) throw new Error("Plain setup installed an agent skill.");
-  const optedIn = JSON.parse(await cli("setup", "--no-open", "--host", "browser", "--wave", "--agent-directory", join(scratch, "skills")));
+  const optedIn = JSON.parse(await cli("setup", "--no-open", "--host", "browser", "--wave", "--agent-directory", join(scratch, "skills"), "--skills", "tetherball"));
   if (!optedIn.data.agent?.installed || optedIn.data.agentSetup) throw new Error("Opt-in setup did not install the skill or repeated its consent guidance.");
   await cli("daemon", "stop");
   await waitForDaemonStop([join(bin, "tether")], { env });
@@ -41,6 +41,7 @@ try {
   const widgets = JSON.parse(await readFile(join(env.WAVETERM_CONFIG_DIR, "widgets.json"), "utf8"));
   if (!widgets.unrelated || Object.keys(widgets).some(key => key.startsWith("tether-"))) throw new Error("Uninstall did not preserve unrelated widgets.");
   await lstat(join(scratch, "skills/tether-review/SKILL.md"));
+  await lstat(join(scratch, "skills/tetherball/SKILL.md"));
   console.log(`Checksum rejection, generated bootstrap, repeat install, spaced paths, skill opt-in guidance, Wave setup and recoverable uninstall passed. Evidence: ${scratch}`);
 } finally {
   if (await lstat(join(bin, "tether")).catch(() => null)) await cli("daemon", "stop").catch(() => {});

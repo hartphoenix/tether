@@ -280,3 +280,38 @@ test("a manual check during a background check is queued, not dropped", async ()
     expect(p.notice.textContent).toBe("Tether 0.1.1 is up to date. OK");
   } finally { p.dom.window.close(); }
 });
+
+test("Tetherball offer survives a hidden update popover and sends explicit scoped actions", async () => {
+  const p = page(true); await Bun.sleep(0);
+  const offer = { revision: "offered", destinations: [{ id: "one", directory: "/skills/one" }, { id: "two", directory: "/skills/two" }] };
+  p.state({ managed: true, available: null, tetherballOffer: offer }); p.refresh(); await Bun.sleep(0);
+  const card = p.dom.window.document.querySelector<HTMLElement>("[data-tetherball-offer]")!;
+  expect(card.textContent).toContain("An agent skill for developing ideas together in a shared document that gets clearer, not longer, as you progress.");
+  expect(p.notice.hidden).toBe(true);
+  card.querySelector<HTMLAnchorElement>("a")!.click(); await Bun.sleep(0);
+  expect(p.requests).toContainEqual({ endpoint: "./api/updates/tetherball/open", body: {} });
+  card.querySelector("select")!.value = "two";
+  p.state({ managed: true, available: null });
+  card.querySelector("button")!.click(); await Bun.sleep(0);
+  expect(p.requests).toContainEqual({ endpoint: "./api/updates/tetherball/decide", body: { action: "install", revision: "offered", destination: "two" } });
+  expect(p.dom.window.document.body.textContent).toContain("Tetherball is installed");
+  expect(p.dom.window.document.querySelector("[data-tetherball-offer]")).toBeNull();
+  p.state({ managed: true, available: null, tetherballOffer: { revision: "empty", destinations: [] } }); p.refresh(); await Bun.sleep(0);
+  const empty = p.dom.window.document.querySelector<HTMLElement>("[data-tetherball-offer]")!;
+  expect(empty.querySelector("button")!.textContent).toBe("Copy setup prompt");
+  p.state({ managed: true, available: null });
+  empty.querySelectorAll("button")[1]!.click(); await Bun.sleep(0);
+  expect(p.requests).toContainEqual({ endpoint: "./api/updates/tetherball/decide", body: { action: "dismiss", revision: "empty", destination: "" } });
+  p.dom.window.close();
+});
+
+test("Tetherball offer follows the reader notice when the canvas remounts", async () => {
+  const p = page(); await Bun.sleep(0);
+  p.state({ managed: true, available: null, tetherballOffer: { revision: "same", destinations: [] } }); p.refresh(); await Bun.sleep(0);
+  const card = p.dom.window.document.querySelector("[data-tetherball-offer]")!;
+  const shell = p.dom.window.document.createElement("div"); p.dom.window.document.body.append(shell);
+  shell.append(p.notice);
+  p.notice.dispatchEvent(new p.dom.window.Event("tether-notice-mounted"));
+  expect(p.notice.nextElementSibling === card).toBe(true);
+  p.dom.window.close();
+});

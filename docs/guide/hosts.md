@@ -43,15 +43,21 @@ Tether does not replace Wave's native file navigator. Open Markdown using Folio 
 
 [Paseo](https://paseo.sh) is a desktop app for coding agents. Tether runs inside it through a Paseo plugin, which lives in this repository at `integrations/paseo`. Full Folio and reader tabs require the Paseo desktop app, Paseo daemon, and Tether on the same Mac. Web and mobile clients show a basic document list.
 
-Paseo plugins run as trusted, unsandboxed code. Install this one only if you trust this repository. Plugins are off by default; either navigate to **Settings** > **Plugins** > select **Enable Plugins**, or set `pluginsEnabled` to `true` in `~/.paseo/config.json`; run `paseo reload` after changing it. Then install the plugin:
+Packaged Tether includes a compiled plugin for Paseo 0.11.2. Setup reports installed hosts without launching them. After accepting the integration, run:
 
 ```sh
-paseo plugin add hartphoenix/tether:integrations/paseo
+tether setup --paseo --no-open
 ```
 
+This registers the bundled plugin with the local Paseo daemon, using the installed application's CLI if it is not on PATH. Paseo plugins run trusted, unsandboxed code. Setup leaves the global plugin switch unchanged; enable it in **Settings → Plugins** when ready. An existing unmanaged Tether plugin is preserved and reported for review. Unsupported or unknown Paseo versions are reported without installation.
+
+The plugin follows Tether’s selected release. After a Tether update, reload the plugin in Paseo Settings → Plugins (or rerun the command above) to activate new code. Disabled plugins stay disabled. Its **Tether Light**, **Tether Dark**, **Light Treason**, and **Dark Academia** themes become available in Appearance without changing your selection.
+
+For source development, see the [plugin README](../../integrations/paseo/README.md).
+
 * **Folio.** In any workspace, click the Tether button in the header to open the Folio in the sidebar. Paseo gives each workspace its own Explorer, so add Folio once in each workspace where you want it. It stays there after that – show/hide it with `⌘-E`. Desktop shows Tether's full Folio: filters and saved chips, right-click menus, sorting, Active/Archive, settings, and your Tether theme. Documents, saved filters, and pins stay synchronized across workspaces. If the embedded view cannot load, a basic document list appears with **Retry full Folio**.
-* **Opening documents.** Click a document in Folio to open its reader as a Paseo browser tab. Links to local Markdown open in another tab. To place a reader beside your work, split the pane first, then open it.
-* **Reader panels (experimental).** Turn on **Open readers in panels** in **Settings → Tether** to open readers as Paseo tabs without an address bar or back and forward buttons. Each document gets its own tab, named for the document, which also appears in Paseo's new-tab menu while it's open. Links to local Markdown open as more panels, and web links open in your default browser. Paseo keeps only the three most recently used tabs in each pane loaded, so returning to an older reader reloads it, keeping your scroll position.
+* **Opening documents.** Click a document in Folio to open its reader in a custom Tether panel by default on desktop. Links to local Markdown open in another tab. To place a reader beside your work, split the pane first, then open it.
+* **Reader panels (experimental).** **Open documents in custom Tether panels** in **Settings → Tether** is on by default and opens readers as Paseo tabs without an address bar or back and forward buttons. Each document gets its own tab, named for the document, which also appears in Paseo's new-tab menu while it's open. Links to local Markdown open as more panels, and web links open in your default browser. Paseo keeps only the three most recently used tabs in each pane loaded, so returning to an older reader reloads it, keeping your scroll position.
 * **The Tether button.** Each workspace header gets a Tether button, which normally opens Folio. When an agent runs `tether open` or `tether recents add` for a document in that workspace, the button shows the document's name; clicking it then opens the document in Tether.
 * **Focus Mode**. With a reader pane in focus, `⌘-⇧-F` fullscreens the pane and hides all others. Focus mode removes distractions and makes room for the threads drawer. `⌘-⇧-F` turns it off again.
 * **Settings.** Paseo **Settings → Tether** shows the connection, turns the button on or off, and sets the `tether` command and profile. By default the plugin finds `tether` on your PATH or in `~/.local/bin`, and uses the `preview` profile.

@@ -18,7 +18,10 @@ export function createCanvas(view: EditorView, notice?: HTMLElement, updateButto
   scene.append(view.dom);
   const header = shell.querySelector<HTMLElement>('.milkdown-top-bar');
   if (updateButton && header) header.append(updateButton);
-  if (notice) header ? header.after(notice) : scroller.before(notice);
+  if (notice) {
+    header ? header.after(notice) : scroller.before(notice);
+    notice.dispatchEvent(new win.Event("tether-notice-mounted"));
+  }
   const stopHeaderOverlay = header ? overlayScrollHeader(scroller, header) : () => {};
   let scale = 1;
   let destroyed = false;

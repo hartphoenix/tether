@@ -116,11 +116,15 @@ try {
     const toolbarIcon=toolbar.querySelector('.top-bar-item svg')!;
     const label=menu.querySelector('[role="menuitem"] > span:last-child')!;
     const icon=menu.querySelector('svg')!;
-    return getComputedStyle(menu).backgroundColor===getComputedStyle(toolbar).backgroundColor
+    // The toolbar deliberately uses a translucent surface; the menu is opaque.
+    const surface=document.createElement('span');
+    surface.style.backgroundColor='var(--wm-color-surface)';menu.append(surface);
+    const surfaceColor=getComputedStyle(surface).backgroundColor;surface.remove();
+    return getComputedStyle(menu).backgroundColor===surfaceColor
       && getComputedStyle(label).color===getComputedStyle(toolbarIcon).color
       && getComputedStyle(icon).fill===getComputedStyle(toolbarIcon).fill;
    });
-   if(!matchingColors)throw Error('Insert colors differ from the toolbar');
+   if(!matchingColors)throw Error('Insert menu surface or toolbar foreground colors differ');
    for(const name of ['Footnote','Code block','Math block','Image','Table','Blockquote','Horizontal rule','Bulleted list','Numbered list','Task list'])if(!names.includes(name))throw Error('Missing Insert action: '+name+'; actual: '+names.join(', '));
    for(const name of ['Heading 1','Heading 2','Heading 3','Heading 4','Heading 5','Heading 6','Bold','Italic','Strikethrough','Inline code','Link','Comment'])if(names.includes(name))throw Error('Duplicate selection-toolbar action: '+name);
    if(await insertMenu.locator('.wm-insert-icon').count()!==names.length)throw Error('Insert action missing icon');
