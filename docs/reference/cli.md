@@ -2,13 +2,13 @@
 
 [Documentation](../README.md) · [Protocol details](protocol.md)
 
-Use `tether` from an installed package, or `./tether` and `./mdreview` from a source checkout. Run commands under the same OS account and profile as the reader. To install the optional review skill, see [agent setup](../guide/agent-setup.md).
+Use `tether` from an installed package, or `./tether` and `./mdreview` from a source checkout. Run commands under the same OS account and `TETHER_PROFILE` as the reader. To install the optional review skill, see [agent setup](../guide/agent-setup.md).
 
-Start with `tether --help` to find a command, then use focused help such as `tether reply --help` for its exact flags. Replace the uppercase ID placeholders in these examples with the values Tether returns.
+Start with `tether --help` to find a command group, then use focused help such as `tether reply --help` for its exact flags. Replace the uppercase ID placeholders in these examples with the values Tether returns.
 
 ## Review comments
 
-Read pending comments first, then fetch the thread you need. If you're missing context, ask for nearby text or an outline before reading the full document.
+Pending identifies changed events without returning their bodies or anchors. Read each affected thread once when current text is needed. If you're missing passage context, ask for nearby text or an outline before reading the full document.
 
 ```sh
 tether pending /path/to/doc.md --actor assistant
@@ -19,14 +19,18 @@ tether document outline /path/to/doc.md
 
 Follow every continuation before acknowledging. Each page of pending events has its own review cursor. Once you've handled that page and all preceding pages, acknowledge the last fully reviewed page's cursor. Don't start a fresh pending read just to get a newer cursor.
 
+An index is not completed review. Handle every listed event or assign a clear next owner before acknowledging. Check `reviewState` even when `events` is empty: `changed` supplies `acknowledgedBodyRevision` for `document diff --from-revision`; if that revision is unavailable, inspect relevant body content. `never_reviewed` requires inspecting relevant document content before acknowledging. A later thread read may contain newer events; keep using the original pending cursor.
+
+Use `event FILE EVENT_ID` for immutable historical details when current thread text is insufficient. An edit event contains its edited text; a deletion identifies its target. Reading that `targetId` returns the original message, so inspect intervening edit events when their text matters. Resolution/deletion metadata alone may suffice when no text-dependent action remains.
+
 Acknowledgement records what the agent has reviewed. Resolution records whether the human still needs to read or act on a thread.
 
 ```sh
-tether reply /path/to/doc.md THREAD_ID --actor assistant --body-file /tmp/reply.txt --operation-id UNIQUE_ID
+tether reply /path/to/doc.md THREAD_ID --actor assistant --body-file /tmp/reply.txt --operation-id UNIQUE_ID --expected-thread-sequence THREAD_SEQUENCE
 tether acknowledge /path/to/doc.md --actor assistant --cursor REVIEWED_CURSOR --operation-id ANOTHER_UNIQUE_ID
 ```
 
-If you retry an annotation change, keep the same operation ID and identical inputs. Look up its receipt with `tether operation <file> --operation-id <id>`. A missing receipt means `outcome_unknown`; the change may still have happened.
+If you retry an annotation change, keep the same operation ID and identical inputs. Look up its receipt with `tether operation <file> --operation-id <id>`. A missing receipt means `outcome_unknown`; the change may still have happened. A replayed receipt's `appliedSequence` is historical; refresh the thread before another guarded write.
 
 Use `--expected-thread-sequence` to reject stale replies, edits, deletions, resolutions, or reopenings. Both `edit` and `delete` take a thread ID and the original comment or reply ID. They append private review events; `delete` leaves the Markdown file alone.
 

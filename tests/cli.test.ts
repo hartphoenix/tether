@@ -321,7 +321,6 @@ test("provides command-specific help without daemon work", async () => {
       command: "help",
       data: {
         command: "acknowledge",
-        reporting: expect.stringContaining("plain language"),
         usage: "mdreview acknowledge <file> --actor <actor> --cursor <cursor> --operation-id <id> [--consumer <consumer>]",
       },
     },
@@ -342,7 +341,7 @@ test("creates a private comment from a server-resolved quote", async () => {
     "comment", path, "--actor", "assistant", "--quote", "quoted passage",
     "--body-file", "-", "--operation-id", "comment-1",
   ], { config, readBody: async () => "Please review this passage." });
-  expect(created.response).toMatchObject({ ok: true, command: "comment", data: { mutation: { operationId: "comment-1", sequence: 1 } } });
+  expect(created.response).toMatchObject({ ok: true, command: "comment", data: { mutation: { operationId: "comment-1", appliedSequence: 1 } } });
   expect(await readFile(path, "utf8")).toBe("A quoted passage.\n");
   expect((await runCli(["threads", path, "--status", "open"], { config })).response).toMatchObject({ ok: true, command: "threads", data: { threads: [{ status: "open" }] } });
 });
@@ -397,7 +396,7 @@ test("runs the private review workflow with cursors and retry-safe mutations", a
   expect(read.response).toMatchObject({ protocol: 1, ok: true, command: "document.read", data: { body: "Review target\n", bodyRevision: initial.bodyRevision } });
 
   const pending = await runCli(["pending", path, "--actor", "assistant"], { config });
-  expect(pending.response).toMatchObject({ ok: true, command: "pending", data: { events: [{ id: threadId, type: "comment" }], maxSequence: 1 } });
+  expect(pending.response).toMatchObject({ ok: true, command: "pending", data: { events: [{ id: threadId, type: "comment" }], throughSequence: 1 } });
   expect(JSON.stringify(pending.response)).not.toContain('"thread"');
   expect(JSON.stringify(pending.response)).not.toContain("Review target");
   const cursor = (pending.response as { data: { cursor: string } }).data.cursor;
@@ -406,20 +405,20 @@ test("runs the private review workflow with cursors and retry-safe mutations", a
   expect((await runCli(["thread", path, threadId], { config })).response).toMatchObject({ ok: true, command: "thread", data: { thread: { id: threadId, status: "open" } } });
   const replyArgs = ["reply", path, threadId, "--actor", "assistant", "--body-file", "-", "--operation-id", "reply-1"];
   const reply = await runCli(replyArgs, { config, readBody: async () => "Applied the requested revision.\nSecond line." });
-  expect(reply.response).toMatchObject({ ok: true, command: "reply", data: { mutation: { operationId: "reply-1", sequence: 2, replayed: false } } });
+  expect(reply.response).toMatchObject({ ok: true, command: "reply", data: { mutation: { operationId: "reply-1", appliedSequence: 2, replayed: false } } });
   const replay = await runCli(replyArgs, { config, readBody: async () => "Applied the requested revision.\nSecond line." });
-  expect(replay.response).toMatchObject({ ok: true, command: "reply", data: { mutation: { operationId: "reply-1", sequence: 2, replayed: true } } });
-  expect((await runCli(["resolve", path, threadId, "--actor", "assistant", "--operation-id", "resolve-1", "--expected-thread-sequence", "2"], { config })).response).toMatchObject({ ok: true, command: "resolve", data: { mutation: { operationId: "resolve-1", sequence: 3 } } });
+  expect(replay.response).toMatchObject({ ok: true, command: "reply", data: { mutation: { operationId: "reply-1", appliedSequence: 2, replayed: true } } });
+  expect((await runCli(["resolve", path, threadId, "--actor", "assistant", "--operation-id", "resolve-1", "--expected-thread-sequence", "2"], { config })).response).toMatchObject({ ok: true, command: "resolve", data: { mutation: { operationId: "resolve-1", appliedSequence: 3 } } });
 
   expect(await readFile(path, "utf8")).toBe("Review target\n");
   const saved = await runCli(["document", "save", path, "--expected-body-revision", initial.bodyRevision, "--body-file", "-"], {
     config,
     readBody: async () => "Revised by agent.\n\nMultiline body.\n",
   });
-  expect(saved.response).toMatchObject({ ok: true, command: "document.save", data: { bodyRevision: bodyRevision("Revised by agent.\n\nMultiline body.\n"), ledgerRevision: expect.any(String) } });
+  expect(saved.response).toMatchObject({ ok: true, command: "document.save", data: { bodyRevision: bodyRevision("Revised by agent.\n\nMultiline body.\n") } });
   expect(await readFile(path, "utf8")).toBe("Revised by agent.\n\nMultiline body.\n");
 
-  expect((await runCli(["acknowledge", path, "--actor", "assistant", "--cursor", cursor, "--operation-id", "ack-1"], { config })).response).toMatchObject({ ok: true, command: "acknowledge", data: { mutation: { operationId: "ack-1", sequence: 1, replayed: false } } });
+  expect((await runCli(["acknowledge", path, "--actor", "assistant", "--cursor", cursor, "--operation-id", "ack-1"], { config })).response).toMatchObject({ ok: true, command: "acknowledge", data: { mutation: { operationId: "ack-1", appliedSequence: 1, replayed: false } } });
   expect((await runCli(["pending", path, "--actor", "assistant"], { config })).response).toMatchObject({ ok: true, data: { events: [] } });
 
   const conflict = await runCli(["document", "save", path, "--expected-body-revision", initial.bodyRevision, "--body-file", "-"], { config, readBody: async () => "Stale overwrite\n" });
@@ -460,7 +459,13 @@ test("exports publish complete private files and require explicit overwrite", as
 test("validates daemon success shapes instead of trusting JSON casts", async () => {
   const { validateControlResponse } = await import("../src/server/lifecycle");
   expect(validateControlResponse("/control/document/read", { body: "incomplete" })).toBe(false);
-  expect(validateControlResponse("/control/review/pending", { events: [], cursor: 3, maxSequence: 0 })).toBe(false);
+  const pending = { events: [], cursor: "r-observed", throughSequence: 0, bodyRevision: "revision", acknowledgedBodyRevision: null, reviewState: "never_reviewed", continuation: null };
+  expect(validateControlResponse("/control/review/pending", pending)).toBe(true);
+  expect(validateControlResponse("/control/review/pending", { ...pending, cursor: 3 })).toBe(false);
+  expect(validateControlResponse("/control/review/pending", { ...pending, acknowledgedBodyRevision: undefined })).toBe(false);
+  const mutation = { operationId: "ack", appliedEventId: null, appliedSequence: 0, replayed: false };
+  expect(validateControlResponse("/control/review/acknowledge", { mutation })).toBe(true);
+  expect(validateControlResponse("/control/review/acknowledge", { mutation: { ...mutation, appliedSequence: undefined, sequence: 0 } })).toBe(false);
   expect(validateControlResponse("/control/launch", { url: "x", expiresAt: "tomorrow", path: "x" })).toBe(false);
   expect(validateControlResponse("/control/folio/export", { format: "tether-review", version: 1, documents: [] })).toBe(true);
   expect(validateControlResponse("/control/document/read", { path: "x", body: "", bodyRevision: "revision" })).toBe(true);

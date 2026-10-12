@@ -13,7 +13,7 @@ import { UpdateService } from "./updates";
 import { listAgentSkillReviews, readAgentSkillReview, decideAgentSkillReview } from "../cli/agent-skills";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
-import { PrivateStore } from "../storage/private-store";
+import { PrivateStore, type MutationReceipt } from "../storage/private-store";
 import { ViewStore, cookieVerifier, verifiesCookie } from "./view-store";
 import { stopHostBridges } from "./stop-hosts";
 import { anchorForQuote, quoteCandidates } from "./quote-anchor";
@@ -36,7 +36,7 @@ import { HostGateway } from "../hosts/host-gateway";
 import { PullQueue } from "../hosts/pull-queue";
 import { PASEO_HOST, PaseoHostAdapter } from "../hosts/paseo";
 import { prepareCmuxBridgeRestart } from "../hosts/cmux-bridge";
-import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type AppendEventInput, type DocumentSession } from "../documents/document-service";
+import { DocumentService, DocumentAccessError, DocumentConflictError, DocumentNotFoundError, DocumentReadOnlyError, type AnnotationEventInput, type AppendEventInput, type DocumentSession, type MutationDocumentSnapshot } from "../documents/document-service";
 import { chooseImportDirectory, chooseMoveDirectory } from "./directory-picker";
 import { requireFolioFile } from "../recents/file-availability";
 import { RecentsRegistry, type ListFolioOptions, type FolioRetention } from "../recents/registry";
@@ -597,15 +597,12 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     finally { service.close(grant); }
   }
 
-  function mutationSummary(document: DocumentSnapshot): Record<string, unknown> {
-    return {
-      path: document.path,
-      bodyRevision: document.bodyRevision,
-      ledgerRevision: document.ledgerRevision,
-      appliedSequence: (document as DocumentSnapshot & { mutation?: { appliedSequence?: number } }).mutation?.appliedSequence,
-      mutation: (document as DocumentSnapshot & { mutation?: unknown }).mutation,
-      unresolvedCount: document.annotations.unresolvedCount,
-    };
+  function agentReceipt({ operationId, appliedEventId, appliedSequence, replayed }: MutationReceipt) {
+    return { operationId, appliedEventId, appliedSequence, replayed };
+  }
+
+  function mutationSummary(document: MutationDocumentSnapshot) {
+    return { mutation: agentReceipt(document.mutation) };
   }
 
   async function browserAnnotation(input: AppendEventInput): Promise<DocumentSnapshot> {
@@ -1120,7 +1117,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
               }
               if (actionName === "operation") {
                 if (typeof body.operationId !== "string") throw invalidRequest("An operation ID is required.");
-                return privateStore.lookupMutation(grant.path, body.operationId);
+                const result = privateStore.lookupMutation(grant.path, body.operationId);
+                return { ...result, receipt: result.receipt ? agentReceipt(result.receipt) : null };
               }
               if (typeof body.quote !== "string") throw invalidRequest("A quote is required.");
               return quoteCandidates(source, body.quote, body);
@@ -1131,7 +1129,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
             }
             if (pathname === "/control/document/save") {
               if (typeof body.body !== "string" || typeof body.expectedBodyRevision !== "string") throw invalidRequest("Document save requires body and expectedBodyRevision.");
-              return mutationSummary(await service.saveBody({ session: grant, body: body.body, expectedBodyRevision: body.expectedBodyRevision }));
+              const saved = await service.saveBody({ session: grant, body: body.body, expectedBodyRevision: body.expectedBodyRevision });
+              return { path: saved.path, bodyRevision: saved.bodyRevision };
             }
             if (pathname === "/control/review/comment") {
               if (typeof body.actor !== "string" || !textBody(body) || typeof body.quote !== "string") throw invalidRequest("A comment needs actor, body and quote.");

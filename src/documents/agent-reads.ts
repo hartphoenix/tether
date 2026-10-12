@@ -3,7 +3,7 @@ import remarkParse from "remark-parse";
 import remarkGfm from 'remark-gfm';
 import GithubSlugger from 'github-slugger';
 import { prepareMarkdown } from '../core/markdown-codec';
-import { bodyRevision } from "../core/index";
+import { bodyRevision, type ReviewEvent } from "../core/index";
 import { markdownProjection } from "../server/quote-anchor";
 import { PrivateStore, PrivateStoreConflictError, PrivateStoreDocumentNotFoundError, REVIEW_CURSOR_LIFETIME_MS } from "../storage/private-store";
 export type AgentPageOptions = {
@@ -140,19 +140,22 @@ export class AgentReads {
             throughSeq: number;
             bodyRevision: string;
         } | null;
-        const state = this.state(path, body, "pending", JSON.stringify([actor, consumer]), options, acknowledgement?.throughSeq ?? 0);
+        const state = this.state(path, body, "pending-index", JSON.stringify([actor, consumer]), options, acknowledgement?.throughSeq ?? 0);
         const refs = this.store.db.query("SELECT id,seq FROM annotation_events WHERE document_id=? AND seq>? AND seq<=? AND type!='ack' AND actor!=? ORDER BY seq LIMIT ?").all(doc.id, state.after, state.snapshot, actor, limit + 1) as EventRef[];
         const events: unknown[] = [];
-        const base = { documentId: doc.id, bodyRevision: state.revision, maxSequence: state.snapshot, acknowledgedBodyRevision: acknowledgement?.bodyRevision ?? null,
-            reviewState: !acknowledgement ? "never_reviewed" : acknowledgement.bodyRevision === state.revision ? "current" : "changed",
-            bodyChangedSinceAck: !acknowledgement || acknowledgement.bodyRevision !== state.revision, maxBytes };
+        const base = { bodyRevision: state.revision, acknowledgedBodyRevision: acknowledgement?.bodyRevision ?? null,
+            reviewState: !acknowledgement ? "never_reviewed" : acknowledgement.bodyRevision === state.revision ? "current" : "changed" };
         let available = maxBytes - bytes(base) - 400, after = state.after, fragmentOffset = state.fragmentOffset, more = false;
         for (const ref of refs) {
             if (events.length >= limit) {
                 more = true;
                 break;
             }
-            const json = this.payload(doc.id, ref.id), event = JSON.parse(json) as unknown;
+            const source = JSON.parse(this.payload(doc.id, ref.id)) as ReviewEvent;
+            const event = { id: source.id, seq: source.seq, type: source.type, actor: source.actor,
+                threadId: source.type === "comment" ? source.id : source.threadId,
+                ...("targetId" in source ? { targetId: source.targetId } : {}) };
+            const json = JSON.stringify(event);
             if (!fragmentOffset && bytes(event) + 1 <= available) {
                 events.push(event);
                 available -= bytes(event) + 1;
@@ -175,7 +178,7 @@ export class AgentReads {
             after = state.snapshot;
         const cursor = this.store.observe(path, consumer, after, state.revision).cursor;
         const continuation = more ? this.continuation(path, { ...state, after, fragmentOffset }) : null;
-        return { ...base, events, cursor, throughSequence: after, continuation, expiresInSeconds: REVIEW_CURSOR_LIFETIME_MS / 1000 };
+        return { ...base, events, cursor, throughSequence: after, continuation };
     }
     private summary(documentId: string, id: string, snapshot: number) {
         const result = this.store.db.query(`SELECT c.id,substr(c.actor,1,128) AS actor,c.created_at AS createdAt,
@@ -192,8 +195,6 @@ export class AgentReads {
             sequence: number;
             replyCount: number;
         } | null;
-        if (result && bytes(result) > 1200)
-            throw Object.assign(new Error("Thread metadata exceeds the response budget. Retrieve its root event with event."), { code: "item_too_large", eventId: id });
         return result;
     }
     threads(path: string, body: string, options: AgentPageOptions & {
@@ -216,6 +217,8 @@ export class AgentReads {
                 after = ref.latest;
                 continue;
             }
+            if (bytes(summary) > 1200)
+                throw Object.assign(new Error("Thread metadata exceeds the response budget. Retrieve its root event with event."), { code: "item_too_large", eventId: ref.id });
             if (threads.length >= limit || bytes(summary) + 1 > available) {
                 more = true;
                 break;
@@ -226,7 +229,7 @@ export class AgentReads {
         }
         if (refs.length === 201)
             more = true;
-        return { documentId: doc.id, bodyRevision: state.revision, maxSequence: state.snapshot, threads, maxBytes, continuation: more ? this.continuation(path, { ...state, after }) : null };
+        return { bodyRevision: state.revision, threads, continuation: more ? this.continuation(path, { ...state, after }) : null };
     }
     thread(path: string, body: string, threadId: string, options: AgentPageOptions = {}) {
         const maxBytes = budget(options), limit = bound(options.limit, 50, 1, 200), doc = this.document(path);
@@ -235,10 +238,11 @@ export class AgentReads {
         const summary = this.summary(doc.id, threadId, state.snapshot);
         if (!summary)
             fail("Annotation thread not found.");
+        const thread = { id: summary.id, status: summary.status, sequence: summary.sequence };
         const refs = this.store.db.query(`SELECT m.id,m.seq FROM annotation_events m WHERE m.document_id=? AND (m.id=? OR m.thread_id=?) AND m.type IN ('comment','reply') AND m.seq>? AND m.seq<? AND m.seq<=?
       AND NOT EXISTS(SELECT 1 FROM annotation_events d WHERE d.document_id=m.document_id AND d.target_id=m.id AND d.type='delete' AND d.seq<=?) ORDER BY m.seq LIMIT ?`).all(doc.id, threadId, threadId, state.after, before, state.snapshot, state.snapshot, limit + 1) as EventRef[];
         const messages: unknown[] = [];
-        let available = maxBytes - bytes(summary) - 650, after = state.after, fragmentOffset = state.fragmentOffset, more = false;
+        let available = maxBytes - bytes(thread) - 650, after = state.after, fragmentOffset = state.fragmentOffset, more = false;
         for (const ref of refs) {
             if (messages.length >= limit) {
                 more = true;
@@ -264,7 +268,7 @@ export class AgentReads {
             more = fragmentOffset > 0 || refs.length > 1;
             break;
         }
-        return { documentId: doc.id, bodyRevision: state.revision, thread: summary, messages, maxBytes, continuation: more ? this.continuation(path, { ...state, after, fragmentOffset }) : null };
+        return { bodyRevision: state.revision, thread, messages, continuation: more ? this.continuation(path, { ...state, after, fragmentOffset }) : null };
     }
     event(path: string, eventId: string, options: {
         offset?: number;

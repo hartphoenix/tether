@@ -223,14 +223,14 @@ export function validateControlResponse(pathname: string, payload: unknown): boo
   if (pathname === "/control/updates/check") return typeof value.managed === "boolean" && typeof value.checkFailed === "boolean" && typeof value.installing === "boolean";
   if (pathname.endsWith("/launch")) return typeof value.url === "string" && typeof value.expiresAt === "number" && (pathname !== "/control/launch" || typeof value.path === "string");
   if (pathname === "/control/document/read") return typeof value.path === "string" && typeof value.body === "string" && typeof value.bodyRevision === "string";
-  if (pathname === "/control/review/pending") return Array.isArray(value.events) && typeof value.cursor === "string" && typeof value.maxSequence === "number";
-  if (pathname === "/control/review/thread") return (typeof value.path === "string" || typeof value.documentId === "string") && value.thread !== null && typeof value.thread === "object";
+  if (pathname === "/control/review/pending") return Array.isArray(value.events) && typeof value.cursor === "string" && typeof value.throughSequence === "number" && typeof value.bodyRevision === "string" && (value.acknowledgedBodyRevision === null || typeof value.acknowledgedBodyRevision === "string") && ["never_reviewed", "current", "changed"].includes(value.reviewState as string);
+  if (pathname === "/control/review/thread") return typeof value.bodyRevision === "string" && value.thread !== null && typeof value.thread === "object" && typeof (value.thread as Record<string, unknown>).id === "string" && typeof (value.thread as Record<string, unknown>).sequence === "number" && Array.isArray(value.messages);
   if (pathname === "/control/review/threads") return Array.isArray(value.threads);
   if (pathname === "/control/folio/list") return Array.isArray(value.files);
   if (pathname === "/control/folio/export") return value.format === "tether-review" && value.version === 1 && Array.isArray(value.documents);
   if (/^\/control\/review\/(comment|reply|edit|delete|resolve|reopen|acknowledge)$/.test(pathname)) {
     const mutation = value.mutation as Record<string, unknown> | undefined;
-    return Boolean(mutation && typeof mutation.operationId === "string" && typeof mutation.sequence === "number" && typeof mutation.replayed === "boolean");
+    return Boolean(mutation && typeof mutation.operationId === "string" && typeof mutation.appliedSequence === "number" && (mutation.appliedEventId === null || typeof mutation.appliedEventId === "string") && typeof mutation.replayed === "boolean");
   }
   if (pathname === "/control/document/outline") return typeof value.bodyRevision === "string" && Array.isArray(value.headings);
   if (pathname === "/control/document/context") return typeof value.bodyRevision === "string" && typeof value.anchorStatus === "string" && typeof value.text === "string";
