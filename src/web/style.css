@@ -359,7 +359,8 @@ html[data-wm-scheme="light"] img[src$="#gh-dark-mode-only"] { display: none; }
 .wm-diagram-controls button:last-child { margin-left: auto; }
 .wm-diagram-viewport { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .wm-diagram-stage { display: grid; place-items: center; }
-.wm-diagram-stage svg { display: block; flex-shrink: 0; }
+.wm-diagram-stage svg, .wm-diagram-stage img { display: block; flex-shrink: 0; }
+#editor img.image-inline, #editor .milkdown-image-block .image-wrapper > img { cursor: zoom-in; }
 
 .wm-diagram-controls {
   --crepe-color-outline: var(--wm-color-outline, currentColor);

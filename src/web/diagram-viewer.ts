@@ -4,25 +4,31 @@ import { $prose } from "@milkdown/kit/utils";
 
 const expandIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3H3v6m0-6 7 7m5-7h6v6m0-6-7 7M3 15v6h6m-6 0 7-7m11 1v6h-6m6 0-7-7" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>';
 
-export function openDiagramViewer(svg: SVGSVGElement, trigger: HTMLElement): () => void {
-  const parent = svg.parentElement!;
+const documentImage = "img.image-inline, .milkdown-image-block .image-wrapper > img";
+
+/** Diagrams move into the viewer to keep their SVG IDs unique; images are copied. */
+export function openDiagramViewer(source: SVGSVGElement | HTMLImageElement, trigger: HTMLElement): () => void {
+  const image = source instanceof HTMLImageElement;
+  const svg = image ? source.cloneNode() as HTMLImageElement : source;
+  if (image) svg.removeAttribute("style");
+  const parent = source.parentElement!;
   const originalStyle = svg.getAttribute("style");
   const dialog = document.createElement("dialog");
   dialog.className = "wm-diagram-viewer";
-  dialog.setAttribute("aria-label", "Diagram viewer");
+  dialog.setAttribute("aria-label", image ? "Image viewer" : "Diagram viewer");
   const controls = document.createElement("div");
   controls.className = "wm-diagram-controls";
   const viewport = document.createElement("div");
   viewport.className = "wm-diagram-viewport";
   viewport.tabIndex = 0;
-  viewport.setAttribute("aria-label", "Diagram; pinch to zoom, scroll to pan");
+  viewport.setAttribute("aria-label", `${image ? "Image" : "Diagram"}; pinch to zoom, scroll to pan`);
   const stage = document.createElement("div");
   stage.className = "wm-diagram-stage";
   const output = document.createElement("output");
-  output.setAttribute("aria-label", "Diagram zoom");
-  const box = svg.viewBox.baseVal;
-  const width = box.width || svg.getBoundingClientRect().width || 1;
-  const height = box.height || svg.getBoundingClientRect().height || 1;
+  output.setAttribute("aria-label", image ? "Image zoom" : "Diagram zoom");
+  const box = image ? { width: source.naturalWidth, height: source.naturalHeight } : source.viewBox.baseVal;
+  const width = box.width || source.getBoundingClientRect().width || 1;
+  const height = box.height || source.getBoundingClientRect().height || 1;
   let zoom = 1, fit = 1, closed = false;
   function layout() {
     const w = width * fit * zoom, h = height * fit * zoom;
@@ -82,8 +88,10 @@ export function openDiagramViewer(svg: SVGSVGElement, trigger: HTMLElement): () 
   function dispose() {
     if (closed) return;
     closed = true; observer.disconnect();
-    if (originalStyle === null) svg.removeAttribute("style"); else svg.setAttribute("style", originalStyle);
-    if (parent.isConnected) parent.append(svg);
+    if (!image) {
+      if (originalStyle === null) svg.removeAttribute("style"); else svg.setAttribute("style", originalStyle);
+      if (parent.isConnected) parent.append(svg);
+    }
     dialog.remove();
     if (trigger.isConnected) trigger.focus({ preventScroll: true });
   }
@@ -131,8 +139,23 @@ export const diagramViewer = $prose(() => new Plugin({
         });
       }
     };
+    const openImage = (event: Event) => {
+      if (event instanceof WheelEvent && !event.ctrlKey) return;
+      const target = event.target;
+      if (!(target instanceof HTMLImageElement) || !target.matches(documentImage) || !target.naturalWidth) return;
+      event.preventDefault();
+      close?.(); activePreview = target; close = openDiagramViewer(target, view.dom);
+    };
+    view.dom.addEventListener("click", openImage);
+    view.dom.addEventListener("wheel", openImage, { passive: false });
+    view.dom.addEventListener("gesturestart", openImage, { passive: false });
     const observer = new MutationObserver(sync);
     observer.observe(view.dom, { childList: true, subtree: true }); sync();
-    return { destroy: () => { observer.disconnect(); close?.(); for (const dispose of controls.values()) dispose(); } };
+    return { destroy: () => {
+      observer.disconnect(); close?.(); for (const dispose of controls.values()) dispose();
+      view.dom.removeEventListener("click", openImage);
+      view.dom.removeEventListener("wheel", openImage);
+      view.dom.removeEventListener("gesturestart", openImage);
+    } };
   },
 }));

@@ -7,7 +7,8 @@ import { createWebBundleResponder } from '../src/web/bundle';
 const root = await mkdtemp('/tmp/tether-render-browser-');
 const web = await createWebBundleResponder();
 await mkdir(join(root,'docs'));
-const source = '# Checks\n\nSelect these words.\n\nNote[^calibration].\n\n```mermaid\nflowchart LR\n A[Start] --> B[Finish]\n```\n\n```mermaid\nnot a diagram\n```\n\n[^calibration]: calibration belongs in this note.\n';
+await writeFile(join(root,'docs','favicon.png'),await readFile(new URL('../src/web/favicon.png',import.meta.url)));
+const source = '# Checks\n\nSelect these words.\n\n![Favicon](favicon.png)\n\nNote[^calibration].\n\n```mermaid\nflowchart LR\n A[Start] --> B[Finish]\n```\n\n```mermaid\nnot a diagram\n```\n\n[^calibration]: calibration belongs in this note.\n';
 
 const daemon = createDaemon({config: resolveConfig({runtimeDir:join(root,'runtime'),configDir:join(root,'config')}),web});
 try {
@@ -51,6 +52,17 @@ try {
     await page.keyboard.press('Escape');
     await page.getByRole('dialog',{name:'Diagram viewer'}).waitFor({state:'detached'});
    }
+   const image=page.locator('.milkdown-image-block .image-wrapper > img');
+   await page.waitForFunction(()=>(document.querySelector('.milkdown-image-block .image-wrapper > img') as HTMLImageElement|null)?.naturalWidth);
+   await image.click({position:{x:4,y:4}});
+   const imageViewer=page.getByRole('dialog',{name:'Image viewer'});
+   await imageViewer.waitFor({state:'visible'});
+   const imageWidth=await imageViewer.locator('.wm-diagram-stage > img').evaluate(img=>img.getBoundingClientRect().width);
+   await imageViewer.getByRole('button',{name:'Zoom in',exact:true}).click();
+   if(await imageViewer.locator('.wm-diagram-stage > img').evaluate(img=>img.getBoundingClientRect().width)<=imageWidth)throw Error('Zoom in did not enlarge image');
+   await page.keyboard.press('Escape');
+   await imageViewer.waitFor({state:'detached'});
+   if(!await image.count())throw Error('Closing the image viewer removed the document image');
    await page.getByRole('button',{name:'Expand diagram',exact:true}).first().click();
    const viewer=page.getByRole('dialog',{name:'Diagram viewer'});
    await viewer.waitFor({state:'visible'});
