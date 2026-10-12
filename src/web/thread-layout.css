@@ -65,6 +65,8 @@
   mask-image: linear-gradient(to bottom, black, transparent);
   pointer-events: none;
 }
+/* The header is inset 4px more than cards; align select-all with their checkbox column. */
+.wm-thread-select.wm-select-all { margin-left: calc(-4px * var(--wm-ui-scale, 1)); }
 .wm-annotation-rail-header h2 { font-size: calc(15px * var(--wm-thread-ui-scale, 1)); font-weight: 600; letter-spacing: 0; }
 .wm-annotation-rail-controls { gap: calc(10px * var(--wm-ui-scale, 1)); }
 .wm-thread-sizing { position: relative; display: inline-flex; }

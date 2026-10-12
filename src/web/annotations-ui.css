@@ -305,3 +305,50 @@
 .wm-comment-popover.wm-draggable { cursor: move; }
 .wm-comment-popover.wm-draggable textarea { cursor: auto; }
 body:has(> .wm-annotation-composer) .milkdown .milkdown-toolbar { display: none; }
+
+/* The pill always takes its own row beneath the title. */
+.wm-annotation-rail-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+.wm-pending-badge { grid-column: 1 / -1; justify-self: start; }
+
+/* Batch resolve: the attention pill toggles a checkbox gutter beside unresolved cards. */
+.wm-annotation-rail { --wm-batch-gutter: calc(26px * var(--wm-thread-ui-scale, 1)); }
+.wm-rail-heading { position: relative; min-width: 0; transition: margin-left .2s ease-out; }
+.wm-annotation-rail.is-batch .wm-rail-heading { margin-left: var(--wm-batch-gutter); }
+.wm-thread-select.wm-select-all { top: 50%; translate: 0 -50%; }
+button.wm-pending-badge {
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color .2s ease-out, background-color .2s ease-out;
+}
+.wm-annotation-rail.is-batch .wm-pending-badge {
+  color: var(--wm-color-background, #fff);
+  background: var(--wm-color-primary, #735b45);
+}
+/* Cards restore clipping only after their checkboxes finish fading out. */
+.wm-thread-card {
+  position: relative;
+  transition: margin-left .2s ease-out, overflow 0s .2s allow-discrete, clip-path 0s .2s allow-discrete;
+}
+.wm-annotation-rail.is-batch .wm-thread-card {
+  transition-delay: 0s;
+  margin-left: var(--wm-batch-gutter);
+  overflow: visible;
+  clip-path: inset(0 0 0 calc(-1 * var(--wm-batch-gutter)));
+}
+.wm-thread-select {
+  position: absolute;
+  top: calc(10px * var(--wm-thread-ui-scale, 1));
+  left: calc(-1 * var(--wm-batch-gutter) + 2px);
+  width: calc(15px * var(--wm-thread-ui-scale, 1));
+  height: calc(15px * var(--wm-thread-ui-scale, 1));
+  margin: 0;
+  accent-color: var(--wm-color-primary, #735b45);
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity .2s ease-out, visibility .2s;
+}
+.wm-annotation-rail.is-batch .wm-thread-select { visibility: visible; opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  button.wm-pending-badge, .wm-thread-card, .wm-thread-select, .wm-rail-heading { transition: none; }
+}
