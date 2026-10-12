@@ -67,6 +67,8 @@ The [Tether review skill](integrations/agents/tether-review/SKILL.md) equips you
 
 This optional skill is the easiest way to keep your agent's Tether instructions in step with the app. When you opt in, setup installs the version bundled with the package, and updates refresh it as those instructions change. **You're welcome to customize your copy of the skill**; during future updates, Tether will keep your edits and offer the new instructions for your review. This helps prevent stale instructions from steering future sessions; see [skill updates](docs/guide/agent-setup.md#skill-updates).
 
+The optional [Tetherball skill](integrations/agents/tetherball/SKILL.md) helps develop shared understanding through an evolving document. Install it alongside `tether-review` when questions, evidence or feedback will reshape the work across exchanges. Tetherball is bundled in the package; copy its directory into your agent’s skills directory to install it. The setup command and managed skill updater currently handle only `tether-review`.
+
 Agents can also use the [CLI reference](docs/reference/cli.md) directly. It covers reading only the relevant comments and document context, replying in threads, making safe edits, and registering finished documents in Folio.
 
 ## Help and development
