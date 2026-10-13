@@ -2,6 +2,7 @@
 /// <reference lib="dom.iterable" />
 import { transcriptSelector } from "./dom";
 import { parseSubmitted, type SubmittedPart } from "./submitted";
+import { renderCommentBody } from "../../../src/web/comment-body";
 
 const sourceSelector = `${transcriptSelector} [data-testid="user-message"] [data-message-text="true"]:not([data-tether-submitted])`;
 const sourceAttribute = "data-tether-submitted-source";
@@ -11,6 +12,13 @@ const css = `
 [data-tether-submitted] p { margin:0; }
 [data-tether-submitted] > :not(:first-child) { margin-top:12px; }
 [data-tether-submitted] blockquote { margin:0; padding:0 0 0 10px; border-left:2px solid var(--colors-accent); }
+[data-tether-submitted] > section > blockquote { padding:10px 12px; border-radius:6px; background:var(--colors-surface0); color:var(--colors-foreground); }
+[data-tether-submitted] .tether-submitted-markdown > :not(:first-child) { margin-top:.6em; }
+[data-tether-submitted] .tether-submitted-markdown :is(ul,ol) { white-space:normal; padding-left:1.5em; margin-block:0; }
+[data-tether-submitted] .tether-submitted-markdown :is(p,li) { white-space:pre-wrap; }
+[data-tether-submitted] .tether-submitted-markdown a { color:inherit; text-decoration:underline; }
+[data-tether-submitted] .tether-submitted-markdown code { font-family:ui-monospace,monospace; }
+[data-tether-submitted] .wm-comment-table { overflow-x:auto; white-space:normal; }
 [data-tether-submitted] .tether-submitted-speaker { color:var(--colors-foreground-muted); font-size:.8em; margin-bottom:3px; }
 [data-tether-submitted] .tether-submitted-feedback { margin-top:6px; }
 [data-tether-submitted] pre { margin:0; font:inherit; font-family:ui-monospace,monospace; white-space:pre-wrap; }
@@ -30,12 +38,18 @@ function content(parts: SubmittedPart[]): HTMLElement {
     const section = document.createElement("section"), quote = document.createElement("blockquote"), speaker = document.createElement("div");
     speaker.className = "tether-submitted-speaker";
     speaker.textContent = part.draft.code ? "Code" : part.draft.from === "assistant" ? "Assistant" : part.draft.from === "user" ? "You" : "Selected passage";
-    const passage = document.createElement(part.draft.code ? "pre" : "p");
-    passage.textContent = part.draft.quote;
+    const passage = part.draft.code ? document.createElement("pre") : renderCommentBody(part.draft.quote);
     if (part.draft.code) {
+      passage.textContent = part.draft.quote;
       passage.dataset.pmono = ""; // Opt out of Paseo's app-wide UI font rule.
       passage.dataset.paseoMarkdownTag = "pre";
       if (typeof part.draft.code === "string") passage.dataset.paseoMarkdownLanguage = part.draft.code;
+    } else {
+      passage.className = "tether-submitted-markdown";
+      for (const code of passage.querySelectorAll<HTMLElement>("pre,code")) {
+        code.dataset.pmono = "";
+        code.dataset.paseoMarkdownTag = code.tagName.toLowerCase();
+      }
     }
     quote.append(speaker, passage); section.append(quote);
     if (part.draft.feedback) {

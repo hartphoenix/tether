@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { chromium, webkit } from "playwright";
 import { formatDrafts } from "../integrations/paseo/chat/model";
+import { themePresets } from "../src/shared/theme-presets";
 
 const sourceRoot = process.argv[2] ?? "/tmp/tether-paseo-v0112-probe";
 assert.equal(Bun.spawnSync(["git", "-C", sourceRoot, "rev-parse", "HEAD"]).stdout.toString().trim(), "75953250959979b8f088bbca8dbd6ee61d0151b1");
@@ -64,7 +65,7 @@ const source = await build.outputs[0].text();
 const wire = `Before the quotes.\n\n${formatDrafts([
   { id: "1", from: "assistant", quote: "A selected passage.", feedback: "My feedback." },
   { id: "2", from: "user", quote: 'const text = "</chat-selection>";', code: "ts", feedback: "" },
-  { id: "3", quote: "Unattributed quote.", feedback: '<img src=x onerror="alert(1)"> literal text.' },
+  { id: "3", quote: '**Bold** and *italic*, ~~removed~~, `inline code`, [link](https://example.com).\n\n<img src=x onerror="alert(1)">', feedback: '<img src=x onerror="alert(1)"> literal text.' },
   { id: "4", quote: "Tool output line.", code: true, feedback: "" },
 ])}\n\nAfter the quotes.`;
 
@@ -83,6 +84,34 @@ for (const engine of [chromium, webkit]) {
     assert.equal(await view.locator('section').count(), 4);
     assert.equal(await view.locator('.tether-submitted-feedback').count(), 2);
     assert.equal(await view.locator('img').count(), 0, "annotation content is text, never HTML");
+    assert.equal(await view.locator('strong').textContent(), 'Bold');
+    assert.equal(await view.locator('strong').evaluate(node => getComputedStyle(node).fontWeight), '700');
+    assert.equal(await view.locator('em').evaluate(node => getComputedStyle(node).fontStyle), 'italic');
+    assert.equal(await view.locator('del').textContent(), 'removed');
+    assert.equal(await view.locator('code').textContent(), 'inline code');
+    assert.match(await view.locator('code').evaluate(node => getComputedStyle(node).fontFamily), /monospace/);
+    assert.equal(await view.locator('a').getAttribute('href'), 'https://example.com');
+    // The whole quote uses the live page palette, including when themes change.
+    for (const [name, theme] of Object.entries(themePresets)) {
+      await page.evaluate(colors => {
+        const style = document.documentElement.style;
+        style.setProperty('--colors-surface0', colors.background);
+        style.setProperty('--colors-surface1', colors.surface);
+        style.setProperty('--colors-foreground', colors['on-background']);
+        style.setProperty('--colors-foreground-muted', colors['on-surface-variant']);
+      }, theme.colors);
+      const colors = await view.locator('section > blockquote').first().evaluate(node => {
+        const probe = document.createElement('div');
+        probe.style.background = 'var(--colors-surface0)'; probe.style.color = 'var(--colors-foreground)';
+        document.body.append(probe);
+        const actual = getComputedStyle(node), expected = getComputedStyle(probe);
+        const result = { background: actual.backgroundColor, foreground: actual.color, expectedBackground: expected.backgroundColor, expectedForeground: expected.color };
+        probe.remove(); return result;
+      });
+      assert.equal(colors.background, colors.expectedBackground, name);
+      assert.equal(colors.foreground, colors.expectedForeground, name);
+      assert.notEqual(colors.background, 'rgba(0, 0, 0, 0)', name);
+    }
     for (const font of await view.locator('pre').evaluateAll(nodes => nodes.map(node => getComputedStyle(node).fontFamily)))
       assert.match(font, /monospace/, "code keeps its font under Paseo's global UI font rule");
     assert.equal(await view.locator('.tether-submitted-feedback').first().evaluate(node => getComputedStyle(node).fontFamily), 'sans-serif');
