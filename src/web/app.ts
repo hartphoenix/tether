@@ -24,7 +24,7 @@ import { Plugin } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose, replaceAll, callCommand } from "@milkdown/kit/utils";
 import { createCodeBlockCommand } from "@milkdown/kit/preset/commonmark";
-import { createAnnotationUi, captureAnchor, type AnnotationThread, type AnnotationUiController } from "./annotations-ui";
+import { createAnnotationUi, captureAnchor, registerDocumentRevision, type AnnotationThread, type AnnotationUiController } from "./annotations-ui";
 import { apiErrorMessage } from "./api-error";
 import { createChromeControls } from "./chrome-controls";
 import { createCanvas } from './canvas';
@@ -414,7 +414,11 @@ async function save(): Promise<boolean> {
   if (conflicted || incomingReview) return false;
   if (saveInFlight) { saveAgain = true; return false; }
   const markdown = currentMarkdown();
-  if (markdown === savedEditorMarkdown) return true;
+  const savedDoc = sourceEditor ? undefined : getEditorView()?.state.doc;
+  if (markdown === savedEditorMarkdown) {
+    if (savedDoc) registerDocumentRevision(savedDoc, currentBodyRevision);
+    return true;
+  }
   saveInFlight = true;
   let succeeded = true;
   try {
@@ -427,6 +431,7 @@ async function save(): Promise<boolean> {
     currentLedgerRevision = result.ledgerRevision;
     annotationState = result.annotations;
     savedEditorMarkdown = markdown;
+    if (savedDoc) registerDocumentRevision(savedDoc, result.bodyRevision);
     // Do not clear a newer in-flight edit's recovery draft.
     if (currentMarkdown() === markdown) await draftPersistence.clear();
   } catch (error) {
@@ -565,9 +570,11 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
         commentButton.setAttribute("aria-pressed", String(open));
       },
       onCreateComment: async ({ body, anchor }) => {
+        const selectedDoc = getEditorView()?.state.doc;
         const annotationPath = currentPath;
         if (!(await save())) throw new Error("Save the document before commenting.");
         if (generation !== documentGeneration || annotationPath !== currentPath) throw new Error("The document changed before the comment was sent.");
+        if (selectedDoc !== getEditorView()?.state.doc) throw new Error("The document changed while saving. Submit the comment again.");
         const revision = currentBodyRevision;
         await postAnnotation("/api/annotations", { type: "comment", body, anchor: { ...anchor, bodyRevision: revision }, expectedBodyRevision: revision }, generation, annotationPath);
       },
@@ -603,6 +610,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       view.setProps({ handleScrollToSelection: scrollSelectionIntoView });
       // A fresh reader starts at the top; reading-anchor preservation is for later zooms.
       canvas.setScale(chrome.getZoom() / 100, { preserveScroll: false });
+      registerDocumentRevision(view.state.doc, currentBodyRevision);
       nextAnnotationUi.attachEditorView(view);
       document.title = documentTabTitle(currentPath, view.state.doc);
     }
@@ -661,6 +669,7 @@ async function saveReviewed(): Promise<void> {
   cancelReviewButton.disabled = true;
   try {
     const markdown = currentMarkdown();
+    const savedDoc = sourceEditor ? undefined : getEditorView()?.state.doc;
     const result = await api<DocumentResponse>("api/file", {
       method: "PUT",
       body: JSON.stringify({ content: review.editorDoc && matchesIncomingDocument(crepe.editor, review.editorDoc) ? review.body : restoreMarkdown(markdown, review.frontmatter), expectedBodyRevision: review.bodyRevision }),
@@ -671,6 +680,7 @@ async function saveReviewed(): Promise<void> {
     diskBody = result.body;
     currentLedgerRevision = result.ledgerRevision;
     savedEditorMarkdown = markdown;
+    if (savedDoc) registerDocumentRevision(savedDoc, result.bodyRevision);
     clearConflict();
     if (currentMarkdown() === markdown) await draftPersistence.clear();
     else scheduleSave();

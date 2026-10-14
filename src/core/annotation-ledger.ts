@@ -797,9 +797,17 @@ function matchingContext(text: string, anchor: AnnotationAnchor, start: number, 
 }
 
 /** Resolve exact quote anchors, making ambiguity explicit instead of guessing. */
-export function resolveAnchor(anchor: AnnotationAnchor, projection: RenderedTextProjection | string): AnchorResolution {
+export function resolveAnchor(anchor: AnnotationAnchor, projection: RenderedTextProjection | string, currentBodyRevision?: string): AnchorResolution {
   const text = typeof projection === "string" ? projection : projection.projection;
   if (!anchor.exact) return { status: "orphan", reason: "quote-not-found", matches: [] };
+  const start = anchor.projectionStart, savedEnd = anchor.projectionEnd;
+  if (currentBodyRevision && currentBodyRevision === anchor.bodyRevision
+    && Number.isSafeInteger(start) && Number.isSafeInteger(savedEnd)
+    && start >= 0 && savedEnd > start && savedEnd <= text.length
+    && text.slice(start, savedEnd) === anchor.exact) {
+    return { status: "resolved", projectionStart: start, projectionEnd: savedEnd,
+      ...(typeof projection === "string" ? {} : { from: projection.positionAt(start), to: projection.positionAt(savedEnd) }) };
+  }
   const matches: number[] = [];
   let from = 0;
   while (from <= text.length) {

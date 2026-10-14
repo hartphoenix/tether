@@ -391,6 +391,25 @@ async function fontAndMediaSizing(page: Page) {
   check(Math.abs((await image.boundingBox())!.height - 85) < 1, 'rebased image jumps to legacy resize minimum');
   console.log('PASS point rendering and saved image ratio/resize');
 }
+async function duplicateComments(page: Page) {
+  await page.goto(new URL('?duplicates', server.url).toString());
+  await page.waitForFunction(() => (window as any).ready);
+  for (const index of [2, 8]) {
+    await page.locator('.ProseMirror p').nth(index).scrollIntoViewIfNeeded();
+    await page.evaluate(i => (window as any).audit.selectDuplicate(i), index);
+    await page.locator('[data-toolbar-item="comment"]').click();
+    const highlight = page.locator('.wm-annotation-highlight');
+    check(await highlight.count() === 1, 'duplicate selection did not receive exactly one highlight');
+    check(await highlight.textContent() === 'duplicate target', 'duplicate quote changed');
+    check(await highlight.evaluate((el, i) => el.closest('p') === document.querySelectorAll('.ProseMirror p')[i], index), 'highlight attached to the wrong occurrence');
+    const selection = (await highlight.boundingBox())!;
+    const composer = page.locator('.wm-annotation-composer');
+    const box = (await composer.boundingBox())!;
+    check(Math.min(Math.abs(box.y - selection.y - selection.height), Math.abs(box.y + box.height - selection.y)) < 40, 'duplicate comment was not placed beside its selection');
+    await composer.getByRole('button', { name: 'Cancel', exact: true }).click();
+  }
+  console.log('PASS duplicate comment highlight and placement');
+}
 async function documentSizing(page: Page, browser: string) {
   const measurements: Record<string, unknown> = {};
   for (const width of [1200, 600]) for (const custom of [false, true]) for (const zoom of [.8, 1]) {
@@ -439,6 +458,7 @@ try {
         await context.close();
         continue;
       }
+      await duplicateComments(page);
       await sourceZoom(page);
       await fontAndMediaSizing(page);
       await selectionMenuScale(page);
