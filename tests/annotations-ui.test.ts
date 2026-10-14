@@ -10,6 +10,7 @@ import {
   createAnnotationUi,
   projectDocument,
   resolveAnchor,
+  registerDocumentRevision,
   type AnnotationThread,
   type AnnotationAnchor,
 } from "../src/web/annotations-ui";
@@ -520,4 +521,90 @@ test('reply and edit submission preserve leading, trailing, and internal whitesp
   const editable = details.querySelector('.wm-editable-annotation')!;
   editable.querySelector('textarea')!.value=value; editable.querySelector<HTMLButtonElement>('.wm-button-primary')!.click();
   expect(edited).toBe(value); ui.destroy();
+});
+
+test('duplicate draft stays on the selected occurrence through edits and submits its updated position', async () => {
+  const win = installDom();
+  const passage = 'x'.repeat(80) + 'target' + 'y'.repeat(80);
+  const { doc } = documentWith(passage, passage);
+  const root = document.createElement('div');
+  const editorRoot = document.createElement('div');
+  document.body.append(root, editorRoot);
+  let submitted: AnnotationAnchor | undefined;
+  let notice = '';
+  const ui = createAnnotationUi({ root, editorRoot,
+    onCreateComment: draft => { submitted = draft.anchor; }, onNotice: message => { notice = message; } });
+  const from = passage.length + 83;
+  let state = EditorState.create({ doc, selection: TextSelection.create(doc, from, from + 6), plugins: [ui.plugin] });
+  const view = { get state() { return state; }, dom: editorRoot,
+    dispatch(tr: Parameters<typeof state.apply>[0]) { state = state.apply(tr); },
+    coordsAtPos: () => ({ left: 100, right: 100, top: 300, bottom: 320 }),
+  } as unknown as import('@milkdown/kit/prose/view').EditorView;
+  ui.attachEditorView(view);
+  const original = captureAnchor(view)!;
+  const stored = JSON.parse(JSON.stringify(original));
+  expect(resolveAnchor(doc, stored)).toBeNull();
+  registerDocumentRevision(doc, bodyRevision);
+  expect(resolveAnchor(doc, stored)?.ranges).toEqual([{ from, to: from + 6 }]);
+  ui.openCommentComposer(original);
+  const drafts = () => annotationUiPluginKey.getState(state)!.decorations.find().filter(d => d.spec.draft);
+  expect(drafts().map(d => d.from)).toEqual([from]);
+  expect(document.querySelector<HTMLElement>('.wm-annotation-composer')!.style.top).toBe('328px');
+  view.dispatch(state.tr.insertText('before ', 1));
+  expect(resolveAnchor(state.doc, stored)).toBeNull(); // The old revision never applies to the edited snapshot.
+  ui.setState({ threads: [] }); // A review refresh must preserve mapped positions.
+  expect(drafts().map(d => d.from)).toEqual([from + 7]);
+  const form = document.querySelector<HTMLFormElement>('.wm-annotation-form')!;
+  form.querySelector('textarea')!.value = 'Comment';
+  form.dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
+  expect(submitted?.projectionStart).toBe(original.projectionStart + 7);
+  expect(submitted?.exact).toBe('target');
+  await Promise.resolve();
+  ui.openCommentComposer(stored);
+  expect(notice).toContain('Couldn’t locate');
+  expect(document.querySelector('.wm-annotation-composer')).toBeNull();
+  view.dispatch(state.tr.setSelection(TextSelection.create(state.doc, from + 7, from + 13)));
+  ui.openCommentComposer();
+  view.dispatch(state.tr.delete(from + 7, from + 13));
+  expect(drafts()).toHaveLength(0);
+  const deletedForm = document.querySelector<HTMLFormElement>('.wm-annotation-form')!;
+  deletedForm.querySelector('textarea')!.value = 'Cannot attach to the other copy';
+  submitted = undefined;
+  deletedForm.dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
+  expect(submitted).toBeUndefined();
+  expect(deletedForm.textContent).toContain('Couldn’t locate');
+  ui.destroy();
+});
+
+test('a completed save verifies only its snapshot, and reopening restores a persisted duplicate anchor', () => {
+  const passage = 'before '.repeat(12) + 'target' + ' after'.repeat(12);
+  const { doc } = documentWith(passage, passage);
+  const from = passage.length + 3 + 'before '.repeat(12).length;
+  const state = EditorState.create({ doc, selection: TextSelection.create(doc, from, from + 6) });
+  const captured = captureAnchor({ state } as import('@milkdown/kit/prose/view').EditorView, bodyRevision)!;
+  const stored = JSON.parse(JSON.stringify(captured));
+  const edited = state.apply(state.tr.insertText('new introduction ', 1));
+  registerDocumentRevision(doc, bodyRevision); // Save response arrives after the newer edit.
+  expect(resolveAnchor(doc, stored)?.ranges).toEqual([{ from, to: from + 6 }]);
+  expect(resolveAnchor(edited.doc, stored)).toBeNull();
+  const reopened = doc.type.schema.nodeFromJSON(doc.toJSON());
+  expect(resolveAnchor(reopened, stored)).toBeNull();
+  registerDocumentRevision(reopened, bodyRevision);
+  expect(resolveAnchor(reopened, stored)?.ranges).toEqual([{ from, to: from + 6 }]);
+  expect(createAnnotationDecorations(reopened, [thread({ anchor: stored })]).find().filter(d => d.spec.annotationId)).toHaveLength(1);
+});
+
+test('fresh selections spanning repeated blocks paint every selected block', () => {
+  const passage = 'context '.repeat(12);
+  const { doc } = documentWith(passage, 'first line', 'second line', passage, passage, 'first line', 'second line', passage);
+  const starts: number[] = [];
+  doc.descendants((node, pos) => { if (node.isTextblock) starts.push(pos + 1); });
+  for (const index of [1, 5]) {
+    const state = EditorState.create({ doc, selection: TextSelection.create(doc, starts[index], starts[index + 1] + 11) });
+    const selected = captureAnchor({ state } as import('@milkdown/kit/prose/view').EditorView)!;
+    expect(resolveAnchor(doc, JSON.parse(JSON.stringify(selected)))).toBeNull();
+    expect(createAnnotationDecorations(doc, [], selected).find().map(d => [d.from, d.to])).toEqual([
+      [starts[index], starts[index] + 10], [starts[index + 1], starts[index + 1] + 11],
+    ]);
+  }
 });

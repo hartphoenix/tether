@@ -143,10 +143,29 @@ function projectionRanges(
   return result;
 }
 
+// ProseMirror documents are immutable: a revision applies only to the snapshot
+// loaded from disk or acknowledged by a completed save, never to later edits.
+const documentRevisions = new WeakMap<ProseMirrorNode, string>();
+export function registerDocumentRevision(doc: ProseMirrorNode, revision: string): void {
+  documentRevisions.set(doc, revision);
+}
+const selectedRanges = new WeakMap<AnnotationAnchor, { doc: ProseMirrorNode; from: number; to: number } | null>();
+
+function currentAnchor(doc: ProseMirrorNode, anchor: AnnotationAnchor): AnnotationAnchor | null {
+  if (!selectedRanges.has(anchor)) return anchor;
+  const range = selectedRanges.get(anchor);
+  if (!range || range.doc !== doc) return null;
+  return captureRange(doc, range.from, range.to, documentRevisions.get(doc) ?? UNKNOWN_BODY_REVISION);
+}
+
 /** Resolve using the canonical ledger resolver, then split cross-block quotes into inline runs. */
 export function resolveAnchor(doc: ProseMirrorNode, anchor: AnnotationAnchor): ResolvedAnchor | null {
   const projection = renderedTextProjection(doc);
-  const resolution = resolveLedgerAnchor(anchor, projection);
+  const captured = currentAnchor(doc, anchor);
+  if (!captured) return null;
+  const resolution = selectedRanges.has(anchor)
+    ? { status: "resolved" as const, projectionStart: captured.projectionStart, projectionEnd: captured.projectionEnd }
+    : resolveLedgerAnchor(anchor, projection, documentRevisions.get(doc));
   if (resolution.status !== "resolved") return null;
   const ranges = projectionRanges(projection, resolution.projectionStart, resolution.projectionEnd);
   return ranges.length > 0
@@ -157,8 +176,12 @@ export function resolveAnchor(doc: ProseMirrorNode, anchor: AnnotationAnchor): R
 /** Capture a selected editor range as a portable quote anchor. */
 export function captureAnchor(view: EditorView, sourceBodyRevision = UNKNOWN_BODY_REVISION): AnnotationAnchor | null {
   const { from, to } = view.state.selection;
+  return captureRange(view.state.doc, from, to, sourceBodyRevision);
+}
+
+function captureRange(doc: ProseMirrorNode, from: number, to: number, sourceBodyRevision: string): AnnotationAnchor | null {
   if (from >= to) return null;
-  const projection = projectDocument(view.state.doc);
+  const projection = projectDocument(doc);
   let start: number | null = null;
   let end: number | null = null;
   for (let offset = 0; offset < projection.positions.length - 1; offset += 1) {
@@ -168,7 +191,9 @@ export function captureAnchor(view: EditorView, sourceBodyRevision = UNKNOWN_BOD
     if (position >= from && position < to && nextPosition !== undefined) end = offset + 1;
   }
   if (start === null || end === null || end <= start) return null;
-  return createLedgerAnchor(projection, start, end, sourceBodyRevision);
+  const anchor = createLedgerAnchor(projection, start, end, sourceBodyRevision);
+  selectedRanges.set(anchor, { doc, from, to });
+  return anchor;
 }
 
 function threadSort(a: AnnotationThread, b: AnnotationThread): number {
@@ -221,6 +246,14 @@ function createAnnotationPlugin(controller: AnnotationUiControllerLike): Plugin<
         if (meta || transaction.docChanged) {
           const threads = meta?.threads ?? previous.threads;
           const draftAnchor = meta?.draftAnchor === undefined ? previous.draftAnchor : meta.draftAnchor;
+          if (transaction.docChanged && draftAnchor && selectedRanges.has(draftAnchor)) {
+            const range = selectedRanges.get(draftAnchor);
+            if (range && range.doc === _oldState.doc) {
+              const from = transaction.mapping.map(range.from, 1);
+              const to = transaction.mapping.map(range.to, -1);
+              selectedRanges.set(draftAnchor, from < to ? { doc: newState.doc, from, to } : null);
+            }
+          }
           return { threads, draftAnchor, decorations: createAnnotationDecorations(newState.doc, threads, draftAnchor) };
         }
         return previous;
@@ -475,9 +508,19 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     },
     openCommentComposer(anchor) {
       if (destroyed) return;
-      composer?.remove();
       const view = currentView();
-      composerAnchor = anchor ?? (view ? captureAnchor(view) : null) ?? undefined;
+      const nextAnchor = anchor ?? (view ? captureAnchor(view) : null) ?? undefined;
+      if (view && (!nextAnchor || !resolveAnchor(view.state.doc, nextAnchor))) {
+        onNotice("Couldn’t locate the selected passage. Select it again before commenting.");
+        return;
+      }
+      composer?.remove();
+      composerAnchor = nextAnchor;
+      // Supplied quote anchors also become a live range while composing.
+      if (view && composerAnchor && !selectedRanges.has(composerAnchor)) {
+        const ranges = resolveAnchor(view.state.doc, composerAnchor)!.ranges;
+        selectedRanges.set(composerAnchor, { doc: view.state.doc, from: ranges[0].from, to: ranges.at(-1)!.to });
+      }
       composer = createCommentComposer(composerAnchor);
       document.body.append(composer);
       syncDecorations();
@@ -649,9 +692,9 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       event.preventDefault();
       const body = textarea.value;
       const view = currentView();
-      const resolvedAnchor = anchor ?? (view ? captureAnchor(view) : null);
+      const resolvedAnchor = anchor ? (view ? currentAnchor(view.state.doc, anchor) : anchor) : (view ? captureAnchor(view) : null);
       if (!resolvedAnchor) {
-        error.textContent = "Select text in the document before commenting.";
+        error.textContent = "Couldn’t locate the selected passage. Close this comment and select it again.";
         error.hidden = false;
         return;
       }
