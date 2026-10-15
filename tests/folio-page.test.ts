@@ -412,3 +412,41 @@ test("default document zoom is saved explicitly without previewing", async () =>
  expect(slider.value).toBe('125');
  dom.window.close();
 });
+
+test("select all toggles every visible document only while selecting", async () => {
+  const { dom } = runPage({ sequence: 1, files: [{ path: "/a.md", name: "A", view: "active" }, { path: "/b.md", name: "B", view: "active" }] });
+  await Bun.sleep(0);
+  const doc = dom.window.document, row = doc.querySelector<HTMLElement>("#select-all-row")!, all = doc.querySelector<HTMLInputElement>("#select-all")!;
+  const checks = () => [...doc.querySelectorAll<HTMLInputElement>("#list .file-check")].map(check => check.checked);
+  expect(row.hidden).toBe(true);
+  doc.querySelector<HTMLButtonElement>("#select")!.click();
+  expect(row.hidden).toBe(false);
+  expect(row.nextElementSibling?.id).toBe("list");
+  all.click();
+  expect(checks()).toEqual([true, true]);
+  doc.querySelector<HTMLInputElement>("#list .file-check")!.click();
+  expect(all.indeterminate).toBe(true);
+  all.click();
+  expect(checks()).toEqual([true, true]);
+  all.click();
+  expect(checks()).toEqual([false, false]);
+  doc.querySelector<HTMLButtonElement>("#finish-selection")!.click();
+  expect(row.hidden).toBe(true);
+  dom.window.close();
+});
+
+test("batch unpin follows pin and unpins the selection", async () => {
+  const { dom, requests } = runPage({ sequence: 1, files: [{ path: "/a.md", name: "A", view: "active", pinned: true }, { path: "/b.md", name: "B", view: "active", pinned: true }] });
+  await Bun.sleep(0);
+  const doc = dom.window.document, unpin = doc.querySelector<HTMLButtonElement>("#batch-unpin")!;
+  expect(unpin.previousElementSibling?.id).toBe("batch-pin");
+  expect(unpin.hidden).toBe(true);
+  doc.querySelector<HTMLButtonElement>("#select")!.click();
+  expect(unpin.hidden).toBe(false);
+  expect(unpin.disabled).toBe(true);
+  doc.querySelector<HTMLInputElement>("#select-all")!.click();
+  unpin.click();
+  await Bun.sleep(0);
+  expect(requests.find(request => request.body.action === "unpin")?.body.paths).toEqual(["/a.md", "/b.md"]);
+  dom.window.close();
+});
