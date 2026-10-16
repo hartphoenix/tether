@@ -60,6 +60,6 @@ Tether starts its local service if it isn't running and opens your default brows
 
 ## Compatibility limits
 
-Tether checks each host's minimum version, but a later host release can still break an integration. The Paseo plugin targets Paseo 0.11.2 exactly; see [Tether in Paseo](paseo.md#compatibility).
+Tether checks each host's minimum version and never refuses a later one. A later host release can still break an integration. The Paseo plugin was tested with Paseo 0.11.2; see [Tether in Paseo](paseo.md#compatibility).
 
 When you request something your host doesn't support, Tether reports it instead of switching to a browser. To find what failed, run `tether doctor` and the host's status command: `tether paseo status`, `tether cmux status` or `tether wave status`. [Recovery](recovery.md) covers relaunching and reconnecting saved views.

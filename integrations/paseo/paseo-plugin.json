@@ -1,6 +1,6 @@
 {
   "id": "tether",
   "requirements": {
-    "paseo": ">=0.11.2 <0.11.3"
+    "paseo": ">=0.11.2"
   }
 }

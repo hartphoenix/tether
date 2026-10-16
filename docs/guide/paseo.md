@@ -12,7 +12,7 @@
 
 ## Install
 
-Packaged Tether includes a compiled plugin for Paseo 0.11.2. The full Folio, reader panels and chat annotations need the Paseo desktop app, the Paseo daemon and Tether on the same Mac; Paseo's web and mobile clients show a basic document list.
+Packaged Tether includes a compiled plugin for Paseo 0.11.2 and later. The full Folio, reader panels and chat annotations need the Paseo desktop app, the Paseo daemon and Tether on the same Mac; Paseo's web and mobile clients show a basic document list.
 
 Setup reports installed hosts without launching them. To install the plugin, run:
 
@@ -20,7 +20,7 @@ Setup reports installed hosts without launching them. To install the plugin, run
 tether setup --paseo --no-open
 ```
 
-The command registers the bundled plugin with the local Paseo daemon, using the CLI inside the Paseo app if `paseo` isn't on your PATH. Setup reports an unsupported or unknown Paseo version instead of installing. If you already have an unmanaged Tether plugin, setup keeps it and reports it for review.
+The command registers the bundled plugin with the local Paseo daemon, using the CLI inside the Paseo app if `paseo` isn't on your PATH. Setup refuses only a Paseo older than 0.11.2. For any other version, it installs the plugin and notes when the version differs from the tested one. If you already have an unmanaged Tether plugin, setup keeps it and reports it for review.
 
 Paseo plugins run trusted, unsandboxed code, so setup leaves Paseo's global plugin switch alone. Turn it on in **Settings → Plugins** when you're ready. Disable other chat annotation plugins before using Tether's.
 
@@ -63,4 +63,4 @@ Open **Settings → Plugins → Tether → ⋯ → Settings**. The screen shows 
 
 ## Compatibility
 
-The plugin targets Paseo 0.11.2 exactly. Its embedded Folio, reader panels and chat annotations rely on parts of Paseo's desktop app outside the supported plugin API, so a later Paseo release can break them. If that happens, the basic document list still works, and turning off custom panels opens readers as browser tabs.
+The plugin requires Paseo 0.11.2 or later and was tested with 0.11.2. Tether doesn't block later Paseo releases. Its embedded Folio, reader panels and chat annotations rely on parts of Paseo's desktop app outside the supported plugin API, so a later Paseo release can break them. If that happens, the basic document list still works, and turning off custom panels opens readers as browser tabs.

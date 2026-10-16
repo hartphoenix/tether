@@ -25,6 +25,7 @@ try {
   }
   const { version } = JSON.parse(await readFile(join(root, "release.json"), "utf8"));
   if (!(await readFile(join(root, "docs/releases", `${version}.md`), "utf8")).startsWith(`# Tether ${version}`)) throw new Error("Missing bundled release notes");
+  if (!(await readFile(join(root, "docs/guide/paseo.md"), "utf8")).startsWith("# Tether in Paseo")) throw new Error("Missing bundled Paseo guide");
   const plugin = join(root, "integrations/paseo");
   const files = (await readdir(plugin)).sort();
   if (JSON.stringify(files) !== JSON.stringify(["LICENSE", "NOTICE.md", "index.client.ts", "index.server.ts", "package.json", "paseo-plugin.json"].sort())) throw new Error("Unexpected plugin payload");
