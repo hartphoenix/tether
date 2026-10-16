@@ -1,6 +1,7 @@
+import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { chmodSync, mkdirSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   appendAnnotationEvent,
   createAnnotationLedger,
@@ -88,6 +89,7 @@ export class PrivateStore {
         archived_at INTEGER,
         expires_at INTEGER
       );
+      CREATE TABLE IF NOT EXISTS visual_evidence (document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE, hash TEXT NOT NULL, png BLOB NOT NULL, PRIMARY KEY(document_id,hash));
       CREATE TABLE IF NOT EXISTS annotation_events (
         document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
         seq INTEGER NOT NULL,
@@ -254,7 +256,7 @@ export class PrivateStore {
         .run({
           documentId: document.id, seq: event.seq, id: event.id, type: event.type, actor: event.actor, createdAt: event.createdAt,
           threadId: "threadId" in event ? event.threadId : null, targetId: "targetId" in event ? event.targetId : null,
-          body: "body" in event ? event.body : null, anchorJson: event.type === "comment" ? JSON.stringify(event.anchor) : null,
+          body: "body" in event ? event.body : null, anchorJson: "anchor" in event ? JSON.stringify(event.anchor) : null,
           throughSeq: event.type === "ack" ? event.throughSeq : null, bodyRevision: event.type === "ack" ? event.bodyRevision : null,
           payloadJson: JSON.stringify(event),
         });
@@ -282,7 +284,7 @@ export class PrivateStore {
       for (const event of events) insert.run({
         documentId: document.id, seq: event.seq, id: event.id, type: event.type, actor: event.actor, createdAt: event.createdAt,
         threadId: "threadId" in event ? event.threadId : null, targetId: "targetId" in event ? event.targetId : null,
-        body: "body" in event ? event.body : null, anchorJson: event.type === "comment" ? JSON.stringify(event.anchor) : null,
+        body: "body" in event ? event.body : null, anchorJson: "anchor" in event ? JSON.stringify(event.anchor) : null,
         throughSeq: event.type === "ack" ? event.throughSeq : null, bodyRevision: event.type === "ack" ? event.bodyRevision : null,
         payloadJson: JSON.stringify(event),
       });
@@ -375,6 +377,7 @@ export class PrivateStore {
     const document = this.documentForPath(path);
     if (!document) return false;
     const transact = this.db.transaction(() => {
+      this.db.query("DELETE FROM visual_evidence WHERE document_id = ?").run(document.id);
       this.db.query("DELETE FROM mutations WHERE document_id = ?").run(document.id);
       this.db.query("DELETE FROM review_observations WHERE document_id = ?").run(document.id);
       this.db.query("DELETE FROM agent_continuations WHERE document_id = ?").run(document.id);
@@ -384,6 +387,7 @@ export class PrivateStore {
       this.db.query("UPDATE documents SET conversation_at = NULL WHERE id = ?").run(document.id);
     });
     transact.immediate();
+    rmSync(join(this.path === ":memory:" ? tmpdir() : dirname(this.path), "visual-artifacts", document.id), { recursive: true, force: true });
     return true;
   }
 }

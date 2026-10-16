@@ -1,3 +1,4 @@
+import { contrastRatio } from "../../../src/shared/themes";
 import type { CollectionHost } from "./collections";
 import { commentWindowCss } from "../../../src/shared/comment-window";
 import { themePresets } from "../../../src/shared/theme-presets";
@@ -104,6 +105,8 @@ export function startChatUi(chats: Map<string, UiChat>, collections: CollectionH
     const foreground = css.getPropertyValue("--colors-foreground").trim().toLowerCase();
     const palette = Object.values(themePresets).find(p => p.colors.background.toLowerCase() === background && p.colors["on-background"].toLowerCase() === foreground)?.colors;
     const vars: Record<string, string> = {
+      annotation: palette?.annotation ?? "var(--colors-accent)",
+      "on-annotation": palette ? (contrastRatio(palette.annotation, '#18212b') >= contrastRatio(palette.annotation, '#ffffff') ? '#18212b' : '#ffffff') : "var(--colors-accent-foreground)",
       surface: "var(--colors-surface1)", input: "var(--colors-surface0)", text: "var(--colors-foreground)", muted: "var(--colors-foreground-muted)",
       outline: palette?.outline ?? "var(--colors-border)", control: palette?.["surface-low"] ?? "var(--colors-surface2)",
       primary: palette?.secondary ?? "var(--colors-accent)", "on-primary": palette?.["on-secondary"] ?? "var(--colors-accent-foreground)",
@@ -187,6 +190,7 @@ export function startChatUi(chats: Map<string, UiChat>, collections: CollectionH
         const oldPosition = mount.style.position, changedPosition = getComputedStyle(mount).position === "static";
         if (changedPosition) mount.style.position = "relative";
         const base = mount.getBoundingClientRect(), badge = button(String(index + 1), () => { void open(key, draft, range.getBoundingClientRect(), range).catch(() => {}); });
+        syncCardTheme(badge);
         badge.dataset.tetherChat = "badge"; badge.setAttribute("aria-label", `Edit annotation ${index + 1}`);
         badge.style.left = `${rect.left - base.left + mount.scrollLeft - mount.clientLeft}px`;
         badge.style.top = `${rect.top - base.top + mount.scrollTop - mount.clientTop - 9}px`;

@@ -8,6 +8,8 @@ import { bodyRevision } from "../src/core/annotation-ledger";
 import { DocumentAccessError, DocumentService } from "../src/documents/document-service";
 import { resolveConfig } from "../src/server/config";
 import { createDaemon, type TetherDaemon } from "../src/server/server";
+import { UpdateService } from "../src/server/updates";
+import { seedReleaseNotes } from "../src/onboarding";
 import { controlRecentsAdd, controlRecentsLaunch } from "../src/server/lifecycle";
 import type { RecentsSnapshot } from "../src/recents/service";
 import type { HostAdapter, OpenLocalFileRequest, OpenViewRequest } from "../src/hosts/host-adapter";
@@ -962,6 +964,42 @@ test('appearance preview reaches ordinary readers without persistence and cancel
     expect((await post('preferences-preview', { owner: 'one', uiScale: 1 }, 'https://other.invalid')).status).toBe(403);
     expect((await fetch(recentsUrl(daemon, folio.location, 'api/preferences'), { method: 'POST', headers: { origin: daemon.origin }, body: '{}' })).status).toBe(401);
   }
+});
+
+test("only the current release notes reader receives the Tetherball offer", async () => {
+  const file = await fixture();
+  const offer = { revision: "offered", destinations: [] };
+  const status = async () => ({ tetherballOffer: offer, agentSkillReviewNeeded: false, managed: true, available: null, installing: false, failed: false, checkFailed: false, prolongedFailure: false, unavailableReason: null, checkError: null, version: "0.1.4" });
+  const daemon = createDaemon({ config: file.config, updates: { status, install: async () => {}, dismiss: async () => {} } as any });
+  daemons.push(daemon); await daemon.ready;
+  const notes = (await seedReleaseNotes(file.config))!;
+  expect(await readFile(notes, "utf8")).toContain("](assets/tether-light-paseo.png)");
+  expect(await readFile(notes, "utf8")).toContain("[[Getting started with Tether.md|");
+  for (const banner of ["dark", "light"]) expect(await readFile(join(file.config.configDir, `documents/assets/tether-banner-${banner}.webp`))).toBeTruthy();
+  const read = async (view: { location: string; cookie: string }) => (await (await fetch(new URL("api/updates", `${daemon.origin}${view.location}`), { headers: { cookie: view.cookie } })).json() as any).tetherballOffer;
+  expect(await read(await exchange(daemon, file.path))).toBeNull();
+  expect(await read(await exchangeRecents(daemon, file.config))).toBeNull();
+  expect(await read(await exchange(daemon, notes))).toEqual(offer);
+});
+
+test("the first view after an update opens the new release notes once", async () => {
+  const file = await fixture();
+  const root = join(file.directory, "release");
+  await mkdir(join(root, "docs/releases"), { recursive: true });
+  await writeFile(join(root, "release.json"), JSON.stringify({ version: "0.1.4" }));
+  await writeFile(join(root, "docs/releases/0.1.4.md"), "# Tether 0.1.4\n");
+  const updates = new UpdateService({ config: file.config, root, discover: async () => null });
+  const opened: string[] = [];
+  const daemon = createDaemon({ config: file.config, updates, opener: async url => { opened.push(url); } });
+  daemons.push(daemon); await daemon.ready;
+  expect((await updates.status()).releaseNotesPending).toBe(true);
+  const view = await exchange(daemon, file.path);
+  const open = () => fetch(new URL("api/updates/release-notes/open", `${daemon.origin}${view.location}`), { method: "POST", headers: { cookie: view.cookie, origin: daemon.origin } });
+  expect(await (await open()).json()).toEqual({ opened: true });
+  expect(opened).toHaveLength(1);
+  expect(await (await open()).json()).toEqual({ opened: false });
+  expect(opened).toHaveLength(1);
+  expect((await updates.status()).releaseNotesPending).toBe(false);
 });
 
 test("reader and Folio open only the bundled Tetherball skill through authenticated same-origin requests", async () => {

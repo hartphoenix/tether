@@ -49,14 +49,14 @@ test.skipIf(process.platform !== "darwin")("bootstrap installs through spaced pa
   const f = await fixture();
   const first = await f.run([], {}, true);
   expect(first.code).toBe(0);
-  expect(await readFile(f.env.TEST_SETUP_LOG, "utf8")).toBe("setup\n");
+  expect(await readFile(f.env.TEST_SETUP_LOG, "utf8")).toBe("setup\n--release-notes\n");
   expect(await realpath(join(f.env.TETHER_BIN_DIR, "tether"))).toBe(await realpath(join(f.root, "current/tether")));
   expect(first.out).toContain('export PATH=');
   const download = await readFile(f.env.TEST_CURL_LOG, "utf8");
   expect(download).toContain("/releases/download/v1.2.3/tether-darwin-arm64.tar.gz");
   expect(download).toContain("--proto-redir\n=https");
   expect((await f.run([], { TEST_DOWNLOAD_FAIL: "1" })).code).toBe(0);
-  expect(await readFile(f.env.TEST_SETUP_LOG, "utf8")).toBe("setup\nupdate\n");
+  expect(await readFile(f.env.TEST_SETUP_LOG, "utf8")).toBe("setup\n--release-notes\nupdate\n");
 });
 
 test.skipIf(process.platform !== "darwin")("bootstrap --no-open installs without invoking setup", async () => {

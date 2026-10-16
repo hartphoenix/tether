@@ -1,10 +1,6 @@
 # Tether for Paseo
 
-A [Paseo](https://paseo.sh) plugin that puts Tether's Folio in Paseo's Explorer sidebar and opens Tether readers in Paseo browser tabs. See [host setup](../../docs/guide/hosts.md#paseo-experimental) for installation and use.
-
-## Current review
-
-Desktop chat annotations are integrated for Paseo 0.11.2; actual desktop acceptance is pending. See the [chat guide](../../docs/guide/paseo-chat.md) and [remaining live checks](prototype/README.md).
+A [Paseo](https://paseo.sh) plugin that puts Tether's Folio in Paseo's Explorer sidebar, opens Tether readers in Paseo panels, adds chat annotations and shares themes. For installation and use, see [Tether in Paseo](../../docs/guide/paseo.md).
 
 ## How it works
 

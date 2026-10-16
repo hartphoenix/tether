@@ -1,5 +1,5 @@
 import { createSourceEditor } from './source-editor';
-import { diagramViewer } from "./diagram-viewer";
+import { diagramViewer, configureVisualAnnotations, setVisualThreads, revealVisualThread } from "./diagram-viewer";
 import { configureMarkdownSerialization } from "./markdown-serialization";
 import { createThreadSizing } from './thread-sizing';
 import { createFileActions } from './file-actions';
@@ -8,7 +8,7 @@ import { linkFragment } from '../shared/link-fragment';
 import { headingAnchors } from './heading-anchors';
 import { configureFootnotes, footnoteIcon, footnoteOrdering } from "./footnotes";
 import { pollPreferences } from "./preferences-poll";
-import { imageDisplayUrl } from "./image-url";
+import { loadImageDisplayUrl, clearImageDisplayCache } from "./image-url";
 import { renderMermaidPreview } from "./mermaid-preview";
 import { installReaderFind } from "./reader-find";
 import { installMenuMotion } from "./motion";
@@ -52,7 +52,7 @@ import "./thread-layout.css";
 
 type ServerComment = { id: string; seq: number; actor: string; createdAt: string; body: string; anchor: AnnotationThread["anchor"] };
 type ServerReply = { id: string; seq: number; actor: string; createdAt: string; body: string };
-type ServerThread = { id: string; comment: ServerComment; replies: ServerReply[]; status: "open" | "resolved"; orphan?: { status?: string }; deleted?: boolean };
+type ServerThread = { id: string; anchor?: AnnotationThread["anchor"]; latestEvent?: { seq: number }; comment: ServerComment; replies: ServerReply[]; status: "open" | "resolved"; orphan?: { status?: string }; deleted?: boolean };
 type AnnotationState = {
   header?: { baseBodyRevision?: string };
   threads?: ServerThread[];
@@ -365,11 +365,11 @@ function normalizeThreads(state: AnnotationState): AnnotationThread[] {
     actor: thread.comment.actor,
     createdAt: thread.comment.createdAt,
     body: thread.comment.body,
-    anchor: thread.comment.anchor,
+    anchor: thread.anchor ?? thread.comment.anchor,
     replies: thread.replies,
     resolved: thread.status === "resolved",
     orphaned: thread.orphan?.status === "orphan" || thread.orphan?.status === "ambiguous",
-    seq: thread.comment.seq,
+    seq: thread.latestEvent?.seq ?? thread.comment.seq,
     deleted: thread.deleted,
   }));
 }
@@ -475,6 +475,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     commentButton.classList.remove("is-active");
     commentButton.setAttribute("aria-pressed", "false");
     await previousCrepe?.destroy();
+    clearImageDisplayCache();
     canvas?.destroy();
     canvas = null;
     editorRoot.replaceChildren();
@@ -505,7 +506,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       features: { [Crepe.Feature.TopBar]: true, [Crepe.Feature.BlockEdit]: false },
       featureConfigs: {
         [Crepe.Feature.CodeMirror]: { renderPreview: renderMermaidPreview, previewOnlyByDefault: true, previewLoading: "Rendering diagram…" },
-        [Crepe.Feature.ImageBlock]: { proxyDomURL: imageDisplayUrl },
+        [Crepe.Feature.ImageBlock]: { proxyDomURL: loadImageDisplayUrl },
         [Crepe.Feature.Placeholder]: { text: "..." },
         [Crepe.Feature.TopBar]: {
           headingOptions: [
@@ -551,6 +552,22 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
         },
       },
     });
+    configureVisualAnnotations({
+      createDrawer: (root, onOpenChange) => nextAnnotationUi.createVisualDrawer(root, onOpenChange),
+      selectThread: thread => annotationUi?.openThread(thread.id),
+      prepare: async (anchor, doc) => {
+        if (!(await save())) throw new Error("Save the document before selecting a region.");
+        if (generation !== documentGeneration || doc !== getEditorView()?.state.doc) throw new Error("The document changed. Reopen the visual and select again.");
+        const visual = anchor.visual!;
+        const loaded = visual.kind === "image" ? await api<{revision:string|null}>(`api/visual-source?src=${encodeURIComponent(visual.source)}`) : null;
+        return { ...anchor, visual: { ...visual, ...(loaded?.revision ? { sourceRevision: loaded.revision } : {}) }, bodyRevision: currentBodyRevision };
+      },
+      save: async (anchor, evidenceData, body, operationId, thread) => {
+        if (anchor.bodyRevision !== currentBodyRevision || currentMarkdown() !== savedEditorMarkdown || generation !== documentGeneration) throw new Error("The document changed. Select a new region.");
+        await postAnnotation("/api/annotations", { type: thread ? "reanchor" : "comment", body, anchor, evidenceData, currentVisualRevision: anchor.visual!.layoutRevision, operationId, expectedBodyRevision: anchor.bodyRevision, ...(thread ? { threadId: thread.id, expectedThreadSequence: thread.seq } : {}) }, generation, currentPath);
+        if (thread) { const updated=normalizeThreads(annotationState).find(t=>t.id===thread.id);if(updated)Object.assign(thread,updated); }
+      },
+    });
     nextAnnotationUi = createAnnotationUi({
       root: annotationsRoot,
       sizingControl: threadSizing.root,
@@ -558,6 +575,14 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       editorRoot,
       getEditorView,
       onNotice: (message) => chrome.setNotice(message),
+      onVisibleThreadsChange: setVisualThreads,
+      onSelectThread: (thread) => { if (thread.anchor.visual) revealVisualThread(thread); },
+      onRedraw: (thread) => { revealVisualThread(thread, true); },
+      onReanchor: async (thread, anchor) => {
+        const doc=getEditorView()?.state.doc;
+        if (!(await save()) || doc!==getEditorView()?.state.doc) throw new Error("The document changed while saving. Select again.");
+        await postAnnotation("/api/annotations", { type: "reanchor", threadId: thread.id, anchor: { ...anchor, bodyRevision: currentBodyRevision }, expectedBodyRevision: currentBodyRevision, expectedThreadSequence: thread.seq, operationId: crypto.randomUUID() }, generation, currentPath);
+      },
       localActor,
       onPendingCountChange: (count) => {
         pendingCount.textContent = String(count);

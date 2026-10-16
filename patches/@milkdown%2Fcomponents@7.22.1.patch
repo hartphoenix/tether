@@ -1,13 +1,15 @@
 diff --git a/lib/code-block/index.js b/lib/code-block/index.js
-index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..784ff4921a7b78045c92dcae17780f24b0871e9b 100644
+index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..82862558e6310d8edd4b37f62bc7f66c321b221f 100644
 --- a/lib/code-block/index.js
 +++ b/lib/code-block/index.js
-@@ -1,3 +1,4 @@
+@@ -1,14 +1,15 @@
 +import { observeFloating, fitFloating } from '@milkdown/plugin-tooltip'
  import { $ctx, $view } from '@milkdown/utils';
  import { codeBlockSchema } from '@milkdown/preset-commonmark';
- import { Compartment, EditorState } from '@codemirror/state';
-@@ -5,10 +6,10 @@ import { EditorView, drawSelection, keymap } from '@codemirror/view';
+-import { Compartment, EditorState } from '@codemirror/state';
+-import { EditorView, drawSelection, keymap } from '@codemirror/view';
++import { Compartment, EditorState, StateEffect, StateField } from '@codemirror/state';
++import { EditorView, Decoration, WidgetType, drawSelection, keymap } from '@codemirror/view';
  import { exitCode } from '@milkdown/prose/commands';
  import { undo, redo } from '@milkdown/prose/history';
  import { TextSelection } from '@milkdown/prose/state';
@@ -115,7 +117,45 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..784ff4921a7b78045c92dcae17780f24
          if (result === null) {
            preview.value = null;
          }
-@@ -596,6 +621,40 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+@@ -586,8 +611,36 @@ function getSharedObserver() {
+   }
+   return sharedObserver;
+ }
++// ProseMirror decorations inside a code block, rendered as CodeMirror decorations.
++const setProseDecorations = StateEffect.define();
++const proseDecorations = StateField.define({
++  create: () => Decoration.none,
++  update: (value, tr) => {
++    for (const effect of tr.effects) if (effect.is(setProseDecorations)) return effect.value;
++    return value.map(tr.changes);
++  },
++  provide: (field) => EditorView.decorations.from(field)
++});
++class ProseWidget extends WidgetType {
++  constructor(deco, view, getPos) {
++    super();
++    this.deco = deco;
++    this.view = view;
++    this.getPos = getPos;
++  }
++  eq(other) {
++    return this.deco.type.eq(other.deco.type);
++  }
++  toDOM() {
++    const { toDOM } = this.deco.type;
++    const dom = typeof toDOM === "function" ? toDOM(this.view, this.getPos) : toDOM;
++    dom.classList?.add("milkdown-code-block-decoration");
++    return dom;
++  }
++}
+ const _CodeMirrorBlock = class _CodeMirrorBlock {
+-  constructor(node, view, getPos, loader, config) {
++  constructor(node, view, getPos, loader, config, innerDecorations) {
++    this.innerDecorations = innerDecorations;
+     this.node = node;
+     this.view = view;
+     this.getPos = getPos;
+@@ -596,6 +649,40 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
      this.selected = ref(false);
      this.language = ref("");
      this.text = ref("");
@@ -156,7 +196,7 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..784ff4921a7b78045c92dcae17780f24
      this.initialized = false;
      this.updating = false;
      this.languageName = "";
-@@ -626,6 +685,9 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+@@ -626,6 +713,9 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
      };
      this.createApp = () => {
        return createApp(CodeBlock, {
@@ -166,7 +206,7 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..784ff4921a7b78045c92dcae17780f24
          text: this.text,
          selected: this.selected,
          codemirror: this.cm,
-@@ -726,6 +788,7 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+@@ -726,6 +816,7 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
      });
      this.renderPlaceholder();
      visibilityCallbacks.set(this.dom, (isIntersecting) => {
@@ -174,7 +214,7 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..784ff4921a7b78045c92dcae17780f24
        if (isIntersecting) {
          this.cancelTeardown();
          this.initializeCodeMirror();
-@@ -734,6 +797,16 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+@@ -734,6 +825,16 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
        }
      });
      getSharedObserver().observe(this.dom);
@@ -191,7 +231,7 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..784ff4921a7b78045c92dcae17780f24
    }
    renderPlaceholder() {
      const pre = document.createElement("pre");
-@@ -745,6 +818,7 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+@@ -745,6 +846,7 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
    }
    initializeCodeMirror() {
      if (this.initialized) return;
@@ -199,7 +239,20 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..784ff4921a7b78045c92dcae17780f24
      this.initialized = true;
      this.cm = new EditorView({
        doc: this.node.textContent,
-@@ -774,6 +848,7 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+@@ -758,6 +860,7 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+         // updates we sync from ProseMirror through.
+         EditorState.changeFilter.of(() => this.view.editable || this.updating),
+         ...this.config.extensions,
++        proseDecorations,
+         EditorView.updateListener.of(this.forwardUpdate)
+       ]
+     });
+@@ -770,10 +873,12 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+     this.app = this.createApp();
+     this.app.mount(this.dom);
+     this.updateLanguage();
++    this.syncDecorations();
+   }
    teardownCodeMirror() {
      if (!this.initialized) return;
      if (this.cm.hasFocus || this.selected.value) return;
@@ -207,7 +260,7 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..784ff4921a7b78045c92dcae17780f24
      this.app.unmount();
      this.cm.destroy();
      this.initialized = false;
-@@ -800,9 +875,10 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+@@ -800,9 +905,10 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
      const languageName = this.node.attrs.language;
      if (languageName === this.languageName) return;
      this.language.value = languageName;
@@ -219,9 +272,40 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..784ff4921a7b78045c92dcae17780f24
          this.cm.dispatch({
            effects: this.languageConf.reconfigure(lang)
          });
-@@ -827,10 +903,16 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+@@ -823,14 +929,46 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+       this.updating = false;
+     }
+   }
+-  update(node) {
++  syncDecorations() {
++    const offset = (this.getPos() ?? 0) + 1;
++    const length = this.cm.state.doc.length;
++    const ranges = [];
++    this.innerDecorations?.forEachSet((set) => {
++      for (const deco of set.find()) {
++        if (deco.to > length) continue;
++        if (deco.type.attrs && deco.from < deco.to) {
++          const { nodeName, class: className, ...attributes } = deco.type.attrs;
++          ranges.push(Decoration.mark({
++            ...(nodeName ? { tagName: nodeName } : {}),
++            class: clsx("milkdown-code-block-decoration", className),
++            attributes
++          }).range(deco.from, deco.to));
++        } else if (deco.type.toDOM) {
++          ranges.push(Decoration.widget({
++            widget: new ProseWidget(deco, this.view, () => offset + deco.from),
++            side: deco.spec.side ?? 0
++          }).range(deco.from));
++        }
++      }
++    });
++    this.cm.dispatch({ effects: setProseDecorations.of(Decoration.set(ranges, true)) });
++  }
++  update(node, _outerDecorations, innerDecorations) {
      var _a;
      if (node.type !== this.node.type) return false;
++    const decorationsChanged = !innerDecorations.eq(this.innerDecorations);
++    this.innerDecorations = innerDecorations;
      if (this.updating) return true;
 +    const changed = !node.eq(this.node);
      this.node = node;
@@ -236,8 +320,23 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..784ff4921a7b78045c92dcae17780f24
        const code = this.dom.querySelector(
          ".milkdown-code-block-placeholder code"
        );
-@@ -877,6 +959,11 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+@@ -861,6 +999,7 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+         this.updating = false;
+       }
+     }
++    if (decorationsChanged) this.syncDecorations();
      return true;
+   }
+   selectNode() {
+@@ -873,10 +1012,16 @@ const _CodeMirrorBlock = class _CodeMirrorBlock {
+   deselectNode() {
+     this.selected.value = false;
+   }
+-  stopEvent() {
+-    return true;
++  // Let editor plugins handle clicks on decorations they rendered here.
++  stopEvent(event) {
++    return !(event.type === "click" && event.target instanceof Element && event.target.closest(".milkdown-code-block-decoration"));
    }
    destroy() {
 +    this.destroyed = true;
@@ -248,6 +347,15 @@ index 7e1baef362d4b2e1d4bafa50da306cd06c3c04c3..784ff4921a7b78045c92dcae17780f24
      this.cancelTeardown();
      getSharedObserver().unobserve(this.dom);
      visibilityCallbacks.delete(this.dom);
+@@ -909,7 +1054,7 @@ const codeBlockView = $view(
+   (ctx) => {
+     const config = ctx.get(codeBlockConfig.key);
+     const languageLoader = new LanguageLoader(config.languages);
+-    return (node, view, getPos) => new CodeMirrorBlock(node, view, getPos, languageLoader, config);
++    return (node, view, getPos, _decorations, innerDecorations) => new CodeMirrorBlock(node, view, getPos, languageLoader, config, innerDecorations);
+   }
+ );
+ withMeta(codeBlockView, {
 diff --git a/lib/image-block/index.js b/lib/image-block/index.js
 index ba6e478ff5d685224be694969d139901109f68c2..601a0579d869ef8ce245608290cf2ebbf384bf02 100644
 --- a/lib/image-block/index.js

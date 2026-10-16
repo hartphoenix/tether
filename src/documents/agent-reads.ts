@@ -1,3 +1,5 @@
+import { visualStatus } from "./visual-evidence";
+import type { AnnotationAnchor } from "../core/annotation-ledger";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from 'remark-gfm';
@@ -154,7 +156,8 @@ export class AgentReads {
             const source = JSON.parse(this.payload(doc.id, ref.id)) as ReviewEvent;
             const event = { id: source.id, seq: source.seq, type: source.type, actor: source.actor,
                 threadId: source.type === "comment" ? source.id : source.threadId,
-                ...("targetId" in source ? { targetId: source.targetId } : {}) };
+                ...("targetId" in source ? { targetId: source.targetId } : {}),
+                ...("anchor" in source && source.anchor.visual ? { anchorKind: source.anchor.visual.kind, verification: "unverified", retrieval: "visual" } : {}) };
             const json = JSON.stringify(event);
             if (!fragmentOffset && bytes(event) + 1 <= available) {
                 events.push(event);
@@ -195,7 +198,10 @@ export class AgentReads {
             sequence: number;
             replyCount: number;
         } | null;
-        return result;
+        if (!result) return result;
+        const anchorRow = this.store.db.query("SELECT anchor_json FROM annotation_events WHERE document_id=? AND (id=? OR thread_id=?) AND type IN ('comment','reanchor') AND seq<=? ORDER BY seq DESC LIMIT 1").get(documentId,id,id,snapshot) as {anchor_json:string}|null;
+        const anchor = anchorRow ? JSON.parse(anchorRow.anchor_json) as AnnotationAnchor : undefined;
+        return { ...result, ...(anchor?.visual ? { anchorKind: anchor.visual.kind, visualRevision: anchor.visual.layoutRevision, verification: 'unverified', retrieval: 'visual' } : {}) };
     }
     threads(path: string, body: string, options: AgentPageOptions & {
         status?: "open" | "resolved";
@@ -238,7 +244,7 @@ export class AgentReads {
         const summary = this.summary(doc.id, threadId, state.snapshot);
         if (!summary)
             fail("Annotation thread not found.");
-        const thread = { id: summary.id, status: summary.status, sequence: summary.sequence };
+        const thread = { id: summary.id, status: summary.status, sequence: summary.sequence, ...(summary.anchorKind ? { anchorKind: summary.anchorKind, visualRevision: summary.visualRevision, verification: summary.verification, retrieval: "visual" } : {}) };
         const refs = this.store.db.query(`SELECT m.id,m.seq FROM annotation_events m WHERE m.document_id=? AND (m.id=? OR m.thread_id=?) AND m.type IN ('comment','reply') AND m.seq>? AND m.seq<? AND m.seq<=?
       AND NOT EXISTS(SELECT 1 FROM annotation_events d WHERE d.document_id=m.document_id AND d.target_id=m.id AND d.type='delete' AND d.seq<=?) ORDER BY m.seq LIMIT ?`).all(doc.id, threadId, threadId, state.after, before, state.snapshot, state.snapshot, limit + 1) as EventRef[];
         const messages: unknown[] = [];
@@ -328,16 +334,13 @@ export class AgentReads {
         maxBytes?: number;
     } = {}) {
         const maxBytes = budget(options), doc = this.document(path), revision = this.remember(path, body);
-        const row = this.store.db.query("SELECT anchor_json FROM annotation_events WHERE document_id=? AND id=? AND type='comment'").get(doc.id, threadId) as {
+        const row = this.store.db.query("SELECT anchor_json FROM annotation_events WHERE document_id=? AND (id=? OR thread_id=?) AND type IN ('comment','reanchor') ORDER BY seq DESC LIMIT 1").get(doc.id, threadId, threadId) as {
             anchor_json: string;
         } | null;
         if (!row)
             fail("Annotation thread not found.");
-        const anchor = JSON.parse(row.anchor_json) as {
-            exact: string;
-            prefix: string;
-            suffix: string;
-        }, projection = markdownProjection(body);
+        const anchor = JSON.parse(row.anchor_json) as AnnotationAnchor, projection = markdownProjection(body);
+        if (anchor.visual) return { bodyRevision: revision, threadId, ...visualStatus(anchor,body,revision), visualRevision: anchor.visual.layoutRevision, region: anchor.visual.region, retrieval: "visual", maxBytes };
         let start = projection.indexOf(anchor.exact), count = 0, located = -1;
         // Context distinguishes repeated quotes using stored surrounding text when possible.
         while (start >= 0 && anchor.exact) {

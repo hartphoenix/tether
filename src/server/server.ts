@@ -8,8 +8,8 @@ import { version as sourceVersion } from "../../package.json";
 import { diagnosticText, diagnosticValue, errorDetails } from "../shared/diagnostics";
 import { preferencesFrom, storedPreferencesFrom, updatePreferences } from "../shared/themes";
 import { runtimeRoot } from "../runtime-paths";
-import { seedWelcome } from "../onboarding";
-import { UpdateService } from "./updates";
+import { releaseNotesDocument, seedReleaseNotes, seedWelcome } from "../onboarding";
+import { UpdateService, writeUpdateState } from "./updates";
 import { listAgentSkillReviews, readAgentSkillReview, decideAgentSkillReview, decideTetherballOffer } from "../cli/agent-skills";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -190,7 +190,7 @@ function textBody(body: Record<string, unknown>): string | undefined {
 }
 
 function eventType(value: unknown): value is AnnotationEventInput["type"] {
-  return value === "comment" || value === "reply" || value === "resolve" || value === "reopen" || value === "edit" || value === "delete" || value === "ack";
+  return value === "comment" || value === "reply" || value === "resolve" || value === "reopen" || value === "edit" || value === "delete" || value === "reanchor" || value === "ack";
 }
 
 function selectEvent(body: Record<string, unknown>, forcedType?: string): AnnotationEventInput {
@@ -547,7 +547,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     throw invalidRequest("Unknown Folio action.");
   }
 
-  async function updateRequest(request: Request, suffix: string, target?: HostTarget): Promise<Response | undefined> {
+  let releaseNotesOpening = false;
+  async function updateRequest(request: Request, suffix: string, target?: HostTarget, documentPath?: string): Promise<Response | undefined> {
       if (request.method === "POST" && ["/api/updates/tetherball/decide", "/api/updates/tetherball/open"].includes(suffix)) {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
         try {
@@ -563,6 +564,23 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           return json({ ok: true });
         } catch (cause) { return codedError(cause, "tetherball_offer_failed", 409); }
       }
+      if (request.method === "POST" && suffix === "/api/updates/release-notes/open") {
+        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
+        // Every open view sees the pending notes; only the first request opens them.
+        if (releaseNotesOpening) return json({ opened: false });
+        releaseNotesOpening = true;
+        try {
+          const notes = await releaseNotesDocument(config);
+          if (!notes || !(await updates.status()).releaseNotesPending) return json({ opened: false });
+          const grant = await service.open(await seedReleaseNotes(config) ?? notes.path);
+          const launch = mintTicket(grant, target);
+          try { await hostAdapter.openView({ url: launch.url, path: grant.realPath, kind: "document", focus: true, target }); }
+          catch (cause) { discardTicket(launch.ticket); throw cause; }
+          await writeUpdateState(config, { releaseNotesShown: notes.version });
+          return json({ opened: true });
+        } catch (cause) { return codedError(cause, "release_notes_failed", 409); }
+        finally { releaseNotesOpening = false; }
+      }
       if (request.method === "GET" && suffix === "/api/updates/skills") return json(await listAgentSkillReviews(config), { headers: { "cache-control": "no-store" } });
       if (request.method === "POST" && ["/api/updates/skills/read", "/api/updates/skills/decide"].includes(suffix)) {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
@@ -573,7 +591,13 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           return json({ ok: true });
         } catch (cause) { return codedError(cause, "skill_review_failed", 409); }
       }
-      if (request.method === "GET" && suffix === "/api/updates") return json(await updates.status(), { headers: { "cache-control": "no-store" } });
+      if (request.method === "GET" && suffix === "/api/updates") {
+        const status = await updates.status();
+        // The Tetherball offer belongs to the current release notes, not every reader or Folio.
+        const notes = documentPath ? await releaseNotesDocument(config) : null;
+        if (!notes || await realpath(notes.path).catch(() => null) !== documentPath) status.tetherballOffer = null;
+        return json(status, { headers: { "cache-control": "no-store" } });
+      }
       if (request.method === "POST" && ["/api/updates/install", "/api/updates/dismiss", "/api/updates/check"].includes(suffix)) {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
         try {
@@ -673,6 +697,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/draft" && request.method === "DELETE") { views.clearDraft(session.id); return json({ cleared: true }); }
       if (apiPath === "/export" && request.method === "POST") return json(await service.exportReviews([session.grant]));
       if (apiPath === "/file" && request.method === "GET") return json(await service.read(session.grant));
+      if (apiPath === "/visual-source" && request.method === "GET") {
+        const source = new URL(request.url).searchParams.get("src") ?? "";
+        return json({ revision: imageAssets.loadedRevision(session.grant, source) ?? null });
+      }
       if (apiPath === "/image" && request.method === "GET") return await imageAssets.response(request, session.grant, await service.read(session.grant));
       if (apiPath === "/file" && request.method === "PUT") {
         const body = await requestJson(request);
@@ -696,7 +724,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         if (!threadId) return error("invalid_request", "A thread ID is required.", 400);
         return json(await service.thread(session.grant, threadId));
       }
-      const action = /^\/annotations\/(reply|resolve|reopen|edit|delete|acknowledge)$/.exec(apiPath)?.[1];
+      if (apiPath === "/annotations/evidence" && request.method === "GET") {
+        const id = new URL(request.url).searchParams.get("threadId") ?? "";
+        return new Response(new Uint8Array(await service.evidence(session.grant, id)), { headers: { "content-type": "image/png", "cache-control": "private, no-store" } });
+      }
+      const action = /^\/annotations\/(reply|resolve|reopen|edit|delete|reanchor|acknowledge)$/.exec(apiPath)?.[1];
       if (action && request.method === "POST") {
         const body = await requestJson(request);
         let event: AnnotationEventInput;
@@ -716,11 +748,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           if (typeof body.threadId !== "string") throw invalidRequest(`A ${action} event needs threadId.`);
           event = selectEvent({ ...body, type: action }, action);
         }
-        return json(await browserAnnotation({ session: session.grant, event, cursor: typeof body.cursor === "string" ? body.cursor : undefined, operationId: typeof body.operationId === "string" ? body.operationId : undefined, expectedBodyRevision: action === "acknowledge" ? body.bodyRevision as string : expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
+        return json(await browserAnnotation({ session: session.grant, event, cursor: typeof body.cursor === "string" ? body.cursor : undefined, operationId: typeof body.operationId === "string" ? body.operationId : undefined, evidenceData: body.evidenceData, currentVisualRevision: body.currentVisualRevision, expectedThreadSequence: typeof body.expectedThreadSequence === "number" ? body.expectedThreadSequence : undefined, expectedBodyRevision: action === "acknowledge" ? body.bodyRevision as string : expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
       }
       if (apiPath === "/annotations" && request.method === "POST") {
         const body = await requestJson(request);
-        return json(await browserAnnotation({ session: session.grant, event: selectEvent(body), operationId: typeof body.operationId === "string" ? body.operationId : undefined, expectedBodyRevision: expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
+        return json(await browserAnnotation({ session: session.grant, event: selectEvent(body), evidenceData: body.evidenceData, currentVisualRevision: body.currentVisualRevision, expectedThreadSequence: typeof body.expectedThreadSequence === "number" ? body.expectedThreadSequence : undefined, operationId: typeof body.operationId === "string" ? body.operationId : undefined, expectedBodyRevision: expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
       }
       if (apiPath === "/lease" && request.method === "POST") {
         const body = await requestJson(request);
@@ -1105,6 +1137,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
             return json(result);
           }
           const result = await withControlDocument(body, async (grant) => {
+            if (pathname === "/control/review/visual") {
+              if (typeof body.threadId !== "string") throw invalidRequest("Visual retrieval requires threadId.");
+              return service.visual(grant, body.threadId, (body.mode ?? "overview") as "overview", Number(body.offset ?? 0), body.history === undefined ? undefined : Number(body.history));
+            }
             const actionName = pathname.split("/").at(-1)!;
             if (["outline", "context", "diff", "pending", "threads", "thread", "event", "quote-candidates", "operation"].includes(actionName)) {
               const source = await service.exportExact(grant);
@@ -1159,7 +1195,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
               const anchor = anchorForQuote(doc.body, body.quote, doc.bodyRevision, typeof body.candidateId === "string" ? body.candidateId : undefined);
               return mutationSummary(await service.appendComment({ session: grant, actor: body.actor, body: textBody(body), requestFingerprint, anchor, expectedBodyRevision: doc.bodyRevision, operationId: typeof body.operationId === "string" ? body.operationId : undefined }));
             }
-            const action = /^\/control\/review\/(reply|resolve|reopen|edit|delete|acknowledge)$/.exec(pathname)?.[1];
+            const action = /^\/control\/review\/(reply|resolve|reopen|edit|delete|reanchor|acknowledge)$/.exec(pathname)?.[1];
             if (!action) throw invalidRequest("Control endpoint not found.");
             if (typeof body.actor !== "string" || !body.actor.trim()) throw invalidRequest(`Review ${action} requires actor.`);
             let event: AnnotationEventInput;
@@ -1178,6 +1214,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
             }
             return mutationSummary(await service.appendEvent({
               session: grant,
+              expectedBodyRevision: expectedBodyRevision(body), evidenceData: body.evidenceData, currentVisualRevision: body.currentVisualRevision,
               event,
               cursor: typeof body.cursor === "string" ? body.cursor : undefined,
               consumer: typeof body.consumer === "string" ? body.consumer : undefined,
@@ -1186,7 +1223,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
               expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined,
             }));
           });
-          if (pathname.startsWith("/control/review/") && !["pending", "thread", "threads", "event", "quote-candidates", "operation"].includes(pathname.split("/").at(-1)!)) await recents.refresh();
+          if (pathname.startsWith("/control/review/") && !["pending", "thread", "threads", "event", "quote-candidates", "operation", "visual"].includes(pathname.split("/").at(-1)!)) await recents.refresh();
           return json(result);
         }
         if (pathname === "/control/status" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId, origin: daemon.origin, pid: process.pid, sessions: sessions.size, version: releaseVersion });
@@ -1205,7 +1242,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           headers: { "content-type": suffix.endsWith(".webp") ? "image/webp" : "image/png", "cache-control": "public, max-age=3600", "x-content-type-options": "nosniff" },
         });
       }
-      const updateResponse = await updateRequest(request, suffix, session.target);
+      const updateResponse = await updateRequest(request, suffix, session.target, session.grant.realPath);
       if (updateResponse) return updateResponse;
       if (suffix.startsWith("/api/")) return sessionApi(request, session, pathname);
       if (options.web) {

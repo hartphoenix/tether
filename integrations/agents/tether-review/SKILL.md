@@ -7,7 +7,7 @@ Use `tether` (`./mdreview` in a source checkout), actor `assistant`, and the rea
 
 ## Documents and attention
 
-Use Tether for work the user may discuss, decide, or track in separate parts. Reuse the relevant document and its comment threads; use a linked companion for a separate purpose. Keep proposals distinct from accepted decisions. After substantive revisions, replace the short “Current review” section near the top with changed sections and remaining decisions. Preserve unresolved content and active anchors.
+Use Tether for work the user may discuss, decide, or track in separate parts. Reuse the relevant document and its comment threads; use a linked companion for a separate purpose. Keep proposals distinct from accepted decisions. After substantive revisions, replace the short “Current review” section near the top with changed sections and remaining decisions. Links are available to help readers navigate: Current review can link to the sections it names, and wikilinks can connect companion and related documents. Preserve unresolved content and active anchors.
 
 Register finished documents without opening a view:
 
@@ -57,6 +57,6 @@ On conflict, reread and reconcile; never overwrite intervening edits. After unce
 
 ## Rendering
 
-Document links resolve relative to their file: `[Section](other.md#heading)` or `[[../path/file.md|Label]]`. Use `document outline` for heading anchors; keep spaces literal in wikilinks. Local non-Markdown links use the host's file handling. Documents support Mermaid and math; escape literal dollar signs (`\$20`). Replies support Markdown tables/code, but not rendered Mermaid/math or document-relative link navigation. Prefer narrow tables for readability.
+Document links resolve relative to their file: `[Section](other.md#heading)` or `[[../path/file.md|Label]]`. Use `document outline` for heading anchors; keep spaces literal in wikilinks. Local non-Markdown links use the host's file handling. Use a Mermaid diagram or an embedded image when a structure, flow or comparison is hard to follow in prose. Documents support Mermaid and math; escape literal dollar signs (`\$20`). Replies support Markdown tables/code, but not rendered Mermaid/math or document-relative link navigation. Prefer narrow tables for readability.
 
 Read this skill once per session and reuse its instructions throughout. Reread only when they are no longer in context, including after compaction.
