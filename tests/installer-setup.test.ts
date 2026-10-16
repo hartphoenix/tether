@@ -99,7 +99,7 @@ test("managed Paseo setup retains stable paths and disabled state, refuses unman
   expect(await removeManagedPaseo(host, options)).toBe(true);
   expect((await Bun.file(join(import.meta.dir, "../integrations/paseo/paseo-plugin.json")).json()).requirements.paseo).not.toContain("<");
   // Newer and unknown Paseo versions install; only a known older version is refused.
-  for (const version of ["0.11.4", "0.12.0", "1.0.0-beta.1", undefined]) {
+  for (const version of ["0.11.4", "0.12.0", "1.0.0-beta.1", null]) {
     plugins = [];
     expect(await setupPaseo({ ...host, version }, options)).toMatchObject({ installed: true, note: expect.stringContaining("Tested with Paseo 0.11.2") });
   }
