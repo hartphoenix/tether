@@ -9,7 +9,7 @@ export const chatCss = `
 [data-tether-chat="menu"] button { width:30px; height:30px; padding:4px; }
 [data-tether-chat] svg { width:20px; height:20px; display:block; }
 [data-tether-chat="card"] { position:fixed; z-index:2147483000; width:340px; max-width:calc(100vw - 16px); max-height:calc(100vh - 16px); overflow:auto; touch-action:none; user-select:none; }
-[data-tether-chat="badge"] { position:absolute; z-index:5; border:1px solid var(--colors-surface0); border-radius:5px; padding:0 4px; min-width:19px; height:19px; line-height:17px; font-weight:700; background:var(--colors-accent); color:var(--colors-accent-foreground); cursor:pointer; user-select:none; }
+[data-tether-chat="badge"] { position:absolute; z-index:5; border:1px solid var(--colors-surface0); border-radius:5px; padding:0 4px; min-width:19px; height:19px; line-height:17px; font-weight:700; background:var(--tc-annotation,var(--colors-accent)); color:var(--tc-on-annotation,var(--colors-accent-foreground)); cursor:pointer; user-select:none; }
 [data-tether-chat="batch"] { margin:-8px -12px; min-width:280px; max-width: min(480px,calc(100vw - 32px)); }
 [data-tether-chat="batch"] ol { margin:0; padding:0; list-style:none; max-height:320px; overflow:auto; }
 [data-tether-chat="batch"] li { display:flex; align-items:center; min-height:32px; margin:0 4px; padding:4px 8px; gap:4px; border-radius:6px; }

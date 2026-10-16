@@ -1,7 +1,11 @@
+import { locateVisualBlock } from "../core/visual-anchor";
+import { saveEvidence, readEvidence, visualOverview, currentImageRevision } from "./visual-evidence";
+import { resolveAnchor } from "../core/annotation-ledger";
+import { markdownProjection, markdownProjectionDetails } from "../server/quote-anchor";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, open, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { bodyRevision, deriveAnnotationState, validateAnnotationEvent, type AnnotationAnchor, type AnnotationEvent, type DerivedThread, type PendingAnnotation, type ReviewEvent, type Revision } from "../core/index";
+import { bodyRevision, deriveAnnotationState, validateAnnotationEvent, type AnnotationAnchor, type AnnotationEvent, type DerivedThread, type PendingAnnotation, type ReviewEvent, type Revision, validateAnnotationLedger } from "../core/index";
 import type { DocumentSnapshot, SerializableAnnotationState } from "../shared/contracts";
 import { PrivateStore, PrivateStoreConflictError, type MutationReceipt } from "../storage/index";
 import { RealPathMutationQueue } from "./mutation-queue";
@@ -45,7 +49,7 @@ export type PortableThread = {
   replies: Array<{ actor: string; createdAt: string; body: string }>;
   status: "open";
 };
-export type ReviewPackage = { format: "tether-review"; version: 1; documents: Array<{ name: string; body: string; threads: PortableThread[] }> };
+export type ReviewPackage = { format: "tether-review"; version: 1 | 2; documents: Array<{ name: string; body: string; threads: PortableThread[]; events?: AnnotationEvent[]; evidence?: Record<string, string> }> };
 
 export class DocumentAccessError extends Error { constructor(message = "The document session is not authorized for this file.") { super(message); this.name = "DocumentAccessError"; } }
 export class DocumentConflictError extends Error { constructor(message = "The document changed before this mutation was applied.", readonly details?: unknown) { super(message); this.name = "DocumentConflictError"; } }
@@ -60,11 +64,11 @@ function inputSession(input: { session?: DocumentSession | string; grant?: Docum
 }
 function sourceEvent(input: AppendEventInput): AnnotationEventInput {
   const candidate = input.event ?? input;
-  if (typeof candidate.type !== "string" || !["comment", "reply", "resolve", "reopen", "edit", "delete", "ack"].includes(candidate.type)) throw invalidRequest("Invalid annotation event type.");
+  if (typeof candidate.type !== "string" || !["comment", "reply", "resolve", "reopen", "edit", "delete", "reanchor", "ack"].includes(candidate.type)) throw invalidRequest("Invalid annotation event type.");
   if (typeof candidate.actor !== "string" || !candidate.actor.trim()) throw invalidRequest("An asserted actor is required.");
   const event = { ...candidate, type: candidate.type as AnnotationEvent["type"], actor: candidate.actor } as AnnotationEventInput;
   if (event.body === undefined && typeof event.text === "string") event.body = event.text;
-  for (const key of ["id", "seq", "createdAt", "session", "grant", "event", "expectedBodyRevision", "expectedConversationRevision", "expectedLedgerRevision", "expectedThreadSequence", "expectedRevision", "operationId", "mutationId", "cursor", "reviewedCursor", "consumer", "requestFingerprint"]) delete event[key];
+  for (const key of ["id", "seq", "createdAt", "session", "grant", "event", "expectedBodyRevision", "expectedConversationRevision", "expectedLedgerRevision", "expectedThreadSequence", "expectedRevision", "operationId", "mutationId", "cursor", "reviewedCursor", "consumer", "requestFingerprint", "evidenceData", "currentVisualRevision"]) delete event[key];
   return event;
 }
 function fingerprint(value: unknown): string {
@@ -181,6 +185,16 @@ export class DocumentService {
   }
   async read(session: DocumentSession | string): Promise<DocumentSnapshot> { return (await this.readExactSnapshot(session)).document; }
   async readExactSnapshot(session: DocumentSession | string): Promise<ExactDocumentRead> { const value = await this.readSource(session); return { document: this.snapshot(value.path, value.source), source: value.source }; }
+  async visual(session: DocumentSession | string, threadId: string, mode: "overview" | "crop" | "clean" = "overview", offset = 0, history?: number) {
+    const { path, source } = await this.readSource(session);
+    return visualOverview(this.store, path, source, bodyRevision(source), threadId, mode, offset, history);
+  }
+  async evidence(session: DocumentSession | string, threadId: string) {
+    const { path, source } = await this.readSource(session);
+    const thread = deriveAnnotationState(this.store.ledger(path, bodyRevision(source))).byThread.get(threadId);
+    if (!thread?.anchor.visual) throw new Error("Thread has no visual evidence.");
+    return readEvidence(this.store, path, thread.anchor.visual.evidence);
+  }
   async exportExact(session: DocumentSession | string): Promise<string> { return (await this.readSource(session)).source; }
   exactExport(session: DocumentSession | string): Promise<string> { return this.exportExact(session); }
   export(session: DocumentSession | string): Promise<string> { return this.exportExact(session); }
@@ -224,11 +238,13 @@ export class DocumentService {
         const replay = this.store.mutationReceipt(path, operationId, payloadHash);
         if (replay) return { ...this.snapshot(path, source), mutation: replay };
       } catch (error) { if (error instanceof PrivateStoreConflictError) throw new DocumentConflictError(error.message); throw error; }
-      if (eventInput.type === "comment") {
+      if (eventInput.type === "reanchor" && input.expectedThreadSequence === undefined) throw new DocumentConflictError("Reanchoring requires the current thread sequence.");
+      if (eventInput.type === "comment" || eventInput.type === "reanchor") {
         if (!expectedBody) throw new DocumentConflictError("A comment requires the body revision returned by its completed save.");
         if (!eventInput.anchor || eventInput.anchor.bodyRevision !== revision) throw new DocumentConflictError("The comment anchor does not match the current body revision.");
       }
       if (expectedBody !== undefined && expectedBody !== revision) throw new DocumentConflictError("The document body changed before this annotation was appended.", { currentBodyRevision: revision });
+      if (eventInput.type === "reanchor" && !eventInput.anchor?.visual && resolveAnchor(eventInput.anchor!, markdownProjection(source), revision).status !== "resolved") throw new DocumentConflictError("The replacement quote is missing or ambiguous.");
       if (eventInput.type === "ack") {
         const cursor = input.cursor ?? input.reviewedCursor;
         if (!cursor) throw new DocumentConflictError("An acknowledgement requires the opaque cursor returned by pending.");
@@ -238,14 +254,28 @@ export class DocumentService {
           return { ...this.snapshot(path, source), mutation };
         } catch (error) { if (error instanceof PrivateStoreConflictError) throw new DocumentConflictError(error.message); throw error; }
       }
-      const event = { ...eventInput, id: `a-${crypto.randomUUID()}`, seq: 0, createdAt: new Date(this.now()).toISOString() } as AnnotationEvent;
+      if ((eventInput.type === "comment" || eventInput.type === "reanchor") && eventInput.anchor?.visual) {
+        const visual = eventInput.anchor.visual;
+        if (visual.kind === "image") {
+          const current = await currentImageRevision(path, source, visual.source);
+          if (current && current !== visual.sourceRevision) throw new DocumentConflictError("The image changed since it was loaded. Reopen it and select again.");
+        } else if (eventInput.anchor.exact !== visual.source) throw new DocumentConflictError("The Mermaid source changed. Select again.");
+        if (input.currentVisualRevision !== eventInput.anchor.visual.layoutRevision) throw new DocumentConflictError("The selected visual revision must be verified before saving.");
+        const details = markdownProjectionDetails(source);
+        const block = locateVisualBlock(eventInput.anchor, details.projection, details.blocks, revision);
+        if (!block || block.start !== eventInput.anchor.projectionStart || block.end !== eventInput.anchor.projectionEnd || block.source !== visual.source) throw new DocumentConflictError("The visual block is missing or ambiguous.");
+      }
+      const event = validateAnnotationEvent({ ...eventInput, id: `a-${crypto.randomUUID()}`, seq: 1, createdAt: new Date(this.now()).toISOString() });
       try {
-        const mutation = this.store.appendEvent({
+        const mutation = this.store.db.transaction(() => {
+          if ("anchor" in event) saveEvidence(this.store, path, event.anchor, input.evidenceData);
+          return this.store.appendEvent({
           path, event, operationId,
           payloadHash,
           expectedConversationRevision: input.expectedConversationRevision ?? input.expectedLedgerRevision,
           expectedThreadSequence: input.expectedThreadSequence, now: this.now(),
         });
+        }).immediate();
         return { ...this.snapshot(path, source), mutation };
       } catch (error) {
         if (error instanceof PrivateStoreConflictError) {
@@ -371,12 +401,17 @@ export class DocumentService {
       let name = original;
       for (let suffix = 2; names.has(name.toLocaleLowerCase()); suffix++) name = `${stem} (${suffix})${extension}`;
       names.add(name.toLocaleLowerCase());
-      documents.push({ name, body: source, threads: threads.map((thread) => ({
+      const retained = new Set(threads.map(t => t.id));
+      const events = this.store.events(path).filter(e => e.type !== "ack" && retained.has(e.type === "comment" ? e.id : e.threadId));
+      const modern = events.some(e => e.type === "reanchor" || ("anchor" in e && e.anchor.visual));
+      const evidence: Record<string, string> = {};
+      if(modern) for(const event of events) if("anchor" in event && event.anchor.visual) evidence[event.anchor.visual.evidence] = readEvidence(this.store,path,event.anchor.visual.evidence).toString('base64');
+      documents.push({ name, body: source, ...(modern ? { events, evidence } : {}), threads: threads.map((thread) => ({
         comment: { actor: thread.comment.actor, createdAt: thread.comment.createdAt, anchor: thread.comment.anchor, body: thread.comment.body },
         replies: thread.replies.map((reply) => ({ actor: reply.actor, createdAt: reply.createdAt, body: reply.body })), status: "open",
       })) });
     }
-    return { format: "tether-review", version: 1, documents };
+    return { format: "tether-review", version: documents.some(d => d.events) ? 2 : 1, documents };
   }
   async importReviews(value: unknown, directory: string): Promise<string[]> {
     const result = await this.importReviewsResult(value, directory);
@@ -389,12 +424,20 @@ export class DocumentService {
   async importReviewsResult(value: unknown, directory: string): Promise<PackageImportResult> {
     if (Buffer.byteLength(JSON.stringify(value) ?? "") > INPUT_LIMITS.package) throw invalidRequest("Package exceeds its aggregate byte limit.");
     const packageValue = value as ReviewPackage;
-    if (!value || typeof value !== "object" || packageValue.format !== "tether-review" || packageValue.version !== 1 || !Array.isArray(packageValue.documents) || packageValue.documents.length > 1_000) throw invalidRequest("Invalid Tether review package.");
+    if (!value || typeof value !== "object" || packageValue.format !== "tether-review" || ![1, 2].includes(packageValue.version) || !Array.isArray(packageValue.documents) || packageValue.documents.length > 1_000) throw invalidRequest("Invalid Tether review package.");
     const names = new Set<string>();
     const validated = packageValue.documents.map((item) => {
       const nameKey = typeof item?.name === "string" ? item.name.toLocaleLowerCase() : "";
       if (!item || typeof item.name !== "string" || basename(item.name) !== item.name || !isMarkdown(item.name) || names.has(nameKey) || typeof item.body !== "string" || Buffer.byteLength(item.body) > INPUT_LIMITS.markdown || !Array.isArray(item.threads) || item.threads.length > 10_000) throw invalidRequest("Invalid Tether review package document.");
       names.add(nameKey);
+      if (packageValue.version === 2 && item.events) {
+        if (!Array.isArray(item.events) || item.events.length > 100_000) throw invalidRequest("Invalid package event count.");
+        for (const event of item.events) if (!event || typeof event.actor !== "string" || event.actor.length > 1_000 || ("body" in event && (typeof event.body !== "string" || Buffer.byteLength(event.body) > INPUT_LIMITS.review))) throw invalidRequest("Invalid package review event.");
+        const ledger = validateAnnotationLedger({ header: { type: "ledger", documentId: "import", createdAt: new Date(this.now()).toISOString(), baseBodyRevision: bodyRevision(item.body) }, events: item.events });
+        const ids = new Map(ledger.events.map(e => [e.id, `a-${crypto.randomUUID()}`]));
+        const events = ledger.events.map(e => ({ ...e, id: ids.get(e.id)!, ...("threadId" in e ? {threadId:ids.get(e.threadId)!} : {}), ...("targetId" in e ? {targetId:ids.get(e.targetId)!} : {}) }));
+        return { name: item.name, body: item.body, events, evidence: item.evidence };
+      }
       const events: AnnotationEvent[] = [];
       for (const thread of item.threads) {
         if (!thread || thread.status !== "open" || !thread.comment || !Array.isArray(thread.replies) || thread.replies.length > 10_000) throw invalidRequest("Invalid Tether review package thread.");

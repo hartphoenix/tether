@@ -400,3 +400,110 @@ html[data-wm-scheme="light"] img[src$="#gh-dark-mode-only"] { display: none; }
 .wm-insert-icon { display: flex; align-items: center; justify-content: center; }
 .wm-insert-icon svg { width: calc(16px * var(--wm-ui-scale, 1)); height: calc(16px * var(--wm-ui-scale, 1)); fill: currentColor; }
 .wm-insert-menu .wm-menu-item:hover, .wm-insert-menu .wm-menu-item:focus-visible { background: var(--wm-color-hover, #f0e9df); }
+
+.wm-diagram-stage { position: relative; }
+.wm-diagram-stage .wm-region-overlay { position: absolute; display: block; max-width: none; overflow: visible; touch-action: none; }
+.wm-region-overlay rect { fill: #397cc333; stroke: #2476bd; stroke-width: 2px; }
+.wm-region-composer { position: absolute; z-index: 4; width: 320px; max-width: calc(100% - 24px); }
+.wm-visual-status { font-size: 13px; max-width: 32em; }
+.wm-diagram-controls .is-active { outline: 2px solid currentColor; }
+.wm-saved-visual { position: absolute; inset: 70px 20px 20px; overflow: auto; background: var(--wm-color-surface); z-index: 5; }
+.wm-saved-visual img { display: block; max-width: 100%; }
+.milkdown-code-block, .milkdown-image-block { position: relative; }
+.wm-visual-badge { position: absolute; right: 4px; top: -24px; border-radius: 12px; min-width: 24px; cursor: pointer; z-index: 2; }
+.wm-reselecting, .wm-reselecting * { cursor: text !important; }
+.wm-historical-visual { position: relative; max-width: 100%; }
+.wm-historical-visual > svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.wm-historical-visual rect { fill: #397cc333; stroke: #2476bd; stroke-width: 2px; }
+.wm-button.is-active { outline: 2px solid currentColor; outline-offset: 1px; }
+
+/* Visual review uses the same typography and controls as reader conversations. */
+.wm-diagram-viewer {
+  --wm-thread-ui-scale: var(--wm-ui-scale, 1);
+  --wm-annotation-muted: var(--wm-color-on-surface-variant, #666);
+  --wm-annotation-border: color-mix(in srgb, var(--wm-color-outline, #888), transparent 65%);
+  --wm-annotation-surface: var(--wm-color-surface, #fff);
+  font-family: var(--wm-review-ui-font, system-ui, sans-serif);
+}
+.wm-diagram-controls { gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--wm-annotation-border); font: 14px/1.5 var(--wm-review-ui-font, system-ui, sans-serif); }
+.wm-diagram-controls output { min-width: 4ch; text-align: center; font-variant-numeric: tabular-nums; }
+.wm-visual-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-left: 12px; padding-left: 16px; border-left: 1px solid var(--wm-annotation-border); }
+.wm-visual-actions .wm-button { font: inherit; min-height: 32px; padding: 5px 10px; border-radius: 6px; }
+:root .wm-visual-actions .wm-button-secondary { background: transparent; border-color: transparent; }
+.wm-visual-status { color: var(--wm-annotation-muted); font: 12px/1.4 var(--wm-review-ui-font, system-ui, sans-serif); }
+.wm-visual-status:empty { display: none; }
+.wm-region-composer {
+  position: absolute; inset: auto 20px 20px auto; box-sizing: border-box;
+  width: min(360px, calc(100% - 40px)); max-height: calc(100% - 100px); overflow: auto;
+  padding: 16px; border: 1px solid var(--wm-annotation-border); border-radius: 12px;
+  background: var(--wm-annotation-surface); color: var(--wm-color-on-surface, inherit); box-shadow: var(--wm-shadow, 0 8px 32px #0002);
+  font-family: var(--wm-review-ui-font, system-ui, sans-serif);
+}
+.wm-region-composer .wm-annotation-textarea { display: block; width: 100%; min-height: 104px; resize: vertical; }
+.wm-region-composer .wm-annotation-actions { display: flex; justify-content: space-between; }
+.wm-visual-regions { position: absolute; pointer-events: none; z-index: 2; }
+.wm-visual-region { position: absolute; border-radius: var(--wm-region-radius); border: 2px solid var(--wm-color-annotation, #f1be5c); background: color-mix(in srgb, var(--wm-color-annotation, #f1be5c) 25%, transparent); }
+:root .wm-visual-regions button.wm-visual-badge, :root button.wm-visual-fallback { position: absolute; right: calc(-8px * var(--wm-ui-scale, 1)); top: calc(-8px * var(--wm-ui-scale, 1)); border-style: solid; border-color: var(--wm-annotation-ring, #b88924); background: var(--wm-color-annotation, #f1be5c); color: var(--wm-annotation-ink, #18212b); cursor: pointer; pointer-events: auto; }
+:root button.wm-visual-fallback { right: 4px; top: -24px; }
+.wm-region-overlay rect, .wm-historical-visual rect { fill: color-mix(in srgb, var(--wm-color-annotation, #f1be5c) 25%, transparent); stroke: var(--wm-color-annotation, #f1be5c); }
+.wm-region-overlay { z-index: 3; pointer-events: none; }
+.is-selecting-region .wm-visual-regions { visibility: hidden; }
+@media (max-width: 600px) {
+  .wm-diagram-controls { flex-wrap: wrap; padding: 8px; }
+  .wm-visual-actions { margin-left: 4px; padding-left: 8px; }
+  .wm-visual-status { max-width: 16em; }
+  .wm-region-composer { right: 12px; bottom: 12px; width: calc(100% - 24px); max-height: 45%; }
+}
+@media (min-width: 761px) {
+  .wm-diagram-viewer[open]:has(.wm-region-composer) {
+    display: grid; grid-template-columns: minmax(0, 1fr) min(360px, 36vw); grid-template-rows: auto minmax(0, 1fr);
+  }
+  .wm-diagram-viewer:has(.wm-region-composer) .wm-diagram-controls { grid-column: 1 / -1; }
+  .wm-diagram-viewer:has(.wm-region-composer) .wm-diagram-viewport { grid-column: 1; grid-row: 2; }
+  .wm-diagram-viewer .wm-region-composer {
+    position: relative; inset: auto; grid-column: 2; grid-row: 2; align-self: start; margin: 16px 16px 16px 0;
+    width: auto; max-width: none; max-height: calc(100% - 32px); box-shadow: none;
+  }
+}
+
+
+/* Text and visual region markers share sizing and the interface preference. */
+:root button:is(.wm-annotation-count, .wm-visual-badge) {
+  min-width: calc(16px * var(--wm-ui-scale, 1));
+  width: auto;
+  height: calc(16px * var(--wm-ui-scale, 1));
+  padding: 0 calc(4px * var(--wm-ui-scale, 1));
+  border-width: calc(1px * var(--wm-ui-scale, 1));
+  border-radius: 999px;
+  font: 700 calc(9px * var(--wm-ui-scale, 1))/calc(14px * var(--wm-ui-scale, 1)) system-ui, sans-serif;
+}
+
+:root { --wm-region-radius: calc(4px * var(--wm-ui-scale, 1)); }
+.is-selecting-region .wm-region-overlay rect {
+  fill: color-mix(in srgb, var(--wm-color-selected, #8dc7e8) 25%, transparent);
+  stroke: var(--wm-color-selected, #8dc7e8);
+}
+.milkdown .milkdown-code-block, .wm-mermaid, .wm-mermaid > svg {
+  border-radius: var(--wm-region-radius);
+}
+
+/* Visual comment entry points share the reader's comment icon and label. */
+.wm-visual-comment, .wm-region-select:not([hidden]) { display: inline-flex; align-items: center; gap: .35em; }
+.wm-visual-comment svg, .wm-region-select svg { width: 1em; height: 1em; flex-shrink: 0; }
+.milkdown .milkdown-image-block .operation > .operation-item:not(.wm-visual-comment) { display: none; }
+.milkdown .milkdown-image-block .image-wrapper .operation > .operation-item.wm-visual-comment { width: auto; gap: .35em; padding: 6px 10px; border-radius: 6px; font: inherit; }
+.milkdown .milkdown-image-block .image-wrapper .operation > .wm-visual-comment svg { width: 1em; height: 1em; }
+
+/* Use the shared thread drawer inside the visual viewer. */
+:root .milkdown .milkdown-code-block .tools .tools-button-group button.wm-visual-comment svg { fill: none; stroke: currentColor; }
+.wm-diagram-viewer[open]:not(:has(.wm-region-composer)) {
+  display: grid; grid-template-columns: minmax(0, 1fr) 0px; grid-template-rows: auto minmax(0, 1fr);
+  transition: grid-template-columns 200ms ease-out;
+}
+.wm-diagram-viewer[open].has-visual-threads:not(:has(.wm-region-composer)) { grid-template-columns: minmax(0, 1fr) min(360px, 40vw); }
+.wm-diagram-viewer .wm-diagram-controls { grid-column: 1 / -1; }
+.wm-diagram-viewer .wm-diagram-viewport { grid-column: 1; grid-row: 2; min-height: 0; }
+.wm-visual-drawer { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; overflow: hidden; }
+.wm-visual-drawer .wm-annotation-rail { position: relative; inset: auto; width: min(360px, 40vw); min-width: 0; height: 100%; max-height: 100%; box-sizing: border-box; }
+.wm-visual-drawer .wm-annotation-rail-header { display: flex; justify-content: flex-end; }
+@media (prefers-reduced-motion: reduce) { .wm-diagram-viewer[open] { transition: none; } }

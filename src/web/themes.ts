@@ -1,4 +1,4 @@
-import { chipRing, builtInThemes, colorKeys, fontSlots, metrics, preferencesFrom, updatePreferences, builtInDesign, type BuiltInTheme, type CustomTheme, type Metric, type ThemeDesign, type ThemeId, type ThemeMutation, type ThemePreferences } from '../shared/themes';
+import { contrastRatio, chipRing, builtInThemes, colorKeys, fontSlots, metrics, preferencesFrom, updatePreferences, builtInDesign, type BuiltInTheme, type CustomTheme, type Metric, type ThemeDesign, type ThemeId, type ThemeMutation, type ThemePreferences } from '../shared/themes';
 import { createThemeMaker } from './theme-maker';
 import { iconSvg } from './icons';
 import { createFontLoader } from './theme-fonts';
@@ -13,7 +13,9 @@ export function applyDesign(editorRoot: HTMLElement, base: BuiltInTheme, design?
   for (const key of Object.keys(metrics)) html.style.removeProperty(`--wm-${key}`);
   html.style.removeProperty('--wm-page-background'); html.style.removeProperty('--wm-page-color');
   html.style.colorScheme = html.dataset.wmScheme = base.endsWith('-dark') ? 'dark' : 'light';
+  html.style.removeProperty('--wm-annotation-ink');
   if (!design) return;
+  html.style.setProperty('--wm-annotation-ink', contrastRatio(design.colors.annotation, '#18212b') >= contrastRatio(design.colors.annotation, '#ffffff') ? '#18212b' : '#ffffff');
   for (const key of ['annotation', 'selected'] as const) html.style.setProperty(`--wm-${key}-ring`, chipRing(design.colors, design.colors[key]));
   for (const key of colorKeys) html.style.setProperty(`--wm-color-${key}`, design.colors[key]);
   for (const slot of fontSlots) html.style.setProperty(`--wm-font-${slot}`, `"${design.fonts[slot].family}", ${design.fonts[slot].fallback}`);

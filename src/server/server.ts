@@ -190,7 +190,7 @@ function textBody(body: Record<string, unknown>): string | undefined {
 }
 
 function eventType(value: unknown): value is AnnotationEventInput["type"] {
-  return value === "comment" || value === "reply" || value === "resolve" || value === "reopen" || value === "edit" || value === "delete" || value === "ack";
+  return value === "comment" || value === "reply" || value === "resolve" || value === "reopen" || value === "edit" || value === "delete" || value === "reanchor" || value === "ack";
 }
 
 function selectEvent(body: Record<string, unknown>, forcedType?: string): AnnotationEventInput {
@@ -673,6 +673,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/draft" && request.method === "DELETE") { views.clearDraft(session.id); return json({ cleared: true }); }
       if (apiPath === "/export" && request.method === "POST") return json(await service.exportReviews([session.grant]));
       if (apiPath === "/file" && request.method === "GET") return json(await service.read(session.grant));
+      if (apiPath === "/visual-source" && request.method === "GET") {
+        const source = new URL(request.url).searchParams.get("src") ?? "";
+        return json({ revision: imageAssets.loadedRevision(session.grant, source) ?? null });
+      }
       if (apiPath === "/image" && request.method === "GET") return await imageAssets.response(request, session.grant, await service.read(session.grant));
       if (apiPath === "/file" && request.method === "PUT") {
         const body = await requestJson(request);
@@ -696,7 +700,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         if (!threadId) return error("invalid_request", "A thread ID is required.", 400);
         return json(await service.thread(session.grant, threadId));
       }
-      const action = /^\/annotations\/(reply|resolve|reopen|edit|delete|acknowledge)$/.exec(apiPath)?.[1];
+      if (apiPath === "/annotations/evidence" && request.method === "GET") {
+        const id = new URL(request.url).searchParams.get("threadId") ?? "";
+        return new Response(new Uint8Array(await service.evidence(session.grant, id)), { headers: { "content-type": "image/png", "cache-control": "private, no-store" } });
+      }
+      const action = /^\/annotations\/(reply|resolve|reopen|edit|delete|reanchor|acknowledge)$/.exec(apiPath)?.[1];
       if (action && request.method === "POST") {
         const body = await requestJson(request);
         let event: AnnotationEventInput;
@@ -716,11 +724,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           if (typeof body.threadId !== "string") throw invalidRequest(`A ${action} event needs threadId.`);
           event = selectEvent({ ...body, type: action }, action);
         }
-        return json(await browserAnnotation({ session: session.grant, event, cursor: typeof body.cursor === "string" ? body.cursor : undefined, operationId: typeof body.operationId === "string" ? body.operationId : undefined, expectedBodyRevision: action === "acknowledge" ? body.bodyRevision as string : expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
+        return json(await browserAnnotation({ session: session.grant, event, cursor: typeof body.cursor === "string" ? body.cursor : undefined, operationId: typeof body.operationId === "string" ? body.operationId : undefined, evidenceData: body.evidenceData, currentVisualRevision: body.currentVisualRevision, expectedThreadSequence: typeof body.expectedThreadSequence === "number" ? body.expectedThreadSequence : undefined, expectedBodyRevision: action === "acknowledge" ? body.bodyRevision as string : expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
       }
       if (apiPath === "/annotations" && request.method === "POST") {
         const body = await requestJson(request);
-        return json(await browserAnnotation({ session: session.grant, event: selectEvent(body), operationId: typeof body.operationId === "string" ? body.operationId : undefined, expectedBodyRevision: expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
+        return json(await browserAnnotation({ session: session.grant, event: selectEvent(body), evidenceData: body.evidenceData, currentVisualRevision: body.currentVisualRevision, expectedThreadSequence: typeof body.expectedThreadSequence === "number" ? body.expectedThreadSequence : undefined, operationId: typeof body.operationId === "string" ? body.operationId : undefined, expectedBodyRevision: expectedBodyRevision(body), expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined }));
       }
       if (apiPath === "/lease" && request.method === "POST") {
         const body = await requestJson(request);
@@ -1105,6 +1113,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
             return json(result);
           }
           const result = await withControlDocument(body, async (grant) => {
+            if (pathname === "/control/review/visual") {
+              if (typeof body.threadId !== "string") throw invalidRequest("Visual retrieval requires threadId.");
+              return service.visual(grant, body.threadId, (body.mode ?? "overview") as "overview", Number(body.offset ?? 0), body.history === undefined ? undefined : Number(body.history));
+            }
             const actionName = pathname.split("/").at(-1)!;
             if (["outline", "context", "diff", "pending", "threads", "thread", "event", "quote-candidates", "operation"].includes(actionName)) {
               const source = await service.exportExact(grant);
@@ -1159,7 +1171,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
               const anchor = anchorForQuote(doc.body, body.quote, doc.bodyRevision, typeof body.candidateId === "string" ? body.candidateId : undefined);
               return mutationSummary(await service.appendComment({ session: grant, actor: body.actor, body: textBody(body), requestFingerprint, anchor, expectedBodyRevision: doc.bodyRevision, operationId: typeof body.operationId === "string" ? body.operationId : undefined }));
             }
-            const action = /^\/control\/review\/(reply|resolve|reopen|edit|delete|acknowledge)$/.exec(pathname)?.[1];
+            const action = /^\/control\/review\/(reply|resolve|reopen|edit|delete|reanchor|acknowledge)$/.exec(pathname)?.[1];
             if (!action) throw invalidRequest("Control endpoint not found.");
             if (typeof body.actor !== "string" || !body.actor.trim()) throw invalidRequest(`Review ${action} requires actor.`);
             let event: AnnotationEventInput;
@@ -1178,6 +1190,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
             }
             return mutationSummary(await service.appendEvent({
               session: grant,
+              expectedBodyRevision: expectedBodyRevision(body), evidenceData: body.evidenceData, currentVisualRevision: body.currentVisualRevision,
               event,
               cursor: typeof body.cursor === "string" ? body.cursor : undefined,
               consumer: typeof body.consumer === "string" ? body.consumer : undefined,
@@ -1186,7 +1199,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
               expectedLedgerRevision: typeof body.expectedLedgerRevision === "string" ? body.expectedLedgerRevision : undefined,
             }));
           });
-          if (pathname.startsWith("/control/review/") && !["pending", "thread", "threads", "event", "quote-candidates", "operation"].includes(pathname.split("/").at(-1)!)) await recents.refresh();
+          if (pathname.startsWith("/control/review/") && !["pending", "thread", "threads", "event", "quote-candidates", "operation", "visual"].includes(pathname.split("/").at(-1)!)) await recents.refresh();
           return json(result);
         }
         if (pathname === "/control/status" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId, origin: daemon.origin, pid: process.pid, sessions: sessions.size, version: releaseVersion });

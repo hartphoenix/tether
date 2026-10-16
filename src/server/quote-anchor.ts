@@ -1,3 +1,4 @@
+import type { VisualBlock } from "../core/visual-anchor";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -7,26 +8,32 @@ import { bodyRevision } from "../core/index";
 import { createHash } from "node:crypto";
 
 const parser = unified().use(remarkParse).use(remarkGfm);
-type Node = { type: string; value?: string; children?: Node[] };
+type Node = { type: string; value?: string; url?: string; identifier?: string; lang?: string; children?: Node[] };
 
 /** Markdown text blocks in the same order as the editor's quote projection. */
-export function markdownProjection(body: string): string {
+export function markdownProjectionDetails(body: string): { projection: string; blocks: VisualBlock[] } {
   const tree = parser.parse(prepareMarkdown(body).editorMarkdown) as Node;
-  const blocks: string[] = [];
-  function inline(node: Node): string {
-    if (node.type === "text" || node.type === "inlineCode") return node.value ?? "";
-    if (node.type === "break") return "\n";
-    if (node.type === "image" || node.type === "imageReference") return "\uFFFC";
-    return (node.children ?? []).map(inline).join("");
+  let projection = '', blockCount = 0;
+  const blocks: VisualBlock[] = [], definitions = new Map<string,string>();
+  const definitionsIn = (node:Node) => {if(node.type==='definition'&&node.identifier&&node.url&&!definitions.has(node.identifier))definitions.set(node.identifier,node.url);node.children?.forEach(definitionsIn);};
+  definitionsIn(tree);
+  function inline(node: Node): void {
+    if (node.type === 'text' || node.type === 'inlineCode') projection += node.value ?? '';
+    else if (node.type === 'break') projection += '\n';
+    else if (node.type === 'image' || node.type === 'imageReference') {
+      blocks.push({kind:'image',source:node.url??definitions.get(node.identifier??'')??'',start:projection.length,end:projection.length+1});projection+='\uFFFC';
+    } else node.children?.forEach(inline);
   }
   function collect(node: Node): void {
-    if (["paragraph", "heading", "tableCell"].includes(node.type)) blocks.push(inline(node));
-    else if (node.type === "code") blocks.push(node.value ?? "");
-    else for (const child of node.children ?? []) collect(child);
+    if (['paragraph','heading','tableCell','code'].includes(node.type)) {
+      if(blockCount++)projection+='\n';
+      if(node.type==='code') {const value=node.value??'';if(node.lang?.toLowerCase()==='mermaid')blocks.push({kind:'mermaid',source:value,start:projection.length,end:projection.length+value.length});projection+=value;}
+      else inline(node);
+    } else node.children?.forEach(collect);
   }
-  collect(tree);
-  return blocks.join("\n");
+  collect(tree);return {projection,blocks};
 }
+export function markdownProjection(body: string): string { return markdownProjectionDetails(body).projection; }
 
 function candidateId(revision: string, quote: string, start: number): string {
   return `q-${createHash("sha256").update(JSON.stringify([revision, quote, start])).digest("hex")}`;
