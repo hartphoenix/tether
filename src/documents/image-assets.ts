@@ -14,7 +14,7 @@ const parser = unified().use(remarkParse).use(remarkGfm);
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 type Node = { type: string; url?: string; identifier?: string; children?: Node[] };
 
-function imageReferences(markdown: string): Set<string> {
+export function imageReferences(markdown: string): Set<string> {
   const images = new Set<string>();
   const definitions = new Map<string, string>();
   const references: string[] = [];
@@ -41,6 +41,8 @@ function imageType(bytes: Buffer, path: string): string | undefined {
 
 /** Document references grant access to individual image files, never a directory. */
 export class ImageAssets {
+  private readonly loaded = new WeakMap<DocumentSession, Map<string, string>>();
+  loadedRevision(grant: DocumentSession, source: string): string | undefined { return this.loaded.get(grant)?.get(source); }
   private readonly references = new WeakMap<DocumentSession, { revision: string; urls: Set<string> }>();
 
   async response(request: Request, grant: DocumentSession, document: DocumentSnapshot): Promise<Response> {
@@ -74,6 +76,8 @@ export class ImageAssets {
       const type = imageType(bytes, canonical);
       if (!type) return new Response("Unsupported image content.", { status: 415 });
       const etag = `"${createHash("sha256").update(bytes).digest("hex")}"`;
+      const loaded = this.loaded.get(grant) ?? new Map<string,string>();
+      loaded.set(source, `sha256:${etag.slice(1,-1)}`); this.loaded.set(grant,loaded);
       const headers = {
         "content-type": type, "etag": etag, "cache-control": "private, no-cache",
         "x-content-type-options": "nosniff", "cross-origin-resource-policy": "same-origin",

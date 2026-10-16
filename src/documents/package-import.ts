@@ -1,10 +1,11 @@
+import { saveEvidence, evidenceTable } from "./visual-evidence";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AnnotationEvent } from "../core/index";
 import type { PrivateStore } from "../storage/private-store";
 
-export type ValidatedImportItem = { name: string; body: string; events: AnnotationEvent[] };
+export type ValidatedImportItem = { name: string; body: string; events: AnnotationEvent[]; evidence?: Record<string, string> };
 export type PackageImportResult = {
   paths: string[];
   completed: Array<{ index: number; path: string; replayed: boolean }>;
@@ -33,6 +34,7 @@ export async function importPackageItems(
   store.db.exec(`CREATE TABLE IF NOT EXISTS package_import_receipts (
     fingerprint TEXT PRIMARY KEY, path TEXT NOT NULL, document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE, created_at INTEGER NOT NULL
   )`);
+  evidenceTable(store);
   const completed: PackageImportResult["completed"] = [];
   const failed: PackageImportResult["failed"] = [];
   for (const [index, item] of items.entries()) {
@@ -56,6 +58,7 @@ export async function importPackageItems(
       store.db.transaction(() => {
         if (store.documentForPath(path)) throw Object.assign(new Error("The destination already has a Tether conversation."), { code: "destination_record_exists" });
         const document = store.ensureDocument(path, now());
+        for (const event of item.events) if ("anchor" in event && event.anchor.visual) saveEvidence(store, path, event.anchor, item.evidence?.[event.anchor.visual.evidence]);
         store.replaceEvents(path, item.events, now());
         store.db.query("INSERT INTO package_import_receipts(fingerprint,path,document_id,created_at) VALUES (?,?,?,?)")
           .run(key, path, document.id, now());

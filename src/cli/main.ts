@@ -399,6 +399,9 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       return { response: success(command, await controlRequest(config, "/control/document/save", { path: resolve(parsed.positionals[0]!), body, expectedBodyRevision })), exitCode: 0 };
     }
 
+    if (command === "visual") {
+      return { response: success(command, await controlRequest(config, "/control/review/visual", { path: resolve(parsed.positionals[0]!), threadId: parsed.positionals[1], mode: optionalFlag(parsed, "--mode") ?? "overview", ...(optionalFlag(parsed, "--history") ? { history: Number(optionalFlag(parsed, "--history")) } : {}), offset: Number(optionalFlag(parsed, "--offset") ?? 0) })), exitCode: 0 };
+    }
     if (command === "pending") {
       const actor = requiredFlag(parsed, "--actor");
       return { response: success(command, await controlRequest(config, "/control/review/pending", { path: resolve(parsed.positionals[0]!), actor, ...readOptions(parsed), ...(optionalFlag(parsed, "--consumer") ? { consumer: optionalFlag(parsed, "--consumer") } : {}) })), exitCode: 0 };

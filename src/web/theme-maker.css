@@ -91,7 +91,7 @@
 :root[data-wm-designed] :is(.wm-thread-reply) { border-color: var(--wm-color-outline); }
 :root[data-wm-designed] :is(.wm-annotation-textarea, .wm-input, .wm-textarea, .wm-button) { color: var(--wm-color-on-background); background: var(--wm-color-surface-low); border-color: var(--wm-color-outline); }
 :root[data-wm-designed] .wm-dialog-title { color: var(--wm-color-on-background); }
-:root[data-wm-designed] .wm-annotation-count { background: var(--wm-color-surface); color: var(--wm-color-primary); }
+:root[data-wm-designed] .wm-annotation-count { background: var(--wm-color-annotation); color: var(--wm-annotation-ink, #18212b); }
 
 .wm-theme-menu { width: max-content; min-width: 0; max-width: 50vw; box-sizing: border-box; max-height: 70vh; overflow-y: auto; }
 .wm-making-theme #workspace { margin-right: calc(360px * var(--wm-ui-scale, 1)); }
