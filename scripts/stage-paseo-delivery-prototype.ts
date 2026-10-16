@@ -15,7 +15,7 @@ if (!client.success || !server.success) throw new Error([...client.logs, ...serv
 // Paseo's directory plugin loader discovers source entrypoint extensions.
 await copyFile(resolve(destination, "index.client.js"), resolve(destination, "index.client.ts"));
 await copyFile(resolve(destination, "index.server.js"), resolve(destination, "index.server.ts"));
-await writeFile(resolve(destination, "paseo-plugin.json"), JSON.stringify({ id: "tether-delivery-prototype", requirements: { paseo: ">=0.11.2 <0.11.3" } }, null, 2));
+await writeFile(resolve(destination, "paseo-plugin.json"), JSON.stringify({ id: "tether-delivery-prototype", requirements: { paseo: ">=0.11.2" } }, null, 2));
 await writeFile(resolve(destination, "package.json"), JSON.stringify({ name: "tether-delivery-prototype", version: "0.0.0", private: true, type: "module", dependencies: { "@getpaseo/plugin": "0.11.2", zod: "^4.4.3" } }, null, 2));
 await copyFile(resolve(root, "integrations/paseo/prototype/NOTICE.md"), resolve(destination, "NOTICE.md"));
 console.log(`Staged only; nothing installed or reloaded: ${destination}`);

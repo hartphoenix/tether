@@ -97,7 +97,14 @@ test("managed Paseo setup retains stable paths and disabled state, refuses unman
   expect(await removeManagedPaseo(host, options)).toBe(false);
   plugins[0]!.path = path;
   expect(await removeManagedPaseo(host, options)).toBe(true);
-  await expect(setupPaseo({ ...host, version: "0.11.3" }, options)).rejects.toThrow("unsupported");
+  expect((await Bun.file(join(import.meta.dir, "../integrations/paseo/paseo-plugin.json")).json()).requirements.paseo).not.toContain("<");
+  // Newer and unknown Paseo versions install; only a known older version is refused.
+  for (const version of ["0.11.4", "0.12.0", "1.0.0-beta.1", undefined]) {
+    plugins = [];
+    expect(await setupPaseo({ ...host, version }, options)).toMatchObject({ installed: true, note: expect.stringContaining("Tested with Paseo 0.11.2") });
+  }
+  plugins = [];
+  await expect(setupPaseo({ ...host, version: "0.11.1" }, options)).rejects.toThrow("0.11.2 or later");
 });
 
 test("Tetherball offer uses registered destinations, preserves customizations, and rejects stale or arbitrary choices", async () => {

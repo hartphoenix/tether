@@ -36,7 +36,7 @@ Client errors use fixed summaries and recognized error codes. Raw stderr and arb
 
 ## Development
 
-The manifest and compiled-package acceptance target Paseo 0.11.2. The development-only SDK remains pinned to 0.9.2, against which this source typechecks; it is not shipped in the compiled package. Updating that tool dependency to 0.11.2 is subject to the dependency age gate. Package acceptance must exercise the declared runtime, independently of SDK typechecking.
+The manifest requires Paseo 0.11.2 or later and must never set an upper bound; a host update should not disable the plugin. Compiled-package acceptance tests Paseo 0.11.2. The development-only SDK remains pinned to 0.9.2, against which this source typechecks; it is not shipped in the compiled package. Updating that tool dependency to 0.11.2 is subject to the dependency age gate. Package acceptance must exercise the declared runtime, independently of SDK typechecking.
 
 ```sh
 npm install

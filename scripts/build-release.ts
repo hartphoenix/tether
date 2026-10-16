@@ -32,6 +32,9 @@ await copyFile("docs/getting-started.md", join(destination, "docs/getting-starte
 // Setup copies these notes into the user's documents after installation.
 await mkdir(join(destination, "docs/releases"));
 await copyFile(`docs/releases/${version}.md`, join(destination, `docs/releases/${version}.md`));
+// The release notes link to the Paseo guide; setup copies it beside them.
+await mkdir(join(destination, "docs/guide"));
+await copyFile("docs/guide/paseo.md", join(destination, "docs/guide/paseo.md"));
 // Brand source files (docs/assets/brand) are for design work, not the runtime.
 await cp("docs/assets", join(destination, "docs/assets"), { recursive: true, filter: source => basename(source) !== "brand" });
 await cp("integrations/agents", join(destination, "integrations/agents"), { recursive: true });
