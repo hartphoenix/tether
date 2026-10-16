@@ -149,6 +149,8 @@
 #editor[data-wm-designed] .cm-content { color: var(--wm-color-on-background); caret-color: var(--wm-color-on-background); }
 #editor[data-wm-designed] .cm-cursor { border-left-color: var(--wm-color-on-background); }
 #editor[data-wm-designed] :is(.cm-activeLine, .cm-activeLineGutter) { background: var(--wm-color-hover); }
+/* CodeMirror draws selections beneath its lines; an opaque active line would hide them. */
+#editor[data-wm-designed] .cm-editor:has(.cm-selectionBackground) .cm-activeLine { background: transparent; }
 #editor[data-wm-designed] .cm-selectionBackground { background: var(--wm-color-selected); }
 @media (max-width: 640px) {
   #editor[data-wm-designed] .ProseMirror { padding: 22.4px 16px 80px; }

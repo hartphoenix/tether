@@ -294,8 +294,13 @@ test("Tetherball offer survives a hidden update popover and sends explicit scope
   p.state({ managed: true, available: null });
   card.querySelector("button")!.click(); await Bun.sleep(0);
   expect(p.requests).toContainEqual({ endpoint: "./api/updates/tetherball/decide", body: { action: "install", revision: "offered", destination: "two" } });
-  expect(p.dom.window.document.body.textContent).toContain("Tetherball is installed");
+  expect(card.textContent).toContain("Tetherball is installed");
+  p.refresh(); await Bun.sleep(0);
+  const done = card.querySelector<HTMLButtonElement>("button")!;
+  expect(done.textContent).toBe("Done");
+  done.click();
   expect(p.dom.window.document.querySelector("[data-tetherball-offer]")).toBeNull();
+  expect(p.dom.window.document.body.textContent).not.toContain("Tetherball is installed");
   p.state({ managed: true, available: null, tetherballOffer: { revision: "empty", destinations: [] } }); p.refresh(); await Bun.sleep(0);
   const empty = p.dom.window.document.querySelector<HTMLElement>("[data-tetherball-offer]")!;
   expect(empty.querySelector("button")!.textContent).toBe("Copy setup prompt");
@@ -314,4 +319,12 @@ test("Tetherball offer follows the reader notice when the canvas remounts", asyn
   p.notice.dispatchEvent(new p.dom.window.Event("tether-notice-mounted"));
   expect(p.notice.nextElementSibling === card).toBe(true);
   p.dom.window.close();
+});
+
+test("pending release notes are requested once per view", async () => {
+  const p = page(); await Bun.sleep(0);
+  p.state({ managed: true, available: null, releaseNotesPending: true });
+  p.refresh(); await Bun.sleep(0); p.refresh(); await Bun.sleep(0);
+  try { expect(p.requests.filter(request => request.endpoint === "./api/updates/release-notes/open")).toEqual([{ endpoint: "./api/updates/release-notes/open", body: {} }]); }
+  finally { p.dom.window.close(); }
 });

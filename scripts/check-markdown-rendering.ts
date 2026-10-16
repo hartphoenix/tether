@@ -66,9 +66,9 @@ try {
    await page.getByRole('button',{name:'Expand diagram',exact:true}).first().click();
    const viewer=page.getByRole('dialog',{name:'Diagram viewer'});
    await viewer.waitFor({state:'visible'});
-   const controls=await viewer.locator('.wm-diagram-controls button').evaluateAll(buttons=>buttons.map(button=>({text:button.textContent, label:button.getAttribute('aria-label'), title:button.getAttribute('title'), icon:!!button.querySelector('svg.tether-icon')})));
+   const controls=await viewer.locator('.wm-diagram-controls button.wm-comment-button').evaluateAll(buttons=>buttons.map(button=>({text:button.textContent, label:button.getAttribute('aria-label'), title:button.getAttribute('title'), icon:!!button.querySelector('svg.tether-icon')})));
    if(controls.length!==4 || controls.some(button=>button.text || !button.icon || !button.label || button.title!==button.label))throw Error('Viewer icon labels missing');
-   const themed=await viewer.locator('.wm-diagram-stage > svg').evaluate(svg=>{
+   const themed=await viewer.locator('.wm-diagram-stage > svg:not(.wm-region-overlay)').evaluate(svg=>{
      const style=getComputedStyle(document.querySelector('.milkdown')!);
      const probe=document.createElement('span');
      probe.style.fontFamily=style.getPropertyValue('--wm-font-code') || style.getPropertyValue('--crepe-font-code');
@@ -80,9 +80,9 @@ try {
      probe.remove();return matches;
    });
    if(!themed)throw Error('Mermaid did not use the theme surface and code font');
-   const originalWidth=await viewer.locator('.wm-diagram-stage > svg').evaluate(svg=>svg.getBoundingClientRect().width);
+   const originalWidth=await viewer.locator('.wm-diagram-stage > svg:not(.wm-region-overlay)').evaluate(svg=>svg.getBoundingClientRect().width);
    await viewer.locator('.wm-diagram-viewport').dispatchEvent('wheel',{ctrlKey:true,deltaY:-100,clientX:400,clientY:300});
-   if(await viewer.locator('.wm-diagram-stage > svg').evaluate(svg=>svg.getBoundingClientRect().width)<=originalWidth)throw Error('Pinch zoom did not enlarge SVG');
+   if(await viewer.locator('.wm-diagram-stage > svg:not(.wm-region-overlay)').evaluate(svg=>svg.getBoundingClientRect().width)<=originalWidth)throw Error('Pinch zoom did not enlarge SVG');
    await viewer.locator('.wm-diagram-viewport').evaluate(element=>{element.scrollLeft=100;element.scrollTop=80;});
    if(await viewer.locator('.wm-diagram-viewport').evaluate(element=>element.scrollLeft)<=0)throw Error('Expanded viewer cannot pan');
    await viewer.locator('.wm-diagram-viewport').evaluate(element=>{

@@ -8,8 +8,8 @@ import { version as sourceVersion } from "../../package.json";
 import { diagnosticText, diagnosticValue, errorDetails } from "../shared/diagnostics";
 import { preferencesFrom, storedPreferencesFrom, updatePreferences } from "../shared/themes";
 import { runtimeRoot } from "../runtime-paths";
-import { seedWelcome } from "../onboarding";
-import { UpdateService } from "./updates";
+import { releaseNotesDocument, seedReleaseNotes, seedWelcome } from "../onboarding";
+import { UpdateService, writeUpdateState } from "./updates";
 import { listAgentSkillReviews, readAgentSkillReview, decideAgentSkillReview, decideTetherballOffer } from "../cli/agent-skills";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -547,7 +547,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     throw invalidRequest("Unknown Folio action.");
   }
 
-  async function updateRequest(request: Request, suffix: string, target?: HostTarget): Promise<Response | undefined> {
+  let releaseNotesOpening = false;
+  async function updateRequest(request: Request, suffix: string, target?: HostTarget, documentPath?: string): Promise<Response | undefined> {
       if (request.method === "POST" && ["/api/updates/tetherball/decide", "/api/updates/tetherball/open"].includes(suffix)) {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
         try {
@@ -563,6 +564,23 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           return json({ ok: true });
         } catch (cause) { return codedError(cause, "tetherball_offer_failed", 409); }
       }
+      if (request.method === "POST" && suffix === "/api/updates/release-notes/open") {
+        if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
+        // Every open view sees the pending notes; only the first request opens them.
+        if (releaseNotesOpening) return json({ opened: false });
+        releaseNotesOpening = true;
+        try {
+          const notes = await releaseNotesDocument(config);
+          if (!notes || !(await updates.status()).releaseNotesPending) return json({ opened: false });
+          const grant = await service.open(await seedReleaseNotes(config) ?? notes.path);
+          const launch = mintTicket(grant, target);
+          try { await hostAdapter.openView({ url: launch.url, path: grant.realPath, kind: "document", focus: true, target }); }
+          catch (cause) { discardTicket(launch.ticket); throw cause; }
+          await writeUpdateState(config, { releaseNotesShown: notes.version });
+          return json({ opened: true });
+        } catch (cause) { return codedError(cause, "release_notes_failed", 409); }
+        finally { releaseNotesOpening = false; }
+      }
       if (request.method === "GET" && suffix === "/api/updates/skills") return json(await listAgentSkillReviews(config), { headers: { "cache-control": "no-store" } });
       if (request.method === "POST" && ["/api/updates/skills/read", "/api/updates/skills/decide"].includes(suffix)) {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
@@ -573,7 +591,13 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           return json({ ok: true });
         } catch (cause) { return codedError(cause, "skill_review_failed", 409); }
       }
-      if (request.method === "GET" && suffix === "/api/updates") return json(await updates.status(), { headers: { "cache-control": "no-store" } });
+      if (request.method === "GET" && suffix === "/api/updates") {
+        const status = await updates.status();
+        // The Tetherball offer belongs to the current release notes, not every reader or Folio.
+        const notes = documentPath ? await releaseNotesDocument(config) : null;
+        if (!notes || await realpath(notes.path).catch(() => null) !== documentPath) status.tetherballOffer = null;
+        return json(status, { headers: { "cache-control": "no-store" } });
+      }
       if (request.method === "POST" && ["/api/updates/install", "/api/updates/dismiss", "/api/updates/check"].includes(suffix)) {
         if (!sameOrigin(request, daemon.origin)) return error("origin_mismatch", "State-changing requests must use the daemon origin.", 403);
         try {
@@ -1218,7 +1242,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           headers: { "content-type": suffix.endsWith(".webp") ? "image/webp" : "image/png", "cache-control": "public, max-age=3600", "x-content-type-options": "nosniff" },
         });
       }
-      const updateResponse = await updateRequest(request, suffix, session.target);
+      const updateResponse = await updateRequest(request, suffix, session.target, session.grant.realPath);
       if (updateResponse) return updateResponse;
       if (suffix.startsWith("/api/")) return sessionApi(request, session, pathname);
       if (options.web) {

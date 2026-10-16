@@ -9,13 +9,13 @@ Tether is a local Markdown editor that works with your coding agent. It's crafte
 
 Your agent hands you a design document. Halfway through, you find a claim that needs more research, followed by a whole section you'd like to rethink. Meanwhile, you're still trying to parse the neuralese.
 
-You might take this moment to start a list of changes in the chat, losing your flow as you bounce back and forth between the draft and the chat window. Or, you open the draft in an editor and just start making inline edits – losing track of your own words amid the agent's. (And when the agent re-reads the whole doc, it balloons your token spend while scattering the agent's attention).
+You might start a list of changes in the chat, losing your flow as you bounce between the draft and the chat window. Or you open the draft in an editor and start making inline edits, losing track of your own words amid the agent's. When the agent rereads the whole doc, your token spend balloons and the agent's attention scatters.
 
 ### Threads that don't unravel
 
-**Tether** fixes this with a Google-Docs-like workflow: highlight some text, write a question or todo, and keep going. Your comments collect in the sidebar, easy to find and edit. When you're ready, ask your agent to work through them. Its replies appear in those same threads, where you can keep discussing a point until you're satisfied.
+**Tether** solves this with a workflow like Google Docs: highlight some text, write a question or todo, and keep going. Your comments collect in the sidebar, easy to find and edit. When you're ready, ask your agent to work through them. Its replies appear in those same threads, where you can keep discussing a point until you're satisfied.
 
-Click "Resolve" on any thread you're done with, and it's hidden away. Quit the session and resume later with a different agent; anything unfinished will be there when you come back. There's even a file organizer with custom filters to help you keep multi-draft projects moving forward.
+Click **Resolve** on any thread you're done with to hide it. Quit the session and resume later with a different agent; anything unfinished will be there when you come back. A file organizer with custom filters keeps multi-draft projects moving.
 
 **Tether works in macOS with any coding agent** with access to your local files and Tether's CLI. It integrates with [Paseo](https://paseo.sh/), [cmux](https://cmux.com/), and [Wave](https://www.waveterm.dev/), and also works in a separate browser.
 
@@ -39,7 +39,7 @@ Run this in your terminal:
 bash -o pipefail -c 'curl --proto "=https" --proto-redir "=https" -fsSL https://github.com/hartphoenix/tether/releases/latest/download/install.sh | bash'
 ```
 
-Once finished, the installer opens the [getting-started guide](docs/getting-started.md) for a practice exchange. If it prints a PATH command, run that to make `tether` available in your terminal. Setup follows your current supported terminal; `tether setup --host browser` selects a separate browser. See [host setup](docs/guide/hosts.md) for requirements and optional integrations.
+When it finishes, the installer opens the [getting-started guide](docs/getting-started.md) for a practice exchange, followed by the release notes. If it prints a PATH command, run that to make `tether` available in your terminal. Setup uses the supported terminal you're in; `tether setup --host browser` selects a separate browser instead. See [host setup](docs/guide/hosts.md) for requirements and optional integrations.
 
 Resume with `tether`, or use the **Open Tether.command** launcher at the path printed by the installer. To open a particular document:
 
@@ -71,13 +71,13 @@ Tether includes a WYSIWYG Markdown editor; any change to the document body saves
 
 The package includes the `tether` command. Agents use it under the same OS account and profile as the reader; `tether --help` lists the commands.
 
-The [Tether review skill](integrations/agents/tether-review/SKILL.md) equips your agent for the review workflow, safe edits, and formatting. During agent-led setup, it asks whether you'd like the skill and handles installation if you say yes. If you installed Tether yourself, ask your agent to run `tether setup --help` and help you add the skill.
+The [Tether review skill](integrations/agents/tether-review/SKILL.md) equips your agent for the review workflow, safe edits, and formatting. During agent-led setup, your agent asks whether you'd like the skill and installs it if you say yes. If you installed Tether yourself, ask your agent to run `tether setup --help` and help you add it.
 
-This optional skill is the easiest way to keep your agent's Tether instructions in step with the app. When you opt in, setup installs the version bundled with the package, and updates refresh it as those instructions change. **You're welcome to customize your copy of the skill**; during future updates, Tether will keep your edits and offer the new instructions for your review. This helps prevent stale instructions from steering future sessions; see [skill updates](docs/guide/agent-setup.md#skill-updates).
+The skill keeps your agent's Tether instructions in step with the app. Setup installs the version bundled with the package, and updates refresh it when those instructions change. **You're welcome to customize your copy**: during later updates, Tether keeps your edits and offers the new instructions for your review, so stale instructions don't steer future sessions. See [skill updates](docs/guide/agent-setup.md#skill-updates).
 
-The optional [Tetherball skill](integrations/agents/tetherball/SKILL.md) helps develop shared understanding through an evolving document. Install it alongside `tether-review` when questions, evidence or feedback will reshape the work across exchanges. Both skills are bundled and supported by setup and managed updates. After updating, choose **Install Tetherball** in the reader or Folio, or ask your agent to run `tether setup --agent-directory /absolute/path/to/skills --skills tetherball --no-open`.
+The optional [Tetherball skill](integrations/agents/tetherball/SKILL.md) helps you and your agent build a shared understanding in a document that evolves as questions, evidence and feedback reshape the work. Installing it also installs `tether-review`, and updates keep both current. Tether offers Tetherball in the release notes it opens after you install or update; you can also ask your agent to run `tether setup --agent-directory /absolute/path/to/skills --skills tetherball --no-open`.
 
-Agents can also use the [CLI reference](docs/reference/cli.md) directly. It covers reading only the relevant comments and document context, replying in threads, making safe edits, and registering finished documents in Folio.
+Agents can also use the [CLI reference](docs/reference/cli.md) directly. It covers reading only the relevant comments and context, replying in threads, making safe edits, and registering finished documents in Folio.
 
 ## Help and development
 
@@ -88,3 +88,5 @@ Report problems in [GitHub Issues](https://github.com/hartphoenix/tether/issues)
 Tether is maintained by [Hart the Phoenix](https://github.com/hartphoenix) and released under the [MIT license](LICENSE).
 
 The Paseo chat annotation adapter adapts selection/Markdown recovery, composer editing and send-capture patterns from [Annotations by neunzig-zehn](https://github.com/neunzig-zehn/paseo-annotations), including inherited [Quote](https://github.com/keefeere/paseo-quote) work; see its [notices](integrations/paseo/chat/NOTICE.md).
+
+Tetherball's writing-style rules adapt a [style guide by Mariven](https://gist.github.com/Mariven/17c2223a1293559a0b6868fbb136fedd).

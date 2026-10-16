@@ -18,10 +18,10 @@ import { PASEO_HOST, PaseoHostAdapter, paseoLaunchTarget } from "../hosts/paseo"
 import type { ProtocolResponse } from "../shared/contracts";
 import { RecentsRegistry } from "../recents/registry";
 import { installWaveLaunchers, uninstallWaveLaunchers, waveLauncherStatus, waveInstallationDetected, type WaveLauncherOptions } from "../hosts/wave-launchers";
-import { agentSetupGuidance, hostPreference, readHostPreference, saveHostPreference, seedWelcome, type HostPreference } from "./setup";
+import { agentSetupGuidance, hostPreference, readHostPreference, releaseNotesDocument, saveHostPreference, seedReleaseNotes, seedWelcome, type HostPreference } from "./setup";
 import { backupState, restoreState } from "./backup";
 import { installVerifiedRelease } from "../releases/verified-update";
-import { UpdateService } from "../server/updates";
+import { UpdateService, writeUpdateState } from "../server/updates";
 import { discoverHosts } from "./host-discovery";
 import { setupPaseo, removeManagedPaseo } from "./paseo-setup";
 import { runtimeRoot } from "../runtime-paths";
@@ -238,11 +238,22 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       completed.push({ step: "welcome_document_ready", path });
       await controlRequest(config, "/control/folio/add", { paths: [path] });
       completed.push({ step: "registered", path });
-      if (!parsed.flags.has("--no-open")) {
-        const opened = await runCli(["open", path, "--host", selectedHost], dependencies);
-        if (!opened.response.ok) throw Object.assign(new Error(opened.response.error.message), { code: opened.response.error.code, details: opened.response.error.details });
+      // The installer shows the current release notes last, so they open in front.
+      const releaseNotes = parsed.flags.has("--release-notes") ? await seedReleaseNotes(config) : null;
+      if (releaseNotes) {
+        // Setup shows these notes itself, so views don't open them again.
+        await writeUpdateState(config, { releaseNotesShown: (await releaseNotesDocument(config))?.version ?? null });
+        await controlRequest(config, "/control/folio/add", { paths: [releaseNotes] });
+        completed.push({ step: "registered", path: releaseNotes });
       }
-      return { response: success(command, { path, hostPreference: selectedHost, agent, agents, hosts, wave, paseo, warnings, updates, opened: !parsed.flags.has("--no-open") && process.env.TETHER_SUPPRESS_BROWSER !== "1",
+      if (!parsed.flags.has("--no-open")) {
+        for (const document of [path, releaseNotes]) {
+          if (!document) continue;
+          const opened = await runCli(["open", document, "--host", selectedHost], dependencies);
+          if (!opened.response.ok) throw Object.assign(new Error(opened.response.error.message), { code: opened.response.error.code, details: opened.response.error.details });
+        }
+      }
+      return { response: success(command, { path, ...(releaseNotes ? { releaseNotes } : {}), hostPreference: selectedHost, agent, agents, hosts, wave, paseo, warnings, updates, opened: !parsed.flags.has("--no-open") && process.env.TETHER_SUPPRESS_BROWSER !== "1",
         next: "Use tether to open Folio. Setup adds the Wave widget when detected. Offer tether setup --paseo --no-open for the optional bundled Paseo plugin and themes; it leaves global plugin enablement unchanged.",
         ...(!agent ? { agentSetup: agentSetupGuidance } : {}),
       }), exitCode: 0 };

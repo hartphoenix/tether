@@ -129,6 +129,8 @@ Operations are `read`, `save` (draft), `remove` (draft ID), `capture` (batch ID,
 
 `--agent-directory /absolute/skills` keeps its existing review-skill behavior. Add `--skills tetherball` to accept both skills, or `--skills tether-review,tetherball` explicitly. Setup reports `agents` with each identity/path/result and retains the legacy `agent` field for the review skill. Neither skill is installed without the directory flag.
 
+The installer runs `tether setup --release-notes`, which also copies the current release notes into Tether's documents folder, adds them to Folio, and opens them after the welcome guide. The optional Tetherball offer appears only in that release-notes reader.
+
 `--paseo` accepts installation of the packaged plugin into the local Paseo daemon. It preserves unmanaged installations and the global plugin switch. `hosts` distinguishes installation, version, active environment, and known connection state; `null` means a connection was not probed. `warnings` reports optional integration steps that need attention even when core setup succeeds.
 
 ## Visual evidence

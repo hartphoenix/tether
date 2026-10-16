@@ -8,6 +8,7 @@ import { keepContentEndVisible, overlayScrollHeader } from "./scroll-geometry";
 import { Plugin, PluginKey, Selection } from "@milkdown/kit/prose/state";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
+import { EditorView as CodeMirror } from "@codemirror/view";
 import {
   createAnchor as createLedgerAnchor,
   renderedTextProjection,
@@ -731,6 +732,13 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
         if (composer === section && view && !view.isDestroyed && currentView() === view &&
             submittedSelection && !submittedSelection.empty && view.state.selection.eq(submittedSelection)) {
           view.dispatch(view.state.tr.setSelection(Selection.near(view.state.doc.resolve(view.state.selection.to))));
+          // An unfocused code block keeps its own selection; collapse it too.
+          const { $to } = view.state.selection;
+          if ($to.parent.type.name === "code_block") {
+            const content = (view.nodeDOM($to.before()) as HTMLElement | null)?.querySelector<HTMLElement>(".cm-content");
+            const code = content ? CodeMirror.findFromDOM(content) : null;
+            code?.dispatch({ selection: { anchor: $to.parentOffset } });
+          }
         }
         close();
       }).catch((reason: unknown) => {

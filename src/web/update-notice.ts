@@ -141,19 +141,40 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
   let offerElement: HTMLElement | undefined;
   let offerKey = "";
   let offerBusy = false;
+  // A completed offer stays until its Done button, even after status reads stop offering it.
+  let offerDone = false;
   element.addEventListener("tether-notice-mounted", () => { if (offerElement) element.after(offerElement); });
   const renderOffer = (state: any) => {
-    if (offerBusy) return;
+    if (offerBusy || offerDone) return;
     const offer = state.installing ? null : state.tetherballOffer;
     if (!offer) { offerElement?.remove(); offerElement = undefined; offerKey = ""; return; }
     if (offerElement && offerKey === offer.revision) return;
     offerElement?.remove();
     offerKey = offer.revision;
+    if (!document.getElementById("tether-offer-style")) {
+      const style = document.createElement("style"); style.id = "tether-offer-style";
+      style.textContent = `
+        .tether-offer{--offer-scale:var(--wm-ui-scale,1);--offer-text:var(--wm-color-on-surface,var(--wm-page-color,var(--text,CanvasText)));--offer-line:color-mix(in srgb,var(--wm-color-outline,var(--line,GrayText)),transparent 35%);--offer-accent:var(--wm-color-primary,var(--accent,Highlight));box-sizing:border-box;width:calc(100% - calc(32px * var(--offer-scale)));max-width:calc(660px * var(--offer-scale));max-height:45vh;overflow:auto;flex-shrink:0;margin:calc(12px * var(--offer-scale)) auto;padding:calc(18px * var(--offer-scale)) calc(22px * var(--offer-scale));border:1px solid var(--offer-line);border-radius:calc(8px * var(--offer-scale));background:var(--wm-color-surface,var(--panel,Canvas));color:var(--offer-text);box-shadow:var(--wm-shadow,0 2px 8px rgb(0 0 0 / 24%));font:calc(14px * var(--offer-scale))/1.55 var(--wm-font-body,system-ui,sans-serif);text-align:left;white-space:normal}
+        .tether-offer h2{margin:0 0 .5em;font:600 calc(18px * var(--offer-scale))/1.3 var(--wm-font-heading,inherit);color:var(--wm-color-on-background,inherit)}
+        .tether-offer p{margin:.5em 0}.tether-offer p:empty{display:none}
+        .tether-offer code{overflow-wrap:anywhere;font:.9em var(--wm-font-code,ui-monospace,monospace);color:var(--wm-color-inline-code,inherit)}
+        .tether-offer select{max-width:100%;font:inherit;color:inherit;background:transparent;border:1px solid var(--offer-line);border-radius:calc(5px * var(--offer-scale));padding:.25em .4em}
+        .tether-offer .offer-actions{display:flex;gap:calc(10px * var(--offer-scale));align-items:center;flex-wrap:wrap;margin-top:calc(14px * var(--offer-scale))}
+        .tether-offer button{font:inherit;color:inherit;background:transparent;border:1px solid var(--offer-line);border-radius:calc(6px * var(--offer-scale));padding:.4em .85em;cursor:pointer}
+        .tether-offer button:hover{background:var(--wm-color-hover,var(--hover,transparent))}
+        .tether-offer button:focus-visible,.tether-offer a:focus-visible{outline:2px solid var(--offer-accent);outline-offset:2px}
+        .tether-offer button:disabled{opacity:.55;cursor:default}
+        .tether-offer button[data-primary]{background:var(--offer-accent);border-color:var(--offer-accent);color:var(--wm-color-background,var(--bg,Canvas))}
+        .tether-offer button[data-primary]:hover{background:color-mix(in srgb,var(--offer-accent),var(--offer-text) 12%)}
+        .tether-offer a{color:var(--offer-accent)}
+      `;
+      document.head.append(style);
+    }
     const card = document.createElement("section"); offerElement = card;
+    card.className = "tether-offer";
     card.dataset.tetherballOffer = "";
     card.setAttribute("aria-label", "Optional Tetherball skill");
-    card.style.cssText = "margin:12px auto;padding:20px 24px;box-sizing:border-box;width:calc(100% - 32px);max-height:45vh;overflow:auto;flex-shrink:0;border:1px solid var(--wm-color-outline,var(--line,GrayText));border-radius:12px;background:var(--wm-color-surface,var(--panel,Canvas));color:var(--wm-page-color,var(--text,CanvasText));font:14px/1.6 system-ui;max-width:660px;text-align:left;white-space:normal";
-    const title = document.createElement("h2"); title.textContent = "Think together with Tetherball"; title.style.cssText = "font-size:20px;margin:0 0 8px";
+    const title = document.createElement("h2"); title.textContent = "Think together with Tetherball";
     const description = document.createElement("p");
     description.textContent = "An agent skill for developing ideas together in a shared document that gets clearer, not longer, as you progress.";
     const destination = document.createElement("select"); destination.setAttribute("aria-label", "Skills directory");
@@ -165,17 +186,17 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
     card.append(title, description, location);
     if (offer.destinations.length > 1) card.append(destination);
     else if (offer.destinations.length) {
-      const path = document.createElement("code"); path.textContent = `${offer.destinations[0].directory}/tetherball`; path.style.overflowWrap = "anywhere"; card.append(path);
+      const path = document.createElement("code"); path.textContent = `${offer.destinations[0].directory}/tetherball`; card.append(path);
     }
     if (offer.destinations.length) {
       const preserved = document.createElement("p"); preserved.textContent = "Your existing review skill and customizations stay intact."; card.append(preserved);
     }
-    const actions = document.createElement("div"); actions.style.cssText = "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:16px";
-    destination.style.cssText = "max-width:100%;font:inherit;color:inherit;background:transparent";
+    const actions = document.createElement("div"); actions.className = "offer-actions";
     const status = document.createElement("p"); status.setAttribute("role", "status");
-    const install = document.createElement("button"); install.textContent = offer.destinations.length ? "Install Tetherball" : "Copy setup prompt";
-    const dismiss = document.createElement("button"); dismiss.textContent = "Not now";
+    const install = document.createElement("button"); install.type = "button"; install.dataset.primary = ""; install.textContent = offer.destinations.length ? "Install Tetherball" : "Copy setup prompt";
+    const dismiss = document.createElement("button"); dismiss.type = "button"; dismiss.textContent = "Not now";
     const read = document.createElement("a"); read.textContent = "Read the SKILL.md"; read.href = "#tetherball-skill";
+    const close = () => { card.remove(); if (offerElement === card) offerElement = undefined; offerKey = ""; offerDone = false; };
     const request = async (action: string, body: unknown) => {
       const response = await fetch(`${api}/updates/tetherball/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       if (!response.ok) { const result = await response.json(); throw new Error(result.error?.message ?? "Could not complete the request."); }
@@ -185,11 +206,13 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
       try {
         await request("decide", { action, revision: offer.revision, destination: destination.value });
         // The next successful status read removes the completed offer in every view.
-        card.remove(); offerElement = undefined; offerKey = "";
         if (action === "install") {
+          offerDone = true;
           const done = document.createElement("p"); done.setAttribute("role", "status"); done.textContent = "Tetherball is installed. Ask your agent to use /tetherball to think through a question together.";
-          const close = document.createElement("button"); close.textContent = "Done"; close.onclick = () => done.remove(); done.append(" ", close); element.after(done);
-        }
+          const finish = document.createElement("button"); finish.type = "button"; finish.dataset.primary = ""; finish.textContent = "Done"; finish.onclick = close;
+          const finished = document.createElement("div"); finished.className = "offer-actions"; finished.append(finish);
+          card.replaceChildren(title, done, finished); finish.focus();
+        } else close();
       } catch (cause) { status.textContent = (cause as Error).message; }
       finally { offerBusy = false; install.disabled = dismiss.disabled = false; void check(); }
     };
@@ -201,10 +224,6 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
     };
     dismiss.onclick = () => void decide("dismiss");
     read.onclick = event => { event.preventDefault(); void request("open", {}).catch(cause => { status.textContent = (cause as Error).message; }); };
-    for (const button of [install, dismiss]) button.style.cssText = "font:inherit;color:inherit;background:transparent;border:1px solid currentColor;border-radius:7px;padding:7px 12px;cursor:pointer";
-    install.style.background = "var(--wm-color-primary,var(--accent,#287e7b))";
-    install.style.color = "var(--wm-color-on-primary,#fff)";
-    read.style.color = "inherit";
     actions.append(install, dismiss, read); card.append(actions, status); element.after(card);
   };
   const render = (state: any, force: boolean) => {
@@ -267,6 +286,7 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
     element.append(notes, " | ", install, " | ", dismiss);
     addSkillReview();
   };
+  let notesRequested = false;
   const check = async (force = false) => {
     // A manual check always answers, even when a background check is in flight.
     if (force) { quietFailure = false; show("Checking for updates…"); }
@@ -279,6 +299,12 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
       const state = await response.json();
       last = state;
       renderOffer(state);
+      // After an update, the first view to notice opens the new release notes in a new tab.
+      if (state.releaseNotesPending && !notesRequested) {
+        notesRequested = true;
+        void fetch(`${api}/updates/release-notes/open`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })
+          .then(response => { if (!response.ok) notesRequested = false; }, () => { notesRequested = false; });
+      }
       if (!state.agentSkillReviewNeeded) finishReview?.();
       if (menuCheck) menuCheck.hidden = !state.managed;
       // A queued manual check renders its own, fresher answer.

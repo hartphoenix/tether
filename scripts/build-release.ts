@@ -29,6 +29,9 @@ if (!web.success) throw new Error(web.logs.map(String).join("\n"));
 await copyFile("src/web/favicon.png", join(destination, "dist/favicon.png"));
 await mkdir(join(destination, "docs"));
 await copyFile("docs/getting-started.md", join(destination, "docs/getting-started.md"));
+// Setup copies these notes into the user's documents after installation.
+await mkdir(join(destination, "docs/releases"));
+await copyFile(`docs/releases/${version}.md`, join(destination, `docs/releases/${version}.md`));
 // Brand source files (docs/assets/brand) are for design work, not the runtime.
 await cp("docs/assets", join(destination, "docs/assets"), { recursive: true, filter: source => basename(source) !== "brand" });
 await cp("integrations/agents", join(destination, "integrations/agents"), { recursive: true });

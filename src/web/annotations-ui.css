@@ -231,6 +231,8 @@
   font: 700 9px/14px system-ui, sans-serif;
   vertical-align: super;
 }
+/* Code lines are shorter than prose; raise the badge without growing the line. */
+.cm-line .wm-annotation-count { vertical-align: baseline; }
 
 .wm-comment-popover,
 .wm-thread-popover {

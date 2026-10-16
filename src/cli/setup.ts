@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 export { installAgentSkill } from "./agent-skills";
 import type { TetherConfig } from "../server/config";
-export { seedWelcome } from "../onboarding";
+export { releaseNotesDocument, seedReleaseNotes, seedWelcome } from "../onboarding";
 
 export type HostPreference = "auto" | "browser" | "wave" | "cmux" | "paseo";
 export function hostPreference(value: string): HostPreference {
