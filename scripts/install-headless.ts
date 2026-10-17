@@ -1,3 +1,4 @@
+import { prepareServiceApp, registerService } from "../src/server/macos-service";
 import { buildMacServiceApp } from "./macos-service-app";
 import { access, chmod, mkdir, realpath, writeFile, lstat, readFile, rename, readdir } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -35,6 +36,8 @@ export function headlessAssets(input: HeadlessInstall) {
   if (input.role === "connector" && !input.connection) throw new Error("A connector requires --connection pointing to its private credential file.");
   if (input.role === "service" && input.connection) throw new Error("The profile service does not use a client connection file.");
   const label = `org.tether.source.${input.role}.${input.profile}`;
+  const managedLabel = `${label}.agent`;
+  const managedApp = join(input.directory, "background/tether.app");
   const launcher = join(input.directory, "tether");
   const app = join(input.directory, "tether.app");
   const executable = input.platform === "darwin" ? join(app, "Contents/MacOS/tether") : input.bun;
@@ -55,9 +58,9 @@ ${input.role === "service" ? `const { loginStart } = await import(${JSON.stringi
   const bootstrapPath = join(input.directory, "launch.js");
   const unitName = `${label}.${input.platform === "darwin" ? "plist" : "service"}`;
   const unit = input.platform === "darwin"
-    ? `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${xml(label)}</string>\n<key>AssociatedBundleIdentifiers</key><array><string>${xml(label)}</string></array>\n<key>ProgramArguments</key><array><string>${xml(executable)}</string><string>--no-env-file</string><string>${xml(bootstrapPath)}</string></array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><true/>\n<key>ThrottleInterval</key><integer>10</integer>\n<key>ExitTimeOut</key><integer>60</integer>\n<key>Umask</key><integer>63</integer>\n<key>StandardOutPath</key><string>${xml(join(input.directory, "stdout.log"))}</string>\n<key>StandardErrorPath</key><string>${xml(join(input.directory, "stderr.log"))}</string>\n</dict></plist>\n`
+    ? `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${xml(managedLabel)}</string>\n<key>BundleProgram</key><string>Contents/MacOS/tether</string>\n<key>ProgramArguments</key><array><string>tether</string><string>--launch</string><string>${xml(executable)}</string><string>--no-env-file</string><string>${xml(bootstrapPath)}</string></array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><true/>\n<key>ThrottleInterval</key><integer>10</integer>\n<key>ExitTimeOut</key><integer>60</integer>\n<key>Umask</key><integer>63</integer>\n<key>StandardOutPath</key><string>${xml(join(input.directory, "stdout.log"))}</string>\n<key>StandardErrorPath</key><string>${xml(join(input.directory, "stderr.log"))}</string>\n</dict></plist>\n`
     : `[Unit]\nDescription=Tether ${input.role} (${input.profile})\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=${systemd(launcher)}\nRestart=always\nRestartSec=10\nTimeoutStopSec=60\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
-  return { label, launcher, script, unitName, unit, app, bootstrapPath, bootstrap };
+  return { label, managedLabel, managedApp, launcher, script, unitName, unit, app, bootstrapPath, bootstrap };
 }
 
 export async function installHeadless(input: HeadlessInstall) {
@@ -79,7 +82,7 @@ export async function installHeadless(input: HeadlessInstall) {
     for (const name of await readdir(normalized.directory)) {
       const legacyScript = assets.script.replaceAll(shell(join(assets.app, "Contents/MacOS/tether")), shell(normalized.bun));
       const legacyUnit = normalized.platform === "darwin"
-        ? assets.unit.replace(/<key>AssociatedBundleIdentifiers<\/key><array>.*?<\/array>\n/, "").replace(/<key>ProgramArguments<\/key><array>.*?<\/array>/, `<key>ProgramArguments</key><array><string>${xml(join(normalized.directory, "run"))}</string></array>`)
+        ? assets.unit.replace(`${assets.managedLabel}</string>`, `${assets.label}</string>`).replace(/<key>BundleProgram<\/key><string>.*?<\/string>\n/, "").replace(/<key>ProgramArguments<\/key><array>.*?<\/array>/, `<key>ProgramArguments</key><array><string>${xml(join(normalized.directory, "run"))}</string></array>`)
         : assets.unit.replace(systemd(assets.launcher), systemd(join(normalized.directory, "run")));
       const expected = name === "run" || name === "tether" ? assets.script : name === assets.unitName ? assets.unit : null;
       if (expected === null || !(await lstat(join(normalized.directory, name))).isFile()) throw new Error("Unrecognized installation contents; nothing has been replaced.");
@@ -89,8 +92,9 @@ export async function installHeadless(input: HeadlessInstall) {
     await writeFile(marker, JSON.stringify({ role: input.role, profile: input.profile, connection: input.connection, configDirectory: input.configDirectory, runtimeDirectory: input.runtimeDirectory }) + "\n", { mode: 0o600, flag: "wx" });
   }
   if (normalized.platform === "darwin") {
-    await buildMacServiceApp(assets.app, normalized.bun, assets.label);
+    await buildMacServiceApp(assets.app, normalized.bun, `${assets.label}.runtime`);
     await writeFile(assets.bootstrapPath, assets.bootstrap, { mode: 0o600 });
+    await prepareServiceApp(assets.managedApp, assets.app, assets.label, assets.managedLabel, assets.unit);
   }
   for (const [destination, contents, mode] of [[assets.launcher, assets.script, 0o700], [unitPath, assets.unit, 0o600]] as const) {
     const existing = await lstat(destination).catch(error => { if (error.code === "ENOENT") return null; throw error; });
@@ -108,23 +112,25 @@ async function supervisorCommand(args: string[], allowFailure = false) {
   if (code && !allowFailure) throw new Error(`Supervisor operation ${args[0]} ${args[1]} failed; inspection may be restricted in this environment.`);
 }
 export async function superviseHeadless(input: HeadlessInstall, unitName: string, unit: string, label: string) {
-  const directory = input.platform === "darwin" ? join(homedir(), "Library/LaunchAgents") : join(homedir(), ".config/systemd/user");
+  if (input.platform === "darwin") {
+    const assets = headlessAssets(input);
+    const result = await registerService(assets.managedApp, assets.managedLabel, {
+      path: join(homedir(), "Library/LaunchAgents", `${label}.plist`), label, ownedPath: input.directory,
+    });
+    if (result.legacyDisabled) throw new Error("Legacy startup is disabled in macOS and was preserved. Allow it in Login Items before migrating.");
+    if (result.status === 2) throw new Error("Allow tether in System Settings > General > Login Items & Extensions > Allow in the Background.");
+    return;
+  }
+  const directory = join(homedir(), ".config/systemd/user");
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const destination = join(directory, unitName);
   const old = await lstat(destination).catch(error => { if (error.code === "ENOENT") return null; throw error; });
   if (old && (!old.isFile() || old.uid !== process.getuid?.() || !(await readFile(destination, "utf8")).includes(input.directory))) throw new Error("An unrelated supervisor already uses this profile. It has not been replaced.");
   const temporary = `${destination}.${crypto.randomUUID()}.tmp`;
   await writeFile(temporary, unit, { mode: 0o600, flag: "wx" }); await rename(temporary, destination);
-  if (input.platform === "darwin") {
-    await supervisorCommand(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-f", join(input.directory, "tether.app")]);
-    const domain = `gui/${process.getuid!()}`;
-    await supervisorCommand(["launchctl", "bootout", `${domain}/${label}`], true);
-    await supervisorCommand(["launchctl", "bootstrap", domain, destination]);
-  } else {
-    await supervisorCommand(["systemctl", "--user", "daemon-reload"]);
-    await supervisorCommand(["systemctl", "--user", "enable", "--now", unitName]);
-    await supervisorCommand(["systemctl", "--user", "restart", unitName]);
-  }
+  await supervisorCommand(["systemctl", "--user", "daemon-reload"]);
+  await supervisorCommand(["systemctl", "--user", "enable", "--now", unitName]);
+  await supervisorCommand(["systemctl", "--user", "restart", unitName]);
 
 }
 

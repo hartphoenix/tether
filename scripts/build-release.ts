@@ -18,6 +18,7 @@ await buildMacServiceApp(join(destination, "tether.app"), process.execPath, "org
 // Preserve the runtime contract while every Tether-owned child uses the branded executable.
 await writeFile(join(destination, "runtime/bun"), '#!/bin/sh\nset -eu\nroot=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\nexec "$root/tether.app/Contents/MacOS/tether" "$@"\n', { mode: 0o755 });
 const entries = {
+  "migrate-startup": "scripts/migrate-startup.ts",
   "update-agent-skills": "scripts/update-agent-skills.ts",
   login: "src/server/login.ts",
   cli: "src/cli/main.ts", public: "src/cli/public.ts", daemon: "src/server/daemon.ts",

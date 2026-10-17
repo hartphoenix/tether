@@ -33,6 +33,13 @@ export async function buildMacServiceApp(app: string, runtime: string, identifie
   const compile = Bun.spawn(["/usr/bin/clang", "-dynamiclib", "-framework", "AppKit", join(import.meta.dir, "native/service-identity.m"), "-o", native], { stdout: "pipe", stderr: "pipe" });
   const [compileCode, compileError] = await Promise.all([compile.exited, new Response(compile.stderr).text()]);
   if (compileCode !== 0) throw new Error(`Service identity compilation failed: ${compileError}`);
+  const controller = join(frameworks, "tether-service");
+  const controllerBuild = Bun.spawn(["/usr/bin/clang", "-mmacosx-version-min=13.0", "-framework", "AppKit", "-framework", "ServiceManagement", join(import.meta.dir, "native/service-controller.m"), "-o", controller], { stdout: "pipe", stderr: "pipe" });
+  const [controllerCode, controllerError] = await Promise.all([controllerBuild.exited, new Response(controllerBuild.stderr).text()]);
+  if (controllerCode !== 0) throw new Error(`Service controller compilation failed: ${controllerError}`);
+  const controllerSign = Bun.spawn(["/usr/bin/codesign", "--force", "--sign", "-", controller], { stdout: "pipe", stderr: "pipe" });
+  const [controllerSignCode, controllerSignError] = await Promise.all([controllerSign.exited, new Response(controllerSign.stderr).text()]);
+  if (controllerSignCode !== 0) throw new Error(`Service controller signing failed: ${controllerSignError}`);
   const nativeSign = Bun.spawn(["/usr/bin/codesign", "--force", "--sign", "-", native], { stdout: "pipe", stderr: "pipe" });
   const [nativeCode, nativeError] = await Promise.all([nativeSign.exited, new Response(nativeSign.stderr).text()]);
   if (nativeCode !== 0) throw new Error(`Native identity signing failed: ${nativeError}`);

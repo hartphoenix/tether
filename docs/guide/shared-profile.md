@@ -58,10 +58,18 @@ The launcher points to the current checkout. On macOS, generation requires Apple
 
 ## Supervise the process
 
-On macOS, register the generated user agent; it starts while that user's login session is available:
+On macOS 13 or newer, register the app-owned agent; it starts while that user's login session is available:
 
 ```sh
-mkdir -p "$HOME/Library/LaunchAgents" && cp "$HOME/tether-service/org.tether.source.service.shared.plist" "$HOME/Library/LaunchAgents/" && launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/org.tether.source.service.shared.plist" && echo "Tether service registered"
+bun scripts/install-headless.ts --role service --profile shared --directory "$HOME/tether-service" --supervise yes && echo "Tether service registered"
+```
+
+The stable `background/tether.app` owns the registration through Apple's SMAppService. No plist is copied into `~/Library/LaunchAgents`. Existing jobs owned by this installation are retired after an ownership check; disabled legacy jobs remain disabled until you allow migration in System Settings. If macOS requests approval, allow Tether in Login Items & Extensions and rerun the command. Do not move or delete a registered app.
+
+To unregister a source service before maintenance, run its bundled controller (use the connector label for a connector):
+
+```sh
+"$HOME/tether-service/background/tether.app/Contents/MacOS/tether" --service org.tether.source.service.shared.agent.plist unregister && echo "Tether service unregistered"
 ```
 
 On Ubuntu, register the generated user service:
@@ -96,7 +104,7 @@ After owner approval, complete the request on that same machine:
 ./tether remote complete --connection "$HOME/.config/tether/server-connection.json" && echo "Connector credential saved privately"
 ```
 
-Generate its launcher, then register the resulting `org.tether.source.connector.shared` unit using the platform's supervision commands above:
+Generate its launcher, then repeat the command with `--supervise yes` on macOS, or register the resulting `org.tether.source.connector.shared` unit with systemd on Ubuntu:
 
 ```sh
 bun scripts/install-headless.ts --role connector --profile shared --directory "$HOME/tether-connector" --connection "$HOME/.config/tether/server-connection.json" && echo "Connector launcher and supervision file generated"

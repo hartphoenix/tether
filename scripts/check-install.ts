@@ -7,7 +7,7 @@ if (!process.argv[2]) throw new Error("Usage: bun scripts/check-install.ts <rele
 const hash = (await readFile(`${archive}.sha256`, "utf8")).trim().split(/\s+/)[0]!;
 const scratch = await mkdtemp(join(tmpdir(), "tether-install-check-"));
 const root = join(scratch, "installation with spaces"), bin = join(scratch, "bin");
-const env = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: tmpdir(), TETHER_INSTALL_DIR: root, TETHER_BIN_DIR: bin,
+const env = { HOME: join(scratch, "home"), PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: tmpdir(), TETHER_INSTALL_DIR: root, TETHER_BIN_DIR: bin,
   TETHER_CONFIG_DIR: join(scratch, "config"), TETHER_RUNTIME_DIR: join(scratch, "runtime"),
   WAVETERM_CONFIG_DIR: join(scratch, "wave"), TETHER_SUPPRESS_BROWSER: "1" };
 async function run(args: string[], ok = true, overrides: Record<string, string> = {}) {

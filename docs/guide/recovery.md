@@ -39,7 +39,7 @@ Its result includes a `shellLine`. With the user's agreement, add it to their sh
 
 If `startup status` reports `login_job_not_loaded`, the user must allow "tether" (older installations may still show the Bun runtime's developer) in **System Settings > General > Login Items & Extensions > Allow in the Background**.
 
-`tether startup disable` removes the job and hook. If the CLI is broken, run `launchctl bootout gui/$(id -u)/LABEL` with the label from the plist path in `startup status`, then delete the plist.
+`tether startup disable` unregisters the app-owned service before removing its bundle and hook. If the CLI is broken, run the service bundle’s `Contents/MacOS/tether --service LABEL.plist unregister`, using the bundle and label shown by `startup status`; preserve the bundle if unregister fails. Legacy jobs are migrated by installer upgrades, except those disabled in System Settings.
 
 ## Back up and restore
 

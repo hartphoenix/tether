@@ -19,6 +19,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ "$(uname -s)" = Darwin ] || { echo 'Tether currently supports macOS only.' >&2; exit 1; }
+[ "$(sw_vers -productVersion | cut -d. -f1)" -ge 13 ] || { echo 'Tether requires macOS 13 or newer.' >&2; exit 1; }
 case "$(uname -m)" in arm64) architecture=arm64 ;; x86_64) architecture=x64 ;; *) echo 'Unsupported CPU architecture.' >&2; exit 1 ;; esac
 if [ "$release_version" != latest ] && ! [[ "$release_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$ ]]; then echo 'Invalid release version.' >&2; exit 2; fi
 case "$install_root:$bin_directory" in /*:/*) ;; *) echo 'Installation paths must be absolute.' >&2; exit 2 ;; esac
@@ -84,6 +85,9 @@ done
 "$destination/runtime/bun" --no-env-file -e 'await Bun.write(process.argv[1],JSON.stringify({binDirectory:process.argv[2]})+"\n")' "$install_root/install.json" "$bin_directory"
 if [ -f "$destination/lib/update-agent-skills.js" ]; then
   TETHER_INSTALL_ROOT="$destination" "$destination/runtime/bun" --no-env-file "$destination/lib/update-agent-skills.js"
+fi
+if [ -f "$destination/lib/migrate-startup.js" ]; then
+  TETHER_INSTALL_ROOT="$destination" "$destination/runtime/bun" --no-env-file "$destination/lib/migrate-startup.js"
 fi
 echo "Installed Tether: $destination"
 echo "Launcher: $install_root/current/Open Tether.command"

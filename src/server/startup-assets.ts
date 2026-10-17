@@ -5,6 +5,8 @@ import type { TetherConfig } from "./config";
 const xml = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 export const startupLabel = (config: TetherConfig) => `local.tether.${config.profile}.${createHash("sha256").update(config.configDir).digest("hex").slice(0, 12)}`;
+export const managedStartupLabel = (config: TetherConfig) => `${startupLabel(config)}.agent`;
+export const startupApp = (config: TetherConfig) => join(config.configDir, "startup/tether.app");
 export const cmuxHookPath = (config: TetherConfig) => join(config.configDir, "cmux-startup.sh");
 /** launchd appends the login job's output here; it only writes on failure. */
 export const startupLogPath = (config: TetherConfig) => join(config.configDir, "login.log");
@@ -17,9 +19,9 @@ export function startupPlist(config: TetherConfig, installBase: string): string 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>Label</key><string>${xml(startupLabel(config))}</string>
-<key>AssociatedBundleIdentifiers</key><array><string>org.tether.desktop</string></array>
-<key>ProgramArguments</key><array><string>${xml(join(current, "tether.app/Contents/MacOS/tether"))}</string><string>--no-env-file</string><string>${xml(join(current, "lib/login.js"))}</string></array>
+<key>Label</key><string>${xml(managedStartupLabel(config))}</string>
+<key>BundleProgram</key><string>Contents/MacOS/tether</string>
+<key>ProgramArguments</key><array><string>tether</string><string>--launch</string><string>${xml(join(current, "tether.app/Contents/MacOS/tether"))}</string><string>--no-env-file</string><string>${xml(join(current, "lib/login.js"))}</string></array>
 <key>EnvironmentVariables</key><dict>${Object.entries(environment).map(([key, value]) => `<key>${key}</key><string>${xml(value)}</string>`).join("")}</dict>
 <key>StandardOutPath</key><string>${xml(startupLogPath(config))}</string>
 <key>StandardErrorPath</key><string>${xml(startupLogPath(config))}</string>

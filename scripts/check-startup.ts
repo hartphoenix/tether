@@ -13,14 +13,27 @@ await mkdir(join(directory, "installation/releases"), { recursive: true });
 await cp(resolve(process.argv[2]), root, { recursive: true });
 await symlink(root, join(directory, "installation/current"));
 const config = resolveConfig({ configDir: join(directory, "config"), runtimeDir: join(directory, "runtime") });
-const options = { root, home: join(directory, "home"), run: async (args: string[]) => args[0] === "print" ? 1 : 0 };
+let registration = 0;
+const options = { root, home: join(directory, "home"), command: async (args: string[]) => {
+  if (args[1] === "--service") {
+    if (args[3] === "register") registration = 1;
+    if (args[3] === "unregister") registration = 0;
+    return { code: 0, stdout: String(registration), stderr: "" };
+  }
+  if (args[0] === "/usr/bin/codesign") {
+    const child = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    return { code, stdout, stderr };
+  }
+  return { code: args[1] === "print" ? 1 : 0, stdout: "", stderr: "" };
+} };
 const current = join(directory, "installation/current");
 const env = { HOME: options.home, PATH: "/usr/bin:/bin", TETHER_PROFILE: config.profile, TETHER_CONFIG_DIR: config.configDir, TETHER_RUNTIME_DIR: config.runtimeDir };
 let child: Bun.Subprocess | undefined;
 
 /** Same command and environment the generated plist gives launchd. */
 function login() {
-  return Bun.spawn([join(current, "tether.app/Contents/MacOS/tether"), "--no-env-file", join(current, "lib/login.js")], { env, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+  return Bun.spawn([join(config.configDir, "startup/tether.app/Contents/MacOS/tether"), "--launch", join(current, "tether.app/Contents/MacOS/tether"), "--no-env-file", join(current, "lib/login.js")], { env, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
 }
 async function launch() {
   child = login();

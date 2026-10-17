@@ -9,7 +9,7 @@ const root = resolve(process.argv[2] ?? "");
 if (!process.argv[2]) throw new Error("Usage: bun scripts/check-release.ts <candidate-directory>");
 const scratch = await mkdtemp(join(tmpdir(), "tether-release-check-"));
 const config = resolveConfig({ configDir: join(scratch, "config"), runtimeDir: join(scratch, "runtime") });
-const env = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: tmpdir(), TETHER_CONFIG_DIR: config.configDir,
+const env = { HOME: join(scratch, "home"), PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: tmpdir(), TETHER_CONFIG_DIR: config.configDir,
   TETHER_RUNTIME_DIR: config.runtimeDir, WAVETERM_CONFIG_DIR: join(scratch, "wave"), TETHER_SUPPRESS_BROWSER: "1" };
 async function command(...args: string[]) {
   const child = Bun.spawn([join(root, "tether"), ...args], { cwd: scratch, env, stdout: "pipe", stderr: "pipe" });
