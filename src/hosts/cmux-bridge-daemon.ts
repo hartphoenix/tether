@@ -1,3 +1,4 @@
+import { registerMacIdentity } from "../server/macos-identity";
 import { diagnosticText, errorDetails } from "../shared/diagnostics";
 import { PROTOCOL_VERSION, SERVICE_ID } from "../shared/contracts";
 import { createCmuxHost, isSupportedCmuxVersion, MINIMUM_CMUX_VERSION } from "./cmux";
@@ -10,6 +11,7 @@ import type { HostTarget, OpenViewRequest } from "./host-adapter";
 import { controlRequest } from "../server/lifecycle";
 import type { RecoveryView } from "./recovery";
 
+await registerMacIdentity();
 const config = resolveConfig();
 await prepareConfig(config);
 const [token, currentDiscovery] = await Promise.all([readControlToken(config), readDiscovery(config)]);

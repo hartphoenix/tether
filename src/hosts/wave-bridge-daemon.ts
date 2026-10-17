@@ -1,3 +1,4 @@
+import { registerMacIdentity } from "../server/macos-identity";
 import { diagnosticText, errorDetails } from "../shared/diagnostics";
 import { createWaveHost } from "./wave";
 import { removeWaveBridge, writeWaveBridge } from "./wave-bridge";
@@ -6,6 +7,7 @@ import type { OpenViewRequest } from "./host-adapter";
 import { syncWaveRecentLaunchers } from "./wave-launchers";
 import type { RecentEntry } from "../recents/registry";
 
+await registerMacIdentity();
 const config = resolveConfig();
 await prepareConfig(config);
 const token = await readControlToken(config);

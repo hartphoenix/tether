@@ -21,6 +21,8 @@ test.skipIf(process.platform !== "darwin")("enable writes a job that follows the
   const result = await enableStartup(f.config, { root: f.root, home: f.home, run: async args => { commands.push(args); return args[0] === "print" ? 1 : 0; } });
   const plist = await readFile(result.plist, "utf8");
   expect(plist).toContain(join(f.directory, "install/current/lib/login.js"));
+  expect(plist).toContain(join(f.directory, "install/current/tether.app/Contents/MacOS/tether"));
+  expect(plist).toContain("AssociatedBundleIdentifiers");
   expect(plist).not.toContain(f.root);
   expect(plist).not.toContain("KeepAlive");
   expect(await readFile(result.hook, "utf8")).toContain("cmux attach");

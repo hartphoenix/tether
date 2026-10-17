@@ -1,3 +1,4 @@
+import { registerMacIdentity } from "../server/macos-identity";
 import { lstat, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { bodyRevision } from "../core/index";
@@ -209,6 +210,7 @@ export type FileConnectorOptions = {
 
 /** Outbound-only connector. Closing a socket never cancels an accepted disk operation. */
 export async function runFileConnector(options: FileConnectorOptions): Promise<void> {
+  await registerMacIdentity();
   const endpoint = connectorOrigin(options.endpoint, options.allowLoopbackHttp === true);
   const lockDirectory = dirname(options.lockPath);
   await mkdir(lockDirectory, { recursive: true, mode: 0o700 });

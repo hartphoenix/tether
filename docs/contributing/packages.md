@@ -4,6 +4,16 @@
 
 Run these checks when you change installation, updates or bundled assets. They build and exercise local candidates without publishing anything; publishing a release requires separate authorization from the maintainer.
 
+## Background service identity
+
+Every Tether-owned service, helper, connector and background process must identify itself as Tether in macOS System Settings and Activity Monitor. Use `tether` as the service name and executable name, with a descriptive Tether-prefixed role where distinction is needed. Generic names such as `run` are not acceptable. The application identity must use the Tether logo and the publisher identity `hartphoenix`.
+
+For macOS distribution, package services in an application bundle with the correct display name, bundle identifier and icon. Legacy LaunchAgent plists must associate with that bundle using `AssociatedBundleIdentifiers`; Apple requires the executable and associated app to have the same signing Team Identifier. Sign with the authorized Apple Developer ID identity: publisher text, copyright fields and Tether's update signatures do not establish macOS developer attribution. Do not relabel a third-party runtime's signature as Tether's or claim verified `hartphoenix` attribution before Apple recognizes the signing identity.
+
+Verify the installed name, logo and developer attribution in System Settings, and the identity of the service and its children in Activity Monitor. Cover initial install, updates, restart and uninstall, preserving the user's background-item permissions. Do not reset the global macOS background-item database to remove stale entries. Local source bundles and release candidates use an ad-hoc signature with no verified developer identity; this is distinct from both Apple Developer ID signing and Tether update-metadata signing. They use the Tether name and icon, but must not claim the verified developer requirement is met. A newly identified app needs its own macOS file-access consent; ad-hoc rebuilds can require renewed consent. Never grant or bypass that consent programmatically. The runtime is copied into the bundle as `tether`, replacing its vendor signature with the local ad-hoc signature so Tether is not attributed to the runtime vendor. Legacy installations must regenerate their service registration to use the bundle. macOS may retain an old background-item record; verify the current executable path rather than resetting unrelated records.
+
+References: [Apple's helper migration requirements](https://developer.apple.com/documentation/servicemanagement/updating-helper-executables-from-earlier-versions-of-macos), [managing background tasks](https://support.apple.com/guide/deployment/depdca572563/web).
+
 ## Build and exercise a candidate
 
 From the repository root, run each command separately:

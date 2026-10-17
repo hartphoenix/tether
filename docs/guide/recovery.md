@@ -37,7 +37,7 @@ Agent runbook. Run commands under the user's macOS account and `TETHER_PROFILE`.
 
 Its result includes a `shellLine`. With the user's agreement, add it to their shell startup file, such as `~/.zshrc`; new cmux terminals then attach Tether and reload its panes. The hook stores no credentials.
 
-If `startup status` reports `login_job_not_loaded`, the user must allow "Jarred Sumner" (the Bun runtime's developer) in **System Settings > General > Login Items & Extensions > Allow in the Background**.
+If `startup status` reports `login_job_not_loaded`, the user must allow "tether" (older installations may still show the Bun runtime's developer) in **System Settings > General > Login Items & Extensions > Allow in the Background**.
 
 `tether startup disable` removes the job and hook. If the CLI is broken, run `launchctl bootout gui/$(id -u)/LABEL` with the label from the plist path in `startup status`, then delete the plist.
 

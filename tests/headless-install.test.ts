@@ -5,16 +5,18 @@ import { join } from "node:path";
 import { headlessAssets, installHeadless } from "../scripts/install-headless";
 import { resolveConfig, readDiscovery } from "../src/server/config";
 import { startDaemon } from "../src/server/server";
+import { ensureDaemon, stopDaemon } from "../src/server/lifecycle";
 
 describe("headless source installation", () => {
   test("supervisors preserve paths and launch foreground roles", () => {
     const input = { role: "connector" as const, platform: "linux" as const, checkout: "/source", directory: '/deployment with "quotes"/$home%/connector', bun: "/runtime/bun", profile: "shared", connection: "/private/connection.json" };
     const linux = headlessAssets(input);
-    expect(linux.unit).toContain('ExecStart="/deployment with \\"quotes\\"/$$home%%/connector/run"');
+    expect(linux.unit).toContain('ExecStart="/deployment with \\"quotes\\"/$$home%%/connector/tether"');
     expect(linux.script).toContain("'connector' 'run' '--connection' '/private/connection.json'");
     expect(linux.unit).toContain("UMask=0077");
     const mac = headlessAssets({ ...input, platform: "darwin" });
     expect(mac.unit).toContain("&quot;quotes&quot;");
+    expect(mac.launcher).toBe(join(input.directory, "tether"));
     expect(mac.unit).toContain("<key>KeepAlive</key><true/>");
     const service = headlessAssets({ ...input, role: "service", connection: undefined });
     expect(service.script).toContain("'/source/src/server/login.ts'");
@@ -79,4 +81,32 @@ describe("headless source installation", () => {
       await rm(scratch, { recursive: true, force: true });
     }
   }, 10_000);
+  test.skipIf(process.platform !== "darwin")("branded supervisor takes over an existing daemon under startup exclusion", async () => {
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), "tether-branded-takeover-")));
+    const config = resolveConfig({ profile: "identity-test", configDir: join(scratch, "config"), runtimeDir: join(scratch, "runtime") });
+    let child: Bun.Subprocess | undefined;
+    try {
+      const before = await ensureDaemon({ config });
+      const installed = await installHeadless({ role: "service", platform: "darwin", checkout: join(import.meta.dir, ".."),
+        directory: join(scratch, "installed"), bun: process.execPath, profile: config.profile,
+        configDirectory: config.configDir, runtimeDirectory: config.runtimeDir });
+      child = Bun.spawn([join(scratch, "installed/tether.app/Contents/MacOS/tether"), "--no-env-file", join(scratch, "installed/launch.js")], { stdout: "pipe", stderr: "pipe" });
+      let current = await readDiscovery(config);
+      for (let attempt = 0; attempt < 200 && current?.pid !== child.pid; attempt++) {
+        if (child.exitCode !== null) throw new Error(await new Response(child.stderr as ReadableStream).text());
+        await Bun.sleep(50); current = await readDiscovery(config);
+      }
+      expect(current?.pid).toBe(child.pid);
+      expect(current?.instanceId).not.toBe(before.instanceId);
+      expect((await fetch(`${current!.origin}/health`)).ok).toBe(true);
+      child.kill("SIGTERM");
+      expect(await child.exited).toBe(0);
+      expect(await readDiscovery(config)).toBeNull();
+    } finally {
+      if (child?.exitCode === null) { child.kill("SIGKILL"); await child.exited; }
+      await stopDaemon(config).catch(() => {});
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }, 20_000);
+
 });

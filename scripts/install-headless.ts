@@ -1,3 +1,4 @@
+import { buildMacServiceApp } from "./macos-service-app";
 import { access, chmod, mkdir, realpath, writeFile, lstat, readFile, rename, readdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
@@ -34,19 +35,29 @@ export function headlessAssets(input: HeadlessInstall) {
   if (input.role === "connector" && !input.connection) throw new Error("A connector requires --connection pointing to its private credential file.");
   if (input.role === "service" && input.connection) throw new Error("The profile service does not use a client connection file.");
   const label = `org.tether.source.${input.role}.${input.profile}`;
-  const launcher = join(input.directory, "run");
+  const launcher = join(input.directory, "tether");
+  const app = join(input.directory, "tether.app");
+  const executable = input.platform === "darwin" ? join(app, "Contents/MacOS/tether") : input.bun;
   const command = input.role === "service"
-    ? [input.bun, "--no-env-file", join(input.checkout, "src/server/login.ts")]
-    : [input.bun, "--no-env-file", join(input.checkout, "src/cli/public.ts"), "connector", "run", "--connection", input.connection!];
+    ? [executable, "--no-env-file", join(input.checkout, "src/server/login.ts")]
+    : [executable, "--no-env-file", join(input.checkout, "src/cli/public.ts"), "connector", "run", "--connection", input.connection!];
   const environment = [`export TETHER_PROFILE=${shell(input.profile)}`,
     ...(input.configDirectory ? [`export TETHER_CONFIG_DIR=${shell(input.configDirectory)}`] : []),
     ...(input.runtimeDirectory ? [`export TETHER_RUNTIME_DIR=${shell(input.runtimeDirectory)}`] : [])];
   const script = `#!/bin/sh\nset -eu\numask 077\nunset TETHER_INSTALL_ROOT\n${environment.join("\n")}\ncd ${shell(input.checkout)}\nexec ${command.map(shell).join(" ")}\n`;
+  const bootstrap = `delete process.env.TETHER_INSTALL_ROOT;
+process.env.TETHER_PROFILE = ${JSON.stringify(input.profile)};
+${input.configDirectory ? `process.env.TETHER_CONFIG_DIR = ${JSON.stringify(input.configDirectory)};` : ""}
+${input.runtimeDirectory ? `process.env.TETHER_RUNTIME_DIR = ${JSON.stringify(input.runtimeDirectory)};` : ""}
+process.chdir(${JSON.stringify(input.checkout)});
+${input.role === "service" ? `const { loginStart } = await import(${JSON.stringify(join(input.checkout, "src/server/login.ts"))}); await loginStart({ takeOver: true });` : `const { publicMain } = await import(${JSON.stringify(join(input.checkout, "src/cli/public.ts"))}); process.exitCode = await publicMain(${JSON.stringify(["connector", "run", "--connection", input.connection])});`}
+`;
+  const bootstrapPath = join(input.directory, "launch.js");
   const unitName = `${label}.${input.platform === "darwin" ? "plist" : "service"}`;
   const unit = input.platform === "darwin"
-    ? `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${xml(label)}</string>\n<key>ProgramArguments</key><array><string>${xml(launcher)}</string></array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><true/>\n<key>ThrottleInterval</key><integer>10</integer>\n<key>ExitTimeOut</key><integer>60</integer>\n<key>Umask</key><integer>63</integer>\n<key>StandardOutPath</key><string>${xml(join(input.directory, "stdout.log"))}</string>\n<key>StandardErrorPath</key><string>${xml(join(input.directory, "stderr.log"))}</string>\n</dict></plist>\n`
+    ? `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${xml(label)}</string>\n<key>AssociatedBundleIdentifiers</key><array><string>${xml(label)}</string></array>\n<key>ProgramArguments</key><array><string>${xml(executable)}</string><string>--no-env-file</string><string>${xml(bootstrapPath)}</string></array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><true/>\n<key>ThrottleInterval</key><integer>10</integer>\n<key>ExitTimeOut</key><integer>60</integer>\n<key>Umask</key><integer>63</integer>\n<key>StandardOutPath</key><string>${xml(join(input.directory, "stdout.log"))}</string>\n<key>StandardErrorPath</key><string>${xml(join(input.directory, "stderr.log"))}</string>\n</dict></plist>\n`
     : `[Unit]\nDescription=Tether ${input.role} (${input.profile})\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=${systemd(launcher)}\nRestart=always\nRestartSec=10\nTimeoutStopSec=60\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
-  return { label, launcher, script, unitName, unit };
+  return { label, launcher, script, unitName, unit, app, bootstrapPath, bootstrap };
 }
 
 export async function installHeadless(input: HeadlessInstall) {
@@ -66,10 +77,20 @@ export async function installHeadless(input: HeadlessInstall) {
   if (!previous) {
     // Adopt only exact legacy assets or our own interrupted, empty installation.
     for (const name of await readdir(normalized.directory)) {
-      const expected = name === "run" ? assets.script : name === assets.unitName ? assets.unit : null;
-      if (expected === null || !(await lstat(join(normalized.directory, name))).isFile() || await readFile(join(normalized.directory, name), "utf8") !== expected) throw new Error("Unrecognized installation contents; nothing has been replaced.");
+      const legacyScript = assets.script.replaceAll(shell(join(assets.app, "Contents/MacOS/tether")), shell(normalized.bun));
+      const legacyUnit = normalized.platform === "darwin"
+        ? assets.unit.replace(/<key>AssociatedBundleIdentifiers<\/key><array>.*?<\/array>\n/, "").replace(/<key>ProgramArguments<\/key><array>.*?<\/array>/, `<key>ProgramArguments</key><array><string>${xml(join(normalized.directory, "run"))}</string></array>`)
+        : assets.unit.replace(systemd(assets.launcher), systemd(join(normalized.directory, "run")));
+      const expected = name === "run" || name === "tether" ? assets.script : name === assets.unitName ? assets.unit : null;
+      if (expected === null || !(await lstat(join(normalized.directory, name))).isFile()) throw new Error("Unrecognized installation contents; nothing has been replaced.");
+      const contents = await readFile(join(normalized.directory, name), "utf8");
+      if (contents !== expected && !(name === "run" && contents === legacyScript) && !(name === assets.unitName && contents === legacyUnit)) throw new Error("Unrecognized installation contents; nothing has been replaced.");
     }
     await writeFile(marker, JSON.stringify({ role: input.role, profile: input.profile, connection: input.connection, configDirectory: input.configDirectory, runtimeDirectory: input.runtimeDirectory }) + "\n", { mode: 0o600, flag: "wx" });
+  }
+  if (normalized.platform === "darwin") {
+    await buildMacServiceApp(assets.app, normalized.bun, assets.label);
+    await writeFile(assets.bootstrapPath, assets.bootstrap, { mode: 0o600 });
   }
   for (const [destination, contents, mode] of [[assets.launcher, assets.script, 0o700], [unitPath, assets.unit, 0o600]] as const) {
     const existing = await lstat(destination).catch(error => { if (error.code === "ENOENT") return null; throw error; });
@@ -95,6 +116,7 @@ export async function superviseHeadless(input: HeadlessInstall, unitName: string
   const temporary = `${destination}.${crypto.randomUUID()}.tmp`;
   await writeFile(temporary, unit, { mode: 0o600, flag: "wx" }); await rename(temporary, destination);
   if (input.platform === "darwin") {
+    await supervisorCommand(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-f", join(input.directory, "tether.app")]);
     const domain = `gui/${process.getuid!()}`;
     await supervisorCommand(["launchctl", "bootout", `${domain}/${label}`], true);
     await supervisorCommand(["launchctl", "bootstrap", domain, destination]);

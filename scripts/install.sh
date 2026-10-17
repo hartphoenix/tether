@@ -75,6 +75,9 @@ fi
 if [ ! -d "$destination" ]; then mv "$candidate" "$destination"; fi
 ln -s "$destination" "$install_root/current.new.$$"
 mv -fh "$install_root/current.new.$$" "$install_root/current"
+if [ -d "$install_root/current/tether.app" ]; then
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$install_root/current/tether.app"
+fi
 for name in tether mdreview; do
   if [ ! -L "$bin_directory/$name" ]; then ln -s "$install_root/current/$name" "$bin_directory/$name"; fi
 done

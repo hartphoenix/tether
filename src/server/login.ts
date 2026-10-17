@@ -2,9 +2,9 @@
 // the daemon then lives in this job and stops with the login session.
 import { realpath } from "node:fs/promises";
 import { basename, resolve } from "node:path";
-import { resolveConfig, acquireStartupLock } from "./config";
+import { resolveConfig, acquireStartupLock, readDiscovery } from "./config";
 
-export async function loginStart(): Promise<void> {
+export async function loginStart(options: { takeOver?: boolean } = {}): Promise<void> {
   // Packaged as <release>/lib/login.js; launchd reaches it through `current`.
   if (basename(import.meta.dir) === "lib") process.env.TETHER_INSTALL_ROOT ??= await realpath(resolve(import.meta.dir, ".."));
   const config = resolveConfig();
@@ -17,6 +17,15 @@ export async function loginStart(): Promise<void> {
   const release = async () => { if (!released) { released = true; await lock.release(); } };
   try {
     const { discoverDaemon } = await import("./lifecycle");
+    if (options.takeOver && await discoverDaemon(config)) {
+      const { stopDaemon } = await import("./lifecycle");
+      await stopDaemon(config);
+      // Hold startup exclusion until the old daemon removes its discovery record.
+      for (let attempt = 0; await readDiscovery(config); attempt++) {
+        if (attempt >= 200) throw new Error("The previous Tether daemon did not stop; takeover was cancelled.");
+        await Bun.sleep(50);
+      }
+    }
     // Login is busy: a daemon that survived logout may answer slowly at first.
     for (let attempt = 0; ; attempt++) {
       try { if (await discoverDaemon(config)) return; break; }

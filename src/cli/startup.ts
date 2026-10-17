@@ -22,9 +22,8 @@ export async function startupStatus(config: TetherConfig, options: StartupOption
   const enabled = await exists(plist);
   const loaded = await (options.run ?? runner)(["print", jobTarget(config)]) === 0;
   const [daemon, cmux] = await Promise.all([statusDaemon(config), cmuxBridgeStatus(config)]);
-  // macOS lists Bun-based agents under Bun's developer name; if that background
-  // item is switched off, launchd silently skips the job at login.
-  const issue = enabled && !loaded ? { code: "login_job_not_loaded", message: "Login startup is enabled but macOS did not load it. In System Settings > General > Login Items & Extensions > Allow in the Background, turn on \"Jarred Sumner\" (Bun), then run `tether startup enable`." } : undefined;
+  // If the Tether background item is disabled, launchd may skip the login job.
+  const issue = enabled && !loaded ? { code: "login_job_not_loaded", message: "Login startup is enabled but macOS did not load it. In System Settings > General > Login Items & Extensions > Allow in the Background, turn on \"tether\", then run `tether startup enable`." } : undefined;
   return { enabled, loaded, ...(issue ? { issue } : {}), plist, log: startupLogPath(config), hook: cmuxHookPath(config), hookInstalled: await exists(cmuxHookPath(config)), shellLine: hookLine(config),
     daemon: { running: daemon.running, pid: daemon.pid }, cmux: { attached: cmux.callbackPlacementReady, ...(cmux.issue ? { issue: cmux.issue } : {}) } };
 }
@@ -58,7 +57,7 @@ export async function enableStartup(config: TetherConfig, options: StartupOption
   await writeAsset(cmuxHookPath(config), cmuxStartupHook(config, installBase));
   const target = jobTarget(config);
   if (await run(["print", target]) === 0) await run(["bootout", target]);
-  if (await run(["bootstrap", `gui/${process.getuid!()}`, path]) !== 0) throw new Error(`Login registration failed. Check that "Jarred Sumner" (Bun) is allowed in System Settings > General > Login Items & Extensions > Allow in the Background, then retry. The job file is at ${path}; \`tether startup disable\` removes it.`);
+  if (await run(["bootstrap", `gui/${process.getuid!()}`, path]) !== 0) throw new Error(`Login registration failed. Check that "tether" is allowed in System Settings > General > Login Items & Extensions > Allow in the Background, then retry. The job file is at ${path}; \`tether startup disable\` removes it.`);
   return { enabled: true, plist: path, hook: cmuxHookPath(config), shellLine: hookLine(config),
     message: "Tether now starts at login. To reconnect cmux automatically, add shellLine to your interactive shell startup file (for example ~/.zshrc)." };
 }

@@ -20,7 +20,7 @@ let child: Bun.Subprocess | undefined;
 
 /** Same command and environment the generated plist gives launchd. */
 function login() {
-  return Bun.spawn([join(current, "runtime/bun"), "--no-env-file", join(current, "lib/login.js")], { env, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+  return Bun.spawn([join(current, "tether.app/Contents/MacOS/tether"), "--no-env-file", join(current, "lib/login.js")], { env, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
 }
 async function launch() {
   child = login();

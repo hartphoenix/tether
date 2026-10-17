@@ -1,3 +1,4 @@
+import { registerMacIdentity } from "../src/server/macos-identity";
 import { DesktopReaderBackend } from "../src/remote/desktop-reader";
 /** Experimental phone adapter; foreground or supervised. Does not configure Tailscale or enroll by itself. */
 import { operationsHealth } from "../src/remote/operations-health";
@@ -14,6 +15,7 @@ import { createDiagramRenderer, type DiagramRenderer } from "../src/remote/diagr
 
 const usage = "bun scripts/phone-reader.ts --document FILE --owner LOGIN --reader-origin https://READER_HOST --approval-origin https://APPROVAL_HOST --state-dir DIR [--folio-profile PROFILE] [--enroll]";
 export async function main(args: string[]) {
+  await registerMacIdentity();
   if (args.includes("--help")) { console.log(usage); return; }
   const values = new Map<string, string>(); let enroll = false;
   for (let index = 0; index < args.length; index++) {

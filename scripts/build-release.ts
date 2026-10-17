@@ -1,3 +1,4 @@
+import { buildMacServiceApp } from "./macos-service-app";
 import { chmod, copyFile, cp, mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildWeb } from "../src/web/build";
@@ -13,8 +14,9 @@ const destination = resolve(process.argv[2] ?? `dist/release/tether-${version}-d
 await mkdir(dirname(destination), { recursive: true });
 await mkdir(destination, { recursive: false });
 await mkdir(join(destination, "runtime"));
-await copyFile(process.execPath, join(destination, "runtime/bun"));
-await chmod(join(destination, "runtime/bun"), 0o755);
+await buildMacServiceApp(join(destination, "tether.app"), process.execPath, "org.tether.desktop");
+// Preserve the runtime contract while every Tether-owned child uses the branded executable.
+await writeFile(join(destination, "runtime/bun"), '#!/bin/sh\nset -eu\nroot=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\nexec "$root/tether.app/Contents/MacOS/tether" "$@"\n', { mode: 0o755 });
 const entries = {
   "update-agent-skills": "scripts/update-agent-skills.ts",
   login: "src/server/login.ts",

@@ -1,3 +1,4 @@
+import { registerMacIdentity } from "./macos-identity";
 import { writeFile } from "node:fs/promises";
 import { diagnostic } from "../shared/diagnostics";
 import { startDaemon } from "./server";
@@ -44,6 +45,7 @@ export async function completeManagedUpdate(config: TetherConfig, root: string, 
 }
 
 export async function runDaemon(options: { config?: TetherConfig; background?: boolean; ready?: () => Promise<void> } = {}): Promise<void> {
+  await registerMacIdentity();
   const config = options.config ?? resolveConfig();
   let startupReport = process.env.TETHER_STARTUP_REPORT;
   delete process.env.TETHER_STARTUP_REPORT;

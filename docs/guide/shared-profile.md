@@ -54,7 +54,7 @@ Generate a foreground launcher and a service-manager configuration in a new dire
 bun scripts/install-headless.ts --role service --profile shared --directory "$HOME/tether-service" && echo "Service launcher and supervision file generated"
 ```
 
-The launcher points to the current checkout and Bun executable. `--checkout`, `--bun`, `--config-directory`, and `--runtime-directory` select explicit paths when needed. It retains source dependencies and launches no reader window.
+The launcher points to the current checkout. On macOS, generation requires Apple Command Line Tools and creates a `tether.app` background bundle with the Tether name and logo, using a copy of the selected Bun runtime. Its local ad-hoc signature does not establish a verified developer; macOS may ask you to allow access to your document folders. On Linux, the launcher uses the selected Bun executable. `--checkout`, `--bun`, `--config-directory`, and `--runtime-directory` select explicit paths when needed. It retains source dependencies and launches no reader window.
 
 ## Supervise the process
 

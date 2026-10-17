@@ -18,7 +18,8 @@ export function startupPlist(config: TetherConfig, installBase: string): string 
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${xml(startupLabel(config))}</string>
-<key>ProgramArguments</key><array><string>${xml(join(current, "runtime/bun"))}</string><string>--no-env-file</string><string>${xml(join(current, "lib/login.js"))}</string></array>
+<key>AssociatedBundleIdentifiers</key><array><string>org.tether.desktop</string></array>
+<key>ProgramArguments</key><array><string>${xml(join(current, "tether.app/Contents/MacOS/tether"))}</string><string>--no-env-file</string><string>${xml(join(current, "lib/login.js"))}</string></array>
 <key>EnvironmentVariables</key><dict>${Object.entries(environment).map(([key, value]) => `<key>${key}</key><string>${xml(value)}</string>`).join("")}</dict>
 <key>StandardOutPath</key><string>${xml(startupLogPath(config))}</string>
 <key>StandardErrorPath</key><string>${xml(startupLogPath(config))}</string>
