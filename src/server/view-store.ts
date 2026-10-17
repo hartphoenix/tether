@@ -46,7 +46,7 @@ export class ViewStore {
     let parent = view.parent;
     if (!parent && view.path) { const info = statSync(dirname(view.path)); parent = { dev: info.dev, ino: info.ino }; }
     const target = view.target ? Object.fromEntries(Object.entries(view.target).filter(([key]) =>
-      ["host", "windowId", "workspaceId", "tabId", "blockId", "surfaceId", "socketPath", "version", "build", "commit"].includes(key))) : undefined;
+      ["host", "windowId", "workspaceId", "tabId", "blockId", "surfaceId", "socketPath", "version", "build", "commit", "surface"].includes(key))) : undefined;
     this.db.query(`INSERT INTO reader_views (id,kind,path,verifier,created_at,target,parent_dev,parent_ino) VALUES (?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET verifier=excluded.verifier, path=excluded.path, target=excluded.target,parent_dev=excluded.parent_dev,parent_ino=excluded.parent_ino`)
       .run(view.id, view.kind, view.path, view.verifier, view.createdAt, target ? JSON.stringify(target) : null, parent?.dev ?? null, parent?.ino ?? null);

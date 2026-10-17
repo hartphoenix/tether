@@ -6,7 +6,7 @@ import { TextSelection } from '@milkdown/kit/prose/state';
 import { $prose } from '@milkdown/kit/utils';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { createAnnotationUi, captureAnchor } from '../../src/web/annotations-ui';
-import { createSelectionUi } from '../../src/web/selection-ui';
+import { createSelectionUi, reviewNoteIconSvg } from '../../src/web/selection-ui';
 import { createThemeMaker } from '../../src/web/theme-maker';
 import { applyDesign } from '../../src/web/themes';
 import { tetherDesign } from '../../src/shared/themes';
@@ -33,14 +33,18 @@ applyDesign(root, 'tether', design);
 const paragraphs = Array.from({length: 40}, (_, i) => `Paragraph ${i}: Here is [target link ${i}](https://example.com/${i}) followed by ordinary words to form a paragraph.`);
 const startup = new URL(location.href).searchParams.get('startup');
 const banner = `![${new URL(location.href).searchParams.has('ratio') ? '0.5' : 'Geometry image'}](/image.svg)\n\n`;
-const markdown = startup === 'image-only' ? banner : (startup === 'long-prefix' ? banner.repeat(8) : '') + '# Geometry fixture\n\n' + paragraphs.map((text, i) => i === 20 ? banner + text : text).join('\n\n') + '\n\n```ts\nconst line = ' + '1234567890'.repeat(50) + ';\n```\n\n| One | Two |\n| --- | --- |\n| cell one | cell two |\n\nLast paragraph.';
+const duplicatePassage = 'Surrounding context '.repeat(5) + 'duplicate target' + ' trailing context'.repeat(5);
+const markdown = new URL(location.href).searchParams.has('duplicates') ? '# Duplicates\n\n' + Array.from({ length: 12 }, () => duplicatePassage).join('\n\n') : startup === 'image-only' ? banner : (startup === 'long-prefix' ? banner.repeat(8) : '') + '# Geometry fixture\n\n' + paragraphs.map((text, i) => i === 20 ? banner + text : text).join('\n\n') + '\n\n```ts\nconst line = ' + '1234567890'.repeat(50) + ';\n```\n\n| One | Two |\n| --- | --- |\n| cell one | cell two |\n\nLast paragraph.';
 let view: EditorView | null = null;
 const annotations = createAnnotationUi({
   root: document.querySelector<HTMLElement>('#annotations')!, editorRoot: root, getEditorView: () => view,
   onCreateComment: ({body, anchor}) => annotations.setState({threads: [{id:'test-comment', actor:'human', createdAt:'2026-09-16T00:00:00Z', body, anchor}]}),
 });
 const selection = createSelectionUi({onNotice: message => console.info(message)});
-const crepe = new Crepe({root, defaultValue: markdown, features: {[Crepe.Feature.TopBar]: true, [Crepe.Feature.BlockEdit]: false}, featureConfigs: {[Crepe.Feature.Placeholder]: {text: "..."}}});
+const crepe = new Crepe({root, defaultValue: markdown, features: {[Crepe.Feature.TopBar]: true, [Crepe.Feature.BlockEdit]: false}, featureConfigs: {[Crepe.Feature.Placeholder]: {text: "..."}, [Crepe.Feature.Toolbar]: {
+  buildToolbar: builder => { builder.getGroup('function').addItem('comment', { icon: reviewNoteIconSvg, label: 'Comment', active: () => false,
+    onRun: ctx => annotations.openCommentComposer(captureAnchor(ctx.get(editorViewCtx)) ?? undefined) }); },
+}}});
 crepe.editor.config(ctx => ctx.update(editorStateOptionsCtx, previous => options => initialReaderSelection(previous(options))));
 crepe.editor.use(selection.plugin).use($prose(() => annotations.plugin));
 await crepe.create();
@@ -79,6 +83,12 @@ const railResize = createRailResize(document.querySelector('#workspace')!, docum
     const from = view!.posAtDOM(link, 0);
     view!.dispatch(view!.state.tr.setSelection(TextSelection.create(view!.state.doc, from, from + 5)));
     return captureAnchor(view!);
+  },
+  selectDuplicate(index: number) {
+    const paragraph = view!.dom.querySelectorAll('p')[index]!;
+    const from = view!.posAtDOM(paragraph, 0) + paragraph.textContent!.indexOf('duplicate target');
+    view!.focus();
+    view!.dispatch(view!.state.tr.setSelection(TextSelection.create(view!.state.doc, from, from + 'duplicate target'.length)));
   },
   comment(i: number) { annotations.openCommentComposer(this.selectLink(i) ?? undefined); },
 };

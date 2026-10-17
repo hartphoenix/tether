@@ -1,6 +1,6 @@
 # Tether for Paseo
 
-A [Paseo](https://paseo.sh) plugin that puts Tether's Folio in Paseo's Explorer sidebar and opens Tether readers in Paseo browser tabs. See [host setup](../../docs/guide/hosts.md#paseo-experimental) for installation and use.
+A [Paseo](https://paseo.sh) plugin that puts Tether's Folio in Paseo's Explorer sidebar, opens Tether readers in Paseo panels, adds chat annotations and shares themes. For installation and use, see [Tether in Paseo](../../docs/guide/paseo.md).
 
 ## How it works
 
@@ -8,7 +8,9 @@ Paseo's **Settings → Appearance** includes **Tether Light**, **Tether Dark**, 
 
 On desktop, the Explorer panel embeds Tether's existing web Folio, with its filters, saved chips, menus, sorting, archive, settings, and theme. Choosing **Folio → Settings** opens a separate Paseo browser pane and leaves Folio in the sidebar. Web/mobile clients and failed desktop loads show the native document list; failed loads offer **Retry full Folio**. In local mode, the app, daemon and Tether run on the same computer. Tether Fly connects a remote Paseo daemon to an explicitly selected shared hub; the Mac app signs in at that hub’s HTTPS origin. See [Fly setup](../../docs/guide/fly-setup.md).
 
-Embedding is experimental: Paseo has no supported plugin webview API. The isolated `client/web-folio.ts` adapter uses the desktop browser partition admitted by Paseo 0.9.2. It retains Paseo's sandbox and cookie handling without injecting scripts or accessing browser credentials. A future Paseo release may block embedding; the native list remains available. See the [Paseo plugin contract](https://paseo.sh/docs/plugins/reference) and [upstream webview proposal](https://github.com/getpaseo/paseo/issues/3548).
+Embedding is experimental: Paseo has no supported plugin webview API. The isolated `client/web-folio.ts` adapter uses the desktop browser partition admitted by Paseo 0.9.2. It retains Paseo's sandbox and cookie handling without injecting scripts or accessing browser credentials. Each view also registers through Paseo's private browser bridge, as Paseo's own browser tabs do, so Paseo forwards its app shortcuts from the view and reloads only the view on ⌘R; registration also lists the view in agents' browser tools, as browser tabs already are. A future Paseo release may block embedding; the native list remains available. See the [Paseo plugin contract](https://paseo.sh/docs/plugins/reference) and [upstream webview proposal](https://github.com/getpaseo/paseo/issues/3548).
+
+With **Open documents in custom Tether panels** on (the default), readers open as plugin panels instead of browser tabs, through the same webview adapter. `client/reader-panels.ts` registers one panel per document at runtime (`reader-` plus a hash of its path), since a panel's tab title is fixed at registration and Paseo keeps one tab per panel per workspace. Registrations are saved in the client's `localStorage` and restored at startup for the panel tabs still in Paseo's saved layout. Each panel caches its reader session; when that session has expired, the panel requests a fresh launch through `tether.open`, and the plugin hands the returning intent to that panel without moving focus. A panel launch adds `surface=panel`, so Tether reports `pageOpensLinks: false` and `hostOpensWebLinks: true` for that session: Paseo silently holds new-tab requests from webviews that aren't its own browser tabs, so the reader opens documents through `api/open` and web links through `api/web-link`. Paseo keeps only the three most recently used tabs in a pane mounted; an evicted reader reloads its cached session when shown again.
 
 Nothing outside Paseo can open its tabs, so the plugin pulls opens from Tether:
 
@@ -34,6 +36,8 @@ Client errors use fixed summaries and recognized error codes. Raw stderr and arb
 
 ## Development
 
+The manifest requires Paseo 0.11.2 or later and must never set an upper bound; a host update should not disable the plugin. Compiled-package acceptance tests Paseo 0.11.2. The development-only SDK remains pinned to 0.9.2, against which this source typechecks; it is not shipped in the compiled package. Updating that tool dependency to 0.11.2 is subject to the dependency age gate. Package acceptance must exercise the declared runtime, independently of SDK typechecking.
+
 ```sh
 npm install
 npm run typecheck
@@ -43,3 +47,7 @@ paseo plugin logs tether
 ```
 
 Tests run from the repository root with `bun test tests/paseo-*.test.ts`. They cover the hub, the client handoff, and the hub against a real Tether daemon.
+
+Chat annotations use `chat/` for selection, cards, native delivery and read-only receipt recovery, with SQLite owned by Tether’s daemon through `tether paseo chat -`. Run `bun scripts/stage-paseo-chat.ts` from the repository root to stage the complete plugin without installing or reloading it. Verify with `bun scripts/check-paseo-chat.ts`; `bun scripts/check-paseo-chat-native.ts /path/to/pinned/paseo` exercises the reviewed release’s source functions. Disable the separate delivery prototype before activating this integration.
+
+Selection/Markdown recovery, composer editing and capture/replay adapt [Annotations by neunzig-zehn](https://github.com/neunzig-zehn/paseo-annotations), including inherited Quote work; [MIT notices](chat/NOTICE.md) identify the adopted portions.

@@ -23,17 +23,19 @@ describe("bounded agent reads",()=>{
     expect(()=>reads.pending(path,body+"changed",{continuation:first.continuation!})).toThrow("document changed");
     expect(()=>store.acknowledge(path,"assistant","assistant",first.continuation!)).toThrow();store.close();
   });
-  test("oversized JSON events are losslessly fragmented without acknowledging omitted content",()=>{
+  test("raw event fragments reconstruct the original without acknowledging it",()=>{
     const text='😀 \\"\n'.repeat(3000),{store,reads}=fixture(text);
-    let continuation:string|undefined,joined="",lastCursor="",pages=0;
+    let offset=0,joined="",pages=0;
     do {
-      const result=reads.pending(path,body,{maxBytes:2048,continuation});expect(size(result)).toBeLessThanOrEqual(2048);
-      const item=result.events[0] as {fragment:{text:string;nextOffset:number|null}};
-      joined+=item.fragment.text;lastCursor=result.cursor;continuation=result.continuation??undefined;pages++;
-      expect(result.throughSequence).toBe(continuation?0:1);
-      expect(pages).toBeLessThan(200);
-    }while(continuation);
-    expect(JSON.parse(joined).body).toBe(text);store.acknowledge(path,"assistant","assistant",lastCursor);expect(reads.pending(path,body).events).toHaveLength(0);store.close();
+      const result=reads.event(path,"comment-1",{maxBytes:2048,offset});
+      expect(size(result)).toBeLessThanOrEqual(2048);
+      if (!("fragment" in result)) throw new Error("Expected a fragment");
+      expect(result.fragment.offset).toBe(joined.length);
+      joined+=result.fragment.text;offset=result.fragment.nextOffset??0;
+      expect(++pages).toBeLessThan(200);
+    }while(offset);
+    expect(JSON.parse(joined).body).toBe(text);
+    expect(store.acknowledgement(path,"assistant")).toBeNull();store.close();
   });
   test("thread messages paginate and include current edits, suppress deleted replies",()=>{
     const {store,reads}=fixture("Question",4);
@@ -82,4 +84,117 @@ describe("bounded agent reads",()=>{
     expect(()=>store.observation(path,"assistant",old.cursor,now)).toThrow("expired");expect(store.lookupMutation(path,"unknown").outcome).toBe("outcome_unknown");store.observe(path,"assistant",1,revision,now);
     expect(store.db.query("SELECT COUNT(*) AS count FROM review_observations").get()).toEqual({count:1});store.close();
   });
+});
+
+describe("pending index", () => {
+  test("large bodies become bounded references while raw events remain lossless", () => {
+    const text = '😀 \\"\n'.repeat(3000);
+    const { store, reads } = fixture(text);
+    const page = reads.pending(path, body, { maxBytes: 2048 });
+    expect(page.events).toEqual([{ id: "comment-1", seq: 1, type: "comment", actor: "hart", threadId: "comment-1" }]);
+    expect(page.continuation).toBeNull();
+    expect(page.throughSequence).toBe(1);
+    expect(size(page)).toBeLessThanOrEqual(2048);
+    expect(store.acknowledgement(path, "assistant")).toBeNull();
+    expect(reads.event(path, "comment-1", { maxBytes: 2048 })).toHaveProperty("fragment");
+    expect(store.events(path)[0]).toHaveProperty("body", text);
+    store.close();
+  });
+
+  test("every change kind remains discoverable, including deleted roots and historical edits", () => {
+    const { store, reads } = fixture("Original", 1);
+    const events = store.events(path);
+    const stamp = { actor: "hart", createdAt: new Date().toISOString(), threadId: "comment-1" };
+    events.push({ ...stamp, type: "edit", id: "edit", seq: 3, targetId: "reply-0", body: "Revised" });
+    events.push({ ...stamp, type: "delete", id: "delete-reply", seq: 4, targetId: "reply-0" });
+    events.push({ ...stamp, type: "resolve", id: "resolve", seq: 5 });
+    events.push({ ...stamp, type: "reopen", id: "reopen", seq: 6 });
+    events.push({ ...stamp, type: "delete", id: "delete-root", seq: 7, targetId: "comment-1" });
+    store.db.query("DELETE FROM annotation_events").run(); store.replaceEvents(path, events);
+    const page = reads.pending(path, body);
+    expect(page.events.map((event: any) => event.type)).toEqual(["comment", "reply", "edit", "delete", "resolve", "reopen", "delete"]);
+    expect(page.events[2]).toMatchObject({ id: "edit", threadId: "comment-1", targetId: "reply-0" });
+    expect(page.events[6]).toMatchObject({ targetId: "comment-1" });
+    expect(JSON.stringify(page.events)).not.toContain("Revised");
+    expect(reads.thread(path, body, "comment-1").messages).toEqual([]);
+    expect(reads.event(path, "edit")).toMatchObject({ event: { body: "Revised" } });
+    expect(reads.event(path, "reply-0")).toMatchObject({ event: { body: "Reply 0" } });
+    store.close();
+  });
+
+  test("index continuations bind kind, actor, consumer, body and snapshot", () => {
+    const { store, reads } = fixture("Question", 4);
+    const first = reads.pending(path, body, { consumer: "reviewer", limit: 1 });
+    const continuation = first.continuation!;
+    expect(first.throughSequence).toBe(1);
+    for (const options of [{}, { consumer: "reviewer", actor: "other" }]) {
+      expect(() => reads.pending(path, body, { ...options, continuation })).toThrow("does not match");
+    }
+    expect(() => reads.pending(path, body + " changed", { consumer: "reviewer", continuation })).toThrow("document changed");
+    // Old raw-event continuations must never reuse their fragment offsets as index offsets.
+    const legacy = reads.pending(path, body, { limit: 1 }).continuation!;
+    const row = store.db.query("SELECT payload_json FROM agent_continuations WHERE cursor=?").get(legacy) as { payload_json: string };
+    store.db.query("UPDATE agent_continuations SET payload_json=? WHERE cursor=?").run(JSON.stringify({ ...JSON.parse(row.payload_json), kind: "pending", fragmentOffset: 10 }), legacy);
+    expect(() => reads.pending(path, body, { continuation: legacy })).toThrow("does not match");
+    const events = store.events(path);
+    events.push({ type: "reply", id: "late", seq: 6, actor: "hart", createdAt: new Date().toISOString(), threadId: "comment-1", body: "Late" });
+    store.db.query("DELETE FROM annotation_events").run(); store.replaceEvents(path, events);
+    const last = reads.pending(path, body, { consumer: "reviewer", continuation });
+    expect(last.events.map((event: any) => event.seq)).toEqual([2, 4]);
+    expect(last.throughSequence).toBe(5);
+    store.acknowledge(path, "reviewer", "assistant", last.cursor);
+    expect(reads.pending(path, body, { consumer: "reviewer" }).events).toMatchObject([{ id: "late" }]);
+    expect(reads.pending(path, body).events).toHaveLength(4);
+    store.close();
+  });
+
+  test("oversized index entries fragment without truncation or premature acknowledgement", () => {
+    const { store, reads } = fixture();
+    const events = store.events(path); events[0]!.actor = '😀"'.repeat(3000);
+    store.db.query("DELETE FROM annotation_events").run(); store.replaceEvents(path, events);
+    let continuation: string | undefined, joined = "", pages = 0;
+    do {
+      const page = reads.pending(path, body, { maxBytes: 2048, continuation });
+      expect(size(page)).toBeLessThanOrEqual(2048);
+      const fragment = (page.events[0] as any).fragment;
+      expect(fragment.offset).toBe(joined.length);
+      joined += fragment.text;
+      continuation = page.continuation ?? undefined;
+      expect(page.throughSequence).toBe(continuation ? 0 : 1);
+      expect(++pages).toBeLessThan(200);
+    } while (continuation);
+    expect(JSON.parse(joined).actor).toBe(events[0]!.actor);
+    store.close();
+  });
+
+  test("empty indexes retain the revision needed to inspect body-only changes", () => {
+    const store = new PrivateStore(); store.ensureDocument(path); const reads = new AgentReads(store);
+    const first = reads.pending(path, body);
+    expect(first).toMatchObject({ events: [], reviewState: "never_reviewed", acknowledgedBodyRevision: null });
+    store.acknowledge(path, "assistant", "assistant", first.cursor);
+    expect(reads.pending(path, body)).toMatchObject({ events: [], reviewState: "current", acknowledgedBodyRevision: revision });
+    const changed = reads.pending(path, body + "More text");
+    expect(changed).toMatchObject({ events: [], reviewState: "changed", acknowledgedBodyRevision: revision });
+    expect(reads.diff(path, body + "More text", changed.acknowledgedBodyRevision!)).toMatchObject({ status: "changed" });
+    expect(store.acknowledgement(path, "assistant")?.bodyRevision).toBe(revision);
+    store.close();
+  });
+});
+
+test("thread reads budget emitted metadata, not unused escaped summary text", () => {
+  const { store, reads } = fixture("\u0001".repeat(160));
+  const events = store.events(path); events[0]!.actor = "\u0001".repeat(128);
+  store.db.query("DELETE FROM annotation_events").run(); store.replaceEvents(path, events);
+  expect(() => reads.threads(path, body)).toThrow("Thread metadata exceeds");
+  let continuation: string | undefined, joined = "";
+  do {
+    const page = reads.thread(path, body, "comment-1", { maxBytes: 2048, continuation });
+    expect(size(page)).toBeLessThanOrEqual(2048);
+    expect(page.thread).toEqual({ id: "comment-1", status: "open", sequence: 1 });
+    const fragment = (page.messages[0] as any).fragment;
+    expect(fragment.offset).toBe(joined.length); joined += fragment.text;
+    continuation = page.continuation ?? undefined;
+  } while (continuation);
+  expect(JSON.parse(joined)).toMatchObject({ body: "\u0001".repeat(160), actor: events[0]!.actor });
+  store.close();
 });

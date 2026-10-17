@@ -103,7 +103,7 @@ try {
   await page.getByText("Shared conversation.", { exact: true }).first().waitFor();
   await page.goto(`${origin}/folio/`);
   await page.locator(".file").first().waitFor();
-  assert((await page.locator(".name").allTextContents()).includes("remote"));
+  assert((await page.locator(".name").allTextContents()).includes("remote · Test connector"));
   await page.locator(".file").first().click();
   await page.locator(".ProseMirror h1").waitFor();
   // Reuse the authenticated session in real WebKit's touch viewport.

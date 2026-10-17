@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, chmod } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, chmod, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { resolveConfig } from "../src/server/config";
@@ -20,10 +20,24 @@ async function command(...args: string[]) {
   return result.data;
 }
 try {
+  for (const id of ["tether-review", "tetherball"]) {
+    if (!(await readFile(join(root, "integrations/agents", id, "SKILL.md"), "utf8")).includes(`name: ${id}`)) throw new Error(`Missing bundled ${id}`);
+  }
+  const { version } = JSON.parse(await readFile(join(root, "release.json"), "utf8"));
+  if (!(await readFile(join(root, "docs/releases", `${version}.md`), "utf8")).startsWith(`# Tether ${version}`)) throw new Error("Missing bundled release notes");
+  if (!(await readFile(join(root, "docs/guide/paseo.md"), "utf8")).startsWith("# Tether in Paseo")) throw new Error("Missing bundled Paseo guide");
+  const plugin = join(root, "integrations/paseo");
+  const files = (await readdir(plugin)).sort();
+  if (JSON.stringify(files) !== JSON.stringify(["LICENSE", "NOTICE.md", "index.client.ts", "index.server.ts", "package.json", "paseo-plugin.json"].sort())) throw new Error("Unexpected plugin payload");
+  const client = await readFile(join(plugin, "index.client.ts"), "utf8");
+  if (client.includes("moved-from-workspace") || client.includes("workspace-browser-store")) throw new Error("Personal workspace migration leaked into the release");
+  for (const theme of ["Tether Light", "Tether Dark", "Light Treason", "Dark Academia"]) if (!client.includes(theme)) throw new Error(`Missing theme ${theme}`);
+  if (!(await readFile(join(plugin, "NOTICE.md"), "utf8")).includes("neunzig-zehn")) throw new Error("Missing Annotations attribution");
   await writeFile(join(scratch, ".env"), "TETHER_PROFILE=invalid/profile\n");
   await command("daemon", "status");
   await chmod(join(scratch, ".env"), 0o000);
-  const setup = await command("setup", "--host", "browser", "--agent-directory", join(scratch, "skills"), "--no-open");
+  const setup = await command("setup", "--host", "browser", "--agent-directory", join(scratch, "skills"), "--skills", "tetherball", "--no-open");
+  if (setup.agents.length !== 2) throw new Error("Both skills were not registered");
   await command("setup", "--host", "browser", "--no-open");
   await command();
   const folio = await command("folio", "list");

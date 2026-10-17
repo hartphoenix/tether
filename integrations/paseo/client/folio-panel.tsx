@@ -8,7 +8,6 @@ import { Pressable, Text, View } from "react-native";
 import { ackRpc, folioViewRpc, type TetherSettings } from "../shared/contracts";
 import { FolioList } from "./folio-list";
 import { lendOpener, useTetherState } from "./state";
-import { lendUrlOpener } from "./tab-restore";
 import { isDesktop } from "./web";
 import { folioViewKey, mountFolioWebview, type FolioViewState } from "./web-folio";
 
@@ -29,6 +28,7 @@ function EmbeddedFolio({ settings, cacheKey, generation, ...props }: PluginWorks
       if (disposed) return;
       cleanup = mountFolioWebview(container.current, {
         cacheKey,
+        workspaceId,
         launch: async () => {
           await themeReady.current;
           const result = await launch({ workspaceId, tetherPath, profile, generation });
@@ -73,7 +73,6 @@ export function FolioPanel(props: PluginWorkspacePanelProps) {
       intent => { void ack({ ids: [intent.id], generation: intent.generation }).catch(() => {}); },
     );
   }, [openBrowser, ack]);
-  useEffect(() => openBrowser ? lendUrlOpener((url, workspaceId) => openBrowser({ url, workspaceId })) : undefined, [openBrowser]);
 
   if (!connection) return <FolioList {...props} />;
   if (!isDesktop() || !openBrowser || (settings.status !== "ready" && settings.status !== "loading")) return <FolioList {...props} />;

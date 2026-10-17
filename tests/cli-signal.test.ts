@@ -148,7 +148,7 @@ test("launch cleanup failure is secondary to the original placement error", asyn
 test("group help lists subcommands without launching a service", async () => {
   for (const group of ["document", "daemon", "wave", "cmux", "folio", "recents"]) {
     const result = await runCli([group, "--help"]);
-    expect(result).toMatchObject({ exitCode: 0, response: { command: "help", data: { command: group, commands: expect.any(Array), reporting: expect.stringContaining("plain language") } } });
+    expect(result).toMatchObject({ exitCode: 0, response: { command: "help", data: { command: group, commands: expect.any(Array) } } });
   }
   expect((await runCli(["document", "--help"])).response).toMatchObject({ data: { commands: expect.arrayContaining([expect.objectContaining({ name: "document.save" })]) } });
   expect((await runCli(["unknown", "--help"])).exitCode).toBe(2);

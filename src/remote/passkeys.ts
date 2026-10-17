@@ -1,20 +1,16 @@
+import "reflect-metadata";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { link, open, rename, unlink } from "node:fs/promises";
 import { isIP } from "node:net";
 import { basename, dirname, join } from "node:path";
-import {
-  generateAuthenticationOptions,
-  generateRegistrationOptions,
-  verifyAuthenticationResponse,
-  verifyRegistrationResponse,
-  type AuthenticationResponseJSON,
-  type PublicKeyCredentialCreationOptionsJSON,
-  type PublicKeyCredentialRequestOptionsJSON,
-  type RegistrationResponseJSON,
-  type WebAuthnCredential,
+import type {
+  AuthenticationResponseJSON, PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON, RegistrationResponseJSON, WebAuthnCredential,
 } from "@simplewebauthn/server";
-import { isoBase64URL } from "@simplewebauthn/server/helpers";
+// Initialize the reflection polyfill before loading certificate helpers in bundled builds.
+const { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } = await import("@simplewebauthn/server");
+const { isoBase64URL } = await import("@simplewebauthn/server/helpers");
 
 /**
  * One owner's passkey. Challenge issuance, single use, expiry, and the enrollment window belong to

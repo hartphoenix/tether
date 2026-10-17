@@ -35,7 +35,7 @@ export async function writeSharedCredential(path: string, value: SharedCredentia
   try { await rename(temporary, path); } catch (cause) { await unlink(temporary).catch(() => {}); throw cause; }
 }
 
-const reads = new Set(["document.read", "document.outline", "document.context", "document.diff", "document.history", "document.verify-save", "review.pending", "review.thread", "review.threads", "review.event", "review.quote-candidates", "review.operation", "folio.list", "folio.member", "folio.export", "machines.list", "reader.receive", "plugin.poll", "plugin.folio", "plugin.open"]);
+const reads = new Set(["document.read", "document.outline", "document.context", "document.diff", "document.history", "document.verify-save", "review.pending", "review.thread", "review.threads", "review.event", "review.quote-candidates", "review.operation", "review.visual", "folio.list", "folio.member", "folio.export", "machines.list", "reader.receive", "plugin.poll", "plugin.folio", "plugin.open"]);
 export type SharedRequestOptions = { signal?: AbortSignal; timeoutMs?: number; fetch?: typeof fetch };
 /** HTTPS certificate checking is provided by fetch; redirects never carry a credential elsewhere. */
 export async function sharedRequest<T = Record<string, unknown>>(connection: SharedCredential, operation: string, input: Record<string, unknown>, options: SharedRequestOptions = {}): Promise<T> {

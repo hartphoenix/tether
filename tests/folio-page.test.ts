@@ -8,7 +8,8 @@ function runPage(snapshot: Record<string, unknown>, savedView?: string, settings
   Object.defineProperty(dom.window.HTMLDialogElement.prototype, "showModal", { configurable: true, value: function(this: HTMLDialogElement) { this.open = true; } });
   Object.defineProperty(dom.window.HTMLDialogElement.prototype, "close", { value: function(this: HTMLDialogElement) { this.open = false; this.dispatchEvent(new dom.window.Event("close")); } });
   if (savedView !== undefined) dom.window.localStorage.setItem("tether.folio.view.v1", savedView);
-  let currentSnapshot = { ...snapshot };
+  const withIds = (value: Record<string, unknown>): Record<string, unknown> => ({ ...value, files: (value.files as Array<Record<string, unknown>>).map(file => ({ ...file, id: file.id ?? file.path })) });
+  let currentSnapshot = withIds(snapshot);
   const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
   let currentTheme: Record<string, unknown> = folioTheme({});
   Object.defineProperty(dom.window, "setInterval", { value: () => 0 });
@@ -34,7 +35,7 @@ function runPage(snapshot: Record<string, unknown>, savedView?: string, settings
   if (!script) throw new Error("Folio script missing");
   dom.window.eval(script);
   const refresh = async (value?: Record<string, unknown>) => {
-    if (value) currentSnapshot = value;
+    if (value) currentSnapshot = withIds(value);
     dom.window.dispatchEvent(new dom.window.Event('online'));
     await Bun.sleep(0);
   };
@@ -427,4 +428,42 @@ test("Escape preserves standalone Settings drafts; Discard explicitly restores s
     expect(input.value).toBe('100');
     expect(dom.window.document.querySelector('#settings-feedback')?.textContent).toBe('Changes discarded.');
   } finally { dom.window.close(); }
+});
+
+test("select all toggles every visible document only while selecting", async () => {
+  const { dom } = runPage({ sequence: 1, files: [{ path: "/a.md", name: "A", view: "active" }, { path: "/b.md", name: "B", view: "active" }] });
+  await Bun.sleep(0);
+  const doc = dom.window.document, row = doc.querySelector<HTMLElement>("#select-all-row")!, all = doc.querySelector<HTMLInputElement>("#select-all")!;
+  const checks = () => [...doc.querySelectorAll<HTMLInputElement>("#list .file-check")].map(check => check.checked);
+  expect(row.hidden).toBe(true);
+  doc.querySelector<HTMLButtonElement>("#select")!.click();
+  expect(row.hidden).toBe(false);
+  expect(row.nextElementSibling?.id).toBe("list");
+  all.click();
+  expect(checks()).toEqual([true, true]);
+  doc.querySelector<HTMLInputElement>("#list .file-check")!.click();
+  expect(all.indeterminate).toBe(true);
+  all.click();
+  expect(checks()).toEqual([true, true]);
+  all.click();
+  expect(checks()).toEqual([false, false]);
+  doc.querySelector<HTMLButtonElement>("#finish-selection")!.click();
+  expect(row.hidden).toBe(true);
+  dom.window.close();
+});
+
+test("batch unpin follows pin and unpins the selection", async () => {
+  const { dom, requests } = runPage({ sequence: 1, files: [{ path: "/a.md", name: "A", view: "active", pinned: true }, { path: "/b.md", name: "B", view: "active", pinned: true }] });
+  await Bun.sleep(0);
+  const doc = dom.window.document, unpin = doc.querySelector<HTMLButtonElement>("#batch-unpin")!;
+  expect(unpin.previousElementSibling?.id).toBe("batch-pin");
+  expect(unpin.hidden).toBe(true);
+  doc.querySelector<HTMLButtonElement>("#select")!.click();
+  expect(unpin.hidden).toBe(false);
+  expect(unpin.disabled).toBe(true);
+  doc.querySelector<HTMLInputElement>("#select-all")!.click();
+  unpin.click();
+  await Bun.sleep(0);
+  expect(requests.find(request => request.body.action === "unpin")?.body.documentIds).toEqual(["/a.md", "/b.md"]);
+  dom.window.close();
 });

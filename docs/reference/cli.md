@@ -2,13 +2,13 @@
 
 [Documentation](../README.md) · [Protocol details](protocol.md)
 
-Use `tether` from an installed package, or `./tether` and `./mdreview` from a source checkout. Run commands under the same OS account and profile as the reader. To install the optional review skill, see [agent setup](../guide/agent-setup.md).
+Use `tether` from an installed package, or `./tether` and `./mdreview` from a source checkout. Run commands under the same OS account and `TETHER_PROFILE` as the reader. To install the optional review skill, see [agent setup](../guide/agent-setup.md).
 
-Start with `tether --help` to find a command, then use focused help such as `tether reply --help` for its exact flags. Replace the uppercase ID placeholders in these examples with the values Tether returns.
+Start with `tether --help` to find a command group, then use focused help such as `tether reply --help` for its exact flags. Replace the uppercase ID placeholders in these examples with the values Tether returns.
 
 ## Review comments
 
-Read pending comments first, then fetch the thread you need. If you're missing context, ask for nearby text or an outline before reading the full document.
+Pending identifies changed events without returning their bodies or anchors. Read each affected thread once when current text is needed. If you're missing passage context, ask for nearby text or an outline before reading the full document.
 
 ```sh
 tether pending /path/to/doc.md --actor assistant
@@ -19,14 +19,18 @@ tether document outline /path/to/doc.md
 
 Follow every continuation before acknowledging. Each page of pending events has its own review cursor. Once you've handled that page and all preceding pages, acknowledge the last fully reviewed page's cursor. Don't start a fresh pending read just to get a newer cursor.
 
+An index is not completed review. Handle every listed event or assign a clear next owner before acknowledging. Check `reviewState` even when `events` is empty: `changed` supplies `acknowledgedBodyRevision` for `document diff --from-revision`; if that revision is unavailable, inspect relevant body content. `never_reviewed` requires inspecting relevant document content before acknowledging. A later thread read may contain newer events; keep using the original pending cursor.
+
+Use `event FILE EVENT_ID` for immutable historical details when current thread text is insufficient. An edit event contains its edited text; a deletion identifies its target. Reading that `targetId` returns the original message, so inspect intervening edit events when their text matters. Resolution/deletion metadata alone may suffice when no text-dependent action remains.
+
 Acknowledgement records what the agent has reviewed. Resolution records whether the human still needs to read or act on a thread.
 
 ```sh
-tether reply /path/to/doc.md THREAD_ID --actor assistant --body-file /tmp/reply.txt --operation-id UNIQUE_ID
+tether reply /path/to/doc.md THREAD_ID --actor assistant --body-file /tmp/reply.txt --operation-id UNIQUE_ID --expected-thread-sequence THREAD_SEQUENCE
 tether acknowledge /path/to/doc.md --actor assistant --cursor REVIEWED_CURSOR --operation-id ANOTHER_UNIQUE_ID
 ```
 
-If you retry an annotation change, keep the same operation ID and identical inputs. Look up its receipt with `tether operation <file> --operation-id <id>`. A missing receipt means `outcome_unknown`; the change may still have happened.
+If you retry an annotation change, keep the same operation ID and identical inputs. Look up its receipt with `tether operation <file> --operation-id <id>`. A missing receipt means `outcome_unknown`; the change may still have happened. A replayed receipt's `appliedSequence` is historical; refresh the thread before another guarded write.
 
 Use `--expected-thread-sequence` to reject stale replies, edits, deletions, resolutions, or reopenings. Both `edit` and `delete` take a thread ID and the original comment or reply ID. They append private review events; `delete` leaves the Markdown file alone.
 
@@ -135,3 +139,29 @@ The Tether plugin for Paseo uses these commands. Paseo can't be driven from outs
 - `tether paseo theme <client-id> <theme-id|unknown>`: report the mounted desktop client’s palette for optional theme inheritance. The client ID is a persistent UUID, not an authorization token; unknown palettes preserve the last inherited theme.
 
 Inside Paseo, `tether open` picks the `paseo` host automatically when the plugin is connected, or explicitly with `--host paseo`. Opens that the plugin makes for the user open a reader tab. Any other open, such as an agent's, only lights the workspace's Tether button and reports `notified: true`, so Tether never moves your focus. `tether recents add` does the same inside Paseo and reports `announced: true`. Links clicked in a Paseo reader open as new tabs directly from the reader.
+
+### Chat annotation storage
+
+`tether paseo chat <json-file|->` is the plugin’s internal storage channel. A request contains `host`, `agent` and `operation`; `-` reads bounded JSON from stdin. It calls the authenticated Tether daemon, which alone owns the chat tables in its private SQLite database. The result is `{ drafts, submission }`.
+
+Operations are `read`, `save` (draft), `remove` (draft ID), `capture` (batch ID, prose, attachment metadata), `dispatch` (batch ID, native message ID, text, wire options), `accepted` (matching batch/message IDs), `cancelPrepared` (batch ID) and `deleteChat`. Captured drafts are immutable; dispatch precedes transport, and acceptance deletes only that batch. `cancelPrepared` rejects uncertain delivery. `deleteChat` is reserved for confirmed permanent chat deletion and fences subsequent stale writes. Validation and state conflicts return `chat_state`. Requests are scoped by daemon and agent, independently of document paths and review ledgers.
+
+## Installer setup
+
+`tether setup --no-open` reports host discovery, update-channel configuration, and optional integration guidance while preserving focus. A configured update channel is not a live connectivity check; use `tether update --check` for that.
+
+`--agent-directory /absolute/skills` keeps its existing review-skill behavior. Add `--skills tetherball` to accept both skills, or `--skills tether-review,tetherball` explicitly. Setup reports `agents` with each identity/path/result and retains the legacy `agent` field for the review skill. Neither skill is installed without the directory flag.
+
+The installer runs `tether setup --release-notes`, which also copies the current release notes into Tether's documents folder, adds them to Folio, and opens them after the welcome guide. The optional Tetherball offer appears only in that release-notes reader.
+
+`--paseo` accepts installation of the packaged plugin into the local Paseo daemon. It preserves unmanaged installations and the global plugin switch. `hosts` distinguishes installation, version, active environment, and known connection state; `null` means a connection was not probed. `warnings` reports optional integration steps that need attention even when core setup succeeds.
+
+## Visual evidence
+
+`tether visual <file> <thread-id> [--mode overview|crop|clean] [--offset <count>] [--history <index>]` retrieves a private PNG artifact. The default overview contains at most 12 numbered regions, with a longest side of 1200 pixels. `regions` maps each number to `threadId`, a bounded comment excerpt and the normalized `{x,y,width,height}` rectangle. Grouping uses block occurrence and saved visual revision, not image content alone. `nextOffset` is null at the end of the group. `--history 0` retrieves the oldest retained anchor for that thread.
+
+The result includes `status`, `artifact` (an absolute local path), `mimeType`, `mode`, `visualRevision`, `evidence`, original `width`/`height`, `attachment` and `verification`. `attachment` is `located`, `stale` or `orphaned`; `verification: unverified` explicitly distinguishes a saved capture from a verified current rendering. Load `artifact` using the agent's image tool. Use `--mode crop` for the selected pixels or `--mode clean` for the unmarked base visual. No detail derivative is generated by `pending`, `thread`, or the default overview. Missing evidence and invalid or oversized exports return errors.
+
+The browser's annotation endpoint also accepts `type: reanchor`, with `threadId`, `anchor`, `expectedBodyRevision`, `expectedThreadSequence` and `operationId`. It retains the original comment and derives the effective anchor from subsequent events. Visual creation and replacement additionally require `evidenceData` (base64 PNG) and `currentVisualRevision`; local image anchors carry the revision recorded when their pixels were served. Evidence and the event commit in one private-store transaction. A stale body, thread sequence or loaded local-image revision rejects the mutation; operation receipts make retries idempotent.
+
+Visual anchors extend quote locators with a versioned `visual` record: kind, source identity, original occurrence count, layout revision, evidence hash, pixel dimensions, optional SVG viewBox and normalized rectangle. Package version 2 carries retained events and their referenced evidence; version 1 remains supported for text reviews. Unknown package versions and visual-anchor versions are rejected.

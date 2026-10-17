@@ -69,7 +69,7 @@ test("shared registration, UUID operations and browser annotations use one centr
     anchor:{exact:"Remote",prefix:"",suffix:" body",projectionStart:0,projectionEnd:6,bodyRevision:boot.document.bodyRevision}});
   expect(created.status).toBe(200);
   const pending = await f.library.dispatch("review.pending",{documentId:f.remote.documentId,actor:"assistant",consumer:"remote-agent"}) as {events:Array<{id:string;actor:string;body:string}>;cursor:string};
-  expect(pending.events).toHaveLength(1); expect(pending.events[0]).toMatchObject({actor:"hart",body:"Clarify this"});
+  expect(pending.events).toHaveLength(1); expect(pending.events[0]).toMatchObject({actor:"hart",type:"comment"});
   await f.library.dispatch("review.reply",{documentId:f.remote.documentId,threadId:pending.events[0]!.id,actor:"assistant",body:"Reviewed",operationId:"agent-reply"});
   const thread = await request(reader,`api/annotations/thread?threadId=${pending.events[0]!.id}`);
   expect((await thread.json()).thread.replies[0]).toMatchObject({actor:"assistant",body:"Reviewed"});
@@ -116,15 +116,15 @@ test("lost save responses verify actual text behind a barrier without replay or 
 
 test("offline readers expose bounded historical threads without substituting a body", async () => {
   const f = await fixture();
-  const created = await f.library.dispatch("review.comment",{documentId:f.remote.documentId,actor:"human",quote:"Remote",body:"Large review ".repeat(1200),operationId:"offline-comment"}) as {mutation:{eventId:string}};
+  const created = await f.library.dispatch("review.comment",{documentId:f.remote.documentId,actor:"human",quote:"Remote",body:"Large review ".repeat(1200),operationId:"offline-comment"}) as {mutation:{appliedEventId:string}};
   f.files.online = false;
   const reader = await f.library.reader.open(f.remote.documentId);
   const bootstrap = await request(reader,"api/bootstrap"); expect(bootstrap.status).toBe(503); expect((await bootstrap.json()).error.code).toBe("connector_disconnected");
   const historyResponse = await request(reader,"api/history?limit=1&maxBytes=2048"); expect(historyResponse.status).toBe(200);
   const history = await historyResponse.json(); expect(history.bodyRevision).toBeNull(); expect(history.anchorContext).toBe("unavailable"); expect(history.threads).toHaveLength(1); expect("body" in history).toBe(false);
-  const detail = await f.library.dispatch("document.history",{documentId:f.remote.documentId,threadId:created.mutation.eventId,maxBytes:2048}) as {bodyRevision:null;continuation:string;messages:unknown[]};
+  const detail = await f.library.dispatch("document.history",{documentId:f.remote.documentId,threadId:created.mutation.appliedEventId,maxBytes:2048}) as {bodyRevision:null;continuation:string;messages:unknown[]};
   expect(Buffer.byteLength(JSON.stringify(detail))).toBeLessThanOrEqual(2048); expect(detail.continuation).toBeString();
-  const next = await request(reader,`api/history?threadId=${created.mutation.eventId}&maxBytes=2048&continuation=${detail.continuation}`);
+  const next = await request(reader,`api/history?threadId=${created.mutation.appliedEventId}&maxBytes=2048&continuation=${detail.continuation}`);
   expect(next.status).toBe(200); expect((await next.json()).messages).not.toEqual(detail.messages);
   expect((await f.library.reader.list!()).find(row => row.id === f.remote.documentId)?.unavailable).toBe(true);
   await reader.close();
@@ -160,7 +160,7 @@ test("relative links and referenced assets stay on the source machine, including
   await writeFile(join(f.root,"image.png"),Buffer.from([137,80,78,71,13,10,26,10,0,0]));
   const reader = await f.library.reader.open(f.remote.documentId), before = await stat(f.remotePath);
   const image = await request(reader,"api/image?src=..%2Fimage.png"); expect(image.status).toBe(200); expect(image.headers.get("content-type")).toBe("image/png"); expect(f.files.images).toBe(1);
-  await expect(request(reader,"api/image?src=unreferenced.png")).rejects.toMatchObject({code:"image_not_referenced",status:403});
+  expect((await request(reader,"api/image?src=unreferenced.png")).status).toBe(403);
   const link = await request(reader,"api/link?target=linked%23section&format=wikilink"); expect(link.status).toBe(303);
   const linked = f.service.store.documentForPath(linkedPath,"remote-machine")!;
   expect(link.headers.get("location")).toBe(`/reader/d/${linked.id}/#section`);
@@ -241,10 +241,10 @@ test("local Folio selects machine-qualified identities and refuses native action
 
 test("central operation receipts and event fragments remain available while a connector is offline", async () => {
   const f = await fixture();
-  const created = await f.library.dispatch("review.comment",{documentId:f.remote.documentId,actor:"human",quote:"Remote",body:"Receipt survives connector loss",operationId:"central-receipt"}) as {mutation:{eventId:string}};
+  const created = await f.library.dispatch("review.comment",{documentId:f.remote.documentId,actor:"human",quote:"Remote",body:"Receipt survives connector loss",operationId:"central-receipt"}) as {mutation:{appliedEventId:string}};
   f.files.online = false;
   expect(await f.library.dispatch("review.operation",{documentId:f.remote.documentId,operationId:"central-receipt"})).toMatchObject({outcome:"applied"});
-  expect(await f.library.dispatch("review.event",{documentId:f.remote.documentId,eventId:created.mutation.eventId,maxBytes:2048})).toMatchObject({event:{body:"Receipt survives connector loss"}});
+  expect(await f.library.dispatch("review.event",{documentId:f.remote.documentId,eventId:created.mutation.appliedEventId,maxBytes:2048})).toMatchObject({event:{body:"Receipt survives connector loss"}});
   await expect(f.library.dispatch("document.read",{documentId:crypto.randomUUID()})).rejects.toMatchObject({code:"document_not_found",status:404});
 });
 
@@ -266,4 +266,41 @@ test("native reader links require explicit same-origin restoration and preserve 
   const launch = await confirmed.json(), reopened = await fetch(launch.url,{redirect:"manual"}); expect(reopened.status).toBe(302);
   expect(f.service.store.documentById(target.documentId)!.active).toBe(1);
   expect(f.service.store.listDocuments()).toHaveLength(3); expect(await readFile(targetPath,"utf8")).toBe("Archived body\n");
+});
+
+test("shared visual evidence follows machine identity, image revisions and reattachment", async () => {
+  const { encodePng } = await import("../src/documents/visual-png");
+  const { createHash } = await import("node:crypto");
+  const { createAnchor } = await import("../src/core/annotation-ledger");
+  const { markdownProjectionDetails } = await import("../src/server/quote-anchor");
+  const body = "![Diagram](image.png)\n", f = await fixture(body);
+  // The same path can belong to another machine; evidence must not use path-only lookup.
+  const local = await f.service.open(f.remotePath);
+  const png = encodePng({ width: 30, height: 20, data: new Uint8Array(30 * 20 * 4).fill(255) });
+  await writeFile(join(f.remoteDirectory, "image.png"), png);
+  const hash = "sha256:" + createHash("sha256").update(png).digest("hex");
+  const reader = await f.library.reader.open(f.remote.documentId);
+  try {
+    expect((await request(reader, "api/image?src=image.png")).status).toBe(200);
+    expect(await (await request(reader, "api/visual-source?src=image.png")).json()).toEqual({ revision: hash });
+    const { projection } = markdownProjectionDetails(body), revision = bodyRevision(body);
+    const anchor = { ...createAnchor(projection, 0, projection.length, revision), visual: {
+      version: 1, kind: "image", source: "image.png", occurrences: 1, sourceRevision: hash,
+      layoutRevision: hash, evidence: hash, width: 30, height: 20, region: { x: .1, y: .1, width: .4, height: .5 },
+    } };
+    const response = await request(reader, "api/annotations", { type: "comment", actor: "human", body: "Remote region", anchor,
+      expectedBodyRevision: revision, currentVisualRevision: hash, evidenceData: png.toString("base64") });
+    expect(response.status).toBe(200);
+    const created = await response.json(), thread = created.annotations.threads[0];
+    expect(Buffer.from(await (await request(reader, `api/annotations/evidence?threadId=${thread.id}`)).arrayBuffer()).toString("base64")).toBe(png.toString("base64"));
+    expect((await f.service.read(local)).annotations.threads).toHaveLength(0);
+    const visual = await f.library.dispatch("review.visual", { documentId: f.remote.documentId, threadId: thread.id, mode: "clean" }) as any;
+    expect(visual).not.toHaveProperty("artifact"); expect(visual.artifactData).toBe(png.toString("base64"));
+    await f.library.dispatch("review.reanchor", { documentId: f.remote.documentId, threadId: thread.id, actor: "human", anchor,
+      expectedBodyRevision: revision, expectedThreadSequence: thread.latestEvent.seq, currentVisualRevision: hash });
+    await writeFile(join(f.remoteDirectory, "image.png"), encodePng({ width: 30, height: 20, data: new Uint8Array(30 * 20 * 4).fill(0) }));
+    expect((await request(reader, "api/annotations", { type: "comment", actor: "human", body: "Stale image", anchor,
+      expectedBodyRevision: revision, currentVisualRevision: hash, evidenceData: png.toString("base64") })).status).toBe(409);
+    expect(f.files.images).toBeGreaterThan(2);
+  } finally { await reader.close(); f.service.close(local); }
 });

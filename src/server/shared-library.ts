@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import type { DocumentService, DocumentSession } from "../documents/document-service";
 import type { RecentsService } from "../recents/service";
@@ -80,7 +81,12 @@ export function createSharedLibrary(options: Options) {
         };
       } finally { service.close(grant); }
     }
-    if (/^(document\.(read|save|outline|context|diff)|review\.(pending|threads|thread|event|quote-candidates|operation|comment|reply|resolve|reopen|edit|delete|acknowledge))$/.test(operation)) return options.documentOperation(route, body);
+    if (operation === "review.visual") {
+      const result = await options.documentOperation(route, body) as { artifact: string };
+      const { artifact, ...metadata } = result;
+      return { ...metadata, artifactData: (await readFile(artifact)).toString("base64") };
+    }
+    if (/^(document\.(read|save|outline|context|diff)|review\.(pending|threads|thread|event|quote-candidates|operation|comment|reply|resolve|reopen|edit|delete|reanchor|visual|acknowledge))$/.test(operation)) return options.documentOperation(route, body);
     if (operation === "folio.list") return { ...await recents.folioSnapshot(body), instanceId: options.instanceId };
     if (operation === "folio.add") return register(body);
     const selected = refs(body);
@@ -141,10 +147,6 @@ export function createSharedLibrary(options: Options) {
           }
           if (pathname === "api/draft") return json({ saved: false, persistent: false });
           if (pathname === "api/position") return json({ saved: false, local: true });
-          if (pathname === "api/image" && request.method === "GET") {
-            const asset = await service.image(grant, new URL(request.url).searchParams.get("src") ?? "");
-            return imageResponse(asset, request);
-          }
           if (pathname === "api/open" || pathname === "api/link") {
             const body = request.method === "GET" ? Object.fromEntries(new URL(request.url).searchParams) : await boundedBody(request);
             if (typeof body.target !== "string") throw invalidRequest("A link target is required.");

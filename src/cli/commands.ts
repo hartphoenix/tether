@@ -62,7 +62,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   "startup.status": { name: "startup.status", usage: "tether startup status", min: 0, max: 0 },
   "startup.enable": { name: "startup.enable", usage: "tether startup enable", min: 0, max: 0 },
   "startup.disable": { name: "startup.disable", usage: "tether startup disable", min: 0, max: 0 },
-  setup: { name: "setup", usage: "tether setup [--host auto|browser|wave|cmux|paseo] [--wave] [--agent-directory <skills-directory>] [--no-open]", min: 0, max: 0, flags: { "--host": { value: true }, "--wave": {}, "--agent-directory": { value: true }, "--no-open": {} } },
+  setup: { name: "setup", usage: "tether setup [--host auto|browser|wave|cmux|paseo] [--wave] [--paseo] [--skills tether-review|tetherball|tether-review,tetherball] [--agent-directory <skills-directory>] [--release-notes] [--no-open]", min: 0, max: 0, flags: { "--host": { value: true }, "--release-notes": {}, "--wave": {}, "--paseo": {}, "--skills": { value: true }, "--agent-directory": { value: true }, "--no-open": {} } },
   "skills.list": { name: "skills.list", usage: "tether skills list", min: 0, max: 0 },
   "skills.read": { name: "skills.read", usage: "tether skills read <id>", min: 1, max: 1 },
   "skills.merge": { name: "skills.merge", usage: "tether skills merge <id> --expected-revision <source-revision> --body-file <file> --confirm", min: 1, max: 1, flags: { "--expected-revision": { value: true }, "--body-file": { value: true }, "--confirm": {} }, required: ["--expected-revision", "--body-file", "--confirm"] },
@@ -78,6 +78,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   "daemon.status": { name: "daemon.status", usage: "mdreview daemon status", min: 0, max: 0 },
   "daemon.stop": { name: "daemon.stop", usage: "mdreview daemon stop", min: 0, max: 0 },
   "cmux.status": { name: "cmux.status", usage: "mdreview cmux status", min: 0, max: 0 },
+  "paseo.chat": { name: "paseo.chat", usage: "tether paseo chat <json-file|->", min: 1, max: 1 },
   "paseo.theme": { name: "paseo.theme", usage: "tether paseo theme <client-id> <theme-id|unknown>", min: 2, max: 2 },
   "paseo.status": { name: "paseo.status", usage: "tether paseo status", min: 0, max: 0 },
   "paseo.wait": { name: "paseo.wait", usage: "tether paseo wait [--after <cursor>] [--folio <version>] [--timeout <seconds>]", min: 0, max: 0, flags: { "--after": { value: true }, "--folio": { value: true }, "--timeout": { value: true } } },
@@ -98,6 +99,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   "document.read": { name: "document.read", usage: "mdreview document read <file>", min: 1, max: 1 },
   "document.save": { name: "document.save", usage: "mdreview document save <file> --expected-body-revision <revision> --body-file <file|->", min: 1, max: 1, flags: { "--expected-body-revision": { value: true }, "--body-file": { value: true } }, required: ["--expected-body-revision", "--body-file"] },
   pending: { name: "pending", usage: "mdreview pending <file> --actor <actor> [--consumer <consumer>] [--limit <count>] [--max-bytes <bytes>] [--continuation <token>]", min: 1, max: 1, flags: { ...actorFlags, ...budgetFlags, "--limit": { value: true }, "--continuation": { value: true } }, required: ["--actor"] },
+  visual: { name: "visual", usage: "tether visual <file> <thread-id> [--mode overview|crop|clean] [--offset <count>] [--history <index>]", min: 2, max: 2, flags: { "--history": { value: true }, "--mode": { value: true }, "--offset": { value: true } } },
   thread: { name: "thread", usage: "mdreview thread <file> <thread-id> [--before-sequence <seq>] [--limit <count>] [--max-bytes <bytes>] [--continuation <token>]", min: 2, max: 2, flags: { ...budgetFlags, "--before-sequence": { value: true }, "--limit": { value: true } } },
   threads: { name: "threads", usage: "mdreview threads <file> [--status <open|resolved>] [--before-sequence <seq>] [--limit <count>] [--max-bytes <bytes>] [--continuation <token>]", min: 1, max: 1, flags: { ...budgetFlags, "--status": { value: true }, "--before-sequence": { value: true }, "--limit": { value: true } } },
   reply: { name: "reply", usage: "mdreview reply <file> <thread-id> --actor <actor> --body-file <file|-> --operation-id <id> [--expected-thread-sequence <seq>]", min: 2, max: 2, flags: { ...mutationActorFlags, ...operationFlags, "--body-file": { value: true } }, required: ["--actor", "--body-file", "--operation-id"] },
@@ -162,6 +164,7 @@ export function parseCommand(argv: string[]): ParsedCommand {
     }
     if (positionals.length < spec.min || positionals.length > spec.max) usage(spec.usage);
     for (const name of spec.required ?? []) if (!flags.has(name)) usage(`${name} is required. ${spec.usage}`);
+    if (flags.has("--skills") && !flags.has("--agent-directory")) usage("--skills requires --agent-directory.");
     if (flags.has("--check") && flags.has("--version")) usage("--check and --version cannot be used together.");
     if (flags.has("--focus") && flags.has("--no-focus")) usage("--focus and --no-focus cannot be used together.");
     if (flags.has("--candidate-id") && !flags.has("--expected-body-revision")) usage("--candidate-id requires --expected-body-revision.");

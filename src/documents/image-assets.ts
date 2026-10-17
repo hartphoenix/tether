@@ -14,7 +14,7 @@ const parser = unified().use(remarkParse).use(remarkGfm);
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 type Node = { type: string; url?: string; identifier?: string; children?: Node[] };
 
-function imageReferences(markdown: string): Set<string> {
+export function imageReferences(markdown: string): Set<string> {
   const images = new Set<string>();
   const definitions = new Map<string, string>();
   const references: string[] = [];
@@ -74,8 +74,19 @@ export function imageResponse(asset: {bytes: Uint8Array;contentType: string;etag
   return request.headers.get("if-none-match") === asset.etag ? new Response(null, {status:304,headers}) : new Response(Buffer.from(asset.bytes), {headers});
 }
 export class ImageAssets {
+  private readonly loaded = new WeakMap<DocumentSession, Map<string, string>>();
+  loadedRevision(grant: DocumentSession, source: string): string | undefined { return this.loaded.get(grant)?.get(source); }
+  record(grant: DocumentSession, source: string, etag: string): void {
+    const values = this.loaded.get(grant) ?? new Map<string, string>();
+    values.set(source, `sha256:${etag.slice(1, -1)}`); this.loaded.set(grant, values);
+  }
   async response(request: Request, grant: DocumentSession, document: DocumentSnapshot): Promise<Response> {
-    try { return imageResponse(await readReferencedImage(grant.realPath, document.body, new URL(request.url).searchParams.get("src") ?? ""), request); }
+    try {
+      const source = new URL(request.url).searchParams.get("src") ?? "";
+      const asset = await readReferencedImage(grant.realPath, document.body, source);
+      this.record(grant, source, asset.etag);
+      return imageResponse(asset, request);
+    }
     catch (error) {
       const status = (error as {status?:number}).status;
       if (status && status !== 409) return new Response((error as Error).message, {status});

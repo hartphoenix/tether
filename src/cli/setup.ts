@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 export { installAgentSkill } from "./agent-skills";
 import type { TetherConfig } from "../server/config";
-export { seedWelcome } from "../onboarding";
+export { releaseNotesDocument, seedReleaseNotes, seedWelcome } from "../onboarding";
 
 export type HostPreference = "auto" | "browser" | "wave" | "cmux" | "paseo";
 export function hostPreference(value: string): HostPreference {
@@ -21,4 +21,4 @@ export async function saveHostPreference(config: TetherConfig, host: HostPrefere
   await rename(temporary, path);
 }
 
-export const agentSetupGuidance = "Ask whether the user wants the optional Tether review skill, which stays current with package updates. After consent, identify your own skills directory and run tether setup --agent-directory <skills-directory> --no-open for them. Ask if the directory is uncertain; do not guess. Customized skills are preserved for review during updates. Do not ask again if the user already accepted or declined in this setup.";
+export const agentSetupGuidance = "Offer the optional tether-review skill for document/comment handling and tetherball for sustained inquiry through a shared document. Tetherball includes tether-review. Both stay current with package updates. After consent, identify your own skills directory and run tether setup --agent-directory <skills-directory> --skills tether-review or --skills tetherball --no-open for them. Ask if the directory is uncertain; do not guess. Customized skills are preserved for review during updates. Do not ask again if the user already accepted or declined in this setup.";

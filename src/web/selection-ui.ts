@@ -13,7 +13,8 @@ import { createReviewNote } from "./editor-commands";
  * The icon is exported for a host's `buildToolbar` item. The selection UI does
  * not install a second selection tooltip; it only provides the action target.
  */
-export const reviewNoteIconSvg = iconSvg("pen-nib");
+export { reviewNoteIconSvg } from "../../integrations/paseo/chat/icon";
+import { reviewNoteIconSvg } from "../../integrations/paseo/chat/icon";
 
 export interface InsertMenuItem { label: string; icon: string; run: () => void; }
 

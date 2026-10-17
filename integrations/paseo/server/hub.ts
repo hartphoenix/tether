@@ -35,6 +35,8 @@ export type HubOptions = {
   sleep?: (ms: number) => Promise<void>;
   /** Whether header-button notices are wanted; read on every pump. */
   buttons?: () => boolean;
+  /** Whether readers open as plugin panels; read on every pump. */
+  readerPanels?: () => boolean;
 };
 
 type Held = { intent: Intent; leaseUntil: number; expiresAt: number; notices: Map<string, Announced>; local?: boolean };
@@ -162,7 +164,7 @@ export class Hub {
       const workspaceId = await this.workspaceFor(intent.target);
       this.assertActive();
       if (!workspaceId || !intent.url) { acknowledged.push(intent.id); continue; }
-      this.held.set(intent.id, { intent: { id: intent.id, url: intent.url, workspaceId }, leaseUntil: 0, expiresAt: intent.expiresAt,
+      this.held.set(intent.id, { intent: { id: intent.id, url: intent.url, workspaceId, ...(intent.path ? { path: intent.path } : {}), ...(intent.documentId ? { documentId: intent.documentId } : {}) }, leaseUntil: 0, expiresAt: intent.expiresAt,
         notices: new Map([...this.notices].filter(([, notice]) => !notice.sharedReader && (intent.documentId ? notice.documentId === intent.documentId : notice.path === intent.path))),
       });
       this.changed();
@@ -258,6 +260,7 @@ export class Hub {
       folio: this.folio,
       notices: this.options.buttons?.() === false ? {} : Object.fromEntries([...this.notices].map(([workspaceId, notice]) => [workspaceId, this.notice(notice)])),
       buttons: this.options.buttons?.() !== false,
+      readerPanels: this.options.readerPanels?.() === true,
       status: this.status,
     };
   }

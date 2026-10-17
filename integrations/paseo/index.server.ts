@@ -1,4 +1,5 @@
 import { sharedTransport } from "./server/transport";
+import { registerChat, runChat } from "./chat/server";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { Hub } from "./server/hub";
 import { paseoLookup } from "./server/paseo-lookup";
@@ -11,7 +12,7 @@ export default function contribute(server: PluginServerContext) {
   const pool = new ProcessPool();
   type Session = { sharedConnection: string; connection: Connection; controller: AbortController; hub: Hub };
   let current: Session | null = null;
-  let disposed = false, subscribed = false, buttons = true;
+  let disposed = false, subscribed = false, buttons = true, readerPanels = false;
   const clear = () => {
     const previous = current;
     current = null;
@@ -23,6 +24,7 @@ export default function contribute(server: PluginServerContext) {
     if (state.status !== "ready") { clear(); return; }
     const values = state.values;
     buttons = values.buttons;
+    readerPanels = values.readerPanels;
     if (current?.connection.tetherPath === values.tetherPath && current.connection.profile === values.profile && current.sharedConnection === values.sharedConnection) {
       current.hub.presentationChanged();
       return;
@@ -36,6 +38,7 @@ export default function contribute(server: PluginServerContext) {
       run,
       ...(values.sharedConnection ? { transport: sharedTransport(run, values.sharedConnection) } : {}),
       buttons: () => buttons,
+      readerPanels: () => readerPanels,
     });
     current = { connection, controller, hub, sharedConnection: values.sharedConnection };
     hub.start();
@@ -45,7 +48,7 @@ export default function contribute(server: PluginServerContext) {
   const unsubscribe = settings.subscribe(state => { subscribed = true; apply(state); initialized(); });
   void settings.read().then(state => { if (!subscribed) apply(state); initialized(); }, () => { initialized(); });
   const unavailable = (error = "Tether connection settings are unavailable. Check plugin settings."): PumpBatch => ({
-    connection: null, revision: -1, folio: null, intents: [], notices: {}, buttons,
+    connection: null, revision: -1, folio: null, intents: [], notices: {}, buttons, readerPanels,
     status: { connected: false, tether: null, error },
   });
   const attach = (session: Session, { paseo }: PluginHandlerContext) => session.hub.attach(paseoLookup(paseo));
@@ -86,6 +89,17 @@ export default function contribute(server: PluginServerContext) {
   server.handle(pinRpc, input => operate(input, async ({ hub }) => { await hub.pin(input.documentId ? `id:${input.documentId}` : input.path!, input.pinned); return { pinned: input.pinned }; }));
   server.handle(themeRpc, input => operate(input, ({ hub }) => hub.theme(input.clientId, input.theme)));
   server.handle(folioViewRpc, input => operate(input, ({ hub }) => hub.folioView(input.workspaceId)));
+
+  registerChat(server, async input => {
+    await loaded;
+    const session = current;
+    if (!session) throw new Error("Tether connection settings are unavailable.");
+    const run = createTetherRunner({ binary: () => resolveTether(session.connection.tetherPath), profile: () => session.connection.profile, signal: session.controller.signal, pool });
+    if (input.generation !== session.connection.generation) throw new Error("Tether connection changed. Reload Paseo before editing annotations.");
+    const result = await runChat(run, input);
+    if (current !== session) throw new Error("Tether connection changed; refresh before retrying.");
+    return result;
+  });
 
   server.before("agent.session_open", ({ request }) => request.workspaceId
     ? { ...request, env: { ...request.env, TETHER_PASEO_WORKSPACE_ID: request.workspaceId } }

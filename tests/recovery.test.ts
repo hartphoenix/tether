@@ -6,6 +6,8 @@ import { resolveConfig } from '../src/server/config';
 import { controlRequest, controlRecentsLaunch } from '../src/server/lifecycle';
 import { anchorForQuote } from '../src/server/quote-anchor';
 import { bodyRevision } from '../src/core/annotation-ledger';
+import { ViewStore } from '../src/server/view-store';
+import { Database } from 'bun:sqlite';
 const directories:string[]=[]; const daemons:TetherDaemon[]=[];
 afterEach(async()=>{for(const d of daemons.splice(0))await d.stop();for(const p of directories.splice(0))await rm(p,{recursive:true,force:true});});
 async function fixture(){const directory=await mkdtemp('/tmp/tether-recovery-');directories.push(directory);const path=join(directory,'document.md');await writeFile(path,'# Target\n\nOriginal body.\n');const config=resolveConfig({profile:'test',runtimeDir:join(directory,'runtime'),configDir:join(directory,'config')});return {directory,path:await realpath(path),config};}
@@ -129,4 +131,10 @@ test('default document zoom is captured once and leaves saved reader zoom unchan
  expect((await bootstrap(second)).zoom).toBe(125);
  expect((await bootstrap(await launch(daemon,f.path))).zoom).toBe(75);
  expect((await setDefault(176)).status).toBe(400);
+});
+
+test('a restored view keeps the launch surface that decides how its reader opens links', () => {
+  const store = new ViewStore(new Database(':memory:'));
+  store.put({ id: 'panel-view', kind: 'folio', path: null, verifier: 'v', createdAt: 1, target: { host: 'paseo', workspaceId: 'w1', surface: 'panel', unrelated: 'dropped' } });
+  expect(store.list().find(view => view.id === 'panel-view')?.target).toEqual({ host: 'paseo', workspaceId: 'w1', surface: 'panel' });
 });

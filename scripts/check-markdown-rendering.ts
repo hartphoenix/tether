@@ -7,7 +7,8 @@ import { createWebBundleResponder } from '../src/web/bundle';
 const root = await mkdtemp('/tmp/tether-render-browser-');
 const web = await createWebBundleResponder();
 await mkdir(join(root,'docs'));
-const source = '# Checks\n\nSelect these words.\n\nNote[^calibration].\n\n```mermaid\nflowchart LR\n A[Start] --> B[Finish]\n```\n\n```mermaid\nnot a diagram\n```\n\n[^calibration]: calibration belongs in this note.\n';
+await writeFile(join(root,'docs','favicon.png'),await readFile(new URL('../src/web/favicon.png',import.meta.url)));
+const source = '# Checks\n\nSelect these words.\n\n![Favicon](favicon.png)\n\nNote[^calibration].\n\n```mermaid\nflowchart LR\n A[Start] --> B[Finish]\n```\n\n```mermaid\nnot a diagram\n```\n\n[^calibration]: calibration belongs in this note.\n';
 
 const daemon = createDaemon({config: resolveConfig({runtimeDir:join(root,'runtime'),configDir:join(root,'config')}),web,webAssets:web});
 try {
@@ -51,12 +52,23 @@ try {
     await page.keyboard.press('Escape');
     await page.getByRole('dialog',{name:'Diagram viewer'}).waitFor({state:'detached'});
    }
+   const image=page.locator('.milkdown-image-block .image-wrapper > img');
+   await page.waitForFunction(()=>(document.querySelector('.milkdown-image-block .image-wrapper > img') as HTMLImageElement|null)?.naturalWidth);
+   await image.click({position:{x:4,y:4}});
+   const imageViewer=page.getByRole('dialog',{name:'Image viewer'});
+   await imageViewer.waitFor({state:'visible'});
+   const imageWidth=await imageViewer.locator('.wm-diagram-stage > img').evaluate(img=>img.getBoundingClientRect().width);
+   await imageViewer.getByRole('button',{name:'Zoom in',exact:true}).click();
+   if(await imageViewer.locator('.wm-diagram-stage > img').evaluate(img=>img.getBoundingClientRect().width)<=imageWidth)throw Error('Zoom in did not enlarge image');
+   await page.keyboard.press('Escape');
+   await imageViewer.waitFor({state:'detached'});
+   if(!await image.count())throw Error('Closing the image viewer removed the document image');
    await page.getByRole('button',{name:'Expand diagram',exact:true}).first().click();
    const viewer=page.getByRole('dialog',{name:'Diagram viewer'});
    await viewer.waitFor({state:'visible'});
-   const controls=await viewer.locator('.wm-diagram-controls button').evaluateAll(buttons=>buttons.map(button=>({text:button.textContent, label:button.getAttribute('aria-label'), title:button.getAttribute('title'), icon:!!button.querySelector('svg.tether-icon')})));
+   const controls=await viewer.locator('.wm-diagram-controls button.wm-comment-button').evaluateAll(buttons=>buttons.map(button=>({text:button.textContent, label:button.getAttribute('aria-label'), title:button.getAttribute('title'), icon:!!button.querySelector('svg.tether-icon')})));
    if(controls.length!==4 || controls.some(button=>button.text || !button.icon || !button.label || button.title!==button.label))throw Error('Viewer icon labels missing');
-   const themed=await viewer.locator('.wm-diagram-stage > svg').evaluate(svg=>{
+   const themed=await viewer.locator('.wm-diagram-stage > svg:not(.wm-region-overlay)').evaluate(svg=>{
      const style=getComputedStyle(document.querySelector('.milkdown')!);
      const probe=document.createElement('span');
      probe.style.fontFamily=style.getPropertyValue('--wm-font-code') || style.getPropertyValue('--crepe-font-code');
@@ -68,9 +80,9 @@ try {
      probe.remove();return matches;
    });
    if(!themed)throw Error('Mermaid did not use the theme surface and code font');
-   const originalWidth=await viewer.locator('.wm-diagram-stage > svg').evaluate(svg=>svg.getBoundingClientRect().width);
+   const originalWidth=await viewer.locator('.wm-diagram-stage > svg:not(.wm-region-overlay)').evaluate(svg=>svg.getBoundingClientRect().width);
    await viewer.locator('.wm-diagram-viewport').dispatchEvent('wheel',{ctrlKey:true,deltaY:-100,clientX:400,clientY:300});
-   if(await viewer.locator('.wm-diagram-stage > svg').evaluate(svg=>svg.getBoundingClientRect().width)<=originalWidth)throw Error('Pinch zoom did not enlarge SVG');
+   if(await viewer.locator('.wm-diagram-stage > svg:not(.wm-region-overlay)').evaluate(svg=>svg.getBoundingClientRect().width)<=originalWidth)throw Error('Pinch zoom did not enlarge SVG');
    await viewer.locator('.wm-diagram-viewport').evaluate(element=>{element.scrollLeft=100;element.scrollTop=80;});
    if(await viewer.locator('.wm-diagram-viewport').evaluate(element=>element.scrollLeft)<=0)throw Error('Expanded viewer cannot pan');
    await viewer.locator('.wm-diagram-viewport').evaluate(element=>{
@@ -104,14 +116,15 @@ try {
     const toolbarIcon=toolbar.querySelector('.top-bar-item svg')!;
     const label=menu.querySelector('[role="menuitem"] > span:last-child')!;
     const icon=menu.querySelector('svg')!;
-    // The toolbar is translucent; menus use the same surface opaquely.
-    const probe=document.createElement('span');probe.style.backgroundColor='var(--crepe-color-surface, var(--crepe-color-background))';toolbar.append(probe);
-    const surface=getComputedStyle(probe).backgroundColor;probe.remove();
-    return getComputedStyle(menu).backgroundColor===surface
+    // The toolbar deliberately uses a translucent surface; the menu is opaque.
+    const surface=document.createElement('span');
+    surface.style.backgroundColor='var(--wm-color-surface)';menu.append(surface);
+    const surfaceColor=getComputedStyle(surface).backgroundColor;surface.remove();
+    return getComputedStyle(menu).backgroundColor===surfaceColor
       && getComputedStyle(label).color===getComputedStyle(toolbarIcon).color
       && getComputedStyle(icon).fill===getComputedStyle(toolbarIcon).fill;
    });
-   if(!matchingColors)throw Error('Insert colors differ from the theme surface and toolbar icons');
+   if(!matchingColors)throw Error('Insert menu surface or toolbar foreground colors differ');
    for(const name of ['Footnote','Code block','Math block','Image','Table','Blockquote','Horizontal rule','Bulleted list','Numbered list','Task list'])if(!names.includes(name))throw Error('Missing Insert action: '+name+'; actual: '+names.join(', '));
    for(const name of ['Heading 1','Heading 2','Heading 3','Heading 4','Heading 5','Heading 6','Bold','Italic','Strikethrough','Inline code','Link','Comment'])if(names.includes(name))throw Error('Duplicate selection-toolbar action: '+name);
    if(await insertMenu.locator('.wm-insert-icon').count()!==names.length)throw Error('Insert action missing icon');

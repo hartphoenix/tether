@@ -1,3 +1,5 @@
+import { locateEditorVisual, mapEditorVisualAnchor } from "./visual-blocks";
+import { commentWindowCss } from "../shared/comment-window";
 import { smoothScroll } from "./motion";
 import { placeOverlay } from './overlay';
 import { iconSvg } from "./icons";
@@ -6,6 +8,7 @@ import { keepContentEndVisible, overlayScrollHeader } from "./scroll-geometry";
 import { Plugin, PluginKey, Selection } from "@milkdown/kit/prose/state";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
+import { EditorView as CodeMirror } from "@codemirror/view";
 import {
   createAnchor as createLedgerAnchor,
   renderedTextProjection,
@@ -59,6 +62,7 @@ export interface ReplyDraft {
 }
 
 export interface AnnotationUiOptions {
+  visualDrawer?: boolean;
   sizingControl?: HTMLElement;
   fileControl?: HTMLElement;
   /** Element into which the controller mounts its narrow rail. */
@@ -71,8 +75,11 @@ export interface AnnotationUiOptions {
   onReopen?: (thread: AnnotationThread) => void | Promise<void>;
   onEdit?: (draft: { thread: AnnotationThread; targetId: string; body: string }) => void | Promise<void>;
   onDelete?: (draft: { thread: AnnotationThread; targetId: string }) => void | Promise<void>;
+  onVisibleThreadsChange?: (threads: readonly AnnotationThread[]) => void;
   onPendingCountChange?: (count: number) => void;
   onRailOpenChange?: (open: boolean) => void;
+  onReanchor?: (thread: AnnotationThread, anchor: AnnotationAnchor) => Promise<void>;
+  onRedraw?: (thread: AnnotationThread) => void;
   onSelectThread?: (thread: AnnotationThread) => void;
   onNotice?: (message: string) => void;
   onExport?: () => void | Promise<void>;
@@ -90,6 +97,7 @@ export interface AnnotationUiController {
   detachEditorView(view?: EditorView): void;
   openCommentComposer(anchor?: AnnotationAnchor): void;
   openThread(threadId: string, trigger?: HTMLElement): void;
+  createVisualDrawer(root: HTMLElement, onOpenChange: (open: boolean) => void): AnnotationUiController;
   setRailOpen(open: boolean): void;
   isRailOpen(): boolean;
   closeFootnotePopover(): void;
@@ -142,10 +150,30 @@ function projectionRanges(
   return result;
 }
 
+// ProseMirror documents are immutable: a revision applies only to the snapshot
+// loaded from disk or acknowledged by a completed save, never to later edits.
+const documentRevisions = new WeakMap<ProseMirrorNode, string>();
+export function registerDocumentRevision(doc: ProseMirrorNode, revision: string): void {
+  documentRevisions.set(doc, revision);
+}
+const selectedRanges = new WeakMap<AnnotationAnchor, { doc: ProseMirrorNode; from: number; to: number } | null>();
+
+function currentAnchor(doc: ProseMirrorNode, anchor: AnnotationAnchor): AnnotationAnchor | null {
+  if (!selectedRanges.has(anchor)) return anchor;
+  const range = selectedRanges.get(anchor);
+  if (!range || range.doc !== doc) return null;
+  return captureRange(doc, range.from, range.to, documentRevisions.get(doc) ?? UNKNOWN_BODY_REVISION);
+}
+
 /** Resolve using the canonical ledger resolver, then split cross-block quotes into inline runs. */
 export function resolveAnchor(doc: ProseMirrorNode, anchor: AnnotationAnchor): ResolvedAnchor | null {
+  if(anchor.visual){const block=locateEditorVisual(doc,anchor,documentRevisions.get(doc));return block?{start:block.start,end:block.end,ranges:[{from:block.from,to:block.to}]}:null;}
   const projection = renderedTextProjection(doc);
-  const resolution = resolveLedgerAnchor(anchor, projection);
+  const captured = currentAnchor(doc, anchor);
+  if (!captured) return null;
+  const resolution = selectedRanges.has(anchor)
+    ? { status: "resolved" as const, projectionStart: captured.projectionStart, projectionEnd: captured.projectionEnd }
+    : resolveLedgerAnchor(anchor, projection, documentRevisions.get(doc));
   if (resolution.status !== "resolved") return null;
   const ranges = projectionRanges(projection, resolution.projectionStart, resolution.projectionEnd);
   return ranges.length > 0
@@ -156,8 +184,12 @@ export function resolveAnchor(doc: ProseMirrorNode, anchor: AnnotationAnchor): R
 /** Capture a selected editor range as a portable quote anchor. */
 export function captureAnchor(view: EditorView, sourceBodyRevision = UNKNOWN_BODY_REVISION): AnnotationAnchor | null {
   const { from, to } = view.state.selection;
+  return captureRange(view.state.doc, from, to, sourceBodyRevision);
+}
+
+export function captureRange(doc: ProseMirrorNode, from: number, to: number, sourceBodyRevision: string): AnnotationAnchor | null {
   if (from >= to) return null;
-  const projection = projectDocument(view.state.doc);
+  const projection = projectDocument(doc);
   let start: number | null = null;
   let end: number | null = null;
   for (let offset = 0; offset < projection.positions.length - 1; offset += 1) {
@@ -167,7 +199,9 @@ export function captureAnchor(view: EditorView, sourceBodyRevision = UNKNOWN_BOD
     if (position >= from && position < to && nextPosition !== undefined) end = offset + 1;
   }
   if (start === null || end === null || end <= start) return null;
-  return createLedgerAnchor(projection, start, end, sourceBodyRevision);
+  const anchor = createLedgerAnchor(projection, start, end, sourceBodyRevision);
+  selectedRanges.set(anchor, { doc, from, to });
+  return anchor;
 }
 
 function threadSort(a: AnnotationThread, b: AnnotationThread): number {
@@ -193,6 +227,12 @@ function createElement<K extends keyof HTMLElementTagNameMap>(tag: K, className?
   return element;
 }
 
+/** Moves only misplaced children; a removed node loses its running transitions. */
+function reconcileChildren(parent: HTMLElement, children: readonly HTMLElement[]): void {
+  for (const child of [...parent.children]) if (!children.includes(child as HTMLElement)) child.remove();
+  children.forEach((child, index) => { if (parent.children[index] !== child) parent.insertBefore(child, parent.children[index] ?? null); });
+}
+
 function setBusy(button: HTMLButtonElement, busy: boolean): void {
   button.disabled = busy;
   button.toggleAttribute("aria-busy", busy);
@@ -213,7 +253,16 @@ function createAnnotationPlugin(controller: AnnotationUiControllerLike): Plugin<
         const meta = transaction.getMeta(annotationUiPluginKey) as AnnotationPluginMeta | undefined;
         if (meta || transaction.docChanged) {
           const threads = meta?.threads ?? previous.threads;
+          if(transaction.docChanged) for(const thread of threads) if(thread.anchor.visual) mapEditorVisualAnchor(thread.anchor,_oldState.doc,newState.doc,transaction.mapping);
           const draftAnchor = meta?.draftAnchor === undefined ? previous.draftAnchor : meta.draftAnchor;
+          if (transaction.docChanged && draftAnchor && selectedRanges.has(draftAnchor)) {
+            const range = selectedRanges.get(draftAnchor);
+            if (range && range.doc === _oldState.doc) {
+              const from = transaction.mapping.map(range.from, 1);
+              const to = transaction.mapping.map(range.to, -1);
+              selectedRanges.set(draftAnchor, from < to ? { doc: newState.doc, from, to } : null);
+            }
+          }
           return { threads, draftAnchor, decorations: createAnnotationDecorations(newState.doc, threads, draftAnchor) };
         }
         return previous;
@@ -269,7 +318,7 @@ export function createAnnotationDecorations(
   }
   const badges = new Map<number, { threadId: string; count: number }>();
   for (const thread of threads) {
-    if (thread.orphaned || thread.deleted) continue;
+    if (thread.orphaned || thread.deleted || thread.anchor.visual) continue;
     const resolved = resolveAnchor(doc, thread.anchor);
     if (!resolved) continue;
     const color = actorColor(thread.actor);
@@ -359,7 +408,7 @@ function showFootnotePopover(root: HTMLElement, reference: FootnoteReference, vi
     edit.type = "button";
     edit.title = "Edit footnote";
     edit.setAttribute("aria-label", "Edit footnote");
-    edit.innerHTML = iconSvg("pencil-simple-line");
+    edit.innerHTML = iconSvg("pencil-line");
     edit.addEventListener("click", () => {
       if (!view.editable) return;
       let position: number | undefined;
@@ -402,12 +451,15 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   let state: DerivedAnnotationState = { threads: [] };
   let editorView: EditorView | null = null;
   let destroyed = false;
+  let cancelReselect = () => {};
   let activeThreadId: string | null = null;
   let composer: HTMLElement | null = null;
   let composerAnchor: AnnotationAnchor | undefined;
   let threadPopover: HTMLElement | null = null;
   let railOpen = false;
-  let showResolved = false;
+  let showResolved = Boolean(options.visualDrawer);
+  let batchResolving = false;
+  const batchSelection = new Set<string>();
   const messageBodies = new WeakMap<HTMLElement, string>();
   const submittingMessages = new WeakMap<HTMLElement, string>();
   const cards = new Map<string, { card: HTMLElement; signature: string }>();
@@ -422,7 +474,13 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   scroller.append(content);
   rail.append(scroller);
   const stopEndRecovery = keepContentEndVisible(content, scroller);
-  let stopHeaderOverlay = () => {};
+  // Cards keep their parents across renders so CSS transitions can run.
+  const orphanGroup = createElement("section", "wm-orphan-group");
+  const orphanHeading = createElement("h3");
+  orphanHeading.textContent = "Orphaned threads";
+  const railHeader = createRailHeader();
+  rail.prepend(railHeader.header);
+  const stopHeaderOverlay = overlayScrollHeader(scroller, railHeader.header);
 
   const controller: AnnotationUiController & AnnotationUiControllerLike = {
     plugin: undefined as unknown as ReturnType<typeof createAnnotationPlugin>,
@@ -460,9 +518,19 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     },
     openCommentComposer(anchor) {
       if (destroyed) return;
-      composer?.remove();
       const view = currentView();
-      composerAnchor = anchor ?? (view ? captureAnchor(view) : null) ?? undefined;
+      const nextAnchor = anchor ?? (view ? captureAnchor(view) : null) ?? undefined;
+      if (view && (!nextAnchor || !resolveAnchor(view.state.doc, nextAnchor))) {
+        onNotice("Couldn’t locate the selected passage. Select it again before commenting.");
+        return;
+      }
+      composer?.remove();
+      composerAnchor = nextAnchor;
+      // Supplied quote anchors also become a live range while composing.
+      if (view && composerAnchor && !selectedRanges.has(composerAnchor)) {
+        const ranges = resolveAnchor(view.state.doc, composerAnchor)!.ranges;
+        selectedRanges.set(composerAnchor, { doc: view.state.doc, from: ranges[0].from, to: ranges.at(-1)!.to });
+      }
       composer = createCommentComposer(composerAnchor);
       document.body.append(composer);
       syncDecorations();
@@ -471,6 +539,12 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       placements.get(composer)?.(); placements.delete(composer);
       makeDraggable(composer);
       composer.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+    },
+    createVisualDrawer(drawerRoot, onOpenChange) {
+      return createAnnotationUi({ ...options, root: drawerRoot, visualDrawer: true,
+        editorRoot: undefined, getEditorView: undefined, sizingControl: undefined, fileControl: undefined,
+        onVisibleThreadsChange: undefined, onPendingCountChange: undefined,
+        onSelectThread: undefined, onRailOpenChange: onOpenChange });
     },
     openThread(threadId, trigger) {
       if (destroyed) return;
@@ -486,6 +560,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     },
     setRailOpen(open) {
       if (railOpen === open) return;
+      if (!open) setBatchResolving(false);
       rail.ownerDocument.dispatchEvent(new rail.ownerDocument.defaultView!.Event("wm-before-rail-layout"));
       railOpen = open;
       threadPopover?.remove();
@@ -500,6 +575,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       editorRoot?.ownerDocument.querySelector(".wm-footnote-popover")?.remove();
     },
     destroy() {
+      cancelReselect();
       if (destroyed) return;
       destroyed = true;
       stopThreadScroll();
@@ -571,6 +647,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   }
 
   function showThreadPopover(thread: AnnotationThread, trigger?: HTMLElement): void {
+    if (thread.anchor.visual) { threadPopover?.remove(); threadPopover = null; return; }
     const previous = threadPopover;
     const focused = previous?.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
     const view = currentView();
@@ -606,12 +683,14 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   }
 
   function createCommentComposer(anchor?: AnnotationAnchor): HTMLElement {
-    const section = createElement("section", "wm-annotation-composer wm-comment-popover");
-    const heading = createElement("h2", "wm-annotation-composer-title");
-    heading.textContent = "New comment";
+    if (!document.getElementById("tether-comment-window-style")) {
+      const style = document.createElement("style"); style.id = "tether-comment-window-style"; style.textContent = commentWindowCss; document.head.append(style);
+    }
+    const section = createElement("section", "wm-annotation-composer wm-comment-popover tether-comment-window");
+    section.setAttribute("aria-label", "Comment");
     const textarea = createElement("textarea", "wm-annotation-textarea");
     textarea.rows = 3;
-    textarea.placeholder = "Comment on the selected passage…";
+    textarea.placeholder = "Comment...";
     textarea.setAttribute("aria-label", "Comment");
     const error = createElement("p", "wm-annotation-error");
     error.hidden = true;
@@ -622,9 +701,11 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     const submit = createElement("button", "wm-button wm-button-primary");
     submit.type = "submit";
     submit.textContent = "Comment";
+    actions.classList.add("tether-comment-actions");
+    submit.dataset.primary = "";
     actions.append(cancel, submit);
     const form = createElement("form", "wm-annotation-form");
-    form.append(heading, textarea, error, actions);
+    form.append(textarea, error, actions);
     section.append(form);
     const close = () => {
       // An older in-flight save must not clear a newer composer's highlight.
@@ -640,9 +721,9 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       event.preventDefault();
       const body = textarea.value;
       const view = currentView();
-      const resolvedAnchor = anchor ?? (view ? captureAnchor(view) : null);
+      const resolvedAnchor = anchor ? (view ? currentAnchor(view.state.doc, anchor) : anchor) : (view ? captureAnchor(view) : null);
       if (!resolvedAnchor) {
-        error.textContent = "Select text in the document before commenting.";
+        error.textContent = "Couldn’t locate the selected passage. Close this comment and select it again.";
         error.hidden = false;
         return;
       }
@@ -653,7 +734,23 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       }
       error.hidden = true;
       setBusy(submit, true);
-      Promise.resolve(onCreateComment({ body, anchor: resolvedAnchor })).then(close).catch((reason: unknown) => {
+      const submittedSelection = view?.state.selection;
+      Promise.resolve(onCreateComment({ body, anchor: resolvedAnchor })).then(() => {
+        // Checkbox toggles refocus the editor without moving its selection.
+        // Retire the submitted range, but preserve any newer user selection.
+        if (composer === section && view && !view.isDestroyed && currentView() === view &&
+            submittedSelection && !submittedSelection.empty && view.state.selection.eq(submittedSelection)) {
+          view.dispatch(view.state.tr.setSelection(Selection.near(view.state.doc.resolve(view.state.selection.to))));
+          // An unfocused code block keeps its own selection; collapse it too.
+          const { $to } = view.state.selection;
+          if ($to.parent.type.name === "code_block") {
+            const content = (view.nodeDOM($to.before()) as HTMLElement | null)?.querySelector<HTMLElement>(".cm-content");
+            const code = content ? CodeMirror.findFromDOM(content) : null;
+            code?.dispatch({ selection: { anchor: $to.parentOffset } });
+          }
+        }
+        close();
+      }).catch((reason: unknown) => {
         setBusy(submit, false);
         error.textContent = reason instanceof Error ? reason.message : "Comment could not be created.";
         error.hidden = false;
@@ -775,16 +872,28 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
 
   function renderThreadDetails(thread: AnnotationThread, orphaned: boolean): HTMLElement {
     const details = createElement("div", "wm-thread-details");
+    if (thread.anchor.visual) {
+      // Region controls belong to the visual viewer, not the conversation.
+    } else if (orphaned && options.onReanchor) {
+      const button=createElement('button','wm-button');button.textContent='Reselect text';let abort:AbortController|undefined;
+      const cancel=()=>{abort?.abort();abort=undefined;editorRoot?.classList.remove('wm-reselecting');button.textContent='Reselect text';button.classList.remove('is-active');button.setAttribute('aria-pressed','false');};
+      button.onclick=()=>{
+        if(abort){cancel();return;}cancelReselect();cancelReselect=cancel;abort=new AbortController();const signal=abort.signal;
+        button.textContent='Reselect text · [esc] to cancel';button.classList.add('is-active');button.setAttribute('aria-pressed','true');editorRoot?.classList.add('wm-reselecting');
+        document.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();cancel();}},{signal,capture:true});
+        editorRoot?.addEventListener('pointerup',()=>{setTimeout(()=>{const view=currentView();const anchor=view?captureAnchor(view):null;if(!anchor||signal.aborted)return;button.disabled=true;options.onReanchor!(thread,anchor).then(cancel).catch(e=>onNotice((e as Error).message)).finally(()=>{button.disabled=false;});},0);},{signal});
+      };details.append(button);
+    }
     const quote = createElement("blockquote", "wm-thread-quote");
-    quote.textContent = thread.anchor.exact || "(No quoted passage)";
-    if (thread.anchor.exact.length > 180) {
+    quote.textContent = thread.anchor.visual ? `${thread.anchor.visual.kind} region` : thread.anchor.exact || "(No quoted passage)";
+    if (!thread.anchor.visual && thread.anchor.exact.length > 180) {
       const context = createElement("details", "wm-thread-context");
       const summary = createElement("summary");
       summary.textContent = `${thread.anchor.exact.slice(0, 160)}…`;
       summary.title = "Expand quoted passage";
       context.append(summary, quote);
       details.append(context);
-    } else details.append(quote);
+    } else if (!thread.anchor.visual) details.append(quote);
     details.append(editableAnnotation(thread, thread.id, thread.body, "wm-thread-body", thread.actor, thread.createdAt, true));
     const replies = createElement("div", "wm-thread-replies");
     let previousDate = new Date(thread.createdAt).toDateString();
@@ -824,6 +933,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   }
 
   function syncDecorations(view = currentView()): void {
+    options.onVisibleThreadsChange?.(visibleThreads());
     if (view && !view.isDestroyed) view.dispatch(view.state.tr.setMeta(annotationUiPluginKey, {
       threads: visibleThreads(), draftAnchor: composerAnchor ?? null,
     } satisfies AnnotationPluginMeta));
@@ -868,6 +978,17 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     expandedTitle.textContent = "Conversation";
     labels.append(count);
     summary.append(identity, expandedTitle, labels, excerpt);
+    if (!thread.resolved) {
+      const select = createElement("input", "wm-thread-select");
+      select.type = "checkbox";
+      select.checked = batchSelection.has(thread.id);
+      select.setAttribute("aria-label", `Select thread started by ${thread.actor}`);
+      select.addEventListener("change", () => {
+        if (select.checked) batchSelection.add(thread.id); else batchSelection.delete(thread.id);
+        renderRail();
+      });
+      card.append(select);
+    }
     card.append(summary);
 
     const details = renderThreadDetails(thread, orphaned);
@@ -905,6 +1026,20 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     }
     cards.set(thread.id, { card, signature });
     return card;
+  }
+
+  function setBatchResolving(on: boolean): void {
+    if (batchResolving === on) return;
+    batchResolving = on;
+    batchSelection.clear();
+    rail.classList.toggle("is-batch", on);
+    renderRail();
+  }
+
+  async function resolveSelectedThreads(): Promise<void> {
+    const selected = state.threads.filter(thread => batchSelection.has(thread.id));
+    setBatchResolving(false);
+    for (const thread of selected) await onResolve(thread);
   }
 
   function updateExpansion(alignId?: string): void {
@@ -950,45 +1085,41 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     drawerAnimation?.cancel();
     rail.dataset.open = String(railOpen);
     rail.inert = !railOpen;
-    if (!railOpen && rail.contains(document.activeElement)) document.querySelector<HTMLButtonElement>('#comment')?.focus({ preventScroll: true });
+    if (!railOpen && rail.contains(document.activeElement)) (options.visualDrawer ? root.closest('dialog')?.querySelector<HTMLElement>('.wm-diagram-viewport') : document.querySelector<HTMLElement>('#comment'))?.focus({ preventScroll: true });
     if (!animate || (rail.ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? true) || !rail.animate) { rail.hidden = !railOpen; return; }
     rail.hidden = false;
     drawerAnimation = rail.animate([{ transform: fromTransform, opacity: fromOpacity }, { transform: railOpen ? 'translateX(0)' : 'translateX(100%)', opacity: railOpen ? 1 : 0 }], { duration: 200, easing: 'ease-out' });
     drawerAnimation.onfinish = () => { rail.hidden = !railOpen; drawerAnimation = undefined; };
   }
 
-  function renderRail(): void {
-    const nextContent: HTMLElement[] = [];
-    const allThreads = state.threads.filter((thread) => !thread.deleted);
-    const threads = visibleThreads().sort(threadSort);
-    const view = currentView();
-    const resolved = new Map<string, boolean>();
-    for (const thread of threads) {
-      // A rail can render before Milkdown has mounted. Only classify by
-      // resolver when a view exists; the decoration plugin will resolve again
-      // once the host attaches it.
-      resolved.set(thread.id, Boolean(thread.orphaned || (view && !resolveAnchor(view.state.doc, thread.anchor))));
-    }
-    const validThreads = threads.filter((thread) => !resolved.get(thread.id));
-    const orphanedThreads = threads.filter((thread) => resolved.get(thread.id));
+  function createRailHeader() {
     const header = createElement("header", "wm-annotation-rail-header");
+    const heading = createElement("div", "wm-rail-heading");
+    const selectAll = createElement("input", "wm-thread-select wm-select-all");
+    selectAll.type = "checkbox";
+    selectAll.setAttribute("aria-label", "Select all threads");
+    selectAll.addEventListener("change", () => {
+      if (selectAll.checked) for (const id of selectAll.dataset.ids?.split(" ").filter(Boolean) ?? []) batchSelection.add(id);
+      else batchSelection.clear();
+      renderRail();
+    });
     const title = createElement("h2");
     title.textContent = "Threads";
-    const badge = createElement("span", "wm-pending-badge");
-    const pending = attentionCount();
-    badge.textContent = `${pending} ${pending === 1 ? "needs" : "need"} attention`;
-    badge.hidden = pending === 0;
-    badge.setAttribute("aria-label", `${pending} open ${pending === 1 ? "thread needs" : "threads need"} your attention`);
+    heading.append(selectAll, title);
+    const badge = createElement("button", "wm-pending-badge");
+    badge.type = "button";
+    badge.addEventListener("click", () => {
+      if (!batchResolving) { setBatchResolving(true); return; }
+      resolveSelectedThreads().catch((reason: unknown) => {
+        onNotice(reason instanceof Error ? reason.message : "Threads could not be resolved.");
+      });
+    });
     const filter = createElement("button", "wm-rail-button wm-unresolved-filter");
     filter.type = "button";
     filter.title = "Show resolved";
     filter.setAttribute("aria-label", "Show resolved");
-    filter.setAttribute("aria-pressed", String(showResolved));
-    filter.innerHTML = iconSvg("check-square-offset");
-    filter.addEventListener("click", () => {
-      showResolved = !showResolved; renderRail(); syncDecorations();
-      rail.querySelector<HTMLButtonElement>(".wm-unresolved-filter")?.focus();
-    });
+    filter.innerHTML = iconSvg("square-check");
+    filter.addEventListener("click", () => { showResolved = !showResolved; renderRail(); syncDecorations(); });
     const controls = createElement("div", "wm-annotation-rail-controls");
     if (options.sizingControl) controls.append(options.sizingControl);
     if (options.fileControl) controls.append(options.fileControl);
@@ -1005,7 +1136,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       exportButton.type = "button";
       exportButton.title = "Export with annotations";
       exportButton.setAttribute("aria-label", "Export with annotations");
-      exportButton.innerHTML = iconSvg("download-simple");
+      exportButton.innerHTML = iconSvg("file-down");
       exportButton.addEventListener("click", () => { void options.onExport!(); });
       controls.append(exportButton);
     }
@@ -1014,16 +1145,56 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       copyPath.type = "button";
       copyPath.title = "Copy file path";
       copyPath.setAttribute("aria-label", "Copy file path");
-      copyPath.innerHTML = iconSvg("file-code");
+      copyPath.innerHTML = iconSvg("route");
       copyPath.addEventListener("click", () => { void options.onCopyFilePath!(); });
       controls.append(copyPath);
     }
     controls.append(hide);
-    header.append(title, controls, badge);
-    rail.querySelector(".wm-annotation-rail-header")?.remove();
-    rail.prepend(header);
-    stopHeaderOverlay();
-    stopHeaderOverlay = overlayScrollHeader(scroller, header);
+    header.append(heading, controls, badge);
+    if (options.visualDrawer) header.replaceChildren(hide);
+    return { header, selectAll, badge, filter };
+  }
+
+  /** Updates the persistent header in place so its transitions can run. */
+  function renderRailHeader(selectableIds: readonly string[]): void {
+    const { selectAll, badge, filter } = railHeader;
+    const selected = selectableIds.filter(id => batchSelection.has(id)).length;
+    selectAll.dataset.ids = selectableIds.join(" ");
+    selectAll.checked = selected > 0 && selected === selectableIds.length;
+    selectAll.indeterminate = selected > 0 && selected < selectableIds.length;
+    selectAll.disabled = !selectableIds.length;
+    for (const select of content.querySelectorAll<HTMLInputElement>(".wm-thread-card > .wm-thread-select")) {
+      select.checked = batchSelection.has(select.closest<HTMLElement>(".wm-thread-card")!.dataset.threadId!);
+    }
+    const pending = attentionCount();
+    if (batchResolving) {
+      badge.textContent = `Resolve ${batchSelection.size} ${batchSelection.size === 1 ? "thread" : "threads"}`;
+      badge.removeAttribute("title");
+      badge.setAttribute("aria-label", badge.textContent);
+    } else {
+      badge.textContent = `${pending} ${pending === 1 ? "needs" : "need"} attention`;
+      badge.title = "Select threads to resolve";
+      badge.setAttribute("aria-label", `${pending} open ${pending === 1 ? "thread needs" : "threads need"} your attention`);
+    }
+    badge.hidden = !batchResolving && pending === 0;
+    filter.setAttribute("aria-pressed", String(showResolved));
+  }
+
+  function renderRail(): void {
+    const nextContent: HTMLElement[] = [];
+    const allThreads = state.threads.filter((thread) => !thread.deleted);
+    const threads = visibleThreads().sort(threadSort);
+    const view = currentView();
+    const resolved = new Map<string, boolean>();
+    for (const thread of threads) {
+      // A rail can render before Milkdown has mounted. Only classify by
+      // resolver when a view exists; the decoration plugin will resolve again
+      // once the host attaches it.
+      resolved.set(thread.id, Boolean(thread.orphaned || (view && !resolveAnchor(view.state.doc, thread.anchor))));
+    }
+    const validThreads = threads.filter((thread) => !resolved.get(thread.id));
+    const orphanedThreads = threads.filter((thread) => resolved.get(thread.id));
+    for (const id of batchSelection) if (!threads.some(thread => thread.id === id && !thread.resolved)) batchSelection.delete(id);
     if (threads.length === 0) {
       const empty = createElement("p", "wm-empty-comments");
       empty.textContent = allThreads.length ? "No open threads." : "No threads.";
@@ -1031,15 +1202,11 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     }
     for (const thread of validThreads) nextContent.push(renderThread(thread, false));
     if (orphanedThreads.length > 0) {
-      const group = createElement("section", "wm-orphan-group");
-      const heading = createElement("h3");
-      heading.textContent = "Orphaned threads";
-      group.append(heading);
-      for (const thread of orphanedThreads) group.append(renderThread(thread, true));
-      nextContent.push(group);
+      reconcileChildren(orphanGroup, [orphanHeading, ...orphanedThreads.map(thread => renderThread(thread, true))]);
+      nextContent.push(orphanGroup);
     }
-    for (const child of [...content.children]) if (!nextContent.includes(child as HTMLElement)) child.remove();
-    nextContent.forEach((child, index) => { if (content.children[index] !== child) content.insertBefore(child, content.children[index] ?? null); });
+    reconcileChildren(content, nextContent);
+    renderRailHeader(threads.filter(thread => !thread.resolved).map(thread => thread.id));
     for (const id of cards.keys()) if (!threads.some(thread => thread.id === id)) cards.delete(id);
     renderRailVisibility();
   }

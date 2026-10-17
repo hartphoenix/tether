@@ -1,5 +1,5 @@
 import type { DiagramPalette } from "../shared/diagram-theme";
-import { chromium, type Browser, type Page } from "playwright";
+import type { Browser, Page } from "playwright";
 
 export interface DiagramRenderer {
   render(source: string, dark: boolean, palette?: DiagramPalette): Promise<string>;
@@ -23,6 +23,8 @@ function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
 
 /** Host-side Mermaid rendering in a sandboxed, offline headless Chromium. Requires a source checkout. */
 export async function createDiagramRenderer(): Promise<DiagramRenderer> {
+  if (!await Bun.file(`${import.meta.dir}/diagram-page.ts`).exists()) throw new Error("Host-side diagram rendering requires a source checkout.");
+  const { chromium } = await import("playwright");
   const build = await Bun.build({ entrypoints: [`${import.meta.dir}/diagram-page.ts`], target: "browser", format: "esm", splitting: false, minify: true });
   if (!build.success || build.outputs.length !== 1) throw new AggregateError(build.logs, "Diagram page build failed");
   const bundle = await build.outputs[0]!.text();

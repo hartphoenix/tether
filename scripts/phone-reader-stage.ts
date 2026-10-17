@@ -62,7 +62,7 @@ export async function startPhoneStage(options: { port?: number; document?: strin
     gateway = new PhoneGateway({ readerOrigin: READER, approvalOrigin: APPROVAL, owner: "staging", document: initialDocument,
       identify: () => "staging", passkeys, diagrams, backend,
       authJavaScript: await readFile(join(assets, "auth.js"), "utf8") });
-    server = Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 120, maxRequestBodySize: 131072, async fetch(request) {
+    server = Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 120, maxRequestBodySize: 12 * 1024 * 1024, async fetch(request) {
       const url = new URL(request.url);
       const allowed = new Set([`http://127.0.0.1:${server!.port}`, `http://localhost:${server!.port}`, ...(proxyOrigin ? [proxyOrigin.origin] : [])]);
       if (!allowed.has(url.origin) || request.headers.get("host") !== url.host) return new Response("Invalid staging host", { status: 403 });

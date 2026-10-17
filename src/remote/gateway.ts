@@ -32,9 +32,9 @@ async function boundedText(request: Request, limit: number): Promise<string> {
   }
   return Buffer.concat(chunks).toString();
 }
-async function jsonBody(request: Request): Promise<Record<string, any>> {
+async function jsonBody(request: Request, limit = 131072): Promise<Record<string, any>> {
   if (!request.headers.get("content-type")?.startsWith("application/json")) throw new Error("JSON required.");
-  const result = JSON.parse(await boundedText(request, 131072));
+  const result = JSON.parse(await boundedText(request, limit));
   if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Object required.");
   return result;
 }
@@ -226,8 +226,8 @@ export class PhoneGateway {
       return Response.json(files);
     }
     const asset = isApplicationAsset(`/${resource}`) || /^(?:[A-Za-z0-9_-]+\.(?:js|css|woff2?|png)|(?:docs\/)?assets\/tether-banner(?:-tagline)?\.png)$/.test(resource);
-    const allowedGet = ["", "api/bootstrap", "api/file", "api/machine", "api/image", "api/annotations", "api/annotations/pending", "api/annotations/thread", "api/preferences"];
-    const allowedPost = ["api/changes", "api/lease", "api/release", "api/position", "api/annotations", "api/annotations/reply", "api/annotations/acknowledge"];
+    const allowedGet = ["", "api/bootstrap", "api/file", "api/machine", "api/image", "api/visual-source", "api/annotations/evidence", "api/annotations", "api/annotations/pending", "api/annotations/thread", "api/preferences"];
+    const allowedPost = ["api/changes", "api/lease", "api/release", "api/position", "api/annotations", "api/annotations/reply", "api/annotations/reanchor", "api/annotations/acknowledge"];
     if (!(request.method === "PUT" && resource === "api/preferences") && !(request.method === "GET" && (allowedGet.includes(resource) || asset)) && !(request.method === "POST" && (allowedPost.includes(resource) || resource === "api/diagrams" && this.options.diagrams))) return this.denied();
     if (scoped && resource !== "" && !asset) {
       const id = decodeURIComponent(scoped[1]!);
@@ -266,7 +266,7 @@ export class PhoneGateway {
     }
     let body: string | undefined;
     if (request.method === "POST" || request.method === "PUT") {
-      const value = await jsonBody(request);
+      const value = await jsonBody(request, resource.startsWith("api/annotations") ? 12 * 1024 * 1024 : 131072);
       if (resource === "api/preferences" && (Object.keys(value).length !== 1 || typeof value.theme !== "string")) return this.denied();
       if (resource === "api/annotations" && value.type !== "comment") return this.denied();
       // Caller assertions are neither identity nor evidence of keyboard approval.

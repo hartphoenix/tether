@@ -50,7 +50,7 @@ export async function main(args: string[]) {
       backend, authJavaScript: await build.outputs[0].text() });
     // Fixed loopback targets make Serve configuration inspectable. Neither is a LAN listener.
     for (const [surface, port] of [["reader", 8413], ["approval", 8414]] as const) {
-      listeners.push(Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 120, maxRequestBodySize: 131072,
+      listeners.push(Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 120, maxRequestBodySize: 12 * 1024 * 1024,
         fetch: request => operationsHealth(request, surface, revision) ?? gateway!.handle(request, surface) }));
     }
     console.log(`Reader: ${readerOrigin}\nPasskey setup: ${approvalOrigin}/enroll\nNo Tailscale settings were changed. Press Ctrl-C to stop.`);

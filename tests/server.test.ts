@@ -8,6 +8,9 @@ import { bodyRevision } from "../src/core/annotation-ledger";
 import { DocumentAccessError, DocumentService } from "../src/documents/document-service";
 import { resolveConfig } from "../src/server/config";
 import { createDaemon, type TetherDaemon } from "../src/server/server";
+import { UpdateService } from "../src/server/updates";
+import { seedReleaseNotes } from "../src/onboarding";
+import { version as packageVersion } from "../package.json";
 import { controlRecentsAdd, controlRecentsLaunch } from "../src/server/lifecycle";
 import type { RecentsSnapshot } from "../src/recents/service";
 import type { HostAdapter, OpenLocalFileRequest, OpenViewRequest } from "../src/hosts/host-adapter";
@@ -193,7 +196,7 @@ describe("browser launch authorization", () => {
     expect(Buffer.from(await icon.arrayBuffer())).toEqual(Buffer.from(await Bun.file("src/web/favicon.png").arrayBuffer()));
     expect(page).toContain("Reveal in Finder");
     expect(page.includes("Open in Default App")).toBe(true);
-    expect(page.includes('data-action="archive">Archive</button>')).toBe(true);
+    expect(page).toMatch(/data-action="archive"><svg[^]*?<span class="menu-label">Archive<\/span><\/button>/);
     expect(page).toContain("Move to Trash");
     expect((await action(file.other, "reveal")).status).toBe(200);
     expect((await action(file.other, "default")).status).toBe(200);
@@ -545,7 +548,7 @@ describe("session API", () => {
     daemons.push(daemon);
     await daemon.ready;
     const session = await exchange(daemon, file.path);
-    for (const path of ["assets/tether-banner.png", "docs/assets/tether-banner.png", "assets/tether-banner-tagline.png", "docs/assets/tether-banner-tagline.png", "assets/tether-banner-dark.webp", "docs/assets/tether-banner-dark.webp"]) {
+    for (const path of ["assets/tether-banner.png", "docs/assets/tether-banner.png", "assets/tether-banner-tagline.png", "docs/assets/tether-banner-tagline.png", "assets/tether-banner-dark.webp", "docs/assets/tether-banner-dark.webp", "assets/tether-banner-light.webp", "docs/assets/tether-banner-light.webp"]) {
       const response = await sessionFetch(daemon, session.location, session.cookie, path);
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toBe(path.endsWith(".webp") ? "image/webp" : "image/png");
@@ -989,4 +992,67 @@ test('combined changes distinguish body, conversation and appearance; conditiona
   expect(await unchanged.text()).toBe('');
   daemon.revokeSession(session.location.split('/')[2]!);
   expect((await sessionFetch(daemon, session.location, session.cookie, 'api/file', { headers: { 'if-none-match': etag } })).status).toBe(401);
+});
+
+test("only the current release notes reader receives the Tetherball offer", async () => {
+  const file = await fixture();
+  const offer = { revision: "offered", destinations: [] };
+  const status = async () => ({ tetherballOffer: offer, agentSkillReviewNeeded: false, managed: true, available: null, installing: false, failed: false, checkFailed: false, prolongedFailure: false, unavailableReason: null, checkError: null, version: "0.1.4" });
+  const daemon = createDaemon({ config: file.config, updates: { status, install: async () => {}, dismiss: async () => {} } as any });
+  daemons.push(daemon); await daemon.ready;
+  const notes = (await seedReleaseNotes(file.config))!;
+  expect(await readFile(notes, "utf8")).toContain("](assets/tether-light-paseo.png)");
+  expect(await readFile(notes, "utf8")).toContain("[[Getting started with Tether.md|");
+  const guide = await readFile(join(file.config.configDir, "documents/Tether in Paseo.md"), "utf8");
+  expect(guide).toContain(`](https://github.com/hartphoenix/tether/blob/v${packageVersion}/docs/README.md)`);
+  expect(guide).toContain(`](https://github.com/hartphoenix/tether/blob/v${packageVersion}/docs/guide/hosts.md)`);
+  expect(guide).toContain("](#install)");
+  for (const banner of ["dark", "light"]) expect(await readFile(join(file.config.configDir, `documents/assets/tether-banner-${banner}.webp`))).toBeTruthy();
+  const read = async (view: { location: string; cookie: string }) => (await (await fetch(new URL("api/updates", `${daemon.origin}${view.location}`), { headers: { cookie: view.cookie } })).json() as any).tetherballOffer;
+  expect(await read(await exchange(daemon, file.path))).toBeNull();
+  expect(await read(await exchangeRecents(daemon, file.config))).toBeNull();
+  expect(await read(await exchange(daemon, notes))).toEqual(offer);
+});
+
+test("the first view after an update opens the new release notes once", async () => {
+  const file = await fixture();
+  const root = join(file.directory, "release");
+  await mkdir(join(root, "docs/releases"), { recursive: true });
+  // The server reads notes from the runtime root, so the fixture release matches its version.
+  await writeFile(join(root, "release.json"), JSON.stringify({ version: packageVersion }));
+  await writeFile(join(root, `docs/releases/${packageVersion}.md`), `# Tether ${packageVersion}\n`);
+  const updates = new UpdateService({ config: file.config, root, discover: async () => null });
+  const opened: string[] = [];
+  const daemon = createDaemon({ config: file.config, updates, opener: async url => { opened.push(url); } });
+  daemons.push(daemon); await daemon.ready;
+  expect((await updates.status()).releaseNotesPending).toBe(true);
+  const view = await exchange(daemon, file.path);
+  const open = () => fetch(new URL("api/updates/release-notes/open", `${daemon.origin}${view.location}`), { method: "POST", headers: { cookie: view.cookie, origin: daemon.origin } });
+  expect(await (await open()).json()).toEqual({ opened: true });
+  expect(opened).toHaveLength(1);
+  expect(await (await open()).json()).toEqual({ opened: false });
+  expect(opened).toHaveLength(1);
+  expect((await updates.status()).releaseNotesPending).toBe(false);
+});
+
+test("reader and Folio open only the bundled Tetherball skill through authenticated same-origin requests", async () => {
+  const file = await fixture();
+  const opened: string[] = [];
+  const daemon = createDaemon({ config: file.config, opener: async url => { opened.push(url); } });
+  daemons.push(daemon); await daemon.ready;
+  const reader = await exchange(daemon, file.path), folio = await exchangeRecents(daemon, file.config);
+  for (const view of [reader, folio]) {
+    const url = new URL("api/updates/tetherball/open", `${daemon.origin}${view.location}`);
+    expect((await fetch(url, { method: "POST" })).status).toBe(401);
+    expect((await fetch(url, { method: "POST", headers: { cookie: view.cookie, origin: "http://other.invalid" } })).status).toBe(403);
+    const before = opened.length;
+    expect((await fetch(url, { method: "POST", headers: { cookie: view.cookie, origin: daemon.origin, "content-type": "application/json" }, body: JSON.stringify({ path: file.other }) })).status).toBe(200);
+    expect(opened.length).toBe(before + 1);
+    const launch = await fetch(opened.at(-1)!, { redirect: "manual" });
+    const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
+    const bootstrap = await fetch(new URL("api/bootstrap", `${daemon.origin}${launch.headers.get("location")}`), { headers: { cookie } });
+    expect(await bootstrap.text()).toContain("tetherball/SKILL.md");
+    const decide = new URL("api/updates/tetherball/decide", `${daemon.origin}${view.location}`);
+    expect((await fetch(decide, { method: "POST", headers: { cookie: view.cookie, origin: "http://other.invalid" } })).status).toBe(403);
+  }
 });

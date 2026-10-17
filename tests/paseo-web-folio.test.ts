@@ -15,6 +15,8 @@ class Guest {
   navigate(url = session, status = 200) { this.emit("did-frame-navigate", { isMainFrame: true, url, httpResponseCode: status }); }
   ready(url = session) { this.navigate(url); this.emit("dom-ready"); }
   get src() { return this.attributes.find(([name]) => name === "src")?.[1]; }
+  webContentsId = 40;
+  getWebContentsId() { return this.webContentsId; }
 }
 const origin = "http://127.0.0.1:3456";
 const session = `${origin}/r/view-a/?instance=daemon-a`;
@@ -339,4 +341,96 @@ test("shared document requests use the same pane opener and leave Folio ready", 
   expect(opened).toEqual([]);
   guest.emit("console-message", { message: "tether:open-browser:" + reader, sourceId: root });
   expect(opened).toEqual([reader]); expect(current.states.at(-1)).toBe("ready"); expect(guest.removed).toBe(false);
+});
+
+test("reader views accept panel launches with a heading and cache the session without it", async () => {
+  const sessions: Array<string | undefined> = [];
+  const launch = `${origin}/launch?ticket=one-use&themeClient=00000000-0000-4000-8000-000000000000&surface=panel#plan`;
+  const first = mount({ kind: "reader", cacheKey: "reader-a", launch: async () => ({ url: launch, expiresAt: Date.now() + 30_000 }), onSession: url => sessions.push(url) });
+  await tick();
+  expect(guests[0]!.src).toBe(launch);
+  guests[0]!.ready(`${origin}/s/view-r/#plan`);
+  expect(first.states.at(-1)).toBe("ready");
+  expect(sessions).toEqual([`${origin}/s/view-r/`]);
+  first.dispose();
+
+  // A remount reuses the session; a fresh mount skips it.
+  const again = mount({ kind: "reader", cacheKey: "reader-a" });
+  expect(again.launches).toBe(0);
+  expect(guests[1]!.src).toBe(`${origin}/s/view-r/`);
+  again.dispose();
+  const fresh = mount({ kind: "reader", cacheKey: "reader-a", fresh: true, launch: async () => ({ url: `${origin}/launch?ticket=two`, expiresAt: Date.now() + 30_000 }) });
+  await tick();
+  expect(guests[2]!.src).toBe(`${origin}/launch?ticket=two`);
+  fresh.dispose();
+});
+
+test("a saved reader session is tried first and discarded when it fails", async () => {
+  const sessions: Array<string | undefined> = [];
+  const view = mount({ kind: "reader", cacheKey: "reader-b", saved: `${origin}/s/old/`, launch: async () => ({ url: `${origin}/launch?ticket=new`, expiresAt: Date.now() + 30_000 }), onSession: url => sessions.push(url) });
+  expect(guests[0]!.src).toBe(`${origin}/s/old/`);
+  guests[0]!.navigate(`${origin}/s/old/`, 401);
+  expect(sessions).toEqual([undefined]);
+  await tick();
+  expect(guests[1]!.src).toBe(`${origin}/launch?ticket=new`);
+  guests[1]!.ready(`${origin}/s/new/`);
+  expect(sessions).toEqual([undefined, `${origin}/s/new/`]);
+  view.dispose();
+});
+
+test("reader and Folio launches are not interchangeable", async () => {
+  for (const [kind, url] of [
+    ["reader", `${origin}/recents/launch?ticket=x`],
+    ["reader", `${origin}/launch?ticket=x&surface=tab`],
+    ["reader", `${origin}/launch?ticket=x&other=1`],
+    ["folio", `${origin}/launch?ticket=x`],
+    ["folio", `${origin}/recents/launch?ticket=x&surface=panel`],
+    ["folio", `${origin}/recents/launch?ticket=x#plan`],
+  ] as const) {
+    const view = mount({ kind, cacheKey: `${kind}:${url}`, launch: async () => ({ url, expiresAt: Date.now() + 30_000 }) });
+    await tick();
+    expect(view.states.at(-1)).toBe("failed");
+    view.dispose();
+  }
+  const reader = mount({ kind: "reader", cacheKey: "reader-c", launch: async () => ({ url: `${origin}/launch?ticket=x`, expiresAt: Date.now() + 30_000 }) });
+  await tick();
+  guests.at(-1)!.ready(`${origin}/r/folio-view/`);
+  expect(reader.states.at(-1)).toBe("failed");
+});
+
+test("each attachment registers the guest with Paseo's browser bridge under one stable ID", async () => {
+  const registrations: Array<{ browserId: string; workspaceId: string; webContentsId: number }> = [];
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { paseoDesktop: { browser: { registerAttachedBrowser: async (input: any) => { registrations.push(input); } } } } });
+  try {
+    const reader = mount({ kind: "reader", cacheKey: "reader-shortcuts", workspaceId: "w1", launch: async () => ({ url: `${origin}/launch?ticket=x`, expiresAt: Date.now() + 30_000 }) });
+    await tick();
+    const guest = guests.at(-1)!;
+    guest.emit("did-attach");
+    guest.webContentsId = 41;
+    guest.emit("did-attach");
+    expect(registrations).toHaveLength(2);
+    expect(registrations[0]).toMatchObject({ workspaceId: "w1", webContentsId: 40 });
+    expect(registrations[0]!.browserId).toMatch(/^tether-reader-[a-z0-9]+-\d+$/);
+    expect(registrations[1]).toEqual({ ...registrations[0]!, webContentsId: 41 });
+    reader.dispose();
+    guest.emit("did-attach");
+    expect(registrations).toHaveLength(2);
+
+    // No workspace, no registration; a missing bridge is not an error.
+    const folio = mount({ cacheKey: "folio-shortcuts" });
+    await tick();
+    guests.at(-1)!.emit("did-attach");
+    expect(registrations).toHaveLength(2);
+    folio.dispose();
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
+    const bare = mount({ cacheKey: "folio-bare", workspaceId: "w1" });
+    await tick();
+    guests.at(-1)!.emit("did-attach");
+    guests.at(-1)!.ready();
+    expect(bare.states.at(-1)).toBe("ready");
+  } finally {
+    if (windowDescriptor) Object.defineProperty(globalThis, "window", windowDescriptor);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
 });

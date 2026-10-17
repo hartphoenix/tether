@@ -1,6 +1,7 @@
 import { chmod, copyFile, cp, mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildWeb } from "../src/web/build";
+import { buildPaseoPlugin } from "./build-paseo-plugin";
 import { buildBootstrap } from "./build-bootstrap";
 import { version as packageVersion } from "../package.json";
 const version = process.argv[3] ?? packageVersion;
@@ -21,23 +22,26 @@ const entries = {
   "wave-bridge": "src/hosts/wave-bridge-daemon.ts", "cmux-bridge": "src/hosts/cmux-bridge-daemon.ts",
 };
 for (const [name, entry] of Object.entries(entries)) {
-  const result = await Bun.build({ entrypoints: [entry], target: "bun", outdir: join(destination, "lib"), naming: `${name}.js` });
+  const result = await Bun.build({ entrypoints: [entry], target: "bun", external: ["playwright"], outdir: join(destination, "lib"), naming: `${name}.js` });
   if (!result.success) throw new Error(result.logs.map(String).join("\n"));
 }
 await buildWeb(join(destination, "dist"));
 await copyFile("src/web/favicon.png", join(destination, "dist/favicon.png"));
 await mkdir(join(destination, "docs"));
 await copyFile("docs/getting-started.md", join(destination, "docs/getting-started.md"));
+// Setup copies these notes into the user's documents after installation.
+await mkdir(join(destination, "docs/releases"));
+await copyFile(`docs/releases/${version}.md`, join(destination, `docs/releases/${version}.md`));
+// The release notes link to the Paseo guide; setup copies it beside them.
+await mkdir(join(destination, "docs/guide"));
+await copyFile("docs/guide/paseo.md", join(destination, "docs/guide/paseo.md"));
 // Brand source files (docs/assets/brand) are for design work, not the runtime.
 await cp("docs/assets", join(destination, "docs/assets"), { recursive: true, filter: source => basename(source) !== "brand" });
-await cp("integrations", join(destination, "integrations"), {
-  recursive: true,
-  // Plugin development dependencies contain symlinks and do not belong in the runtime archive.
-  filter: source => basename(source) !== "node_modules",
-});
+await cp("integrations/agents", join(destination, "integrations/agents"), { recursive: true });
+await buildPaseoPlugin(join(destination, "integrations/paseo"), version);
 await copyFile("LICENSE", join(destination, "LICENSE"));
 await mkdir(join(destination, "licenses"));
-await copyFile("licenses/phosphor-icons-LICENSE.txt", join(destination, "licenses/phosphor-icons-LICENSE.txt"));
+await copyFile("licenses/lucide-icons-LICENSE.txt", join(destination, "licenses/lucide-icons-LICENSE.txt"));
 await copyFile(`licenses/bun-${Bun.version}-LICENSE.md`, join(destination, "licenses/Bun-LICENSE.md"));
 for await (const path of new Bun.Glob("**/{LICENSE,LICENSE.md,LICENSE.txt,license,license.md,OFL.txt}").scan({ cwd: "node_modules", followSymlinks: true })) {
   const target = join(destination, "licenses", path);

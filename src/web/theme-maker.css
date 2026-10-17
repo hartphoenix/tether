@@ -91,9 +91,9 @@
 :root[data-wm-designed] :is(.wm-thread-reply) { border-color: var(--wm-color-outline); }
 :root[data-wm-designed] :is(.wm-annotation-textarea, .wm-input, .wm-textarea, .wm-button) { color: var(--wm-color-on-background); background: var(--wm-color-surface-low); border-color: var(--wm-color-outline); }
 :root[data-wm-designed] .wm-dialog-title { color: var(--wm-color-on-background); }
-:root[data-wm-designed] .wm-annotation-count { background: var(--wm-color-surface); color: var(--wm-color-primary); }
+:root[data-wm-designed] .wm-annotation-count { background: var(--wm-color-annotation); color: var(--wm-annotation-ink, #18212b); }
 
-.wm-theme-menu { max-height: 70vh; overflow-y: auto; max-width: min(300px, 90vw); }
+.wm-theme-menu { width: max-content; min-width: 0; max-width: 50vw; box-sizing: border-box; max-height: 70vh; overflow-y: auto; }
 .wm-making-theme #workspace { margin-right: calc(360px * var(--wm-ui-scale, 1)); }
 .wm-theme-maker {
   position: fixed; z-index: 35; inset: 0 0 0 auto;
@@ -149,6 +149,8 @@
 #editor[data-wm-designed] .cm-content { color: var(--wm-color-on-background); caret-color: var(--wm-color-on-background); }
 #editor[data-wm-designed] .cm-cursor { border-left-color: var(--wm-color-on-background); }
 #editor[data-wm-designed] :is(.cm-activeLine, .cm-activeLineGutter) { background: var(--wm-color-hover); }
+/* CodeMirror draws selections beneath its lines; an opaque active line would hide them. */
+#editor[data-wm-designed] .cm-editor:has(.cm-selectionBackground) .cm-activeLine { background: transparent; }
 #editor[data-wm-designed] .cm-selectionBackground { background: var(--wm-color-selected); }
 @media (max-width: 640px) {
   #editor[data-wm-designed] .ProseMirror { padding: 22.4px 16px 80px; }
@@ -162,6 +164,10 @@
 :root[data-wm-designed] .wm-thread-card.is-active { border-color: var(--wm-color-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--wm-color-primary), transparent 80%); }
 
 .wm-theme-row { display: flex; align-items: stretch; }
+.wm-theme-menu .wm-theme-choice { display: grid; grid-template-columns: calc(16px * var(--wm-ui-scale, 1)) minmax(0, 1fr); align-items: center; column-gap: calc(8px * var(--wm-ui-scale, 1)); }
+.wm-theme-icon { display: grid; place-items: center; width: calc(16px * var(--wm-ui-scale, 1)); height: calc(16px * var(--wm-ui-scale, 1)); }
+.wm-theme-menu .wm-theme-icon .tether-icon { width: 100%; height: 100%; }
+.wm-theme-label { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .wm-theme-row > button[data-theme] { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .wm-theme-menu .wm-theme-edit { flex: 0 0 32px; display: grid; place-items: center; padding: 0; }
 .wm-theme-edit .tether-icon { width: 14px; height: 14px; }

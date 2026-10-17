@@ -20,6 +20,7 @@ test("legacy location migration preserves UUID, review receipts, acknowledgement
   let store = new PrivateStore(database);
   const record = store.ensureDocument(path), id = record.id;
   store.appendEvent({path,event:{type:"comment",id:"comment",seq:1,actor:"human",createdAt:new Date().toISOString(),body:"Keep me",anchor:anchor()},operationId:"op",payloadHash:"hash"});
+  store.db.query("INSERT INTO visual_evidence VALUES(?,?,?)").run(id, "evidence", new Uint8Array([1,2,3]));
   const observed = store.observe(path,"agent",1,bodyRevision("Body\n"));
   store.acknowledge(path,"agent","assistant",observed.cursor);
   store.db.query("UPDATE documents SET active=0,pinned=1,archived_at=10 WHERE id=?").run(id);
@@ -35,6 +36,7 @@ test("legacy location migration preserves UUID, review receipts, acknowledgement
   store = new PrivateStore(database);
   expect(store.documentForPath(path)).toMatchObject({id,active:0,pinned:1,location_version:1,machine_id:store.localMachineId});
   expect(store.events({documentId:id})).toHaveLength(1);
+  expect(store.db.query("SELECT png FROM visual_evidence WHERE document_id=?").get(id)).toEqual({png: new Uint8Array([1,2,3])});
   expect(store.lookupMutation({documentId:id},"op").outcome).toBe("applied");
   expect(store.acknowledgement({documentId:id},"agent")).toMatchObject({cursor:observed.cursor,throughSeq:1});
   expect(store.db.query("PRAGMA foreign_key_check").all()).toEqual([]);

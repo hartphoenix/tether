@@ -2,7 +2,7 @@ import { mountReaderLayout } from "./reader-layout";
 import { formatMachinePath, type FileMachine } from "../shared/machine-path";
 import { mountMobileFolio } from "./mobile-folio";
 import { createSourceEditor } from './source-editor';
-import { diagramViewer } from "./diagram-viewer";
+import { diagramViewer, configureVisualAnnotations, setVisualThreads, revealVisualThread } from "./diagram-viewer";
 import { configureMarkdownSerialization } from "./markdown-serialization";
 import { createThreadSizing } from './thread-sizing';
 import { createFileActions } from './file-actions';
@@ -11,7 +11,7 @@ import { linkFragment } from '../shared/link-fragment';
 import { headingAnchors } from './heading-anchors';
 import { configureFootnotes, footnoteIcon, footnoteOrdering } from "./footnotes";
 import { createChangesInspector, updateReaderBody } from "./reader-changes";
-import { imageDisplayUrl } from "./image-url";
+import { loadImageDisplayUrl, clearImageDisplayCache } from "./image-url";
 import { renderMermaidPreview, setMermaidPreviews } from "./mermaid-preview";
 import { installReaderFind } from "./reader-find";
 import { installMenuMotion } from "./motion";
@@ -27,7 +27,7 @@ import { Plugin } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose, replaceAll, callCommand } from "@milkdown/kit/utils";
 import { createCodeBlockCommand } from "@milkdown/kit/preset/commonmark";
-import { createAnnotationUi, captureAnchor, type AnnotationThread, type AnnotationUiController } from "./annotations-ui";
+import { createAnnotationUi, captureAnchor, registerDocumentRevision, type AnnotationThread, type AnnotationUiController } from "./annotations-ui";
 import { apiErrorMessage } from "./api-error";
 import { createChromeControls } from "./chrome-controls";
 import { createCanvas } from './canvas';
@@ -57,7 +57,7 @@ import "./phone-reader.css";
 
 type ServerComment = { id: string; seq: number; actor: string; createdAt: string; body: string; anchor: AnnotationThread["anchor"] };
 type ServerReply = { id: string; seq: number; actor: string; createdAt: string; body: string };
-type ServerThread = { id: string; comment: ServerComment; replies: ServerReply[]; status: "open" | "resolved"; orphan?: { status?: string }; deleted?: boolean };
+type ServerThread = { id: string; anchor?: AnnotationThread["anchor"]; latestEvent?: { seq: number }; comment: ServerComment; replies: ServerReply[]; status: "open" | "resolved"; orphan?: { status?: string }; deleted?: boolean };
 type AnnotationState = {
   header?: { baseBodyRevision?: string };
   threads?: ServerThread[];
@@ -206,7 +206,7 @@ function compactTopBar(): void {
     const trigger = document.createElement("button");
     trigger.type = "button";
     trigger.className = "wm-overflow-trigger";
-    trigger.innerHTML = iconSvg("text-aa");
+    trigger.innerHTML = iconSvg("type");
     trigger.title = "More formatting tools";
     trigger.setAttribute("aria-label", trigger.title);
     trigger.setAttribute("aria-expanded", "false");
@@ -246,7 +246,7 @@ function compactTopBar(): void {
     code.type = "button";
     code.dataset.insertCode = "true";
     code.className = "wm-comment-button";
-    code.innerHTML = iconSvg("code-block");
+    code.innerHTML = iconSvg("square-code");
     code.title = "Insert code block";
     code.setAttribute("aria-label", code.title);
     code.addEventListener("pointerdown", event => event.preventDefault());
@@ -258,8 +258,8 @@ function compactTopBar(): void {
     });
     menu.append(code);
   }
-  // Edit Markdown source sits with the formatting tools, after the overflow trigger.
-  if (overflow.nextElementSibling !== sourceButton) overflow.after(sourceButton);
+  // Edit Markdown source leads, then the overflow trigger, then Crepe's Block style.
+  if (inner.firstElementChild !== sourceButton || sourceButton.nextElementSibling !== overflow) inner.prepend(sourceButton, overflow);
   const tools = [...inner.children].filter((element) => element.classList.contains("top-bar-item") || element.classList.contains("top-bar-divider"));
   if (tools.length) menu.append(...tools);
   const inlineCode = menu.querySelectorAll(".top-bar-item")[topBarLabels.indexOf("Inline code")];
@@ -271,8 +271,7 @@ function compactTopBar(): void {
     decrease.type = "button";
     decrease.dataset.decreaseQuote = "true";
     decrease.className = "wm-comment-button";
-    decrease.innerHTML = iconSvg("quotes");
-    decrease.querySelector("svg")!.style.transform = "rotate(180deg)";
+    decrease.innerHTML = iconSvg("indent-decrease");
     labelIconButton(decrease, "Decrease quote level");
     decrease.addEventListener("pointerdown", event => event.preventDefault());
     decrease.addEventListener("click", () => {
@@ -392,11 +391,11 @@ function normalizeThreads(state: AnnotationState): AnnotationThread[] {
     actor: thread.comment.actor,
     createdAt: thread.comment.createdAt,
     body: thread.comment.body,
-    anchor: thread.comment.anchor,
+    anchor: thread.anchor ?? thread.comment.anchor,
     replies: thread.replies,
     resolved: thread.status === "resolved",
     orphaned: thread.orphan?.status === "orphan" || thread.orphan?.status === "ambiguous",
-    seq: thread.comment.seq,
+    seq: thread.latestEvent?.seq ?? thread.comment.seq,
     deleted: thread.deleted,
   }));
 }
@@ -447,7 +446,11 @@ async function save(): Promise<boolean> {
   if (conflicted || incomingReview || unconfirmedSave) return false;
   if (saveInFlight) { saveAgain = true; return false; }
   const markdown = currentMarkdown();
-  if (markdown === savedEditorMarkdown) return true;
+  const savedDoc = sourceEditor ? undefined : getEditorView()?.state.doc;
+  if (markdown === savedEditorMarkdown) {
+    if (savedDoc) registerDocumentRevision(savedDoc, currentBodyRevision);
+    return true;
+  }
   saveInFlight = true;
   let succeeded = true;
   const attempted = { markdown, body: currentContent(markdown), baseRevision: currentBodyRevision };
@@ -461,6 +464,7 @@ async function save(): Promise<boolean> {
     currentLedgerRevision = result.ledgerRevision;
     annotationState = result.annotations;
     savedEditorMarkdown = markdown;
+    if (savedDoc) registerDocumentRevision(savedDoc, result.bodyRevision);
     // Do not clear a newer in-flight edit's recovery draft.
     if (currentMarkdown() === markdown) await draftPersistence.clear();
   } catch (error) {
@@ -538,6 +542,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     commentButton.classList.remove("is-active");
     commentButton.setAttribute("aria-pressed", "false");
     await previousCrepe?.destroy();
+    clearImageDisplayCache();
     canvas?.destroy();
     canvas = null;
     editorRoot.replaceChildren();
@@ -571,7 +576,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       features: { [Crepe.Feature.TopBar]: true, [Crepe.Feature.BlockEdit]: false },
       featureConfigs: {
         [Crepe.Feature.CodeMirror]: { renderPreview: renderMermaidPreview, previewOnlyByDefault: true, previewLoading: "Rendering diagram…" },
-        [Crepe.Feature.ImageBlock]: { proxyDomURL: source => imageDisplayUrl(source, currentLocationVersion) },
+        [Crepe.Feature.ImageBlock]: { proxyDomURL: source => loadImageDisplayUrl(source, currentLocationVersion) },
         [Crepe.Feature.Placeholder]: { text: "..." },
         [Crepe.Feature.TopBar]: {
           headingOptions: [
@@ -617,6 +622,22 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
         },
       },
     });
+    configureVisualAnnotations({
+      createDrawer: (root, onOpenChange) => nextAnnotationUi.createVisualDrawer(root, onOpenChange),
+      selectThread: thread => annotationUi?.openThread(thread.id),
+      prepare: async (anchor, doc) => {
+        if (ledgerReadOnly || (!readOnly && !(await save()))) throw new Error("Save the document before selecting a region.");
+        if (generation !== documentGeneration || doc !== getEditorView()?.state.doc) throw new Error("The document changed. Reopen the visual and select again.");
+        const visual = anchor.visual!;
+        const loaded = visual.kind === "image" ? await api<{revision:string|null}>(`api/visual-source?src=${encodeURIComponent(visual.source)}`) : null;
+        return { ...anchor, visual: { ...visual, ...(loaded?.revision ? { sourceRevision: loaded.revision } : {}) }, bodyRevision: currentBodyRevision };
+      },
+      save: async (anchor, evidenceData, body, operationId, thread) => {
+        if (anchor.bodyRevision !== currentBodyRevision || currentMarkdown() !== savedEditorMarkdown || generation !== documentGeneration) throw new Error("The document changed. Select a new region.");
+        await postAnnotation(thread ? "/api/annotations/reanchor" : "/api/annotations", { type: thread ? "reanchor" : "comment", body, anchor, evidenceData, currentVisualRevision: anchor.visual!.layoutRevision, operationId, expectedBodyRevision: anchor.bodyRevision, ...(thread ? { threadId: thread.id, expectedThreadSequence: thread.seq } : {}) }, generation, currentPath);
+        if (thread) { const updated=normalizeThreads(annotationState).find(t=>t.id===thread.id);if(updated)Object.assign(thread,updated); }
+      },
+    });
     nextAnnotationUi = createAnnotationUi({
       root: annotationsRoot,
       sizingControl: threadSizing.root,
@@ -624,6 +645,14 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       editorRoot,
       getEditorView,
       onNotice: (message) => chrome.setNotice(message),
+      onVisibleThreadsChange: setVisualThreads,
+      onSelectThread: (thread) => { if (thread.anchor.visual) revealVisualThread(thread); },
+      onRedraw: (thread) => { revealVisualThread(thread, true); },
+      onReanchor: async (thread, anchor) => {
+        const doc=getEditorView()?.state.doc;
+        if (!(await save()) || doc!==getEditorView()?.state.doc) throw new Error("The document changed while saving. Select again.");
+        await postAnnotation("/api/annotations", { type: "reanchor", threadId: thread.id, anchor: { ...anchor, bodyRevision: currentBodyRevision }, expectedBodyRevision: currentBodyRevision, expectedThreadSequence: thread.seq, operationId: crypto.randomUUID() }, generation, currentPath);
+      },
       localActor,
       onPendingCountChange: (count) => {
         pendingCount.textContent = String(count);
@@ -636,9 +665,11 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
         commentButton.setAttribute("aria-pressed", String(open));
       },
       onCreateComment: async ({ body, anchor }) => {
+        const selectedDoc = getEditorView()?.state.doc;
         const annotationPath = currentPath;
         if (documentResponse.readOnly || (!readOnly && !(await save()))) throw new Error("Save the document before commenting.");
         if (generation !== documentGeneration || annotationPath !== currentPath) throw new Error("The document changed before the comment was sent.");
+        if (selectedDoc !== getEditorView()?.state.doc) throw new Error("The document changed while saving. Submit the comment again.");
         const revision = currentBodyRevision;
         await postAnnotation("/api/annotations", { type: "comment", body, anchor: { ...anchor, bodyRevision: revision }, expectedBodyRevision: revision }, generation, annotationPath);
       },
@@ -674,6 +705,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       view.setProps({ handleScrollToSelection: scrollSelectionIntoView });
       // A fresh reader starts at the top; reading-anchor preservation is for later zooms.
       canvas.setScale(chrome.getZoom() / 100, { preserveScroll: false });
+      registerDocumentRevision(view.state.doc, currentBodyRevision);
       nextAnnotationUi.attachEditorView(view);
       document.title = documentTabTitle(currentPath, view.state.doc);
     }
@@ -735,6 +767,8 @@ async function saveReviewed(): Promise<void> {
   saveReviewButton.disabled = true;
   cancelReviewButton.disabled = true;
   try {
+    const markdown = currentMarkdown();
+    const savedDoc = sourceEditor ? undefined : getEditorView()?.state.doc;
     const result = await api<DocumentResponse>("api/file", {
       method: "PUT",
       body: JSON.stringify({ content: attempted.body, expectedBodyRevision: attempted.baseRevision, expectedLocationVersion: currentLocationVersion }),
@@ -745,6 +779,7 @@ async function saveReviewed(): Promise<void> {
     diskBody = result.body;
     currentLedgerRevision = result.ledgerRevision;
     savedEditorMarkdown = markdown;
+    if (savedDoc) registerDocumentRevision(savedDoc, result.bodyRevision);
     clearConflict();
     if (currentMarkdown() === markdown) await draftPersistence.clear();
     else scheduleSave();
@@ -836,7 +871,7 @@ async function start(): Promise<void> {
   } catch {}
   if (!document.getElementById("phone-comment")) {
     const button = document.createElement("button");
-    button.id = "phone-comment"; button.type = "button"; button.innerHTML = iconSvg("pen-nib");
+    button.id = "phone-comment"; button.type = "button"; button.innerHTML = iconSvg("pencil-line");
     button.setAttribute("aria-label", "Comment on selection");
     button.title = "Comment on selection";
     button.addEventListener("mousedown", event => event.preventDefault());
@@ -858,6 +893,7 @@ async function start(): Promise<void> {
   }
   if (bootstrap.updateControls && !updateMounted) { mountUpdates(); updateMounted = true; }
   pageOpensLinks = bootstrap.capabilities?.pageOpensLinks === true;
+  hostOpensWebLinks = bootstrap.capabilities?.hostOpensWebLinks === true;
   revealAvailable = bootstrap.capabilities?.revealFile === true;
   fileActions.update(revealAvailable, readOnly || sharedReader, bootstrap.directoryPicker === true);
   stopFind?.();
@@ -1005,6 +1041,15 @@ editorRoot.addEventListener("click", (event) => {
   })().catch((error) => chrome.setNotice(`Could not open link: ${(error as Error).message}`, 0));
 }, true);
 addEventListener('hashchange', () => scrollToDocumentAnchor(editorRoot, location.hash));
+// Where the page's new windows go nowhere (a Paseo plugin panel), web links open in the default browser.
+let hostOpensWebLinks = false;
+document.addEventListener("click", (event) => {
+  const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+  if (!hostOpensWebLinks || event.defaultPrevented || !link || link.target !== "_blank" || !/^https?:$/.test(link.protocol)) return;
+  event.preventDefault();
+  void api("api/web-link", { method: "POST", body: JSON.stringify({ url: link.href }) })
+    .catch((error) => chrome.setNotice(`Could not open link: ${(error as Error).message}`, 0));
+});
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
 });

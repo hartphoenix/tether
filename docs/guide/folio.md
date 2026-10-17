@@ -1,12 +1,8 @@
 # Folio and sharing
 
-[Documentation](../README.md)
+[Documentation](../README.md) · [Host setup](hosts.md)
 
-## Current review
-
-The Mobile Folio section describes the new phone drawer and its available controls. No desktop behavior changes.
-
-Run `tether folio` to open the document organizer. In cmux, you can add it to the Dock (right sidebar) in **Settings > Beta Features**, then use  `⌘-⌥-B` to show/hide it. Folio keeps active projects together and helps you find documents and conversations that need attention.
+Folio is Tether's document organizer. It keeps active projects together and shows which documents have open conversations. Run `tether folio` to open it, or use your host's shortcut: the Tether button in Paseo, the Dock in cmux (`⌘-⌥-B`), or the **Tether Folio** widget in Wave. [Host setup](hosts.md) describes each one.
 
 ## Mobile Folio
 
@@ -16,38 +12,40 @@ The mobile drawer has no custom context menu, document-link hover effects, file 
 
 Desktop library access must be explicitly enabled when configuring the phone reader; the single-document pilot remains scoped to its test document otherwise. See [phone reader setup](../contributing/phone-reader.md).
 
-## Folio Toolbar
+## Toolbar
 
-**Active** shows ongoing work; **Archive** holds finished conversations.
+* **Active** lists ongoing work, and **Archive** holds documents you've finished with. Clicking an archived document restores it to Active.
+* **Filter** (funnel icon) saves searches that match file paths, file names and each document's first H1 heading. A project folder's name makes a useful filter.
+* **Sort** (slider icon) orders documents by when they were opened, modified, added to Folio or created, by recent conversation activity, or by name. It can also group them by directory or Git repository.
+* **Folio menu** (three lines icon) has **Select documents**, **Import annotations**, **Settings** and **Check for updates**, along with **Restart service** and **Quit Tether**.
 
-Use the **Filter** button (funnel icon) to save searches across file paths, file names, and each document's first H1 heading. A project folder's name makes a useful filter.
+**Select documents** lets you pin, archive, restore or export several documents at once.
 
-Using the **Sort** button (slider icon), you can sort by when a document was opened, modified, added, or created, as well as by recent conversation activity or by file name. Group entries by directory or Git repository to keep related work together. 
+## Settings
 
-The **Folio Menu** (three lines icon) has batch selection, import, and **settings**:
+**Interface scale** sizes the application controls, and **Comment text** sets the size of conversation text, starting at 16px. Both apply to every reader in the current Tether profile; the threads drawer's zoom button has the same two controls. **Default document zoom** sets the scale for newly opened documents.
 
-**Interface scale** changes application controls; **Comment text** independently sets conversation body text, starting at 16px. Both apply across readers in the current Tether profile. The threads drawer's zoom button exposes the same two controls. **Default document zoom** controls how newly opened documents are scaled.
+**Archive retention** defaults to **Keep forever**. You can instead keep archived conversations for a number of days, or choose **Delete immediately**. When an archived entry expires, Tether deletes its conversation and recovery data and leaves the Markdown file alone. Restoring a document to Active cancels its expiry.
 
-### Archive retention
+## Document actions
 
-Archived conversations default to **Keep forever**. Via **settings**, you can choose a custom retention period or **Delete immediately**; when an entry expires, Tether deletes its private conversation and recovery data but leaves the Markdown file alone.
+Right-click a document in Folio for these actions:
 
-Restoring a document returns it to Active and cancels its expiry.
+* **Pin** keeps the document at the top of the list.
+* **Copy file path**, **Reveal in Finder** and **Open in Default App** work with the Markdown file.
+* **Export with annotations** creates a `.tether` package; see [Sharing](#sharing).
+* **Archive** moves the document to Archive, and **Restore to active** brings it back.
+* **Remove from Folio** appears for documents without a conversation and removes their entry.
+* **Delete conversation** permanently deletes the document's threads and leaves the Markdown file alone.
+* **Move file to Trash** moves the Markdown file to the macOS Trash and archives its Folio entry, so the conversation follows your archive retention setting.
+* **Locate file** appears when a document with a conversation has moved outside Tether; Folio shows its title in red. Choose the file's new location to reconnect the conversation.
 
-Pin documents you want to keep visible. **Clear unpinned** archives all other active documents without deleting their Markdown files.
+Agents moving an active document should use `tether document move`, which carries the conversation with the file.
 
-## Context Menu
+## Sharing
 
-**Right-click a document in Folio** for actions on that document:
+Tether stores comments apart from your Markdown files, so sharing a file alone doesn't share its conversation. **Export with annotations**, in the reader or Folio, creates a `.tether` package containing the document body and its open threads, with authors, timestamps and anchors. The package leaves out resolved and deleted threads, event history, drafts, acknowledgement cursors and absolute source paths.
 
-* **Remove from Folio** will skip the Archive and delete that doc's threads and Tether data, but leave the Markdown file alone.
-* **Move file to Trash** deletes associated Tether data and sends the Markdown file to macOS's trash. Restoring it from the trash will not restore its Tether data.
-* If you move a file outside Tether, its title will display in red; use **Locate file** to reconnect its conversation data to the new file path. Agents moving an active document should use `tether document move` to carry its conversation with it.
+To add a package from another machine or profile, choose **Import annotations** in the Folio menu and pick a destination directory. Tether won't overwrite existing files or conversations, and it adds imported documents to Active. If some items fail, fix their destinations and import the same package into the same directory again; Tether skips items it has already imported.
 
-## Export: sharing Tether data
-
-Tether's annotations are kept separate from Markdown files; if you want to share open threads from Tether along with a file, use **Export with annotations** in the reader or Folio to create a `.tether` package containing the document body and open threads, with authors, timestamps, and anchors. (The export package doesn't include resolved or deleted material, event history, drafts, acknowledgement cursors, or absolute source paths.)
-
-To add an export package from another machine or profile, use **Import annotations** in Folio and choose a destination directory. Tether refuses to overwrite existing files or conversations and adds imported documents to Active. If some items fail to import, fix their destinations and retry with the same package and directory. Tether skips items it has already imported.
-
-For CLI equivalents, see [file operations](../reference/cli.md#folio-and-file-operations). For complete private history, use a [backup](recovery.md#private-review-backup).
+The [CLI reference](../reference/cli.md#folio-and-file-operations) lists command-line equivalents. To keep your complete private history, make a [backup](recovery.md#back-up-and-restore).

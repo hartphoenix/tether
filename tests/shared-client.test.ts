@@ -36,3 +36,25 @@ test("structured conflicts and lost mutation outcomes remain distinct", async ()
   await expect(sharedRequest(credential, "document.save", {}, { fetch: lost })).rejects.toMatchObject({ code: "save_unconfirmed", details: { outcome: "outcome_unknown" } });
   await expect(sharedRequest(credential, "document.read", {}, { fetch: lost })).rejects.toMatchObject({ code: "service_unreachable", details: { outcome: "not_applied" } });
 });
+
+test("remote visual retrieval materializes bounded evidence on the caller machine", async () => {
+  const { remoteControl } = await import("../src/cli/remote");
+  const { parseCommand } = await import("../src/cli/commands");
+  const { encodePng } = await import("../src/documents/visual-png");
+  const { dirname } = await import("node:path");
+  const png = encodePng({ width: 2, height: 2, data: new Uint8Array(16).fill(255) });
+  const id = crypto.randomUUID(), parsed = parseCommand(["visual", `id:${id}`, "thread"]);
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (url, init) => {
+      expect(String(url)).toEndWith("/api/shared/review.visual");
+      expect(JSON.parse(String(init?.body))).toEqual({ documentId: id, threadId: "thread" });
+      return Response.json({ status: "available", artifactData: png.toString("base64") });
+    }) as typeof fetch;
+    const result = await remoteControl<{artifact:string}>(credential, parsed, "/control/review/visual", { path: "/wrong-local-path", threadId: "thread" });
+    directories.push(dirname(result.artifact));
+    expect((await readFile(result.artifact)).toString("base64")).toBe(png.toString("base64"));
+    expect((await stat(result.artifact)).mode & 0o777).toBe(0o600);
+    expect(result).not.toHaveProperty("artifactData");
+  } finally { globalThis.fetch = original; }
+});

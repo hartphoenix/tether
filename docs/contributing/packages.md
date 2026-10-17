@@ -2,7 +2,7 @@
 
 [Contributor setup](../../CONTRIBUTING.md)
 
-Use these checks when you change installation, updates, or bundled assets. They build and exercise local candidates. Publishing a release requires separate authorization from the maintainer.
+Run these checks when you change installation, updates or bundled assets. They build and exercise local candidates without publishing anything; publishing a release requires separate authorization from the maintainer.
 
 ## Build and exercise a candidate
 
@@ -16,21 +16,25 @@ bun scripts/check-startup.ts /absolute/path/to/new-candidate/app
 bun scripts/check-install.ts /absolute/path/to/new-candidate/tether-darwin-arm64.tar.gz
 ```
 
-Use `x64` instead of `arm64` for an Intel build. The builder uses the local Mac's architecture and installed Bun. Match the CI runtime in [CONTRIBUTING.md](../../CONTRIBUTING.md); the corresponding Bun license must exist in `licenses/`.
+For an Intel build, use `x64` in place of `arm64`. The builder uses the local Mac's architecture and installed Bun. Use the Bun version named in [CONTRIBUTING.md](../../CONTRIBUTING.md), which matches CI; its license must exist in `licenses/`.
 
-The builder won't overwrite an existing destination or archive. In the candidate directory, it writes the app, an archive for the build architecture, a SHA-256 checksum file, and a bootstrap installer pinned to that version. After the destination, its optional second argument sets the version; its optional third argument names a directory containing public `update-root.json` and `update-trust.json` files. Never put private publisher material in a candidate.
+The builder refuses to overwrite an existing destination or archive. In the candidate directory, it writes the app, an archive for the build architecture, a SHA-256 checksum file and a bootstrap installer pinned to that version. An optional second argument sets the version, and an optional third names a directory containing the public `update-root.json` and `update-trust.json` files. Never put private publisher material in a candidate.
 
-The app includes Bun, the CLI, daemon and host bridges, web assets, the welcome guide, the optional review skill, and license notices. Users don't need to build anything during installation.
+The app includes Bun, the CLI, the daemon and host bridges, web assets, the welcome guide, the current release notes, both optional agent skills, the compiled Paseo plugin with its theme and attribution assets, and license notices. Users don't build anything during installation.
 
 ## What the checks establish
 
-`check-release.ts` runs with an isolated profile and minimal PATH. It checks setup, skill installation, Folio, reader assets, private review, and backup/restore, then stops its test daemon and leaves its evidence directory available for inspection.
+`check-release.ts` runs with an isolated profile and a minimal PATH. It checks the release notes, both skills, the compiled plugin's payload, themes and notices, the absence of personal workspace-migration code, setup, skill installation, Folio, reader assets, private review, and backup and restore. Afterward, it stops its test daemon and leaves its evidence directory for inspection.
 
 `check-startup.ts` runs the packaged login entry with the environment the generated job gives launchd, in disposable directories. It verifies that the job follows `current`, that a second start reuses the running daemon, that SIGTERM stops it cleanly, that a crash does not block the next start, and that disable removes the job and hook. It mocks launchctl and never registers a real login job.
 
+`check-paseo-package.ts <candidate-directory> <paseo-cli>` exercises the compiled plugin with Paseo 0.11.2 in a disposable home and daemon. It verifies directory registration, disabled-state preservation, runtime compilation/loading, following the current-release pointer, explicit reload, and removal. It does not verify desktop UI interactions.
+
+`check-verified-update.ts <0.1.3-archive> <0.1.4-archive>` rehearses CLI, reader, and Folio updates from the published baseline using the supplied binaries. It replaces only their public trust files in disposable copies, signs those copies with ephemeral test keys, and verifies draft/review recovery and skill migration. The original archives and production publisher state are untouched.
+
 `check-install.ts` checks that installation rejects a wrong checksum, works repeatedly and with paths containing spaces, sets up Wave widgets, and uninstalls without removing private data or unrelated widgets. [.github/workflows/check.yml](../../.github/workflows/check.yml) runs these checks on macOS without publishing.
 
-You still need to test installation on a fresh account, interaction in native browsers and hosts, sleep/reboot recovery, and launch behavior after downloading the package. Record the macOS version, architecture, browser or host version, and results with your change. Advertise support only for combinations you have evidence for.
+These checks don't cover installation on a fresh account, interaction in native browsers and hosts, recovery after sleep or reboot, or launch behavior after downloading the package; test those by hand. Record the macOS version, architecture, browser or host version and results with your change, and advertise support only for combinations you have evidence for.
 
 ## Bootstrap and release boundaries
 
@@ -58,9 +62,9 @@ For an automated browser check, use `bun scripts/rehearse-update.ts --verify` wi
 
 ## Clean-account recovery acceptance
 
-Test the existing package now for an installation baseline. Use a rebuilt local candidate for recovery acceptance; publishing is unnecessary. The new candidate adds `lib/login.js`, opt-in login startup with a cmux shell hook, and pane recovery. Neither installation nor setup registers a login job.
+Run this acceptance matrix when you change login startup (`lib/login.js`), the cmux shell hook or pane recovery. A local candidate is enough; you don't need to publish. Neither installation nor setup registers a login job.
 
-Run this matrix in a disposable macOS account, recording macOS and cmux versions. Keep the main account's startup disabled. Use saved documents, a persisted draft, a conflict, reading positions, and Folio in multiple cmux workspaces. Distinguish persisted changes from keystrokes never saved before termination.
+Use a disposable macOS account, record the macOS and cmux versions, and keep login startup disabled on your main account. Set up saved documents, a persisted draft, a conflict, reading positions and Folio in several cmux workspaces. When judging results, distinguish persisted changes from keystrokes that were never saved before termination.
 
 | Test | Required result |
 | --- | --- |

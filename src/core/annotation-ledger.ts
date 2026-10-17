@@ -1,3 +1,4 @@
+import { validateVisual, type VisualAnchor } from "./visual-anchor";
 import { createHash } from "node:crypto";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 
@@ -9,6 +10,7 @@ export const ANNOTATION_END = "-->";
 export type Revision = `sha256:${string}`;
 
 export type AnnotationAnchor = {
+  visual?: VisualAnchor;
   exact: string;
   prefix: string;
   suffix: string;
@@ -93,7 +95,9 @@ export type AcknowledgeEvent = {
   createdAt: string;
 };
 
-export type ReviewEvent = CommentEvent | ReplyEvent | ResolveEvent | ReopenEvent | EditEvent | DeleteEvent;
+export type ReanchorEvent = { type: "reanchor"; id: string; seq: number; actor: string; createdAt: string; threadId: string; anchor: AnnotationAnchor };
+
+export type ReviewEvent = ReanchorEvent | CommentEvent | ReplyEvent | ResolveEvent | ReopenEvent | EditEvent | DeleteEvent;
 export type AnnotationEvent = ReviewEvent | AcknowledgeEvent;
 
 export type AnnotationLedger = {
@@ -228,7 +232,7 @@ function validateAnchor(value: unknown, line?: number): AnnotationAnchor {
     throw new AnnotationLedgerError("invalid-event", "An anchor end must not precede its start.", line);
   }
   const bodyRevisionValue = requiredRevision(value.bodyRevision, "anchor.bodyRevision", line);
-  return { exact, prefix, suffix, projectionStart, projectionEnd, bodyRevision: bodyRevisionValue };
+  return { exact, prefix, suffix, projectionStart, projectionEnd, bodyRevision: bodyRevisionValue, ...(value.visual !== undefined ? { visual: validateVisual(value.visual as VisualAnchor) } : {}) };
 }
 
 function requiredStringAllowEmpty(value: unknown, field: string, line?: number): string {
@@ -273,6 +277,7 @@ export function validateAnnotationEvent(value: unknown, line?: number): Annotati
     if (!body.trim()) throw new AnnotationLedgerError("invalid-event", "A comment body cannot be empty.", line);
     return { type, id, seq, actor, createdAt, anchor: validateAnchor(value.anchor, line), body };
   }
+  if (type === "reanchor") return { type, id, seq, actor, createdAt, threadId: requiredString(value.threadId, "threadId", line), anchor: validateAnchor(value.anchor, line) };
   if (type === "reply") {
     const body = requiredString(value.body, "body", line);
     if (!body.trim()) throw new AnnotationLedgerError("invalid-event", "A reply body cannot be empty.", line);
@@ -328,11 +333,12 @@ export function validateAnnotationLedger(value: AnnotationLedger): AnnotationLed
       threads.add(event.id);
       editableEvents.set(event.id, { type: "comment", threadId: event.id, deleted: false });
     }
-    if (event.type === "reply" || event.type === "resolve" || event.type === "reopen") {
+    if (event.type === "reanchor" || event.type === "reply" || event.type === "resolve" || event.type === "reopen") {
       if (!threads.has(event.threadId)) {
         throw new AnnotationLedgerError("missing-thread", `Annotation event refers to missing thread: ${event.threadId}.`, index + 2);
       }
     }
+    if (event.type === "reanchor" && editableEvents.get(event.threadId)?.deleted) throw new AnnotationLedgerError("missing-thread", "Cannot reanchor a deleted thread.");
     if (event.type === "reply") editableEvents.set(event.id, { type: "reply", threadId: event.threadId, deleted: false });
     if (event.type === "edit" || event.type === "delete") {
       const target = editableEvents.get(event.targetId);
@@ -520,6 +526,8 @@ function ledgerAndEvents(value: AnnotationLedger | AnnotationEvent[]): { header?
 export type DerivedThread = {
   id: string;
   comment: CommentEvent;
+  anchor: AnnotationAnchor;
+  anchorHistory: AnnotationAnchor[];
   replies: ReplyEvent[];
   status: "open" | "resolved";
   latestEvent: ReviewEvent;
@@ -557,11 +565,20 @@ export function deriveAnnotationState(value: AnnotationLedger | AnnotationEvent[
       comments.set(event.id, {
         id: event.id,
         comment: event,
+        anchor: event.anchor,
+        anchorHistory: [],
         replies: [],
         status: "open",
         latestEvent: event,
         ...(projection ? { orphan: resolveAnchor(event.anchor, projection) } : {}),
       });
+    } else if (event.type === "reanchor") {
+      const thread = comments.get(event.threadId);
+      if (!thread) continue;
+      thread.anchorHistory.push(thread.anchor);
+      thread.anchor = event.anchor;
+      thread.latestEvent = event;
+      if (projection) thread.orphan = resolveAnchor(event.anchor, projection);
     } else if (event.type === "reply") {
       const thread = comments.get(event.threadId);
       if (!thread) continue;
@@ -715,7 +732,7 @@ export function renderedTextProjection(node: ProseMirrorNode): RenderedTextProje
   const blocks: Array<{ node: NodeLike; position: number }> = [];
 
   const collectBlocks = (current: NodeLike, position: number, rootNode = false): void => {
-    if (!rootNode && isTextblock(current)) {
+    if (!rootNode && (isTextblock(current) || (current.isAtom && current.type?.name?.includes("image")))) {
       blocks.push({ node: current, position });
       return;
     }
@@ -726,10 +743,11 @@ export function renderedTextProjection(node: ProseMirrorNode): RenderedTextProje
   blocks.forEach(({ node: block, position }, index) => {
     if (index > 0) {
       const previous = blocks[index - 1];
-      const separatorPosition = previous.position + previous.node.nodeSize - 1;
+      const separatorPosition = previous.position + previous.node.nodeSize - (previous.node.isAtom ? 0 : 1);
       appendProjectionUnit(output, "separator", "\n", separatorPosition, separatorPosition);
     }
-    block.forEach?.((child, offset) => appendInline(child, position + 1 + offset, output));
+    if (block.isAtom && block.type?.name?.includes("image")) appendProjectionUnit(output, "atom", "\uFFFC", position, position + block.nodeSize);
+    else block.forEach?.((child, offset) => appendInline(child, position + 1 + offset, output));
   });
 
   // Empty projections still have one valid boundary position (the document start).
@@ -797,9 +815,17 @@ function matchingContext(text: string, anchor: AnnotationAnchor, start: number, 
 }
 
 /** Resolve exact quote anchors, making ambiguity explicit instead of guessing. */
-export function resolveAnchor(anchor: AnnotationAnchor, projection: RenderedTextProjection | string): AnchorResolution {
+export function resolveAnchor(anchor: AnnotationAnchor, projection: RenderedTextProjection | string, currentBodyRevision?: string): AnchorResolution {
   const text = typeof projection === "string" ? projection : projection.projection;
   if (!anchor.exact) return { status: "orphan", reason: "quote-not-found", matches: [] };
+  const start = anchor.projectionStart, savedEnd = anchor.projectionEnd;
+  if (currentBodyRevision && currentBodyRevision === anchor.bodyRevision
+    && Number.isSafeInteger(start) && Number.isSafeInteger(savedEnd)
+    && start >= 0 && savedEnd > start && savedEnd <= text.length
+    && text.slice(start, savedEnd) === anchor.exact) {
+    return { status: "resolved", projectionStart: start, projectionEnd: savedEnd,
+      ...(typeof projection === "string" ? {} : { from: projection.positionAt(start), to: projection.positionAt(savedEnd) }) };
+  }
   const matches: number[] = [];
   let from = 0;
   while (from <= text.length) {
@@ -809,9 +835,21 @@ export function resolveAnchor(anchor: AnnotationAnchor, projection: RenderedText
     // Include overlapping occurrences: repeated characters are not unique quotes.
     from = match + 1;
   }
+  if (!matches.length && anchor.visual && (anchor.prefix || anchor.suffix)) {
+    const candidates: Array<{ start: number; end: number }> = [];
+    for (let start = 0; start < text.length; start++) {
+      if (anchor.prefix ? !text.slice(0, start).endsWith(anchor.prefix) : start !== 0) continue;
+      const end = anchor.suffix ? text.indexOf(anchor.suffix, start + 1) : text.length;
+      if (end > start) candidates.push({ start, end });
+    }
+    if (candidates.length === 1) {
+      const { start, end } = candidates[0]!;
+      return { status: "resolved", projectionStart: start, projectionEnd: end, ...(typeof projection === "string" ? {} : { from: projection.positionAt(start), to: projection.positionAt(end) }) };
+    }
+  }
   if (!matches.length) return { status: "orphan", reason: "quote-not-found", matches: [] };
   // Surrounding edits cannot invalidate a quote that is unique in the document.
-  const candidates = matches.length === 1 ? matches : matches.filter(start => matchingContext(text, anchor, start, start + anchor.exact.length));
+  const candidates = matches.length === 1 && (!anchor.visual || anchor.visual.occurrences === 1) ? matches : matches.filter(start => matchingContext(text, anchor, start, start + anchor.exact.length));
   if (candidates.length !== 1) return { status: "orphan", reason: "ambiguous", matches };
   const match = candidates[0];
   const end = match + anchor.exact.length;

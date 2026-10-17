@@ -21,6 +21,8 @@ export type HostCapabilities = {
   pageOpensLinks?: boolean;
   /** Host delegates its Find shortcut to the page. */
   pageFind?: boolean;
+  /** The page's new windows go nowhere; the reader asks Tether to open web links in the default browser. */
+  hostOpensWebLinks?: boolean;
 };
 
 export type AppPreferences = import("./themes").ThemePreferences;

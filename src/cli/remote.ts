@@ -1,9 +1,12 @@
+import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { decodePng } from "../documents/visual-png";
 import { writeRemoteBinding } from "../remote/binding";
 import { setupReporting } from "./setup-reporting";
 import { relocate } from "./relocation";
 import { Database } from "bun:sqlite";
 import { constants } from "node:fs";
-import { mkdir, open, rename, unlink } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, open, rename, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { acquireStartupLock, prepareConfig, type TetherConfig } from "../server/config";
 import { controlRequest, statusDaemon } from "../server/lifecycle";
@@ -194,5 +197,13 @@ export async function remoteControl<T>(connection: SharedCredential, parsed: Par
     operation = "document.relink";
     body = { ...remoteAddress(parsed.positionals[0]!, machineId), path: requiredFlag(parsed, "--new-path"), machineId };
   }
-  return sharedRequest<T>(connection, operation, body);
+  const result = await sharedRequest<T>(connection, operation, body);
+  if (operation !== "review.visual") return result;
+  const { artifactData, ...metadata } = result as Record<string, unknown>;
+  if (typeof artifactData !== "string" || artifactData.length > Math.ceil(8 * 1024 * 1024 * 4 / 3) + 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(artifactData)) throw new Error("Invalid visual evidence response.");
+  const png = Buffer.from(artifactData, "base64"); decodePng(png);
+  const folder = await mkdtemp(join(tmpdir(), "tether-visual-"));
+  const artifact = join(folder, createHash("sha256").update(png).digest("hex") + ".png");
+  await writeFile(artifact, png, { mode: 0o600 });
+  return { ...metadata, artifact } as T;
 }

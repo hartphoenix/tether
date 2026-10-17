@@ -267,3 +267,16 @@ describe("rendered text projection and anchors", () => {
     expect((orphan as { matches: number[] }).matches).toHaveLength(2);
   });
 });
+
+test('saved positions distinguish identical passages only in a verified revision', () => {
+  const passage = 'x'.repeat(80) + 'target' + 'y'.repeat(80);
+  const text = passage + '\n' + passage;
+  const revision = bodyRevision(text);
+  for (const start of [80, passage.length + 81]) {
+    const anchor = createAnchor(text, start, start + 6, revision);
+    expect(resolveAnchor(anchor, text)).toMatchObject({ status: 'orphan', reason: 'ambiguous' });
+    expect(resolveAnchor(anchor, text, revision)).toMatchObject({ status: 'resolved', projectionStart: start });
+    expect(resolveAnchor(anchor, text, bodyRevision('changed'))).toMatchObject({ status: 'orphan' });
+    expect(resolveAnchor({ ...anchor, projectionStart: 0, projectionEnd: 6 }, text, revision)).toMatchObject({ status: 'orphan' });
+  }
+});

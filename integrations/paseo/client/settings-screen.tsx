@@ -34,6 +34,13 @@ function Controls({ settings, theme }: { settings: Ready; theme: PluginSurfacePr
           disabled={settings.saving}
           onValueChange={buttons => { void settings.save({ ...settings.values, buttons }, settings.revision); }}
         />
+        <SettingsSwitch
+          label="Open documents in custom Tether panels"
+          hint="Desktop only. Opens documents without browser controls. If a Paseo update breaks panels, turn this off to use browser tabs."
+          value={settings.values.readerPanels}
+          disabled={settings.saving}
+          onValueChange={readerPanels => { void settings.save({ ...settings.values, readerPanels }, settings.revision); }}
+        />
       </SettingsCard>
       <SettingsCard>
         <SettingsInput

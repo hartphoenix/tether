@@ -3,7 +3,7 @@ import { readRemoteBinding } from "../remote/binding";
 import { remoteSetup, remoteAddress, remoteControl } from "./remote";
 import { readSharedCredential, sharedRequest } from "../remote/shared-client";
 import type { ReaderAnnouncement } from "../remote/reader-delivery";
-import { pendingAgentSkillReviews, listAgentSkillReviews, readAgentSkillReview, mergeAgentSkill } from "./agent-skills";
+import { pendingAgentSkillReviews, listAgentSkillReviews, readAgentSkillReview, mergeAgentSkill, installSelectedAgentSkills } from "./agent-skills";
 import { diagnosticText, errorDetails, operationError } from "../shared/diagnostics";
 import { commandResult } from "./results";
 import { realpath, readFile, readlink, unlink, rename } from "node:fs/promises";
@@ -22,10 +22,12 @@ import { PASEO_HOST, PaseoHostAdapter, paseoLaunchTarget } from "../hosts/paseo"
 import type { ProtocolResponse } from "../shared/contracts";
 import { RecentsRegistry } from "../recents/registry";
 import { installWaveLaunchers, uninstallWaveLaunchers, waveLauncherStatus, waveInstallationDetected, type WaveLauncherOptions } from "../hosts/wave-launchers";
-import { agentSetupGuidance, hostPreference, readHostPreference, saveHostPreference, seedWelcome, installAgentSkill, type HostPreference } from "./setup";
+import { agentSetupGuidance, hostPreference, readHostPreference, releaseNotesDocument, saveHostPreference, seedReleaseNotes, seedWelcome, type HostPreference } from "./setup";
 import { backupState, restoreState } from "./backup";
 import { installVerifiedRelease } from "../releases/verified-update";
-import { UpdateService } from "../server/updates";
+import { UpdateService, writeUpdateState } from "../server/updates";
+import { discoverHosts } from "./host-discovery";
+import { setupPaseo, removeManagedPaseo } from "./paseo-setup";
 import { runtimeRoot } from "../runtime-paths";
 import type { RecoveryView } from "../hosts/recovery";
 import { enableStartup, disableStartup, refreshCmuxHook, startupStatus } from "./startup";
@@ -131,8 +133,6 @@ function commandName(argv: string[]): string {
   return argv[0] ?? "unknown";
 }
 
-const reportingGuidance = "For user-facing summaries, report what completed, what did not, and any decision needed in plain language. Omit diagnostic codes, host implementation names, and internal paths unless the user asks for technical diagnosis. Keep these details for your own recovery decisions. A warning does not undo a completed operation.";
-
 function localDocumentId(value: string): string | undefined {
   if (!value.startsWith("id:")) return undefined;
   const id = value.slice(3);
@@ -154,15 +154,15 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
   const completed: Array<{ step: string; path?: string }> = [];
   try {
     if (argv.length === 1 && argv[0] === "--help") {
-      return { response: success("help", { usage: usageText, reporting: reportingGuidance, commands: Object.values(commandSpecs).map(({ name, usage }) => ({ name, usage })) }), exitCode: 0 };
+      return { response: success("help", { usage: usageText, commands: [...new Set(Object.keys(commandSpecs).map(name => name.split(".")[0]))] }), exitCode: 0 };
     }
     if (argv.length === 2 && argv[1] === "--help") {
       const commands = Object.values(commandSpecs).filter(spec => spec.name.startsWith(`${argv[0]}.`)).map(({ name, usage }) => ({ name, usage }));
-      if (commands.length) return { response: success("help", { command: argv[0], usage: commandSpecs[argv[0]!]?.usage ?? `mdreview ${argv[0]} <command> [arguments] [flags]`, commands, reporting: reportingGuidance }), exitCode: 0 };
+      if (commands.length) return { response: success("help", { command: argv[0], usage: commandSpecs[argv[0]!]?.usage ?? `mdreview ${argv[0]} <command> [arguments] [flags]`, commands }), exitCode: 0 };
     }
     const parsed = parseCommand(argv);
     command = parsed.spec.name;
-    if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage, ...(command === "setup" ? { agentSetup: agentSetupGuidance } : {}), reporting: reportingGuidance }), exitCode: 0 };
+    if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage, ...(command === "setup" ? { agentSetup: agentSetupGuidance } : {}) }), exitCode: 0 };
     const config = dependencies.config ?? resolveConfig();
     const binding = await readRemoteBinding(config);
     if (binding && (command.startsWith("shared.") || command.startsWith("relocate.") || ["startup.enable", "cmux.attach", "paseo.wait"].includes(command))) throw new Error("This profile is bound to a shared hub. Manage the authority in the hub’s local profile.");
@@ -266,6 +266,8 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         if (target === null || await realpath(resolve(dirname(command.path), target)) !== await realpath(command.target)) throw new Error(`Command has changed; preserved: ${command.path}`);
       }
       const wave = await waveLauncherStatus();
+      const hosts = await discoverHosts();
+      if (await removeManagedPaseo(hosts.find(host => host.id === "paseo")!)) completed.push({ step: "paseo_plugin_removed" });
       if (wave.installed.length) { await uninstallWaveLaunchers(); completed.push({ step: "wave_launchers_removed" }); }
       for (const command of commands) { await unlink(command.path); completed.push({ step: "command_removed", path: command.path }); }
       const retained = resolve(root, `uninstalled-${Date.now()}`);
@@ -299,20 +301,42 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     if (command === "setup") {
       if (parsed.flags.has("--host")) { await saveHostPreference(config, selectedHost); completed.push({ step: "host_preference_saved", path: resolve(config.configDir, "launch.json") }); }
       const skillDirectory = optionalFlag(parsed, "--agent-directory");
-      const agent = skillDirectory ? await installAgentSkill(skillDirectory, config) : undefined;
-      if (agent) completed.push({ step: "agent_skill_installed", path: agent.path });
+      const agents = skillDirectory ? await installSelectedAgentSkills(skillDirectory, config, optionalFlag(parsed, "--skills"), runtimeRoot(), path => completed.push({ step: "agent_skill_installed", path })) : [];
+      const agent = agents.find(item => item.skill === "tether-review");
+      const hosts = await discoverHosts({ wave: dependencies.waveLaunchers, paseoConnected: await paseoConnected(config) });
+      const warnings: string[] = [];
+      let paseo;
+      if (parsed.flags.has("--paseo")) {
+        try { paseo = await setupPaseo(hosts.find(host => host.id === "paseo")!); completed.push({ step: "paseo_plugin_installed", path: paseo.path }); }
+        catch (cause) { warnings.push((cause as Error).message); }
+      }
+      const release = await readFile(resolve(runtimeRoot(), "release.json"), "utf8").then(JSON.parse).catch(() => null);
+      const trusted = Boolean(process.env.TETHER_INSTALL_ROOT) && await Promise.all(["update-root.json", "update-trust.json"].map(name => readFile(resolve(runtimeRoot(), name), "utf8").then(JSON.parse))).then(() => true, () => false);
+      const updates = { configured: trusted, version: release?.version ?? null, next: trusted ? "Signed update channel configured. Run tether update --check to verify current service availability." : "This source checkout or local package has no configured signed update channel." };
+
       const wave = (parsed.flags.has("--wave") || await waveInstallationDetected(dependencies.waveLaunchers)) ? await installWaveLaunchers(dependencies.waveLaunchers) : undefined;
       if (wave) completed.push({ step: "wave_launchers_installed" });
       const path = await seedWelcome(config);
       completed.push({ step: "welcome_document_ready", path });
       await requestControl(config, "/control/folio/add", { paths: [path] });
       completed.push({ step: "registered", path });
-      if (!parsed.flags.has("--no-open")) {
-        const opened = await runCli(["open", path, "--host", selectedHost], dependencies);
-        if (!opened.response.ok) throw Object.assign(new Error(opened.response.error.message), { code: opened.response.error.code, details: opened.response.error.details });
+      // The installer shows the current release notes last, so they open in front.
+      const releaseNotes = parsed.flags.has("--release-notes") ? await seedReleaseNotes(config) : null;
+      if (releaseNotes) {
+        // Setup shows these notes itself, so views don't open them again.
+        await writeUpdateState(config, { releaseNotesShown: (await releaseNotesDocument(config))?.version ?? null });
+        await controlRequest(config, "/control/folio/add", { paths: [releaseNotes] });
+        completed.push({ step: "registered", path: releaseNotes });
       }
-      return { response: success(command, { path, hostPreference: selectedHost, agent, wave, opened: !parsed.flags.has("--no-open") && process.env.TETHER_SUPPRESS_BROWSER !== "1",
-        next: "Use tether to open Folio. Setup adds the Folio widget when Wave is detected; tether setup --wave also installs it explicitly.",
+      if (!parsed.flags.has("--no-open")) {
+        for (const document of [path, releaseNotes]) {
+          if (!document) continue;
+          const opened = await runCli(["open", document, "--host", selectedHost], dependencies);
+          if (!opened.response.ok) throw Object.assign(new Error(opened.response.error.message), { code: opened.response.error.code, details: opened.response.error.details });
+        }
+      }
+      return { response: success(command, { path, ...(releaseNotes ? { releaseNotes } : {}), hostPreference: selectedHost, agent, agents, hosts, wave, paseo, warnings, updates, opened: !parsed.flags.has("--no-open") && process.env.TETHER_SUPPRESS_BROWSER !== "1",
+        next: "Use tether to open Folio. Setup adds the Wave widget when detected. Offer tether setup --paseo --no-open for the optional bundled Paseo plugin and themes; it leaves global plugin enablement unchanged.",
         ...(!agent ? { agentSetup: agentSetupGuidance } : {}),
       }), exitCode: 0 };
     }
@@ -384,6 +408,10 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         throw await launchFailure(config, launch.url, cause);
       }
       return { response: success(command, { expiresAt: launch.expiresAt, opened: process.env.TETHER_SUPPRESS_BROWSER !== "1" && !notified, ...(notified ? { notified: true } : {}) }), exitCode: 0 };
+    }
+    if (command === "paseo.chat") {
+      const input = JSON.parse(await readBoundedInput(parsed.positionals[0]!, 32 * 1024 * 1024));
+      return { response: success(command, await controlRequest(config, "/control/chat", input)), exitCode: 0 };
     }
     if (command === "paseo.theme") {
       return { response: success(command, await requestControl(config, `/control/hosts/${PASEO_HOST}/theme`, { clientId: parsed.positionals[0], theme: parsed.positionals[1] === "unknown" ? null : parsed.positionals[1] })), exitCode: 0 };
@@ -468,6 +496,9 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       return { response: success(command, await requestControl(config, "/control/document/save", { path: resolve(parsed.positionals[0]!), body, expectedBodyRevision })), exitCode: 0 };
     }
 
+    if (command === "visual") {
+      return { response: success(command, await requestControl(config, "/control/review/visual", { path: resolve(parsed.positionals[0]!), threadId: parsed.positionals[1], mode: optionalFlag(parsed, "--mode") ?? "overview", ...(optionalFlag(parsed, "--history") ? { history: Number(optionalFlag(parsed, "--history")) } : {}), offset: Number(optionalFlag(parsed, "--offset") ?? 0) })), exitCode: 0 };
+    }
     if (command === "pending") {
       const actor = requiredFlag(parsed, "--actor");
       return { response: success(command, await requestControl(config, "/control/review/pending", { path: resolve(parsed.positionals[0]!), actor, ...readOptions(parsed), ...(optionalFlag(parsed, "--consumer") ? { consumer: optionalFlag(parsed, "--consumer") } : {}) })), exitCode: 0 };

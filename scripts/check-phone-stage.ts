@@ -152,7 +152,7 @@ try {
   await phone.locator("#phone-comment").click();
   const composer = phone.getByRole("textbox", { name: "Comment", exact: true });
   await composer.waitFor(); await composer.fill("Staging comment");
-  await phone.getByRole("button", { name: "Comment", exact: true }).click();
+  await phone.locator(".wm-annotation-composer").getByRole("button", { name: "Comment", exact: true }).click();
   if (await phone.locator("#comment").getAttribute("aria-pressed") !== "true") await phone.locator("#comment").click();
   await phone.getByText("Staging comment", { exact: true }).first().waitFor();
   await page.screenshot({ path: "/tmp/tether-phone-stage-preview.png" });

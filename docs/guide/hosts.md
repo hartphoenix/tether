@@ -2,15 +2,25 @@
 
 [Documentation](../README.md) · [Recovery](recovery.md)
 
-"Host" here refers to your local terminal environment's embedded browser (such as cmux or wave, which Tether provides adapters for), not a cloud platform or remote server.
+A **host** is the app on your Mac that displays Tether's reader and Folio. Tether supports Paseo, cmux, Wave Terminal and a separate browser.
 
-Run `tether setup --host auto` to use the supported terminal you’re working in, or `tether setup --host browser` to use a separate browser. You can select a terminal explicitly with `--host cmux` or `--host wave`. Inside Paseo, the Tether plugin selects the `paseo` host itself. Your local data is shared across hosts that use the same account and profile.
+* [Paseo](#paseo)
+* [cmux](#cmux)
+* [Wave Terminal](#wave-terminal)
+* [Separate browser](#separate-browser)
+* [Compatibility limits](#compatibility-limits)
+
+Setup chooses the host. `tether setup --host auto` uses the supported terminal you run it from, and `tether setup --host browser` uses a separate browser. To name a terminal, use `--host cmux` or `--host wave`. Inside Paseo, the Tether plugin selects the `paseo` host itself. Hosts running under the same macOS account and Tether profile share your documents and conversations.
+
+## Paseo
+
+[Paseo](https://paseo.sh) is a desktop app for coding agents. Tether's Paseo plugin puts Folio in each workspace's sidebar, opens documents in Tether panels, lets you annotate agent chats, and shares themes with Paseo. To install it, run `tether setup --paseo --no-open`. [Tether in Paseo](paseo.md) covers setup and use.
 
 ## cmux
 
-cmux is the recommended host for Tether, providing the most flexibility. Its Dock (enabled through **cmux settings > Beta Features > Dock**) keeps the Folio handy with a hotkey (default `⌘-⌥-B`), letting you launch the reader into any workspace while keeping your screen uncluttered. Tether requires cmux 0.64.22 or later.
+Tether requires cmux 0.64.22 or later. The cmux Dock keeps Folio a hotkey away, so you can open documents in any workspace without cluttering your screen. Enable the Dock in **cmux Settings > Beta Features > Dock**; `⌘-⌥-B` then shows and hides it.
 
-You or your agent can run commands from an authenticated cmux terminal:
+From a cmux terminal, you or your agent can run:
 
 ```sh
 tether open /absolute/path/to/document.md
@@ -19,15 +29,13 @@ tether folio
 tether cmux status
 ```
 
-Documents open in a shared Tether pane beside the surface you launched them from. Each additional document opens in a new tab.
+`tether open` puts the document in a shared Tether pane beside the surface you ran it from, and each additional document opens as a new tab in that pane. A document opened from Folio goes to a Tether pane in the focused workspace, preferring the active one; if the workspace has none, Tether splits the focused or most recently active main pane. Links to local Markdown open in the reader's current pane. cmux opens other local files with its native file handling and website links in its browser.
 
-Opening a document from Folio uses a Tether pane in the focused workspace, preferring its active one. If there isn't a Tether pane, Tether creates a split beside the focused or last-active main pane. Links to local Markdown open in the reader's current pane. Other local files use cmux's native file handling, and website links use its browser behavior.
-
-See [cmux keyboard shortcuts](https://cmux.com/docs/keyboard-shortcuts) for sidebar, workspace, and pane controls. Tether does not change those bindings or settings.
+Tether doesn't change cmux's key bindings or settings. See [cmux keyboard shortcuts](https://cmux.com/docs/keyboard-shortcuts) for sidebar, workspace and pane controls.
 
 ## Wave Terminal
 
-Tether's Wave adapter requires Wave 0.14.5 or later. Setup looks for Wave's configuration, standard macOS application, or installed CLI, then adds a **Tether Folio** widget. Use `tether setup --wave` to request widget installation explicitly.
+Tether requires Wave 0.14.5 or later. Setup looks for Wave's configuration, the standard macOS app or Wave's CLI, and adds a **Tether Folio** widget when it finds Wave. `tether setup --wave` requests the widget explicitly. You can also manage it directly:
 
 ```sh
 tether wave status
@@ -35,43 +43,23 @@ tether wave install
 tether wave uninstall
 ```
 
-Clicking the widget opens Folio in the visible tab. Installation leaves your other widgets alone and creates a one-time `widgets.json.tether-cutover.backup`. The widget uses the `preview` profile.
+Click the widget to open Folio in the visible tab. Installing the widget leaves your other widgets in place and saves a one-time backup, `widgets.json.tether-cutover.backup`. The widget uses the `preview` profile.
 
-Tether does not replace Wave's native file navigator. Open Markdown using Folio or `tether open absolute/path/to/file.md`.
-
-## Paseo (experimental)
-
-[Paseo](https://paseo.sh) is a desktop app for coding agents. Tether runs inside it through a Paseo plugin, which lives in this repository at `integrations/paseo`. Full Folio and reader tabs require the Paseo desktop app, Paseo daemon, and Tether on the same Mac. Web and mobile clients show a basic document list.
-
-Paseo plugins run as trusted, unsandboxed code. Install this one only if you trust this repository. Plugins are off by default; either navigate to **Settings** > **Plugins** > select **Enable Plugins**, or set `pluginsEnabled` to `true` in `~/.paseo/config.json`; run `paseo reload` after changing it. Then install the plugin:
-
-```sh
-paseo plugin add hartphoenix/tether:integrations/paseo
-```
-
-* **Folio.** In any workspace, click the Tether button in the header to open the Folio in the sidebar. Paseo gives each workspace its own Explorer, so add Folio once in each workspace where you want it. It stays there after that – show/hide it with `⌘-E`. Desktop shows Tether's full Folio: filters and saved chips, right-click menus, sorting, Active/Archive, settings, and your Tether theme. Documents, saved filters, and pins stay synchronized across workspaces. If the embedded view cannot load, a basic document list appears with **Retry full Folio**.
-* **Opening documents.** Click a document in Folio to open its reader as a Paseo browser tab. Links to local Markdown open in another tab. To place a reader beside your work, split the pane first, then open it.
-* **The Tether button.** Each workspace header gets a Tether button, which normally opens Folio. When an agent runs `tether open` or `tether recents add` for a document in that workspace, the button shows the document's name; clicking it then opens the document in Tether.
-* **Focus Mode**. With a reader pane in focus, `⌘-⇧-F` fullscreens the pane and hides all others. Focus mode removes distractions and makes room for the threads drawer. `⌘-⇧-F` turns it off again.
-* **Settings.** Paseo **Settings → Tether** shows the connection, turns the button on or off, and sets the `tether` command and profile. By default the plugin finds `tether` on your PATH or in `~/.local/bin`, and uses the `preview` profile.
-
-`tether paseo status` reports whether the plugin is connected.
-
-The embedded Folio uses a desktop webview mechanism outside Paseo's supported plugin API. If a Paseo update blocks it, the basic list remains available.
+Wave's file navigator doesn't open documents in Tether. Use Folio or `tether open /absolute/path/to/file.md`.
 
 ## Separate browser
 
-If you're working in another terminal or agent environment, or you want to use Tether in a separate browser, enter these commands one at a time:
+To use Tether from another terminal or agent environment, or in your own browser, run these commands one at a time:
 
 ```sh
 tether open /absolute/path/to/document.md --host browser
 tether folio --host browser
 ```
 
-Tether starts or reuses its local service and opens the system browser. You can bookmark these localhost locations once they're launched. If they fail to resume, it's likely the Tether service needs to restart; reuse the commands above. Browser mode doesn't provide terminal pane placement or host-specific focus controls.
+Tether starts its local service if it isn't running and opens your default browser. You can bookmark the pages once they load. If a bookmark stops working, the service has probably restarted; run the commands again. A browser can't place panes or manage focus the way the terminal hosts do.
 
 ## Compatibility limits
 
-Tether checks minimum host versions, but that doesn't guarantee compatibility with every later build. If you request an operation your host doesn't support, Tether reports it without switching to a browser. Use `tether doctor` and the host status command to find out what failed.
+Tether checks each host's minimum version and never refuses a later one. A later host release can still break an integration. The Paseo plugin was tested with Paseo 0.11.2; see [Tether in Paseo](paseo.md#compatibility).
 
-[Recovery](recovery.md) describes how to relaunch and what saved-view recovery requires.
+When you request something your host doesn't support, Tether reports it instead of switching to a browser. To find what failed, run `tether doctor` and the host's status command: `tether paseo status`, `tether cmux status` or `tether wave status`. [Recovery](recovery.md) covers relaunching and reconnecting saved views.

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tether · Icon picker</title>
+  <link rel="stylesheet" href="/fonts.css"><link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <main>
+    <header><div class="brand">TETHER <span>/</span> WORKBENCH</div><span id="save-status" role="status">Loading…</span><button id="retry" hidden>Retry save</button></header>
+    <section class="intro"><div><h1>Icon picker</h1><p>Compare the current icons with Lucide. Pick one per control.</p></div><a href="https://lucide.dev/icons/" target="_blank" rel="noreferrer">Lucide library ↗</a></section>
+    <section class="controls" aria-label="Preview settings">
+      <label>Theme <select id="theme" aria-label="Theme"></select></label>
+      <label class="scale">Icon scale <input id="scale" type="range" min="50" max="250" step="5" value="100"><output id="scale-value" for="scale">100%</output></label>
+      <button id="actual-size">Actual size</button><span id="progress"></span>
+    </section>
+    <p class="hint">Names appear below each icon. Enter a Lucide name to add it; right-click a button to remove it. Arrow keys move between choices.</p>
+    <div class="table-wrap"><table><colgroup><col class="name-col"><col class="current-col"><col><col class="add-col"></colgroup><thead><tr><th scope="col">Button / control</th><th scope="col">Current control</th><th scope="col">Choose a Lucide icon</th><th scope="col">Add a candidate</th></tr></thead><tbody id="rows"></tbody></table></div>
+    <footer><span>Selections and row edits save automatically on this Mac.</span><a id="download" href="/api/state" download="tether-icon-selections.json">Download choices</a><code id="save-path"></code></footer>
+  </main>
+  <div id="context-menu" role="menu" hidden><button id="remove" role="menuitem">Remove from row</button></div>
+</body>
+</html>
