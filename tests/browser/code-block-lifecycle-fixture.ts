@@ -3,7 +3,9 @@ import { editorViewCtx } from '@milkdown/kit/core';
 import { initialReaderSelection } from '../../src/web/initial-selection';
 import { editorStateOptionsCtx } from '@milkdown/kit/core';
 import { createCanvas } from '../../src/web/canvas';
-import { renderMermaidPreview } from '../../src/web/mermaid-preview';
+import { renderMermaidPreview, setDiagramRenderer } from '../../src/web/mermaid-preview';
+// This fixture measures Mermaid's cache and ID isolation.
+setDiagramRenderer('diagrams: mermaid\n');
 import '@milkdown/crepe/theme/common/style.css';
 import '@milkdown/crepe/theme/frame.css';
 import '../../src/web/style.css';
