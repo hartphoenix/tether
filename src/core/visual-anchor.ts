@@ -25,6 +25,8 @@ export type VisualAnchor = {
     region: Region;
     /** Diagram elements the region covers, as `<pele class>:<data-id>`; they survive relayout. */
     targets?: string[];
+    /** For a drawn region, the targets' box when it was drawn; the region keeps its shape around them. */
+    targetBox?: Region;
 };
 export function validateRegion(value: Region): Region {
     if (!value || ![value.x, value.y, value.width, value.height].every(Number.isFinite)
@@ -51,7 +53,7 @@ export function validateVisual(value: VisualAnchor): VisualAnchor {
     const b = value.viewBox;
     if (b && (![b.x, b.y, b.width, b.height].every(Number.isFinite) || b.width <= 0 || b.height <= 0))
         throw new Error("Invalid SVG viewBox.");
-    return { version: 1, kind: value.kind, source: value.source, occurrences: value.occurrences, ...(value.sourceRevision ? { sourceRevision: value.sourceRevision } : {}), layoutRevision: value.layoutRevision, evidence: value.evidence, width: value.width, height: value.height, ...(b ? { viewBox: { ...b } } : {}), region: validateRegion(value.region), ...(targets ? { targets: [...targets] as string[] } : {}) };
+    return { version: 1, kind: value.kind, source: value.source, occurrences: value.occurrences, ...(value.sourceRevision ? { sourceRevision: value.sourceRevision } : {}), layoutRevision: value.layoutRevision, evidence: value.evidence, width: value.width, height: value.height, ...(b ? { viewBox: { ...b } } : {}), region: validateRegion(value.region), ...(targets ? { targets: [...targets] as string[] } : {}), ...(targets && value.targetBox ? { targetBox: validateRegion(value.targetBox) } : {}) };
 }
 export function validateDimensions(width: number, height: number): void {
     if (![width, height].every(n => Number.isSafeInteger(n) && n > 0 && n <= VISUAL_LIMITS.dimension) || width * height > VISUAL_LIMITS.pixels)
