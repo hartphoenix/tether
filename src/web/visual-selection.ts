@@ -9,7 +9,8 @@ export type VisualSelectionOptions = {
     threads: () => readonly AnnotationThread[];
     prepare: () => Promise<AnnotationAnchor>;
     isCurrent?: () => boolean;
-    save: (anchor: AnnotationAnchor, png: string, body: string, operationId: string) => Promise<void>;
+    /** `redraw` replaces the opened thread's region; otherwise the selection starts a new thread. */
+    save: (anchor: AnnotationAnchor, png: string, body: string, operationId: string, redraw: boolean) => Promise<void>;
     thread?: {
         id: string;
         body: string;
@@ -86,6 +87,14 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         y: number;
     } | null = null, pointer: number | null = null, region: Region | null = null, frame = 0, composer: HTMLElement | null = null, saving = false;
     let savedCurrent = false;
+    // A viewer opened from a thread still offers new comments; it redraws only a stale or requested region.
+    let redrawing = false;
+    const setRedrawing = (value: boolean) => {
+        redrawing = value;
+        select.hidden = false;
+        select.innerHTML = iconSvg('message-square') + (value ? 'Redraw selection' : 'Comment');
+        select.setAttribute('aria-label', value ? 'Redraw selection' : 'Comment');
+    };
     let snapped: string | undefined;
     let capture: Awaited<ReturnType<typeof captureVisual>> | undefined, anchor: AnnotationAnchor | undefined;
     function align() {
@@ -101,7 +110,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         rect.setAttribute('ry', String(bounds.height ? radius / bounds.height : 0));
         const visible = options.isThreadVisible?.() !== false;
         rect.setAttribute('visibility', region && visible ? 'visible' : 'hidden');
-        if (!visible) { status.textContent = ''; select.hidden = true; }
+        if (!visible && redrawing) { status.textContent = ''; select.hidden = true; }
         if (region)
             for (const [k, v] of Object.entries(region))
                 rect.setAttribute(k, String(v));
@@ -213,11 +222,11 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         const targets = snapped ? [snapped] : source instanceof SVGSVGElement ? coveredTargets(source, region) : undefined;
         const drawnBox = !snapped && targets && source instanceof SVGSVGElement ? targetsRegion(source, targets) ?? undefined : undefined;
         const nextAnchor = { ...anchor, visual: { ...visual, width: capture.width, height: capture.height, evidence: capture.evidence, layoutRevision: capture.layoutRevision, ...(capture.viewBox ? { viewBox: capture.viewBox } : {}), region: validateRegion(region), ...(targets ? { targets } : {}), ...(drawnBox ? { targetBox: drawnBox } : {}) } };
-        await options.save(nextAnchor, capture.png, body, operationId);
-        if (options.thread) {
+        await options.save(nextAnchor, capture.png, body, operationId, redrawing);
+        if (redrawing && options.thread) {
             options.thread = { ...options.thread, anchor: nextAnchor };
             savedCurrent = true;
-            select.hidden = true;
+            setRedrawing(false);
         }
     }
     function compose() {
@@ -227,14 +236,14 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         const text = document.createElement('textarea');
         text.className = 'wm-annotation-textarea';
         text.rows = 3;
-        text.setAttribute('aria-label', options.thread ? 'Replacement region' : 'Comment');
+        text.setAttribute('aria-label', redrawing ? 'Replacement region' : 'Comment');
         text.placeholder = 'Comment on this region';
-        text.required = !options.thread;
+        text.required = !redrawing;
         const error = document.createElement('div');
         error.setAttribute('role', 'status');
         const save = document.createElement('button');
         save.type = 'submit';
-        save.textContent = options.thread ? 'Save selection' : 'Comment';
+        save.textContent = redrawing ? 'Save selection' : 'Comment';
         save.className = 'wm-button wm-button-primary';
         const discard = document.createElement('button');
         discard.type = 'button';
@@ -244,7 +253,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         const actions = document.createElement('div');
         actions.className = 'wm-annotation-actions';
         actions.append(discard, save);
-        if (!options.thread)
+        if (!redrawing)
             form.append(text);
         form.append(error, actions);
         dialog.append(form);
@@ -268,7 +277,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
                 save.disabled = discard.disabled = false;
             }
         };
-        if (options.thread)
+        if (redrawing)
             form.requestSubmit();
         else
             text.focus();
@@ -318,7 +327,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         paint();
     });
     select.onclick = () => void begin();
-    dialog.addEventListener("wm-redraw", () => void begin());
+    dialog.addEventListener("wm-redraw", () => { if (options.thread) setRedrawing(true); void begin(); });
     dialog.addEventListener('cancel', e => {
         if (active || composer || saving) {
             e.preventDefault();
@@ -357,9 +366,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
             if (current) {
                 paint();
             }
-            select.hidden = current;
-            select.textContent = 'Redraw selection';
-            select.setAttribute('aria-label', 'Redraw selection');
+            setRedrawing(!current);
         }
         if (options.startSelecting || (options.redraw && !savedCurrent))
             void begin();
