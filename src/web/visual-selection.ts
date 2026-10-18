@@ -1,6 +1,6 @@
 import type { AnnotationThread, AnnotationUiController } from './annotations-ui';
 import { iconSvg } from './icons';
-import { regionLayer, visualMatches } from './visual-regions';
+import { regionLayer, visualMatches, elementRegion, elementTarget, coveredTargets } from './visual-regions';
 import { captureVisual } from './visual-capture';
 import { validateRegion, type Region } from '../core/visual-anchor';
 import type { AnnotationAnchor } from '../core/annotation-ledger';
@@ -21,6 +21,8 @@ export type VisualSelectionOptions = {
     isThreadVisible?: () => boolean;
     regions?: () => {threadId: string; anchor: AnnotationAnchor; label: string; open: () => void}[];
 };
+/** Mermaid and Pele groups that make sense to comment on as a whole. */
+const SNAP_TARGETS = '.pele-node, .pele-edge-label, .pele-cluster-label, .pele-cluster, g.node, g.edgeLabel, g.cluster, .actor, .messageText, .note, .task, [data-id]';
 /** The pointer loop only maps coordinates and paints an SVG rectangle. */
 export function installVisualSelection(dialog: HTMLDialogElement, controls: HTMLElement, stage: HTMLElement, source: SVGSVGElement | HTMLImageElement, options: VisualSelectionOptions) {
     const threadPanel = document.createElement('div');
@@ -83,6 +85,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         y: number;
     } | null = null, pointer: number | null = null, region: Region | null = null, frame = 0, composer: HTMLElement | null = null, saving = false;
     let savedCurrent = false;
+    let snapped: string | undefined;
     let capture: Awaited<ReturnType<typeof captureVisual>> | undefined, anchor: AnnotationAnchor | undefined;
     function align() {
         const b = source.getBoundingClientRect(), s = stage.getBoundingClientRect();
@@ -109,7 +112,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         select.setAttribute('aria-pressed', String(value));
         overlay.style.pointerEvents = value ? 'auto' : 'none';
         overlay.style.cursor = value ? 'crosshair' : '';
-        status.textContent = value ? 'select a region, or [esc] to cancel' : '';
+        status.textContent = value ? (source instanceof SVGSVGElement ? 'tap an element or draw a region, [esc] to cancel' : 'select a region, or [esc] to cancel') : '';
         paint();
     }
     function cancel() {
@@ -161,9 +164,32 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         const b = source.getBoundingClientRect();
         return { x: Math.max(0, Math.min(1, (event.clientX - b.left) / b.width)), y: Math.max(0, Math.min(1, (event.clientY - b.top) / b.height)) };
     };
+    /** A tap on a diagram element selects its box; drawing remains available everywhere. */
+    function snapRegion(e: PointerEvent): Region | null {
+        snapped = undefined;
+        if (!(source instanceof SVGSVGElement))
+            return null;
+        const element = document.elementsFromPoint(e.clientX, e.clientY).find(el => el !== source && source.contains(el))?.closest(SNAP_TARGETS);
+        if (!element || !source.contains(element))
+            return null;
+        const box = elementRegion(source, element);
+        if (box)
+            snapped = elementTarget(element);
+        return box;
+    }
+    function hover(e: PointerEvent) {
+        if (!active || start || saving || e.pointerType === 'touch')
+            return;
+        region = snapRegion(e);
+        rect.classList.toggle('is-candidate', Boolean(region));
+        if (!frame)
+            frame = requestAnimationFrame(paint);
+    }
     function move(e: PointerEvent) {
         if (!start || e.pointerId !== pointer)
-            return;
+            return hover(e);
+        rect.classList.remove('is-candidate');
+        snapped = undefined;
         const p = point(e);
         region = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), width: Math.abs(start.x - p.x), height: Math.abs(start.y - p.y) };
         if (!frame)
@@ -176,7 +202,9 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         const latest = await captureVisual(source);
         if (latest.layoutRevision !== capture.layoutRevision)
             throw Error('The visual changed. Cancel and select a new region.');
-        const nextAnchor = { ...anchor, visual: { ...anchor.visual!, width: capture.width, height: capture.height, evidence: capture.evidence, layoutRevision: capture.layoutRevision, ...(capture.viewBox ? { viewBox: capture.viewBox } : {}), region: validateRegion(region) } };
+        const { targets: _previous, ...visual } = anchor.visual!;
+        const targets = snapped ? [snapped] : source instanceof SVGSVGElement ? coveredTargets(source, region) : undefined;
+        const nextAnchor = { ...anchor, visual: { ...visual, width: capture.width, height: capture.height, evidence: capture.evidence, layoutRevision: capture.layoutRevision, ...(capture.viewBox ? { viewBox: capture.viewBox } : {}), region: validateRegion(region), ...(targets ? { targets } : {}) } };
         await options.save(nextAnchor, capture.png, body, operationId);
         if (options.thread) {
             options.thread = { ...options.thread, anchor: nextAnchor };
@@ -247,10 +275,22 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         region = null;
     });
     overlay.addEventListener('pointermove', move);
+    overlay.addEventListener('pointerleave', () => {
+        if (start || !rect.classList.contains('is-candidate'))
+            return;
+        rect.classList.remove('is-candidate');
+        region = null;
+        paint();
+    });
     overlay.addEventListener('pointerup', e => {
         if (!start || e.pointerId !== pointer)
             return;
-        move(e);
+        const tap = region === null || (region.width * overlay.getBoundingClientRect().width < 6 && region.height * overlay.getBoundingClientRect().height < 6);
+        if (tap)
+            region = snapRegion(e);
+        else
+            move(e);
+        rect.classList.remove('is-candidate');
         start = null;
         overlay.releasePointerCapture(e.pointerId);
         pointer = null;

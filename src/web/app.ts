@@ -9,7 +9,8 @@ import { headingAnchors } from './heading-anchors';
 import { configureFootnotes, footnoteIcon, footnoteOrdering } from "./footnotes";
 import { pollPreferences } from "./preferences-poll";
 import { loadImageDisplayUrl, clearImageDisplayCache } from "./image-url";
-import { renderMermaidPreview } from "./mermaid-preview";
+import { renderMermaidPreview, setDiagramRenderer } from "./mermaid-preview";
+import { installDiagramTrace } from "./diagram-trace";
 import { installReaderFind } from "./reader-find";
 import { installMenuMotion } from "./motion";
 import { createRailResize } from "./rail-resize";
@@ -490,6 +491,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     document.title = filenameStem(currentPath);
     const prepared = prepareMarkdown(documentResponse.body);
     currentFrontmatter = prepared.frontmatter;
+    setDiagramRenderer(currentFrontmatter);
     let insertItems: import("./selection-ui").InsertMenuItem[] = [];
     const nextSelectionUi = createSelectionUi({
       insertItems: () => insertItems,
@@ -756,6 +758,7 @@ async function start(): Promise<void> {
   fileActions.update(revealAvailable, readOnly, bootstrap.directoryPicker === true);
   stopFind?.();
   stopFind = bootstrap.capabilities?.pageFind ? installReaderFind(getEditorView) : undefined;
+  installDiagramTrace();
   initializing = true;
   editorRoot.inert = true;
   annotationsRoot.inert = true;

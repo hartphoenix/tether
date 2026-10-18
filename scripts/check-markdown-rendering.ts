@@ -8,7 +8,8 @@ const root = await mkdtemp('/tmp/tether-render-browser-');
 const web = await createWebBundleResponder();
 await mkdir(join(root,'docs'));
 await writeFile(join(root,'docs','favicon.png'),await readFile(new URL('../src/web/favicon.png',import.meta.url)));
-const source = '# Checks\n\nSelect these words.\n\n![Favicon](favicon.png)\n\nNote[^calibration].\n\n```mermaid\nflowchart LR\n A[Start] --> B[Finish]\n```\n\n```mermaid\nnot a diagram\n```\n\n[^calibration]: calibration belongs in this note.\n';
+// Mermaid-specific label, ID and theme checks; Pele is covered by compare-diagram-renderers.ts.
+const source = '---\ndiagrams: mermaid\n---\n# Checks\n\nSelect these words.\n\n![Favicon](favicon.png)\n\nNote[^calibration].\n\n```mermaid\nflowchart LR\n A[Start] --> B[Finish]\n```\n\n```mermaid\nnot a diagram\n```\n\n[^calibration]: calibration belongs in this note.\n';
 
 const daemon = createDaemon({config: resolveConfig({runtimeDir:join(root,'runtime'),configDir:join(root,'config')}),web});
 try {

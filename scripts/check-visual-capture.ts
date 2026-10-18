@@ -171,12 +171,12 @@ try {
             await page.waitForSelector('.wm-mermaid svg');
             await page.locator('.wm-visual-fallback').first().click();
             await redraw.click();
-            await page.waitForFunction(() => document.querySelector('.wm-visual-status')?.textContent === 'select a region, or [esc] to cancel');
+            await page.waitForFunction(() => document.querySelector('.wm-visual-status')?.textContent === 'tap an element or draw a region, [esc] to cancel');
             await page.keyboard.press('Escape');
             if (!await reopened.isVisible())
                 throw Error('Escape closed viewer before cancelling selection');
             await redraw.click();
-            await page.waitForFunction(() => document.querySelector('.wm-visual-status')?.textContent === 'select a region, or [esc] to cancel');
+            await page.waitForFunction(() => document.querySelector('.wm-visual-status')?.textContent === 'tap an element or draw a region, [esc] to cancel');
             const rb = await reopened.locator('.wm-region-overlay').boundingBox();
             if (!rb)
                 throw Error('Missing redraw overlay');

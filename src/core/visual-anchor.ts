@@ -1,5 +1,5 @@
 /** Host-independent visual coordinates and resource boundaries. */
-export const VISUAL_LIMITS = { dimension: 4096, pixels: 8000000, bytes: 8 * 1024 * 1024, overview: 1200, regions: 12, svgBytes: 16 * 1024 * 1024, svgElements: 10000 } as const;
+export const VISUAL_LIMITS = { dimension: 4096, pixels: 8000000, bytes: 8 * 1024 * 1024, overview: 1200, regions: 12, svgBytes: 16 * 1024 * 1024, svgElements: 10000, targets: 32 } as const;
 export type Region = {
     x: number;
     y: number;
@@ -23,6 +23,8 @@ export type VisualAnchor = {
         height: number;
     };
     region: Region;
+    /** Diagram elements the region covers, as `<pele class>:<data-id>`; they survive relayout. */
+    targets?: string[];
 };
 export function validateRegion(value: Region): Region {
     if (!value || ![value.x, value.y, value.width, value.height].every(Number.isFinite)
@@ -39,11 +41,17 @@ export function validateVisual(value: VisualAnchor): VisualAnchor {
         throw new Error("Unsupported or invalid visual anchor.");
     if (value.sourceRevision !== undefined && !/^sha256:[a-f0-9]{64}$/.test(value.sourceRevision))
         throw new Error("Invalid source revision.");
+    // Demo anchors saved a single `target` before multi-element regions.
+    const legacy = (value as { target?: unknown }).target;
+    const targets = value.targets ?? (legacy === undefined ? undefined : [legacy]);
+    if (targets !== undefined && (!Array.isArray(targets) || !targets.length || targets.length > VISUAL_LIMITS.targets
+        || !targets.every(t => typeof t === "string" && /^[a-z][a-z-]*:.{1,512}$/s.test(t))))
+        throw new Error("Invalid visual targets.");
     validateDimensions(value.width, value.height);
     const b = value.viewBox;
     if (b && (![b.x, b.y, b.width, b.height].every(Number.isFinite) || b.width <= 0 || b.height <= 0))
         throw new Error("Invalid SVG viewBox.");
-    return { version: 1, kind: value.kind, source: value.source, occurrences: value.occurrences, ...(value.sourceRevision ? { sourceRevision: value.sourceRevision } : {}), layoutRevision: value.layoutRevision, evidence: value.evidence, width: value.width, height: value.height, ...(b ? { viewBox: { ...b } } : {}), region: validateRegion(value.region) };
+    return { version: 1, kind: value.kind, source: value.source, occurrences: value.occurrences, ...(value.sourceRevision ? { sourceRevision: value.sourceRevision } : {}), layoutRevision: value.layoutRevision, evidence: value.evidence, width: value.width, height: value.height, ...(b ? { viewBox: { ...b } } : {}), region: validateRegion(value.region), ...(targets ? { targets: [...targets] as string[] } : {}) };
 }
 export function validateDimensions(width: number, height: number): void {
     if (![width, height].every(n => Number.isSafeInteger(n) && n > 0 && n <= VISUAL_LIMITS.dimension) || width * height > VISUAL_LIMITS.pixels)
