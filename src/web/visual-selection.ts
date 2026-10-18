@@ -23,6 +23,7 @@ export type VisualSelectionOptions = {
 };
 /** Mermaid and Pele groups that make sense to comment on as a whole. */
 const SNAP_TARGETS = '.pele-node, .pele-edge-label, .pele-cluster-label, .pele-cluster, g.node, g.edgeLabel, g.cluster, .actor, .messageText, .note, .task, [data-id]';
+const SNAP_MARKS = 'rect, circle, ellipse, polygon';
 /** The pointer loop only maps coordinates and paints an SVG rectangle. */
 export function installVisualSelection(dialog: HTMLDialogElement, controls: HTMLElement, stage: HTMLElement, source: SVGSVGElement | HTMLImageElement, options: VisualSelectionOptions) {
     const threadPanel = document.createElement('div');
@@ -169,10 +170,16 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         snapped = undefined;
         if (!(source instanceof SVGSVGElement))
             return null;
-        const element = document.elementsFromPoint(e.clientX, e.clientY).find(el => el !== source && source.contains(el))?.closest(SNAP_TARGETS);
-        if (!element || !source.contains(element))
+        const hit = document.elementsFromPoint(e.clientX, e.clientY).find(el => el !== source && source.contains(el));
+        const named = hit?.closest(SNAP_TARGETS);
+        // Charts without element groups (bars, dots, labels) snap to the tapped mark itself.
+        const element = named && source.contains(named) ? named : hit?.closest('text') ?? (hit?.matches(SNAP_MARKS) ? hit : null);
+        if (!element)
             return null;
         const box = elementRegion(source, element);
+        // Backgrounds and plot areas are not marks.
+        if (!named && box && box.width * box.height > .25)
+            return null;
         if (box)
             snapped = elementTarget(element);
         return box;

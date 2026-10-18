@@ -88,12 +88,14 @@ export function regionLayer(source: SVGSVGElement | HTMLImageElement, parent: HT
     const align = () => {
         const b = source.getBoundingClientRect(), p = parent.getBoundingClientRect();
         if (!b.width || !b.height) return;
-        Object.assign(layer.style, { left: `${b.left - p.left + parent.scrollLeft}px`, top: `${b.top - p.top + parent.scrollTop}px`, width: `${b.width}px`, height: `${b.height}px` });
+        // Document zoom scales the parent with a transform; convert screen pixels to its local pixels.
+        const k = parent.offsetWidth ? p.width / parent.offsetWidth : 1;
+        Object.assign(layer.style, { left: `${(b.left - p.left) / k + parent.scrollLeft}px`, top: `${(b.top - p.top) / k + parent.scrollTop}px`, width: `${b.width / k}px`, height: `${b.height / k}px` });
         const placed: DOMRect[] = [];
         for (const badge of layer.querySelectorAll<HTMLElement>('.wm-visual-badge')) {
             badge.style.transform = '';
             let rect = badge.getBoundingClientRect(), offset = 0;
-            const step = rect.width + 3;
+            const step = (rect.width + 3) / k;
             while (offset > -entries.length * step && placed.some(other => rect.left < other.right + 3 && rect.right + 3 > other.left && rect.top < other.bottom + 3 && rect.bottom + 3 > other.top)) {
                 offset -= step;
                 badge.style.transform = `translateX(${offset}px)`;
