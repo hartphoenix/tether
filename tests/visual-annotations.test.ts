@@ -24,6 +24,10 @@ test('diagram element targets survive validation and reject malformed names', ()
     expect(validateVisual({ ...anchor().visual, targets: ['pele-node:Write draft', 'pele-edge:L_A_B_0'] }).targets).toEqual(['pele-node:Write draft', 'pele-edge:L_A_B_0']);
     expect(validateVisual({ ...anchor().visual, target: 'pele-node:C' } as never).targets).toEqual(['pele-node:C']);
     expect(validateVisual(anchor().visual).targets).toBeUndefined();
+    const box = { x: .2, y: .2, width: .1, height: .1 };
+    expect(validateVisual({ ...anchor().visual, targets: ['pele-point:A'], targetBox: box }).targetBox).toEqual(box);
+    expect(validateVisual({ ...anchor().visual, targetBox: box }).targetBox).toBeUndefined();
+    expect(() => validateVisual({ ...anchor().visual, targets: ['pele-point:A'], targetBox: { ...box, width: 2 } })).toThrow();
     for (const targets of [[], [''], ['node'], [':A'], ['Pele-node:A'], ['pele-node:' + 'x'.repeat(513)], Array(33).fill('pele-node:A')])
         expect(() => validateVisual({ ...anchor().visual, targets })).toThrow();
 });

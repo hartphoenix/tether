@@ -1,6 +1,6 @@
 import type { AnnotationThread, AnnotationUiController } from './annotations-ui';
 import { iconSvg } from './icons';
-import { regionLayer, visualMatches, elementRegion, elementTarget, coveredTargets } from './visual-regions';
+import { regionLayer, visualMatches, elementRegion, elementTarget, coveredTargets, targetsRegion } from './visual-regions';
 import { captureVisual } from './visual-capture';
 import { validateRegion, type Region } from '../core/visual-anchor';
 import type { AnnotationAnchor } from '../core/annotation-ledger';
@@ -209,9 +209,10 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         const latest = await captureVisual(source);
         if (latest.layoutRevision !== capture.layoutRevision)
             throw Error('The visual changed. Cancel and select a new region.');
-        const { targets: _previous, ...visual } = anchor.visual!;
+        const { targets: _previous, targetBox: _previousBox, ...visual } = anchor.visual!;
         const targets = snapped ? [snapped] : source instanceof SVGSVGElement ? coveredTargets(source, region) : undefined;
-        const nextAnchor = { ...anchor, visual: { ...visual, width: capture.width, height: capture.height, evidence: capture.evidence, layoutRevision: capture.layoutRevision, ...(capture.viewBox ? { viewBox: capture.viewBox } : {}), region: validateRegion(region), ...(targets ? { targets } : {}) } };
+        const drawnBox = !snapped && targets && source instanceof SVGSVGElement ? targetsRegion(source, targets) ?? undefined : undefined;
+        const nextAnchor = { ...anchor, visual: { ...visual, width: capture.width, height: capture.height, evidence: capture.evidence, layoutRevision: capture.layoutRevision, ...(capture.viewBox ? { viewBox: capture.viewBox } : {}), region: validateRegion(region), ...(targets ? { targets } : {}), ...(drawnBox ? { targetBox: drawnBox } : {}) } };
         await options.save(nextAnchor, capture.png, body, operationId);
         if (options.thread) {
             options.thread = { ...options.thread, anchor: nextAnchor };

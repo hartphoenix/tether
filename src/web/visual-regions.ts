@@ -28,7 +28,7 @@ function targetRegion(source: SVGSVGElement, target: string): Region | null {
     return element ? elementRegion(source, element) : null;
 }
 /** The box around every target still present in the current layout. */
-function targetsRegion(source: SVGSVGElement, targets: string[]): Region | null {
+export function targetsRegion(source: SVGSVGElement, targets: string[]): Region | null {
     const boxes = targets.map(t => targetRegion(source, t)).filter((r): r is Region => r !== null);
     if (!boxes.length) return null;
     const x = Math.min(...boxes.map(r => r.x)), y = Math.min(...boxes.map(r => r.y));
@@ -42,7 +42,7 @@ export function coveredTargets(source: SVGSVGElement, region: Region): string[] 
         if (!target || !box) continue;
         const w = Math.max(0, Math.min(box.x + box.width, region.x + region.width) - Math.max(box.x, region.x));
         const h = Math.max(0, Math.min(box.y + box.height, region.y + region.height) - Math.max(box.y, region.y));
-        if (w * h >= .6 * box.width * box.height && !found.includes(target)) found.push(target);
+        if (w * h >= .75 * box.width * box.height && !found.includes(target)) found.push(target);
     }
     return found.length && found.length <= VISUAL_LIMITS.targets ? found : undefined;
 }
@@ -50,7 +50,18 @@ export function coveredTargets(source: SVGSVGElement, region: Region): string[] 
 export function currentRegion(source: SVGSVGElement | HTMLImageElement, anchor: AnnotationAnchor): Region {
     const saved = anchor.visual!;
     if (!(source instanceof SVGSVGElement) || !saved.targets || sameLayout(source, saved)) return saved.region;
-    return targetsRegion(source, saved.targets) ?? saved.region;
+    const now = targetsRegion(source, saved.targets);
+    if (!now || !saved.targetBox || !saved.viewBox) return now ?? saved.region;
+    // Drawn regions keep their shape: same offset from their targets, scaled with the diagram.
+    const before = saved.viewBox, after = source.viewBox.baseVal, scale = after.width / before.width;
+    const center = (r: Region, w: number, h: number) => ({ x: (r.x + r.width / 2) * w, y: (r.y + r.height / 2) * h });
+    const was = center(saved.targetBox, before.width, before.height), is = center(now, after.width, after.height), drawn = center(saved.region, before.width, before.height);
+    const width = saved.region.width * before.width * scale, height = saved.region.height * before.height * scale;
+    const x = is.x + (drawn.x - was.x) * scale - width / 2, y = is.y + (drawn.y - was.y) * scale - height / 2;
+    // Also cover the targets wherever relayout put them (a row that became a column).
+    const x0 = Math.max(0, Math.min(x / after.width, now.x)), y0 = Math.max(0, Math.min(y / after.height, now.y));
+    const x1 = Math.min(1, Math.max((x + width) / after.width, now.x + now.width)), y1 = Math.min(1, Math.max((y + height) / after.height, now.y + now.height));
+    return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
 }
 export async function visualMatches(source: SVGSVGElement | HTMLImageElement, anchor: AnnotationAnchor, currentSource?: string): Promise<boolean> {
     const saved = anchor.visual!;
