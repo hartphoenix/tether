@@ -1,6 +1,6 @@
 # Diagram renderer comparison
 
-The same Mermaid source renders in both readers. The only difference between the two files is the `diagrams: pele` frontmatter.
+The same Mermaid source renders in both readers. The only difference between the two files is the `diagrams: mermaid` frontmatter in the Mermaid file.
 
 ## Review loop
 

@@ -1,10 +1,10 @@
 import { renderPelePreview } from "./pele-preview";
 type ApplyPreview = (value: string | HTMLElement | null) => void;
 export type DiagramRenderer = "mermaid" | "pele";
-let renderer: DiagramRenderer = "mermaid";
-/** A document opts into an experimental renderer with `diagrams: pele` in its frontmatter. */
+let renderer: DiagramRenderer = "pele";
+/** Pele renders by default; `diagrams: mermaid` in a document's frontmatter selects Mermaid. */
 export function setDiagramRenderer(frontmatter: string): void {
-  renderer = /^diagrams:\s*pele\s*$/m.test(frontmatter) ? "pele" : "mermaid";
+  renderer = /^diagrams:\s*mermaid\s*$/m.test(frontmatter) ? "mermaid" : "pele";
 }
 let library: Promise<typeof import("mermaid")> | undefined;
 let queue: Promise<unknown> = Promise.resolve();

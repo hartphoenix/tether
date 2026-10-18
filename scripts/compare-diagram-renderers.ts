@@ -27,7 +27,7 @@ const scratch = await mkdtemp(join(tmpdir(), "tether-diagrams-"));
 const config = resolveConfig({ profile: "test", configDir: join(scratch, "config"), runtimeDir: join(scratch, "runtime") });
 const daemon = createDaemon({ config, web: await createWebBundleResponder(), opener: async () => {} });
 const docs = { mermaid: join(scratch, "mermaid.md"), pele: join(scratch, "pele.md") };
-await writeFile(docs.mermaid, samples);
+await writeFile(docs.mermaid, "---\ndiagrams: mermaid\n---\n" + samples);
 await writeFile(docs.pele, "---\ndiagrams: pele\n---\n" + samples);
 
 type DiagramMetric = { title: string; type: string; ok: boolean; bytes: number; elements: number; width: number; height: number; shown: number; labelPx: number };
