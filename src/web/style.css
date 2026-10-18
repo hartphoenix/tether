@@ -543,10 +543,12 @@ html[data-wm-scheme="dark"] { --wm-series-l: .74; --wm-series-c: .09; }
 /* Hovering a diagram element while selecting previews the region a tap would choose. */
 .is-selecting-region .wm-region-overlay rect.is-candidate { stroke-dasharray: 4 3; fill: color-mix(in srgb, var(--wm-color-selected, #8dc7e8) 14%, transparent); }
 
-/* Tracing dims what an element does not touch and draws its connections in the accent. */
-.wm-trace :is(.pele-node, .pele-edge, .pele-edge-label, .pele-sankey-node, .pele-sankey-link, .pele-slice, .pele-legend-item, .pele-task, .pele-point, .pele-commit, .pele-lifeline):not(.is-traced, .is-neighbor) { opacity: .28; }
-.wm-pele svg :is(.pele-node, .pele-edge, .pele-edge-label, .pele-sankey-link, .pele-slice, .pele-task, .pele-point) { transition: opacity 120ms ease; }
+/* Tracing dims what an element does not touch and draws its connections in the accent.
+   Opacity and stroke transitions repaint only the small diagram SVG. */
+svg.pele .is-dimmed { opacity: .28; }
+svg.pele :is(.pele-node, .pele-edge, .pele-edge-label, .pele-sankey-node, .pele-sankey-link, .pele-slice, .pele-legend-item, .pele-task, .pele-point, .pele-commit, .pele-lifeline, .pele-cluster) { transition: opacity 200ms ease; }
+svg.pele :is(.pele-edge path, path.pele-edge, .pele-marker, .pele-node > :first-child) { transition: stroke 200ms ease, stroke-width 200ms ease, fill 200ms ease; }
 .wm-trace .pele-edge.is-traced { --_l: var(--wm-color-primary); }
-.wm-trace .pele-edge.is-traced path:not(.pele-marker) { stroke: var(--wm-color-primary); stroke-width: 2px; }
+.wm-trace :is(.pele-edge.is-traced path:not(.pele-marker), path.pele-edge.is-traced) { stroke: var(--wm-color-primary); stroke-width: 2px; }
 .wm-trace .pele-node.is-traced > :first-child { stroke: var(--wm-color-primary); stroke-width: 2px; }
-@media (prefers-reduced-motion: reduce) { .wm-pele svg * { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { svg.pele * { transition: none !important; } }

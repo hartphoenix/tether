@@ -22,8 +22,8 @@ export async function captureSvg(source: SVGSVGElement): Promise<string> {
 }
 async function captureUntraced(source: SVGSVGElement): Promise<string> {
     const clone = source.cloneNode(true) as SVGSVGElement;
-    for (const el of clone.querySelectorAll('.is-traced, .is-neighbor'))
-        el.classList.remove('is-traced', 'is-neighbor');
+    for (const el of clone.querySelectorAll('.is-traced, .is-neighbor, .is-dimmed'))
+        el.classList.remove('is-traced', 'is-neighbor', 'is-dimmed');
     const originals = [source, ...source.querySelectorAll('*')];
     const copies = [clone, ...clone.querySelectorAll('*')];
     const ids = new Map<string, string>();
