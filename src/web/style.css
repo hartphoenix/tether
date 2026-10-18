@@ -536,6 +536,8 @@ html[data-wm-scheme="dark"] { --wm-series-l: .74; --wm-series-c: .09; }
 .wm-diagram-viewer .wm-diagram-controls { grid-column: 1 / -1; }
 .wm-diagram-viewer .wm-diagram-viewport { grid-column: 1; grid-row: 2; min-height: 0; }
 .wm-visual-drawer { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; overflow: hidden; }
+/* A new comment's composer takes the drawer's column until it is saved or cancelled. */
+.wm-diagram-viewer:has(.wm-region-composer) .wm-visual-drawer { display: none; }
 .wm-visual-drawer .wm-annotation-rail { position: relative; inset: auto; width: min(360px, 40vw); min-width: 0; height: 100%; max-height: 100%; box-sizing: border-box; }
 .wm-visual-drawer .wm-annotation-rail-header { display: flex; justify-content: flex-end; }
 @media (prefers-reduced-motion: reduce) { .wm-diagram-viewer[open] { transition: none; } }
