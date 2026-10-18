@@ -6,7 +6,7 @@ import { DocumentService } from '../src/documents/document-service';
 import { PrivateStore } from '../src/storage/private-store';
 import { bodyRevision, createAnchor, resolveAnchor } from '../src/core/annotation-ledger';
 import { encodePng, decodePng, renderEvidence } from '../src/documents/visual-png';
-import { validateRegion } from '../src/core/visual-anchor';
+import { validateRegion, validateVisual } from '../src/core/visual-anchor';
 import { AgentReads } from '../src/documents/agent-reads';
 const png = encodePng({ width: 30, height: 20, data: new Uint8Array(30 * 20 * 4).fill(255) });
 const hash = 'sha256:' + createHash('sha256').update(png).digest('hex');
@@ -19,6 +19,12 @@ function anchor() {
 test('visual rectangles reject non-finite, empty and out of bounds geometry', () => {
     for (const r of [{ x: NaN, y: 0, width: 1, height: 1 }, { x: 0, y: 0, width: 0, height: 1 }, { x: .8, y: 0, width: .3, height: 1 }])
         expect(() => validateRegion(r)).toThrow();
+});
+test('snapped diagram targets survive validation and reject malformed names', () => {
+    expect(validateVisual({ ...anchor().visual, target: 'pele-node:Write draft' }).target).toBe('pele-node:Write draft');
+    expect(validateVisual(anchor().visual).target).toBeUndefined();
+    for (const target of ['', 'node', ':A', 'Pele-node:A', 'pele-node:' + 'x'.repeat(513)])
+        expect(() => validateVisual({ ...anchor().visual, target })).toThrow();
 });
 test('bounded PNG evidence produces readable overview and exact crop dimensions', () => {
     expect(decodePng(png).data.every(n => n === 255)).toBe(true);

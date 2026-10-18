@@ -9,7 +9,21 @@ export async function captureSvg(source: SVGSVGElement): Promise<string> {
         throw new Error("This diagram contains content that cannot be captured directly.");
     if (source.querySelectorAll("*").length > VISUAL_LIMITS.svgElements || source.outerHTML.length > VISUAL_LIMITS.svgBytes)
         throw new Error("Diagram exceeds the SVG capture limit.");
+    // Hover tracing is presentation, not layout; capture the diagram untraced.
+    const traced = source.classList.contains('wm-trace');
+    source.classList.remove('wm-trace');
+    try {
+        return await captureUntraced(source);
+    }
+    finally {
+        if (traced)
+            source.classList.add('wm-trace');
+    }
+}
+async function captureUntraced(source: SVGSVGElement): Promise<string> {
     const clone = source.cloneNode(true) as SVGSVGElement;
+    for (const el of clone.querySelectorAll('.is-traced, .is-neighbor'))
+        el.classList.remove('is-traced', 'is-neighbor');
     const originals = [source, ...source.querySelectorAll('*')];
     const copies = [clone, ...clone.querySelectorAll('*')];
     const ids = new Map<string, string>();
@@ -17,7 +31,7 @@ export async function captureSvg(source: SVGSVGElement): Promise<string> {
         if (el.id)
             ids.set(el.id, `visual-${ids.size}`);
     });
-    const properties = ['fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-dasharray', 'opacity', 'font-family', 'font-size', 'font-weight', 'font-style', 'text-anchor', 'dominant-baseline', 'color'];
+    const properties = ['fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-dasharray', 'stroke-opacity', 'stroke-linecap', 'stroke-linejoin', 'rx', 'ry', 'opacity', 'font-family', 'font-size', 'font-weight', 'font-style', 'text-anchor', 'dominant-baseline', 'color'];
     copies.forEach((el, i) => {
         const style = getComputedStyle(originals[i]!);
         el.removeAttribute('style');

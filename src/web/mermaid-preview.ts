@@ -1,4 +1,11 @@
+import { renderPelePreview } from "./pele-preview";
 type ApplyPreview = (value: string | HTMLElement | null) => void;
+export type DiagramRenderer = "mermaid" | "pele";
+let renderer: DiagramRenderer = "mermaid";
+/** A document opts into an experimental renderer with `diagrams: pele` in its frontmatter. */
+export function setDiagramRenderer(frontmatter: string): void {
+  renderer = /^diagrams:\s*pele\s*$/m.test(frontmatter) ? "pele" : "mermaid";
+}
 let library: Promise<typeof import("mermaid")> | undefined;
 let queue: Promise<unknown> = Promise.resolve();
 let nextId = 0;
@@ -26,8 +33,9 @@ function instantiate(svg: string): string {
 }
 
 /** Crepe retains editable source; only Mermaid blocks trigger the separate renderer download. */
-export function renderMermaidPreview(language: string, source: string, apply: ApplyPreview): string | null | undefined {
+export function renderMermaidPreview(language: string, source: string, apply: ApplyPreview): string | HTMLElement | null | undefined {
   if (language.toLowerCase() !== "mermaid" || !source.trim()) return null;
+  if (renderer === "pele") return renderPelePreview(source, apply);
   const style = getComputedStyle(document.querySelector(".milkdown") ?? document.documentElement);
   const color = (name: string, fallback: string) => style.getPropertyValue(`--wm-color-${name}`).trim() || style.getPropertyValue(`--crepe-color-${name}`).trim() || fallback;
   const fontFamily = style.getPropertyValue("--wm-font-code").trim() || style.getPropertyValue("--crepe-font-code").trim() || "monospace";
