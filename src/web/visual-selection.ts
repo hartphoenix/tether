@@ -1,6 +1,6 @@
 import type { AnnotationThread, AnnotationUiController } from './annotations-ui';
 import { iconSvg } from './icons';
-import { regionLayer, visualMatches, elementRegion, elementTarget } from './visual-regions';
+import { regionLayer, visualMatches, elementRegion, elementTarget, coveredTargets } from './visual-regions';
 import { captureVisual } from './visual-capture';
 import { validateRegion, type Region } from '../core/visual-anchor';
 import type { AnnotationAnchor } from '../core/annotation-ledger';
@@ -85,7 +85,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         y: number;
     } | null = null, pointer: number | null = null, region: Region | null = null, frame = 0, composer: HTMLElement | null = null, saving = false;
     let savedCurrent = false;
-    let target: string | undefined;
+    let snapped: string | undefined;
     let capture: Awaited<ReturnType<typeof captureVisual>> | undefined, anchor: AnnotationAnchor | undefined;
     function align() {
         const b = source.getBoundingClientRect(), s = stage.getBoundingClientRect();
@@ -166,16 +166,16 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
     };
     /** A tap on a diagram element selects its box; drawing remains available everywhere. */
     function snapRegion(e: PointerEvent): Region | null {
-        target = undefined;
+        snapped = undefined;
         if (!(source instanceof SVGSVGElement))
             return null;
         const element = document.elementsFromPoint(e.clientX, e.clientY).find(el => el !== source && source.contains(el))?.closest(SNAP_TARGETS);
         if (!element || !source.contains(element))
             return null;
-        const snapped = elementRegion(source, element);
-        if (snapped)
-            target = elementTarget(element);
-        return snapped;
+        const box = elementRegion(source, element);
+        if (box)
+            snapped = elementTarget(element);
+        return box;
     }
     function hover(e: PointerEvent) {
         if (!active || start || saving || e.pointerType === 'touch')
@@ -189,7 +189,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         if (!start || e.pointerId !== pointer)
             return hover(e);
         rect.classList.remove('is-candidate');
-        target = undefined;
+        snapped = undefined;
         const p = point(e);
         region = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), width: Math.abs(start.x - p.x), height: Math.abs(start.y - p.y) };
         if (!frame)
@@ -202,8 +202,9 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         const latest = await captureVisual(source);
         if (latest.layoutRevision !== capture.layoutRevision)
             throw Error('The visual changed. Cancel and select a new region.');
-        const { target: _previous, ...visual } = anchor.visual!;
-        const nextAnchor = { ...anchor, visual: { ...visual, width: capture.width, height: capture.height, evidence: capture.evidence, layoutRevision: capture.layoutRevision, ...(capture.viewBox ? { viewBox: capture.viewBox } : {}), region: validateRegion(region), ...(target ? { target } : {}) } };
+        const { targets: _previous, ...visual } = anchor.visual!;
+        const targets = snapped ? [snapped] : source instanceof SVGSVGElement ? coveredTargets(source, region) : undefined;
+        const nextAnchor = { ...anchor, visual: { ...visual, width: capture.width, height: capture.height, evidence: capture.evidence, layoutRevision: capture.layoutRevision, ...(capture.viewBox ? { viewBox: capture.viewBox } : {}), region: validateRegion(region), ...(targets ? { targets } : {}) } };
         await options.save(nextAnchor, capture.png, body, operationId);
         if (options.thread) {
             options.thread = { ...options.thread, anchor: nextAnchor };

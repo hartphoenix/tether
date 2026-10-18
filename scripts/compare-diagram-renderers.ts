@@ -147,6 +147,20 @@ try {
       await dialog.locator(".wm-visual-status", { hasText: "Saved" }).waitFor({ timeout: 15000 });
       await dialog.locator(".wm-visual-region").first().waitFor({ timeout: 15000 });
     }
+    if (r === "pele") {
+      // Draw around two nodes: the comment should name both and follow them through relayout.
+      await dialog.locator(".wm-region-select").click();
+      await page.waitForFunction(() => document.querySelector(".wm-region-overlay")?.getAttribute("style")?.includes("pointer-events: auto"));
+      const boxes = await Promise.all(["Write draft", "Comment?"].map(text => dialog.locator("svg .pele-node").filter({ hasText: text }).first().boundingBox()));
+      const [a, b] = boxes as { x: number; y: number; width: number; height: number }[];
+      await page.mouse.move(Math.min(a!.x, b!.x) - 6, Math.min(a!.y, b!.y) - 6);
+      await page.mouse.down();
+      await page.mouse.move(Math.max(a!.x + a!.width, b!.x + b!.width) + 6, Math.max(a!.y + a!.height, b!.y + b!.height) + 6, { steps: 6 });
+      await page.mouse.up();
+      await composer.locator("textarea").fill("Drawn around two nodes");
+      await composer.locator("button[type=submit]").click();
+      await dialog.locator(".wm-visual-status", { hasText: "Saved" }).waitFor({ timeout: 15000 });
+    }
     const region = snapped ? await dialog.locator(".wm-visual-region").first().evaluate(el => (el as HTMLElement).style.cssText) : null;
     const viewBox = await dialog.locator(".wm-diagram-stage > svg").first().getAttribute("viewBox");
     await dialog.screenshot({ path: join(out, `annotation-${r}.png`) });
@@ -160,6 +174,17 @@ try {
     const block = page.locator(".milkdown-code-block").first();
     await block.locator(".wm-mermaid svg").waitFor();
     await page.waitForTimeout(500);
+    if (r === "pele") {
+      const drawn = await daemon.service.read(grants.pele);
+      const threads = drawn.annotations.threads as { anchor: { visual?: { targets?: string[] } } }[];
+      (annotation.pele as Record<string, unknown>).targets = threads.map(t => t.anchor.visual?.targets);
+      (annotation.pele as Record<string, unknown>).drawnAt390 = await block.evaluate(b => {
+        const regions = [...b.querySelectorAll(".wm-visual-regions .wm-visual-region")].map(el => el.getBoundingClientRect());
+        const nodes = ["Write draft", "Comment?"].map(text => [...b.querySelectorAll("svg .pele-node")].find(n => n.textContent?.includes(text))!.getBoundingClientRect());
+        const inside = (n: DOMRect, a: DOMRect) => n.left >= a.left - 1 && n.right <= a.right + 1 && n.top >= a.top - 1 && n.bottom <= a.bottom + 1;
+        return regions.some(a => nodes.every(n => inside(n, a)));
+      });
+    }
     const placed = await block.evaluate(b => {
       const badge = b.querySelector(".wm-visual-regions .wm-visual-region");
       const node = [...b.querySelectorAll("svg :is(.pele-node, g.node)")].find(n => n.textContent?.includes("Write draft"));

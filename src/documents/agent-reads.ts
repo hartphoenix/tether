@@ -340,7 +340,7 @@ export class AgentReads {
         if (!row)
             fail("Annotation thread not found.");
         const anchor = JSON.parse(row.anchor_json) as AnnotationAnchor, projection = markdownProjection(body);
-        if (anchor.visual) return { bodyRevision: revision, threadId, ...visualStatus(anchor,body,revision), visualRevision: anchor.visual.layoutRevision, region: anchor.visual.region, ...(anchor.visual.target ? { target: anchor.visual.target } : {}), retrieval: "visual", maxBytes };
+        if (anchor.visual) return { bodyRevision: revision, threadId, ...visualStatus(anchor,body,revision), visualRevision: anchor.visual.layoutRevision, region: anchor.visual.region, ...(anchor.visual.targets ? { targets: anchor.visual.targets } : {}), retrieval: "visual", maxBytes };
         let start = projection.indexOf(anchor.exact), count = 0, located = -1;
         // Context distinguishes repeated quotes using stored surrounding text when possible.
         while (start >= 0 && anchor.exact) {

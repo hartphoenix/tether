@@ -4,28 +4,60 @@ let library: Promise<typeof import("pele")> | undefined;
 let pele: typeof import("pele") | undefined;
 let nextId = 0;
 const previews = new Map<string, string>();
-/** Lay out for the column, quantized so small resizes keep the same layout. */
-const STEP = 80, MIN_WIDTH = 320;
-let width = 0, observer: ResizeObserver | undefined, observed: Element | undefined;
+/**
+ * Diagrams may grow past the text column on wide screens, up to MAX_WIDTH. Layout width is
+ * quantized so small resizes keep the same geometry, and so the same comment regions.
+ */
+const STEP = 80, MIN_WIDTH = 320, MAX_WIDTH = 1200, GUTTER = 32, BLOCK_PADDING = 32;
+let width = 0, observer: ResizeObserver | undefined, mutations: MutationObserver | undefined, observed: HTMLElement | undefined, frame = 0;
 
-function measureWidth(root: Element): number {
+function columns(root: HTMLElement) {
   const style = getComputedStyle(root);
-  const inner = root.getBoundingClientRect().width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 40;
-  return Math.max(MIN_WIDTH, Math.floor(inner / STEP) * STEP);
+  const column = root.offsetWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  const scene = root.parentElement?.offsetWidth ?? column;
+  return { column, available: Math.max(column, Math.min(MAX_WIDTH, scene - 2 * GUTTER)) };
 }
+function measureWidth(root: HTMLElement): number {
+  return Math.max(MIN_WIDTH, Math.floor((columns(root).available - BLOCK_PADDING - 8) / STEP) * STEP);
+}
+/** Widen a diagram's block to its drawing, centered on the text column. */
+function fitBlocks() {
+  frame = 0;
+  if (!observed?.isConnected) return;
+  const { column, available } = columns(observed);
+  for (const block of observed.querySelectorAll<HTMLElement>(".milkdown-code-block")) {
+    const svg = block.querySelector<SVGSVGElement>(".wm-pele svg");
+    const wide = svg ? Math.min(available, svg.viewBox.baseVal.width + BLOCK_PADDING) : 0;
+    if (wide > column + 1) {
+      block.style.width = `${wide}px`;
+      block.style.marginLeft = `${(column - wide) / 2}px`;
+      block.classList.add("wm-wide-diagram");
+    } else if (block.classList.contains("wm-wide-diagram")) {
+      block.style.removeProperty("width");
+      block.style.removeProperty("margin-left");
+      block.classList.remove("wm-wide-diagram");
+    }
+  }
+}
+const scheduleFit = () => { frame ||= requestAnimationFrame(fitBlocks); };
 /** Regions anchor to the viewBox, so only a width-bucket change re-renders diagrams. */
-function watchWidth(root: Element) {
+function watchWidth(root: HTMLElement) {
   if (observed === root) return;
-  observer?.disconnect();
+  observer?.disconnect(); mutations?.disconnect();
   observed = root;
   width = measureWidth(root);
   observer = new ResizeObserver(() => {
+    scheduleFit();
     const next = measureWidth(root);
     if (next === width) return;
     width = next;
-    for (const block of document.querySelectorAll('.milkdown-code-block:has(.wm-pele)')) block.dispatchEvent(new Event('milkdown:refresh-preview'));
+    for (const block of root.querySelectorAll('.milkdown-code-block:has(.wm-pele)')) block.dispatchEvent(new Event('milkdown:refresh-preview'));
   });
   observer.observe(root);
+  if (root.parentElement) observer.observe(root.parentElement);
+  // Previews arrive after Crepe sanitizes them, and the viewer borrows the SVG while open.
+  mutations = new MutationObserver(scheduleFit);
+  mutations.observe(root, { childList: true, subtree: true });
 }
 
 function themeOptions(): RenderOptions {
@@ -64,7 +96,7 @@ function failure(error: unknown): HTMLElement {
 
 /** Pele renders synchronously once loaded; only the first diagram waits for the chunk. */
 export function renderPelePreview(source: string, apply: ApplyPreview): string | HTMLElement | undefined {
-  const root = document.querySelector("#editor .ProseMirror") ?? document.documentElement;
+  const root = document.querySelector<HTMLElement>("#editor .ProseMirror") ?? document.documentElement;
   watchWidth(root);
   if (pele) {
     try { return renderNow(source); } catch (error) { return failure(error); }

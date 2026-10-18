@@ -20,11 +20,12 @@ test('visual rectangles reject non-finite, empty and out of bounds geometry', ()
     for (const r of [{ x: NaN, y: 0, width: 1, height: 1 }, { x: 0, y: 0, width: 0, height: 1 }, { x: .8, y: 0, width: .3, height: 1 }])
         expect(() => validateRegion(r)).toThrow();
 });
-test('snapped diagram targets survive validation and reject malformed names', () => {
-    expect(validateVisual({ ...anchor().visual, target: 'pele-node:Write draft' }).target).toBe('pele-node:Write draft');
-    expect(validateVisual(anchor().visual).target).toBeUndefined();
-    for (const target of ['', 'node', ':A', 'Pele-node:A', 'pele-node:' + 'x'.repeat(513)])
-        expect(() => validateVisual({ ...anchor().visual, target })).toThrow();
+test('diagram element targets survive validation and reject malformed names', () => {
+    expect(validateVisual({ ...anchor().visual, targets: ['pele-node:Write draft', 'pele-edge:L_A_B_0'] }).targets).toEqual(['pele-node:Write draft', 'pele-edge:L_A_B_0']);
+    expect(validateVisual({ ...anchor().visual, target: 'pele-node:C' } as never).targets).toEqual(['pele-node:C']);
+    expect(validateVisual(anchor().visual).targets).toBeUndefined();
+    for (const targets of [[], [''], ['node'], [':A'], ['Pele-node:A'], ['pele-node:' + 'x'.repeat(513)], Array(33).fill('pele-node:A')])
+        expect(() => validateVisual({ ...anchor().visual, targets })).toThrow();
 });
 test('bounded PNG evidence produces readable overview and exact crop dimensions', () => {
     expect(decodePng(png).data.every(n => n === 255)).toBe(true);

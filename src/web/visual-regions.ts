@@ -1,6 +1,6 @@
 import type { AnnotationAnchor } from '../core/annotation-ledger';
 import { captureVisual } from './visual-capture';
-import type { Region } from '../core/visual-anchor';
+import { VISUAL_LIMITS, type Region } from '../core/visual-anchor';
 
 function sameLayout(source: SVGSVGElement, saved: NonNullable<AnnotationAnchor['visual']>): boolean {
     const box = source.viewBox.baseVal;
@@ -27,16 +27,35 @@ function targetRegion(source: SVGSVGElement, target: string): Region | null {
     const element = source.querySelector(`.${CSS.escape(target.slice(0, split))}[data-id="${CSS.escape(target.slice(split + 1))}"]`);
     return element ? elementRegion(source, element) : null;
 }
-/** Where a saved region belongs now: unchanged layouts keep it; snapped elements follow relayout. */
+/** The box around every target still present in the current layout. */
+function targetsRegion(source: SVGSVGElement, targets: string[]): Region | null {
+    const boxes = targets.map(t => targetRegion(source, t)).filter((r): r is Region => r !== null);
+    if (!boxes.length) return null;
+    const x = Math.min(...boxes.map(r => r.x)), y = Math.min(...boxes.map(r => r.y));
+    return { x, y, width: Math.max(...boxes.map(r => r.x + r.width)) - x, height: Math.max(...boxes.map(r => r.y + r.height)) - y };
+}
+/** Elements whose boxes lie mostly inside a drawn region: what the reader meant to select. */
+export function coveredTargets(source: SVGSVGElement, region: Region): string[] | undefined {
+    const found: string[] = [];
+    for (const element of source.querySelectorAll('[data-id]')) {
+        const target = elementTarget(element), box = target ? elementRegion(source, element) : null;
+        if (!target || !box) continue;
+        const w = Math.max(0, Math.min(box.x + box.width, region.x + region.width) - Math.max(box.x, region.x));
+        const h = Math.max(0, Math.min(box.y + box.height, region.y + region.height) - Math.max(box.y, region.y));
+        if (w * h >= .6 * box.width * box.height && !found.includes(target)) found.push(target);
+    }
+    return found.length && found.length <= VISUAL_LIMITS.targets ? found : undefined;
+}
+/** Where a saved region belongs now: unchanged layouts keep it; targeted elements follow relayout. */
 export function currentRegion(source: SVGSVGElement | HTMLImageElement, anchor: AnnotationAnchor): Region {
     const saved = anchor.visual!;
-    if (!(source instanceof SVGSVGElement) || !saved.target || sameLayout(source, saved)) return saved.region;
-    return targetRegion(source, saved.target) ?? saved.region;
+    if (!(source instanceof SVGSVGElement) || !saved.targets || sameLayout(source, saved)) return saved.region;
+    return targetsRegion(source, saved.targets) ?? saved.region;
 }
 export async function visualMatches(source: SVGSVGElement | HTMLImageElement, anchor: AnnotationAnchor, currentSource?: string): Promise<boolean> {
     const saved = anchor.visual!;
     if (currentSource !== undefined && saved.source !== currentSource) return false;
-    if (source instanceof SVGSVGElement) return sameLayout(source, saved) || (!!saved.target && targetRegion(source, saved.target) !== null);
+    if (source instanceof SVGSVGElement) return sameLayout(source, saved) || (!!saved.targets && targetsRegion(source, saved.targets) !== null);
     if (saved.sourceRevision) {
         const response = await fetch(`api/visual-source?src=${encodeURIComponent(saved.source)}`);
         if (response.ok) {
