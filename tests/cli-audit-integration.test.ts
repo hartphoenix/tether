@@ -25,16 +25,16 @@ async function fixture() {
 test("CLI quote candidates, editing, bounded reads and moving preserve one conversation", async () => {
   const f = await fixture(); const candidates = await f.cli(["quote-candidates", f.path, "--quote", "repeated phrase"]);
   expect(candidates.candidates).toHaveLength(2);
-  const comment = await f.cli(["comment", f.path, "--actor", "assistant", "--quote", "repeated phrase", "--candidate-id", candidates.candidates[1].candidateId, "--expected-body-revision", candidates.bodyRevision, "--operation-id", "comment", "--body-file", "-"]);
+  const comment = await f.cli(["comment", f.path, "--actor", "assistant", "--agent-id", "assistant", "--quote", "repeated phrase", "--candidate-id", candidates.candidates[1].candidateId, "--expected-body-revision", candidates.bodyRevision, "--operation-id", "comment", "--body-file", "-"]);
   const threadId = comment.mutation.appliedEventId;
   expect((await f.cli(["event", f.path, threadId])).event.id).toBe(threadId);
-  const reply = await f.cli(["reply", f.path, threadId, "--actor", "assistant", "--operation-id", "reply", "--body-file", "-"]);
-  await f.cli(["edit", f.path, threadId, reply.mutation.appliedEventId, "--actor", "assistant", "--operation-id", "edit", "--expected-thread-sequence", "2", "--body-file", "-"], "Edited reply");
+  const reply = await f.cli(["reply", f.path, threadId, "--actor", "assistant", "--agent-id", "assistant", "--operation-id", "reply", "--body-file", "-"]);
+  await f.cli(["edit", f.path, threadId, reply.mutation.appliedEventId, "--actor", "assistant", "--agent-id", "assistant", "--operation-id", "edit", "--expected-thread-sequence", "2", "--body-file", "-"], "Edited reply");
   const page = await f.cli(["thread", f.path, threadId, "--limit", "1", "--max-bytes", "2048"]);
   expect(page.messages).toHaveLength(1); expect(page.continuation).toBeTruthy();
   const next = await f.cli(["thread", f.path, threadId, "--limit", "1", "--continuation", page.continuation]);
   expect(next.messages[0].body).toBe("Edited reply");
-  await f.cli(["delete", f.path, threadId, reply.mutation.appliedEventId, "--actor", "assistant", "--operation-id", "delete", "--expected-thread-sequence", "3"]);
+  await f.cli(["delete", f.path, threadId, reply.mutation.appliedEventId, "--actor", "assistant", "--agent-id", "assistant", "--operation-id", "delete", "--expected-thread-sequence", "3"]);
   expect((await f.cli(["thread", f.path, threadId])).messages).toHaveLength(1);
   expect((await f.cli(["operation", f.path, "--operation-id", "edit"])).outcome).toBe("applied");
   const outline = await f.cli(["document", "outline", f.path]); expect(outline.headings[0].title).toBe("Title");
@@ -49,7 +49,7 @@ test("CLI quote candidates, editing, bounded reads and moving preserve one conve
 });
 
 test("comment preconditions and invalid revision inputs fail before mutation", async () => {
-  const f = await fixture(); const args = ["comment", f.path, "--actor", "assistant", "--quote", "Title", "--body-file", "-", "--operation-id", "stale", "--expected-body-revision", bodyRevision("Old")];
+  const f = await fixture(); const args = ["comment", f.path, "--actor", "assistant", "--agent-id", "assistant", "--quote", "Title", "--body-file", "-", "--operation-id", "stale", "--expected-body-revision", bodyRevision("Old")];
   expect((await runCli(args, { config: f.config, readBody: async () => "Body" })).response).toMatchObject({ ok: false, error: { code: "conflict" } });
   const invalid = await runCli(["document", "diff", f.path, "--from-revision", "x".repeat(8192)], { config: f.config });
   expect(invalid.exitCode).toBe(2);

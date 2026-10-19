@@ -40,7 +40,23 @@ export type CliDependencies = {
   host?: HostAdapter;
   cmuxHost?: CmuxHostAdapter;
   readCmuxBridgeStatus?: (config: TetherConfig) => Promise<CmuxBridgeStatus>;
+  /** Environment for host agent IDs; defaults to process.env. */
+  env?: Record<string, string | undefined>;
 };
+
+type AgentSignature = { agentId: string } | { issueAgentId: true };
+
+/**
+ * The ID an agent signs with: `--agent-id`, then the host's agent ID, then one
+ * the daemon issues and returns for the agent to pass back.
+ */
+export function agentSignature(agentId: string | undefined, env: Record<string, string | undefined> = process.env): AgentSignature {
+  if (agentId) return { agentId };
+  const paseo = env.PASEO_AGENT_ID?.trim(), claude = env.CLAUDE_CODE_SESSION_ID?.trim();
+  if (paseo) return { agentId: `paseo:${paseo}` };
+  if (claude) return { agentId: `claude:${claude}` };
+  return { issueAgentId: true };
+}
 
 function createPaseoHost(config: TetherConfig, connectionPath?: string): PaseoHostAdapter {
   return new PaseoHostAdapter({ enqueue: intent => intent.sharedReader
@@ -121,21 +137,25 @@ async function bodyFile(path: string, dependencies: CliDependencies, limit = 256
   return readBoundedInput(path, limit);
 }
 
-type TurnWaitResult = { turn: { cursor: string; sequence: number; requestedAt: string; path: string; actor: string } } | { turn: null; cursor: string } | { turn: null; stopped: true };
+type IssuedAgent = { agent?: { id: string; issued?: boolean } };
+type TurnWaitResult = IssuedAgent & ({ turn: { cursor: string; sequence: number; requestedAt: string; path: string; agentId: string } } | { turn: null; cursor: string } | { turn: null; stopped: true });
 
 /** Chain bounded daemon long-polls until the human presses this agent's Go or the overall timeout elapses. */
-async function waitForTurn(config: TetherConfig, path: string, actor: string, label: string | undefined, after: string | undefined, timeoutMs: number): Promise<TurnWaitResult> {
+async function waitForTurn(config: TetherConfig, path: string, actor: string, signature: AgentSignature, label: string | undefined, after: string | undefined, timeoutMs: number): Promise<TurnWaitResult> {
   const deadline = Date.now() + timeoutMs;
-  let cursor = after, failures = 0;
+  let cursor = after, failures = 0, note: TurnWaitResult["agent"];
+  const finish = (result: TurnWaitResult): TurnWaitResult => note && !result.agent ? { ...result, agent: note } : result;
   while (true) {
     const pollMs = Math.max(0, Math.min(25_000, deadline - Date.now()));
     let result: TurnWaitResult;
     try {
-      result = await controlRequest<TurnWaitResult>(config, "/control/turn/wait", { path, actor, ...(label ? { label } : {}), ...(cursor === undefined ? {} : { after: cursor }), timeoutMs: pollMs }, { timeoutMs: pollMs + 10_000 });
+      result = await controlRequest<TurnWaitResult>(config, "/control/turn/wait", { path, actor, ...signature, ...(label ? { label } : {}), ...(cursor === undefined ? {} : { after: cursor }), timeoutMs: pollMs }, { timeoutMs: pollMs + 10_000 });
       failures = 0;
+      // Later polls sign with the ID the daemon issued on the first.
+      if (result.agent) { note = result.agent; if (result.agent.issued) signature = { agentId: result.agent.id }; }
     } catch (cause) {
       // `tether daemon stop` is deliberate: exit rather than start the daemon again.
-      if (cause instanceof ControlRequestError && cause.code === "service_stopped") return { turn: null, stopped: true };
+      if (cause instanceof ControlRequestError && cause.code === "service_stopped") return finish({ turn: null, stopped: true });
       // A restarting daemon is a reconnect, not a failure; its new instance treats the old cursor as 0.
       // A cut-off body is retried too: the poll changes nothing on the daemon.
       const code = cause instanceof ControlRequestError ? cause.code : undefined;
@@ -144,9 +164,9 @@ async function waitForTurn(config: TetherConfig, path: string, actor: string, la
       await Bun.sleep(Math.min(1_000 * failures, deadline - Date.now()));
       continue;
     }
-    if (result.turn || "stopped" in result) return result;
+    if (result.turn || "stopped" in result) return finish(result);
     cursor = result.cursor;
-    if (Date.now() >= deadline) return result;
+    if (Date.now() >= deadline) return finish(result);
   }
 }
 
@@ -194,6 +214,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     command = parsed.spec.name;
     if (parsed.help) return { response: success("help", { command, usage: parsed.spec.usage, ...(command === "setup" ? { agentSetup: agentSetupGuidance } : {}) }), exitCode: 0 };
     const config = dependencies.config ?? resolveConfig();
+    const signature = agentSignature(optionalFlag(parsed, "--agent-id"), dependencies.env);
     const binding = await readRemoteBinding(config);
     if (binding && (command.startsWith("shared.") || command.startsWith("relocate.") || ["startup.enable", "cmux.attach", "paseo.wait"].includes(command))) throw new Error("This profile is bound to a shared hub. Manage the authority in the hub’s local profile.");
     const setup = await remoteSetup(parsed, config);
@@ -461,7 +482,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const timeout = optionalFlag(parsed, "--timeout");
       const seconds = timeout === undefined ? Infinity : Number(timeout);
       if (Number.isNaN(seconds) || seconds < 0) usage("--timeout must be a nonnegative number of seconds.");
-      return { response: success(command, await waitForTurn(config, resolve(parsed.positionals[0]!), requiredFlag(parsed, "--actor"), optionalFlag(parsed, "--label")?.trim(), optionalFlag(parsed, "--after"), seconds * 1000)), exitCode: 0 };
+      return { response: success(command, await waitForTurn(config, resolve(parsed.positionals[0]!), requiredFlag(parsed, "--actor"), signature, optionalFlag(parsed, "--label")?.trim(), optionalFlag(parsed, "--after"), seconds * 1000)), exitCode: 0 };
     }
     if (command === "paseo.ack") {
       return { response: success(command, await requestControl(config, `/control/hosts/${PASEO_HOST}/ack`, { ids: parsed.positionals })), exitCode: 0 };
@@ -529,7 +550,8 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     if (command === "document.save") {
       const expectedBodyRevision = requiredFlag(parsed, "--expected-body-revision");
       const body = await bodyFile(requiredFlag(parsed, "--body-file"), dependencies, 16 * 1024 * 1024);
-      return { response: success(command, await requestControl(config, "/control/document/save", { path: resolve(parsed.positionals[0]!), body, expectedBodyRevision })), exitCode: 0 };
+      return { response: success(command, await requestControl(config, "/control/document/save", { path: resolve(parsed.positionals[0]!), body, expectedBodyRevision,
+        ...(optionalFlag(parsed, "--actor") ? { actor: optionalFlag(parsed, "--actor"), ...signature } : "agentId" in signature ? { agentId: signature.agentId } : {}) })), exitCode: 0 };
     }
 
     if (command === "visual") {
@@ -537,7 +559,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     }
     if (command === "pending") {
       const actor = requiredFlag(parsed, "--actor");
-      return { response: success(command, await requestControl(config, "/control/review/pending", { path: resolve(parsed.positionals[0]!), actor, ...readOptions(parsed), ...(optionalFlag(parsed, "--consumer") ? { consumer: optionalFlag(parsed, "--consumer") } : {}) })), exitCode: 0 };
+      return { response: success(command, await requestControl(config, "/control/review/pending", { path: resolve(parsed.positionals[0]!), actor, ...signature, ...readOptions(parsed), ...(optionalFlag(parsed, "--consumer") ? { consumer: optionalFlag(parsed, "--consumer") } : {}) })), exitCode: 0 };
     }
     if (command === "thread" || command === "threads") {
       const beforeSequence = optionalFlag(parsed, "--before-sequence");
@@ -557,7 +579,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const body = (command === "reply" || command === "edit") ? await bodyFile(requiredFlag(parsed, "--body-file"), dependencies) : undefined;
       return {
         response: success(command, await requestControl(config, `/control/review/${command}`, {
-          path: resolve(parsed.positionals[0]!), threadId: parsed.positionals[1]!, actor,
+          path: resolve(parsed.positionals[0]!), threadId: parsed.positionals[1]!, actor, ...signature,
           ...(["edit", "delete"].includes(command) ? { targetId: parsed.positionals[2]! } : {}),
           operationId: requiredFlag(parsed, "--operation-id"),
           ...(body === undefined ? {} : { body }),
@@ -570,7 +592,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const actor = requiredFlag(parsed, "--actor");
       return {
         response: success(command, await requestControl(config, "/control/review/acknowledge", {
-          path: resolve(parsed.positionals[0]!), actor, cursor: requiredFlag(parsed, "--cursor"), operationId: requiredFlag(parsed, "--operation-id"),
+          path: resolve(parsed.positionals[0]!), actor, ...signature, cursor: requiredFlag(parsed, "--cursor"), operationId: requiredFlag(parsed, "--operation-id"),
           ...(optionalFlag(parsed, "--consumer") ? { consumer: optionalFlag(parsed, "--consumer") } : {}),
         })),
         exitCode: 0,
@@ -580,7 +602,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const body = await bodyFile(requiredFlag(parsed, "--body-file"), dependencies);
       return {
         response: success(command, await requestControl(config, "/control/review/comment", {
-          path: resolve(parsed.positionals[0]!), actor: requiredFlag(parsed, "--actor"), quote: requiredFlag(parsed, "--quote"), body,
+          path: resolve(parsed.positionals[0]!), actor: requiredFlag(parsed, "--actor"), ...signature, quote: requiredFlag(parsed, "--quote"), body,
           operationId: requiredFlag(parsed, "--operation-id"),
           ...(optionalFlag(parsed, "--candidate-id") ? { candidateId: optionalFlag(parsed, "--candidate-id") } : {}),
           ...(optionalFlag(parsed, "--expected-body-revision") ? { expectedBodyRevision: optionalFlag(parsed, "--expected-body-revision") } : {}),

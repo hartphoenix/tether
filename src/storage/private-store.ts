@@ -1,5 +1,6 @@
 import { hostname, tmpdir } from "node:os";
 import { Machines } from "./machines";
+import { Identities } from "./identities";
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -75,6 +76,7 @@ export class PrivateStore {
   readonly path: string;
   readonly localMachineId: string;
   readonly machines: Machines;
+  readonly identities: Identities;
 
   constructor(path = ":memory:") {
     this.path = path;
@@ -93,6 +95,7 @@ export class PrivateStore {
     this.db.query("INSERT OR IGNORE INTO settings(key,value) VALUES ('library_id',?)").run(crypto.randomUUID());
     this.localMachineId = (this.db.query("SELECT value FROM settings WHERE key='local_machine_id'").get() as {value:string}).value;
     this.machines = new Machines(this.db);
+    this.identities = new Identities(this.db);
     if (!this.machines.get(this.localMachineId)) {
       let name = hostname(), suffix = 2;
       while (this.machines.list().some(machine => machine.name.toLowerCase() === name.toLowerCase())) name = `${hostname()} (${suffix++})`;

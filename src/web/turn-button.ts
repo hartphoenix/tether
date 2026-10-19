@@ -1,38 +1,27 @@
-import { agentColor } from './agent-colors';
-import { turnIcons } from './turn-icons';
+import { turnIcon, turnIcons } from './turn-icons';
+import { identityColor, identityName, type IdentityLookup } from './identities';
+import { bindAgentRename } from './agent-rename';
 
-export type TurnAgent = { actor: string; label?: string; state: 'ready' | 'working' };
-export type TurnPress = { cursor: string; sequence: number; actor: string };
+export type TurnAgent = { agentId: string; label?: string; state: 'ready' | 'working' };
+export type TurnPress = { cursor: string; sequence: number; agentId: string };
 
-/** Shuffled bag (Fisher-Yates) that never shows the same face twice in a row, even across refills. */
-export function createIconBag<T>(items: readonly T[], random: () => number = Math.random): () => T {
-  let bag: T[] = [];
-  let last: T | undefined;
-  return () => {
-    if (!bag.length) {
-      bag = [...items];
-      for (let i = bag.length - 1; i > 0; i--) {
-        const j = Math.floor(random() * (i + 1));
-        [bag[i], bag[j]] = [bag[j]!, bag[i]!];
-      }
-      // The bag is consumed from the end; keep the refill from repeating the last face.
-      if (bag.length > 1 && bag.at(-1) === last) [bag[0], bag[bag.length - 1]] = [bag.at(-1)!, bag[0]!];
-    }
-    return last = bag.pop()!;
-  };
-}
-
-type Slot = { item: HTMLElement; button: HTMLButtonElement; caption: HTMLElement; nextIcon: () => string; agent?: TurnAgent; pending: boolean };
+type Slot = { item: HTMLElement; button: HTMLButtonElement; caption: HTMLElement; icon?: string; agent?: TurnAgent; pending: boolean };
 
 /**
  * One Go button per agent waiting on this document, stacked from the drawer's
- * bottom-right corner. A press wakes only that agent and carries no content.
+ * bottom-right corner. Each shows its agent's own icon and color. A press wakes
+ * only that agent and carries no content.
  */
-export function createTurnControls(options: { request: (actor: string) => Promise<TurnPress>; notice: (message: string) => void; icons?: readonly string[] }) {
-  const icons = options.icons ?? turnIcons;
+export function createTurnControls(options: {
+  request: (agentId: string) => Promise<TurnPress>;
+  notice: (message: string) => void;
+  identity?: IdentityLookup;
+  rename?: (agentId: string, x: number, y: number) => void;
+}) {
   const root = document.createElement('div');
   root.className = 'wm-turn-stack';
   const slots = new Map<string, Slot>();
+  let agents: readonly TurnAgent[] = [];
 
   const slot = (key: string): Slot => {
     let existing = slots.get(key);
@@ -45,12 +34,13 @@ export function createTurnControls(options: { request: (actor: string) => Promis
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'wm-turn-button';
-    const nextIcon = createIconBag(icons);
-    button.innerHTML = nextIcon();
+    // An agent's button stays blank until its identity resolves; the empty placeholder shows the first icon.
+    if (!key) button.innerHTML = turnIcons[0]!;
     item.append(caption, button);
-    existing = { item, button, caption, nextIcon, pending: false };
+    existing = { item, button, caption, pending: false };
     const current = existing;
     button.addEventListener('click', () => { void press(current); });
+    if (key && options.rename) for (const target of [caption, button]) bindAgentRename(target, (x, y) => { if (current.agent) options.rename!(current.agent.agentId, x, y); });
     slots.set(key, existing);
     return existing;
   };
@@ -65,14 +55,18 @@ export function createTurnControls(options: { request: (actor: string) => Promis
       caption.textContent = '';
       return;
     }
+    const identity = options.identity?.(agent.agentId);
+    const name = identityName(options.identity, agent.agentId);
     const working = agent.state === 'working';
     item.dataset.state = agent.state;
-    item.style.setProperty('--wm-agent-color', agentColor(agent.actor));
+    const color = identityColor(identity);
+    if (color) item.style.setProperty('--wm-agent-color', color); else item.style.removeProperty('--wm-agent-color');
+    if (identity?.icon && entry.icon !== identity.icon) { button.innerHTML = turnIcon(identity.icon); entry.icon = identity.icon; }
     button.disabled = working || entry.pending;
-    const description = `${agent.actor}${agent.label ? `: ${agent.label}` : ''}`;
+    const description = `${name}${agent.label ? `: ${agent.label}` : ''}`;
     button.title = working ? `${description} (taking its turn)` : `Take the next turn: ${description}`;
-    button.setAttribute('aria-label', working ? `${agent.actor} is taking its turn` : `Take the next turn: ${agent.actor}`);
-    caption.textContent = agent.label ?? agent.actor;
+    button.setAttribute('aria-label', working ? `${name} is taking its turn` : `Take the next turn: ${name}`);
+    caption.textContent = agent.label ?? name;
   };
 
   const press = async (entry: Slot) => {
@@ -81,9 +75,8 @@ export function createTurnControls(options: { request: (actor: string) => Promis
     entry.pending = true;
     render(entry);
     try {
-      await options.request(agent.actor);
+      await options.request(agent.agentId);
       entry.agent = { ...agent, state: 'working' };
-      entry.button.innerHTML = entry.nextIcon();
       entry.item.classList.remove('is-sent');
       void entry.item.offsetWidth; // Restart the pulse.
       entry.item.classList.add('is-sent');
@@ -104,20 +97,23 @@ export function createTurnControls(options: { request: (actor: string) => Promis
   return {
     root,
     /** Replace the agent list with the daemon's current view. */
-    update(agents: readonly TurnAgent[]) {
-      const keys = new Set(agents.map(agent => agent.actor.trim().toLocaleLowerCase()));
+    update(next: readonly TurnAgent[]) {
+      agents = next;
+      const keys = new Set(next.map(agent => agent.agentId));
       for (const [key, entry] of slots) if (key && !keys.has(key)) { entry.item.remove(); slots.delete(key); }
-      placeholder.item.hidden = agents.length > 0;
+      placeholder.item.hidden = next.length > 0;
       const order = [placeholder.item];
-      for (const agent of agents) {
-        const entry = slot(agent.actor.trim().toLocaleLowerCase());
+      for (const agent of next) {
+        const entry = slot(agent.agentId);
         entry.agent = agent;
         render(entry);
         order.push(entry.item);
       }
       // Reorder only on change, so a focused button keeps focus across updates.
       if (order.some((item, index) => root.children[index] !== item) || root.children.length !== order.length) root.replaceChildren(...order);
-      root.dataset.count = String(Math.max(1, agents.length));
+      root.dataset.count = String(Math.max(1, next.length));
     },
+    /** Redraw names, icons and colors after the identity registry changes. */
+    refreshIdentities() { for (const agent of agents) { const entry = slots.get(agent.agentId); if (entry) render(entry); } },
   };
 }

@@ -1,7 +1,9 @@
 // Lucide Icons 1.53.0 (ISC; Feather-derived icons MIT). See licenses/lucide-icons-LICENSE.txt.
 // Icons without the lucide class are Tether's own drawings in Lucide's style.
-// Faces for the reader's "Take the next turn" button, shown in shuffled rotation.
-// Append new icons as plain inline SVG strings in the same format.
+// Agent icons: the daemon gives each agent one, shown on its Go button and beside its name.
+// Keep this order in step with AGENT_ICON_NAMES in src/shared/agent-identity.ts.
+import { AGENT_ICON_NAMES } from "../shared/agent-identity";
+
 export const turnIcons: readonly string[] = [
   // balloon
   "<svg class=\"tether-icon lucide lucide-balloon\" aria-hidden=\"true\" focusable=\"false\" xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 16v1a2 2 0 0 0 2 2h1a2 2 0 0 1 2 2v1\" /><path d=\"M12 6a2 2 0 0 1 2 2\" /><path d=\"M18 8c0 4-3.5 8-6 8s-6-4-6-8a6 6 0 0 1 12 0\" /></svg>",
@@ -60,3 +62,9 @@ export const turnIcons: readonly string[] = [
   // winged-heel
   "<svg class=\"tether-icon tether-turn-winged-heel\" aria-hidden=\"true\" focusable=\"false\" xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M11 6v10a4 4 0 0 0 4 4h5a1.5 1.5 0 0 0 .7-2.8L16 13.5V6\" /><path d=\"M11 9.5C8 9.5 5.5 8 4 5\" /><path d=\"M11 12.5c-2.5 0-4.5-1-6-3\" /><path d=\"M2 16.5h4\" /><path d=\"M4 20h4\" /></svg>",
 ];
+
+/** The SVG for a registry icon name; unknown names fall back to the first icon. */
+export function turnIcon(name: string | null | undefined): string {
+  const index = name ? (AGENT_ICON_NAMES as readonly string[]).indexOf(name) : -1;
+  return turnIcons[Math.max(0, index)]!;
+}

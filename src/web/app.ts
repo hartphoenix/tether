@@ -30,6 +30,9 @@ import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose, replaceAll, callCommand } from "@milkdown/kit/utils";
 import { createCodeBlockCommand } from "@milkdown/kit/preset/commonmark";
 import { createTurnControls, type TurnAgent, type TurnPress } from "./turn-button";
+import { createIdentityCache, identityName } from "./identities";
+import { openAgentRename } from "./agent-rename";
+import type { Identity } from "../shared/agent-identity";
 import { createAnnotationUi, captureAnchor, registerDocumentRevision, type AnnotationThread, type AnnotationUiController } from "./annotations-ui";
 import { apiErrorMessage } from "./api-error";
 import { createChromeControls } from "./chrome-controls";
@@ -166,9 +169,22 @@ let railResize: ReturnType<typeof createRailResize> | null = null;
 const threadSizing = createThreadSizing(async value => {
   applyAppearance(await api('api/preferences', { method: 'PUT', body: JSON.stringify(value) }));
 }, message => chrome.setNotice(message));
+const identities = createIdentityCache({
+  fetch: ids => api<{ identities: Identity[]; identityRevision: number }>(`api/identities?ids=${ids.map(encodeURIComponent).join(',')}`),
+  changed: () => { annotationUi?.refreshIdentities(); turnControls.refreshIdentities(); },
+});
+/** Hart renames an agent wherever its name appears; the reader then relabels every message. */
+function renameAgent(id: string, x: number, y: number): void {
+  openAgentRename({ x, y, name: identityName(identities.get, id), save: async name => {
+    const result = await api<{ identity: Identity; identityRevision: number }>('api/identities/rename', { method: 'POST', body: JSON.stringify({ id, name }) });
+    identities.set(result.identity, result.identityRevision);
+  } });
+}
 const turnControls = createTurnControls({
-  request: actor => api<TurnPress>('api/turn', { method: 'POST', body: JSON.stringify({ actor }) }),
+  request: agentId => api<TurnPress>('api/turn', { method: 'POST', body: JSON.stringify({ agentId }) }),
   notice: message => chrome.setNotice(message),
+  identity: identities.get,
+  rename: renameAgent,
 });
 let stopTurns: (() => void) | undefined;
 const fileActions = createFileActions({
@@ -409,6 +425,7 @@ function normalizeThreads(state: AnnotationState): AnnotationThread[] {
 }
 function applyAnnotationState(state: AnnotationState): void {
   annotationState = state;
+  identities.want((state.threads ?? []).flatMap(thread => [thread.comment.actor, ...(thread.replies ?? []).map(reply => reply.actor)]));
   annotationUi?.setState({ threads: normalizeThreads(state) });
 }
 async function refreshAnnotations(generation = documentGeneration, path = currentPath): Promise<void> {
@@ -664,6 +681,8 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
         await postAnnotation("/api/annotations", { type: "reanchor", threadId: thread.id, anchor: { ...anchor, bodyRevision: currentBodyRevision }, expectedBodyRevision: currentBodyRevision, expectedThreadSequence: thread.seq, operationId: crypto.randomUUID() }, generation, currentPath);
       },
       localActor,
+      identity: identities.get,
+      onRenameAgent: renameAgent,
       onPendingCountChange: (count) => {
         pendingCount.textContent = String(count);
         pendingCount.hidden = count === 0;
@@ -811,9 +830,10 @@ async function saveReviewed(): Promise<void> {
 }
 async function lease(generation = documentGeneration, path = currentPath, signal?: AbortSignal): Promise<void> {
   try {
-    const result = await api<{ path?: string; bodyRevision: string | null; ledgerRevision: string | null; appearanceRevision: string; preferences?: SessionBootstrap["preferences"] }>("api/changes", {
+    const result = await api<{ path?: string; bodyRevision: string | null; ledgerRevision: string | null; appearanceRevision: string; identityRevision?: number; preferences?: SessionBootstrap["preferences"] }>("api/changes", {
       method: "POST", body: JSON.stringify({ clientId, appearanceRevision }), signal,
     });
+    identities.observe(result.identityRevision);
     if (generation !== documentGeneration || path !== currentPath) return;
     if (result.preferences) { themePicker?.update(result.preferences); applyAppearance(result.preferences); }
     appearanceRevision = result.appearanceRevision;
@@ -908,7 +928,11 @@ async function start(): Promise<void> {
   fileActions.update(revealAvailable, readOnly || sharedReader, bootstrap.directoryPicker === true);
   // Agent state is in daemon memory; short polls avoid holding a browser connection.
   stopTurns?.();
-  stopTurns = pollPreferences('api/turns', (value: { agents: TurnAgent[] }) => turnControls.update(value.agents));
+  stopTurns = pollPreferences('api/turns', (value: { agents: TurnAgent[]; identityRevision?: number }) => {
+    identities.want(value.agents.map(agent => agent.agentId));
+    identities.observe(value.identityRevision);
+    turnControls.update(value.agents);
+  });
   stopFind?.();
   stopFind = bootstrap.capabilities?.pageFind ? installReaderFind(getEditorView) : undefined;
   installDiagramTrace();

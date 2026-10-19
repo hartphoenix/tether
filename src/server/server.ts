@@ -19,6 +19,8 @@ import { listAgentSkillReviews, readAgentSkillReview, decideAgentSkillReview, de
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
 import { PrivateStore, type MutationReceipt, type DocumentReference, type PrivateDocumentRow } from "../storage/private-store";
+import { validAgentId } from "../storage/identities";
+import { MAX_AGENT_ID_LENGTH, isHumanId, HUMAN_ID } from "../shared/agent-identity";
 import { ViewStore, cookieVerifier, verifiesCookie } from "./view-store";
 import { stopHostBridges } from "./stop-hosts";
 import { anchorForQuote, quoteCandidates } from "./quote-anchor";
@@ -702,7 +704,55 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     return result;
   }
 
+  type AgentSignature = { id: string; created: boolean; note?: Record<string, unknown> };
+
+  /**
+   * Resolve the signing agent for a review, turn or save command, and replace
+   * `body.actor` with its ID. `actor` is the requested display name. With
+   * `agentId` the agent signs with that ID; with `issueAgentId` the daemon
+   * issues one; with neither, a legacy actor string is both ID and name.
+   */
+  function signAgent(body: Record<string, unknown>): AgentSignature | undefined {
+    const requested = typeof body.actor === "string" ? body.actor.trim() : "";
+    const hostId = body.agentId === undefined ? undefined : validAgentId(body.agentId);
+    delete body.agentId;
+    const issue = body.issueAgentId === true;
+    delete body.issueAgentId;
+    if (!requested) {
+      if (hostId) privateStore.identities.touch(hostId, now());
+      return undefined;
+    }
+    if (isHumanId(requested)) { body.actor = HUMAN_ID; return { id: HUMAN_ID, created: false }; }
+    if (!hostId && !issue) {
+      // Legacy clients: the actor string is the ID. Strings the registry can't hold stay unregistered.
+      const legacy = body.actor as string;
+      if (legacy !== legacy.trim() || legacy.length > MAX_AGENT_ID_LENGTH || /\p{Cc}/u.test(legacy)) return undefined;
+      try { return { id: legacy, created: privateStore.identities.claim(legacy, legacy, now()).created }; }
+      catch (cause) { if ((cause as { code?: string }).code === "agent_name_taken") throw cause; return undefined; }
+    }
+    const id = hostId ?? privateStore.identities.issue();
+    const claim = privateStore.identities.claim(id, requested, now());
+    body.actor = id;
+    if (!hostId) return { id, created: claim.created, note: { id, name: claim.identity.name, issued: true, next: `Tether issued you this agent ID. Pass --agent-id ${id} on every later Tether command.` } };
+    if (claim.nameKept) return { id, created: claim.created, note: { id, name: claim.identity.name, next: `The human named you "${claim.identity.name}"; Tether shows that name instead of --actor.` } };
+    return { id, created: claim.created };
+  }
+
+  /** Run an agent command signed by its identity; an identity created for a failed command is discarded. */
+  async function signed<T>(body: Record<string, unknown>, operation: () => Promise<T>): Promise<T> {
+    const signature = signAgent(body);
+    let result: T;
+    try { result = await operation(); }
+    catch (cause) { if (signature?.created) privateStore.identities.discard(signature.id); throw cause; }
+    return signature?.note && result && typeof result === "object" && !Array.isArray(result) ? { ...result, agent: signature.note } : result;
+  }
+
   async function documentOperation(pathname: string, body: Record<string, unknown>): Promise<unknown> {
+    if (/^\/control\/(?:review\/(?:pending|comment|reply|resolve|reopen|edit|delete|reanchor|acknowledge)|document\/save)$/.test(pathname)) return signed(body, () => unsignedOperation(pathname, body));
+    return unsignedOperation(pathname, body);
+  }
+
+  async function unsignedOperation(pathname: string, body: Record<string, unknown>): Promise<unknown> {
     if (pathname === "/control/document/move") {
       if (typeof body.path !== "string" || typeof body.target !== "string") throw invalidRequest("Move requires source and destination paths.");
       const result = await service.move(body.path, body.target);
@@ -956,7 +1006,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         if (!sessions.has(session.id)) return error("session_expired", "Session revoked.", 401);
         session.leases.set(body.clientId, now() + leaseMs);
         emptySince = 0;
-        return json({ ...revisions, appearanceRevision, ...(body.appearanceRevision === appearanceRevision ? {} : { preferences: appearance }) }, { headers: { "cache-control": "no-store" } });
+        return json({ ...revisions, appearanceRevision, identityRevision: privateStore.identities.revision(), ...(body.appearanceRevision === appearanceRevision ? {} : { preferences: appearance }) }, { headers: { "cache-control": "no-store" } });
       }
       if (apiPath === "/lease" && request.method === "POST") {
         const body = await requestJson(request);
@@ -967,15 +1017,28 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         const read = await service.read(session.grant);
         return json({ path: read.path, bodyRevision: read.bodyRevision, ledgerRevision: read.ledgerRevision, revision: read.bodyRevision });
       }
-      if (apiPath === "/turns" && request.method === "GET") return json({ agents: turns.agents(session.grant.path) });
+      if (apiPath === "/turns" && request.method === "GET") return json({ agents: turns.agents(session.grant.path), identityRevision: privateStore.identities.revision() });
       // Wakes one agent; it carries no content beyond "the human started your next turn".
       if (apiPath === "/turn" && request.method === "POST") {
         const body = await requestJson(request);
-        if (typeof body.actor !== "string" || !body.actor.trim()) throw invalidRequest("A turn needs the agent's actor.");
-        const press = turns.request(session.grant.path, body.actor);
-        if (press === "unavailable") return error("agent_unavailable", `${body.actor} is not waiting on this document.`, 409);
-        if (press === "working") return error("agent_working", `${body.actor} is still taking its turn.`, 409);
+        const agentId = typeof body.agentId === "string" ? body.agentId : body.actor;
+        if (typeof agentId !== "string" || !agentId.trim()) throw invalidRequest("A turn needs the agent's ID.");
+        const press = turns.request(session.grant.path, agentId);
+        const name = () => privateStore.identities.resolve([agentId], now())[0]!.name;
+        if (press === "unavailable") return error("agent_unavailable", `${name()} is not waiting on this document.`, 409);
+        if (press === "working") return error("agent_working", `${name()} is still taking its turn.`, 409);
         return json(press);
+      }
+      // Names, icons and colors for message authors and Go buttons; unknown IDs are registered on sight.
+      if (apiPath === "/identities" && request.method === "GET") {
+        const ids = [...new Set((new URL(request.url).searchParams.get("ids") ?? "").split(",").filter(Boolean))];
+        if (ids.length > 200 || ids.some(id => Buffer.byteLength(id) > INPUT_LIMITS.identifier)) throw invalidRequest("Request at most 200 identities.");
+        return json({ identities: privateStore.identities.resolve(ids, now()), identityRevision: privateStore.identities.revision() }, { headers: { "cache-control": "no-store" } });
+      }
+      if (apiPath === "/identities/rename" && request.method === "POST") {
+        const body = await requestJson(request);
+        if (typeof body.id !== "string" || typeof body.name !== "string") throw invalidRequest("A rename needs the agent's ID and its new name.");
+        return json({ identity: privateStore.identities.rename(body.id, body.name, now()), identityRevision: privateStore.identities.revision() });
       }
       if (apiPath === "/release" && request.method === "POST") {
         const body = await requestJson(request);
@@ -1405,10 +1468,17 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const timeoutMs = Math.min(Math.max(Number(body.timeoutMs ?? 0), 0), 25_000);
           if (!Number.isFinite(timeoutMs) || (body.after !== undefined && typeof body.after !== "string")) throw invalidRequest("Invalid turn wait.");
           if (typeof body.actor !== "string" || !body.actor.trim() || body.actor.length > 200) throw invalidRequest("A turn wait needs --actor.");
+          if (isHumanId(body.actor)) throw invalidRequest(`"${HUMAN_ID}" is the human reader, not an agent.`);
           if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL_LENGTH)) throw invalidRequest(`A label must be ${MAX_LABEL_LENGTH} characters or fewer.`);
-          // Authorize the path, then release the grant so a long wait never extends file access.
-          const path = await withControlDocument(body, async (grant) => grant.path);
-          return json(await turns.wait(path, body.actor, (body.label as string | undefined)?.trim() || undefined, body.after as string | undefined, timeoutMs, request.signal));
+          // Authorize the path and sign the agent, then release the grant so a long wait never extends file access.
+          let agentId = "";
+          const signedPath = await signed(body, async () => {
+            const path = await withControlDocument(body, async (grant) => grant.path);
+            agentId = body.actor as string;
+            return { path };
+          }) as { path: string; agent?: unknown };
+          const waited = await turns.wait(signedPath.path, agentId, (body.label as string | undefined)?.trim() || undefined, body.after as string | undefined, timeoutMs, request.signal);
+          return json(signedPath.agent ? { ...waited, agent: signedPath.agent } : waited);
         }
         if (request.method === "POST" && (pathname.startsWith("/control/document/") || pathname.startsWith("/control/review/"))) {
           const body = await requestJson(request);

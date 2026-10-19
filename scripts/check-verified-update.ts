@@ -42,7 +42,9 @@ try {
     const config = resolveConfig({ profile: "verified-check", configDir: join(base, "config"), runtimeDir: join(base, "runtime") });
     configs.push(config);
     const env = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: base, TMPDIR: "/tmp", TETHER_INSTALL_DIR: installation, TETHER_BIN_DIR: bin,
-      TETHER_CONFIG_DIR: config.configDir, TETHER_RUNTIME_DIR: config.runtimeDir, TETHER_PROFILE: config.profile, TETHER_SUPPRESS_BROWSER: "1" };
+      TETHER_CONFIG_DIR: config.configDir, TETHER_RUNTIME_DIR: config.runtimeDir, TETHER_PROFILE: config.profile, TETHER_SUPPRESS_BROWSER: "1",
+      // One simulated agent signs every review command; releases before agent IDs ignore it.
+      CLAUDE_CODE_SESSION_ID: "verified-update" };
     const hash = (await readFile(`${archives[0]}.sha256`, "utf8")).split(/\s/)[0]!;
     await run(["/bin/bash", resolve("scripts/install.sh"), "--archive", archives[0]!, "--sha256", hash, "--no-open"], env);
     await run(["/bin/bash", resolve("scripts/install.sh"), "--archive", archives[1]!, "--sha256", (await readFile(`${archives[1]}.sha256`, "utf8")).split(/\s/)[0]!, "--version", "v0.9.9", "--no-open"], env, false);

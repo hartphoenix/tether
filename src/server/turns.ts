@@ -1,13 +1,13 @@
 /**
- * Human-initiated turn signals, held in daemon memory per (canonical path, actor).
+ * Human-initiated turn signals, held in daemon memory per (canonical path, agent ID).
  * A press carries no content; it only tells one waiting agent that the human
  * started its next turn. Cursors name the daemon instance so a restart is visible.
  */
-export type TurnSignal = { cursor: string; sequence: number; requestedAt: string; path: string; actor: string };
+export type TurnSignal = { cursor: string; sequence: number; requestedAt: string; path: string; agentId: string };
 export type TurnWait = { turn: TurnSignal } | { turn: null; cursor: string } | { turn: null; stopped: true };
 export type AgentState = "ready" | "working";
-export type TurnAgent = { actor: string; label?: string; state: AgentState };
-export type TurnPress = { cursor: string; sequence: number; actor: string };
+export type TurnAgent = { agentId: string; label?: string; state: AgentState };
+export type TurnPress = { cursor: string; sequence: number; agentId: string };
 
 /** A chained poll keeps an agent ready this long after a wait ends without a turn. */
 export const READY_GRACE_MS = 60_000;
@@ -15,9 +15,7 @@ export const READY_GRACE_MS = 60_000;
 export const WORKING_LIMIT_MS = 2 * 60 * 60_000;
 export const MAX_LABEL_LENGTH = 60;
 
-type Agent = { actor: string; label?: string; sequence: number; requestedAt: string; state: AgentState; since: number; waiters: Set<() => void> };
-
-const actorKey = (actor: string) => actor.trim().toLocaleLowerCase();
+type Agent = { agentId: string; label?: string; sequence: number; requestedAt: string; state: AgentState; since: number; waiters: Set<() => void> };
 
 export class TurnSignals {
   private readonly paths = new Map<string, Map<string, Agent>>();
@@ -51,8 +49,8 @@ export class TurnSignals {
 
   agents(path: string): TurnAgent[] {
     return [...this.live(path).values()]
-      .map(({ actor, label, state }) => ({ actor, ...(label ? { label } : {}), state }))
-      .sort((left, right) => left.actor.localeCompare(right.actor));
+      .map(({ agentId, label, state }) => ({ agentId, ...(label ? { label } : {}), state }))
+      .sort((left, right) => left.agentId.localeCompare(right.agentId));
   }
 
   /** Registered agents keep the daemon alive, as an open host wait does. */
@@ -62,8 +60,8 @@ export class TurnSignals {
   }
 
   /** Wake one agent. Fails when that agent isn't registered or is still working. */
-  request(path: string, actor: string): TurnPress | "unavailable" | "working" {
-    const agent = this.live(path).get(actorKey(actor));
+  request(path: string, agentId: string): TurnPress | "unavailable" | "working" {
+    const agent = this.live(path).get(agentId);
     if (!agent) return "unavailable";
     if (agent.state === "working") return "working";
     agent.sequence += 1;
@@ -71,29 +69,28 @@ export class TurnSignals {
     agent.state = "working";
     agent.since = this.now();
     for (const wake of [...agent.waiters]) wake();
-    return { cursor: this.cursor(agent.sequence), sequence: agent.sequence, actor: agent.actor };
+    return { cursor: this.cursor(agent.sequence), sequence: agent.sequence, agentId: agent.agentId };
   }
 
   /**
-   * Arm `actor` on `path`. Resolves with a press newer than `after` (now, when
+   * Arm `agentId` on `path`. Resolves with a press newer than `after` (now, when
    * omitted), or with null at the timeout. Arming without an undelivered press
    * ends a working turn.
    */
-  async wait(path: string, actor: string, label: string | undefined, after: string | undefined, timeoutMs: number, signal?: AbortSignal): Promise<TurnWait> {
+  async wait(path: string, agentId: string, label: string | undefined, after: string | undefined, timeoutMs: number, signal?: AbortSignal): Promise<TurnWait> {
     if (this.stopped) return { turn: null, stopped: true };
     const agents = this.live(path);
     this.paths.set(path, agents);
-    const key = actorKey(actor);
-    let agent = agents.get(key);
+    let agent = agents.get(agentId);
     // An agent dropped while its watcher was away (a sleeping laptop) resumes from its cursor,
     // so the next press is newer than anything it has already seen.
-    if (!agent) agents.set(key, agent = { actor: actor.trim(), sequence: this.sequenceOf(after), requestedAt: "", state: "ready", since: this.now(), waiters: new Set() });
+    if (!agent) agents.set(agentId, agent = { agentId, sequence: this.sequenceOf(after), requestedAt: "", state: "ready", since: this.now(), waiters: new Set() });
     agent.label = label;
     const since = after === undefined ? agent.sequence : this.sequenceOf(after);
     const current = agent;
     const result = (): TurnWait => this.stopped && current.sequence <= since ? { turn: null, stopped: true }
       : current.sequence > since
-        ? { turn: { cursor: this.cursor(current.sequence), sequence: current.sequence, requestedAt: current.requestedAt, path, actor: current.actor } }
+        ? { turn: { cursor: this.cursor(current.sequence), sequence: current.sequence, requestedAt: current.requestedAt, path, agentId: current.agentId } }
         : { turn: null, cursor: this.cursor(Math.max(since, current.sequence)) };
     if (agent.sequence > since) return result();
     agent.state = "ready";

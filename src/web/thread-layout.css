@@ -182,7 +182,7 @@
 .wm-actor-dot { background: var(--wm-color-selected, #4678b7); }
 [data-last-assistant="true"] .wm-actor-dot { background: var(--wm-color-annotation, #bf7b18); }
 
-/* Agents sign their work in a stable palette color. Themes may override these on :root. */
+/* Agents sign their work in a registry-assigned palette color. Themes may override these on :root. */
 :root {
   --tether-agent-1: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 135));
   --tether-agent-2: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 270));
@@ -190,6 +190,12 @@
   --tether-agent-4: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 180));
   --tether-agent-5: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 315));
   --tether-agent-6: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 90));
+  --tether-agent-7: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 225));
+  --tether-agent-8: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 112.5));
+  --tether-agent-9: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 337.5));
+  --tether-agent-10: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 202.5));
+  --tether-agent-11: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 67.5));
+  --tether-agent-12: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 292.5));
   --tether-go-size: 40px;
   --tether-go-fg: var(--wm-color-background, #fffdf9);
 }
@@ -206,6 +212,16 @@
 }
 .wm-editable-annotation.is-agent .wm-message-author,
 .wm-thread-actor.is-agent { color: color-mix(in oklab, var(--wm-agent-color) 75%, currentColor); }
+.wm-agent-icon { display: inline-flex; margin-right: .3em; vertical-align: -.18em; color: var(--wm-agent-color); }
+.wm-agent-icon .tether-icon { width: 1.2em; height: 1.2em; stroke-width: 2.25; }
+.wm-agent-rename {
+  position: fixed; z-index: 60; box-sizing: border-box; width: min(18rem, calc(100vw - 16px)); margin: 0;
+  padding: calc(6px * var(--wm-ui-scale, 1)); border: 1px solid var(--wm-annotation-border, rgb(0 0 0 / .15));
+  border-radius: calc(6px * var(--wm-ui-scale, 1)); background: var(--wm-annotation-surface, #fffdf9);
+  box-shadow: 0 6px 20px rgb(0 0 0 / .18); font: calc(13px * var(--wm-ui-scale, 1))/1.4 var(--wm-review-ui-font, system-ui);
+}
+.wm-agent-rename input { box-sizing: border-box; width: 100%; font: inherit; color: inherit; }
+.wm-agent-rename-error { margin: calc(6px * var(--wm-ui-scale, 1)) 0 0; color: var(--wm-color-danger, #b3261e); }
 
 /* Go buttons: one per waiting agent, stacked from the drawer's bottom-right corner. */
 .wm-turn-stack {

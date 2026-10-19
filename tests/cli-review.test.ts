@@ -22,7 +22,7 @@ async function fixture() {
     if (!result.response.ok) throw new Error(JSON.stringify(result.response));
     return result.response.data as any;
   };
-  const comment = (id: string, body?: string) => call(["comment", path, "--actor", "hart", "--quote", "unique passage", "--body-file", "-", "--operation-id", id], body);
+  const comment = (id: string, body?: string) => call(["comment", path, "--actor", "hart", "--agent-id", "hart", "--quote", "unique passage", "--body-file", "-", "--operation-id", id], body);
   return { root, path, config, run, call, comment };
 }
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
@@ -46,23 +46,23 @@ test("ordinary help is focused and invalid arguments cause no body read", async 
 test("ordinary writes retain safe receipts, replay, conflicts, and file safety", async () => {
   const f = await fixture(), original = await readFile(f.path, "utf8");
   const seeded = await f.comment("seed"); const id = seeded.mutation.appliedEventId;
-  const pending = await f.call(["pending", f.path, "--actor", "assistant"]);
+  const pending = await f.call(["pending", f.path, "--actor", "assistant", "--agent-id", "assistant"]);
   expect(pending).toMatchObject({ acknowledgedBodyRevision: null, reviewState: "never_reviewed", events: [{ id, threadId: id, type: "comment" }] });
   expect(pending).not.toHaveProperty("documentId"); expect(pending.events[0]).not.toHaveProperty("body");
   const thread = await f.call(["thread", f.path, id]);
   expect(thread.thread).toEqual({ id, status: "open", sequence: 1 });
   expect(thread.messages[0].body).toBe("A question");
-  const args = ["reply", f.path, id, "--actor", "assistant", "--body-file", "-", "--operation-id", "reply", "--expected-thread-sequence", "1"];
+  const args = ["reply", f.path, id, "--actor", "assistant", "--agent-id", "assistant", "--body-file", "-", "--operation-id", "reply", "--expected-thread-sequence", "1"];
   const reply = await f.call(args, "An answer");
   expect(Object.keys(reply)).toEqual(["mutation"]);
   expect(reply.mutation).toEqual({ operationId: "reply", appliedEventId: expect.any(String), appliedSequence: 2, replayed: false });
   expect(await f.call(args, "An answer")).toMatchObject({ mutation: { appliedSequence: 2, replayed: true } });
   expect(await f.call(["operation", f.path, "--operation-id", "reply"])).toEqual({ operationId: "reply", outcome: "applied", receipt: reply.mutation });
   expect(await f.call(["operation", f.path, "--operation-id", "missing"])).toEqual({ operationId: "missing", outcome: "outcome_unknown", receipt: null });
-  const stale = ["resolve", f.path, id, "--actor", "assistant", "--operation-id", "stale", "--expected-thread-sequence", "1"];
+  const stale = ["resolve", f.path, id, "--actor", "assistant", "--agent-id", "assistant", "--operation-id", "stale", "--expected-thread-sequence", "1"];
   expect((await f.run(stale)).response).toMatchObject({ ok: false, error: { code: "conflict" } });
   expect((await f.call(["thread", f.path, id])).thread.status).toBe("open");
-  await f.call(["resolve", f.path, id, "--actor", "assistant", "--operation-id", "resolve", "--expected-thread-sequence", "2"]);
+  await f.call(["resolve", f.path, id, "--actor", "assistant", "--agent-id", "assistant", "--operation-id", "resolve", "--expected-thread-sequence", "2"]);
   expect(await f.call(args, "An answer")).toEqual({ mutation: { ...reply.mutation, replayed: true } });
   expect((await f.call(["thread", f.path, id])).thread).toEqual({ id, status: "resolved", sequence: 3 });
   expect(await readFile(f.path, "utf8")).toBe(original);
@@ -71,7 +71,7 @@ test("ordinary writes retain safe receipts, replay, conflicts, and file safety",
   expect(Object.keys(saved).sort()).toEqual(["bodyRevision", "documentId", "locationVersion", "machineId", "path"]);
   expect((await f.run(["document", "save", f.path, "--expected-body-revision", read.bodyRevision, "--body-file", "-"], "Stale overwrite")).response).toMatchObject({ ok: false, error: { code: "conflict" } });
   expect(await readFile(f.path, "utf8")).toBe("New body\n");
-  expect(await f.call(["pending", f.path, "--actor", "assistant"])).toHaveProperty("events.0.id", id);
+  expect(await f.call(["pending", f.path, "--actor", "assistant", "--agent-id", "assistant"])).toHaveProperty("events.0.id", id);
 });
 
 test("the distributed single-file skill installs without extra resources", async () => {
@@ -82,9 +82,9 @@ test("the distributed single-file skill installs without extra resources", async
 
 async function reviewCycle(passage: boolean, count: number) {
   const f = await fixture();
-  const initial = await f.call(["pending", f.path, "--actor", "assistant"]);
+  const initial = await f.call(["pending", f.path, "--actor", "assistant", "--agent-id", "assistant"]);
   await f.call(["document", "read", f.path]);
-  await f.call(["acknowledge", f.path, "--actor", "assistant", "--cursor", initial.cursor, "--operation-id", "baseline"]);
+  await f.call(["acknowledge", f.path, "--actor", "assistant", "--agent-id", "assistant", "--cursor", initial.cursor, "--operation-id", "baseline"]);
   for (let i = 0; i < count; i++) await f.comment(`seed-${i}`, `Question ${i}. ` + "Please consider this detail. ".repeat(20));
   let total = 0, calls = 0;
   const measured = async (args: string[], text?: string) => {
@@ -93,16 +93,16 @@ async function reviewCycle(passage: boolean, count: number) {
     total += bytes(result.response); calls++;
     return result.response.data as any;
   };
-  const pending = await measured(["pending", f.path, "--actor", "assistant"]);
+  const pending = await measured(["pending", f.path, "--actor", "assistant", "--agent-id", "assistant"]);
   for (const event of pending.events) {
     const id = event.threadId ?? event.id;
     const thread = await measured(["thread", f.path, id]);
     // Include passage context in workflows that need it; the index does not carry anchors.
     if (passage) await measured(["document", "context", f.path, id]);
-    await measured(["reply", f.path, id, "--actor", "assistant", "--operation-id", `answer-${id}`, "--expected-thread-sequence", String(thread.thread.sequence), "--body-file", "-"], "Handled; ready for your review.");
+    await measured(["reply", f.path, id, "--actor", "assistant", "--agent-id", "assistant", "--operation-id", `answer-${id}`, "--expected-thread-sequence", String(thread.thread.sequence), "--body-file", "-"], "Handled; ready for your review.");
   }
-  await measured(["acknowledge", f.path, "--actor", "assistant", "--cursor", pending.cursor, "--operation-id", "reviewed"]);
-  expect((await f.call(["pending", f.path, "--actor", "assistant"])).events).toEqual([]);
+  await measured(["acknowledge", f.path, "--actor", "assistant", "--agent-id", "assistant", "--cursor", pending.cursor, "--operation-id", "reviewed"]);
+  expect((await f.call(["pending", f.path, "--actor", "assistant", "--agent-id", "assistant"])).events).toEqual([]);
   expect(await readFile(f.path, "utf8")).toBe("# Review\n\nA unique passage to discuss.\n");
   return { bytes: total, calls };
 }
@@ -124,7 +124,7 @@ test("ordinary thread pages preserve lossless fragments and the current edited m
   const f = await fixture();
   const seeded = await f.comment("long-seed", "Original"); const id = seeded.mutation.appliedEventId;
   const text = '😀 \\"\n'.repeat(3000);
-  await f.call(["edit", f.path, id, id, "--actor", "hart", "--operation-id", "long-edit", "--expected-thread-sequence", "1", "--body-file", "-"], text);
+  await f.call(["edit", f.path, id, id, "--actor", "hart", "--agent-id", "hart", "--operation-id", "long-edit", "--expected-thread-sequence", "1", "--body-file", "-"], text);
   let continuation: string | undefined, joined = "", pages = 0;
   do {
     const page = await f.call(["thread", f.path, id, "--max-bytes", "2048", ...(continuation ? ["--continuation", continuation] : [])]);

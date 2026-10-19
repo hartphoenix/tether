@@ -321,7 +321,7 @@ test("provides command-specific help without daemon work", async () => {
       command: "help",
       data: {
         command: "acknowledge",
-        usage: "mdreview acknowledge <file> --actor <actor> --cursor <cursor> --operation-id <id> [--consumer <consumer>]",
+        usage: "mdreview acknowledge <file> --actor <name> [--agent-id <id>] --cursor <cursor> --operation-id <id> [--consumer <consumer>]",
       },
     },
   });
@@ -338,7 +338,7 @@ test("creates a private comment from a server-resolved quote", async () => {
   await daemon.ready;
 
   const created = await runCli([
-    "comment", path, "--actor", "assistant", "--quote", "quoted passage",
+    "comment", path, "--actor", "assistant", "--agent-id", "assistant", "--quote", "quoted passage",
     "--body-file", "-", "--operation-id", "comment-1",
   ], { config, readBody: async () => "Please review this passage." });
   expect(created.response).toMatchObject({ ok: true, command: "comment", data: { mutation: { operationId: "comment-1", appliedSequence: 1 } } });
@@ -395,7 +395,7 @@ test("runs the private review workflow with cursors and retry-safe mutations", a
   expect(read.exitCode).toBe(0);
   expect(read.response).toMatchObject({ protocol: 1, ok: true, command: "document.read", data: { body: "Review target\n", bodyRevision: initial.bodyRevision } });
 
-  const pending = await runCli(["pending", path, "--actor", "assistant"], { config });
+  const pending = await runCli(["pending", path, "--actor", "assistant", "--agent-id", "assistant"], { config });
   expect(pending.response).toMatchObject({ ok: true, command: "pending", data: { events: [{ id: threadId, type: "comment" }], throughSequence: 1 } });
   expect(JSON.stringify(pending.response)).not.toContain('"thread"');
   expect(JSON.stringify(pending.response)).not.toContain("Review target");
@@ -403,12 +403,12 @@ test("runs the private review workflow with cursors and retry-safe mutations", a
   expect(typeof cursor).toBe("string");
 
   expect((await runCli(["thread", path, threadId], { config })).response).toMatchObject({ ok: true, command: "thread", data: { thread: { id: threadId, status: "open" } } });
-  const replyArgs = ["reply", path, threadId, "--actor", "assistant", "--body-file", "-", "--operation-id", "reply-1"];
+  const replyArgs = ["reply", path, threadId, "--actor", "assistant", "--agent-id", "assistant", "--body-file", "-", "--operation-id", "reply-1"];
   const reply = await runCli(replyArgs, { config, readBody: async () => "Applied the requested revision.\nSecond line." });
   expect(reply.response).toMatchObject({ ok: true, command: "reply", data: { mutation: { operationId: "reply-1", appliedSequence: 2, replayed: false } } });
   const replay = await runCli(replyArgs, { config, readBody: async () => "Applied the requested revision.\nSecond line." });
   expect(replay.response).toMatchObject({ ok: true, command: "reply", data: { mutation: { operationId: "reply-1", appliedSequence: 2, replayed: true } } });
-  expect((await runCli(["resolve", path, threadId, "--actor", "assistant", "--operation-id", "resolve-1", "--expected-thread-sequence", "2"], { config })).response).toMatchObject({ ok: true, command: "resolve", data: { mutation: { operationId: "resolve-1", appliedSequence: 3 } } });
+  expect((await runCli(["resolve", path, threadId, "--actor", "assistant", "--agent-id", "assistant", "--operation-id", "resolve-1", "--expected-thread-sequence", "2"], { config })).response).toMatchObject({ ok: true, command: "resolve", data: { mutation: { operationId: "resolve-1", appliedSequence: 3 } } });
 
   expect(await readFile(path, "utf8")).toBe("Review target\n");
   const saved = await runCli(["document", "save", path, "--expected-body-revision", initial.bodyRevision, "--body-file", "-"], {
@@ -418,8 +418,8 @@ test("runs the private review workflow with cursors and retry-safe mutations", a
   expect(saved.response).toMatchObject({ ok: true, command: "document.save", data: { bodyRevision: bodyRevision("Revised by agent.\n\nMultiline body.\n") } });
   expect(await readFile(path, "utf8")).toBe("Revised by agent.\n\nMultiline body.\n");
 
-  expect((await runCli(["acknowledge", path, "--actor", "assistant", "--cursor", cursor, "--operation-id", "ack-1"], { config })).response).toMatchObject({ ok: true, command: "acknowledge", data: { mutation: { operationId: "ack-1", appliedSequence: 1, replayed: false } } });
-  expect((await runCli(["pending", path, "--actor", "assistant"], { config })).response).toMatchObject({ ok: true, data: { events: [] } });
+  expect((await runCli(["acknowledge", path, "--actor", "assistant", "--agent-id", "assistant", "--cursor", cursor, "--operation-id", "ack-1"], { config })).response).toMatchObject({ ok: true, command: "acknowledge", data: { mutation: { operationId: "ack-1", appliedSequence: 1, replayed: false } } });
+  expect((await runCli(["pending", path, "--actor", "assistant", "--agent-id", "assistant"], { config })).response).toMatchObject({ ok: true, data: { events: [] } });
 
   const conflict = await runCli(["document", "save", path, "--expected-body-revision", initial.bodyRevision, "--body-file", "-"], { config, readBody: async () => "Stale overwrite\n" });
   expect(conflict).toMatchObject({ exitCode: 1, response: { ok: false, command: "document.save", error: { code: "conflict", details: { outcome: "not_applied" } } } });

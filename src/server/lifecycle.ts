@@ -244,7 +244,7 @@ export function validateControlResponse(pathname: string, payload: unknown): boo
   if (pathname === "/control/folio/import") return value.cancelled === true || Array.isArray(value.completed) && Array.isArray(value.failed) && Array.isArray(value.paths) && ["applied", "partially_applied", "not_applied"].includes(value.outcome as string);
   if (pathname === "/control/turn/wait") {
     const turn = value.turn as Record<string, unknown> | null | undefined;
-    return turn === null ? typeof value.cursor === "string" || value.stopped === true : Boolean(turn && typeof turn.cursor === "string" && typeof turn.sequence === "number" && typeof turn.requestedAt === "string" && typeof turn.actor === "string");
+    return turn === null ? typeof value.cursor === "string" || value.stopped === true : Boolean(turn && typeof turn.cursor === "string" && typeof turn.sequence === "number" && typeof turn.requestedAt === "string" && typeof turn.agentId === "string");
   }
   if (pathname === "/control/folio/sync") return ["succeeded", "failed", "unsupported", "skipped"].includes(value.hostSyncStatus as string);
   return Object.keys(value).length > 0;

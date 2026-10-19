@@ -6,7 +6,7 @@ export function validateControlInput(body: Record<string, unknown>, path: string
   for (const key of ["expectedBodyRevision", "fromRevision", "expectedLedgerRevision", "expectedConversationRevision"] as const) {
     if (body[key] !== undefined && (typeof body[key] !== "string" || !/^sha256:[a-f0-9]{64}$/.test(body[key] as string))) throw invalidRequest(`Invalid ${key}: expected sha256:<64 lowercase hex characters>.`);
   }
-  for (const key of ["actor", "consumer", "operationId", "threadId", "targetId", "eventId", "path", "target", "cursor", "continuation", "candidateId", "expectedBodyRevision", "fromRevision"] as const) {
+  for (const key of ["actor", "agentId", "consumer", "operationId", "threadId", "targetId", "eventId", "path", "target", "cursor", "continuation", "candidateId", "expectedBodyRevision", "fromRevision"] as const) {
     if (key === "target" && body.target && typeof body.target === "object" && !Array.isArray(body.target) && !["/control/document/move", "/control/folio/locate"].includes(path) && !path.endsWith("/open")) {
       if (Object.entries(body.target).some(([key, value]) => key.length > 128 || typeof value !== "string" || Buffer.byteLength(value) > INPUT_LIMITS.identifier)) throw invalidRequest("Invalid host target.");
       continue;

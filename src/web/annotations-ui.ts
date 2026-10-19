@@ -5,7 +5,8 @@ import { placeOverlay } from './overlay';
 import { iconSvg } from "./icons";
 import { renderCommentBody } from "./comment-body";
 import { keepContentEndVisible, overlayScrollHeader } from "./scroll-geometry";
-import { agentColor } from "./agent-colors";
+import { identityColor, identityIcon, identityName, type IdentityLookup } from "./identities";
+import { bindAgentRename } from "./agent-rename";
 import { Plugin, PluginKey, Selection } from "@milkdown/kit/prose/state";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
@@ -89,6 +90,10 @@ export interface AnnotationUiOptions {
   onCopyFilePath?: () => void | Promise<void>;
   /** Actor using this viewer; any other latest author hands the thread to them. */
   localActor?: string;
+  /** Current name, icon and color for an author ID. */
+  identity?: IdentityLookup;
+  /** Right-click on an agent's name asks to rename it. */
+  onRenameAgent?: (id: string, x: number, y: number) => void;
   /** Optional lazy lookup keeps the controller independent of app state. */
   getEditorView?: () => EditorView | null;
 }
@@ -96,6 +101,8 @@ export interface AnnotationUiOptions {
 export interface AnnotationUiController {
   readonly plugin: ReturnType<typeof createAnnotationPlugin>;
   setState(state: DerivedAnnotationState): void;
+  /** Redraw author names, icons and colors after the identity registry changes. */
+  refreshIdentities(): void;
   attachEditorView(view: EditorView): void;
   detachEditorView(view?: EditorView): void;
   openCommentComposer(anchor?: AnnotationAnchor): void;
@@ -450,6 +457,22 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     getEditorView,
     localActor = "human",
   } = options;
+  const authorName = (actor: string) => identityName(options.identity, actor);
+  /** Sign an author element with its agent's current name, icon and color; the human stays plain. */
+  const signAuthor = (element: HTMLElement, actor: string) => {
+    element.dataset.authorId = actor;
+    const identity = options.identity?.(actor);
+    const icon = identityIcon(identity);
+    element.replaceChildren(...(icon ? [icon] : []), document.createTextNode(authorName(actor)));
+    if (actorMatches(actor, localActor)) return;
+    const colored = element.closest<HTMLElement>(".wm-editable-annotation") ?? element;
+    colored.style.setProperty("--wm-agent-color", identityColor(identity) ?? "var(--wm-annotation-muted)");
+    if (options.onRenameAgent && !element.dataset.renameBound) {
+      element.dataset.renameBound = "true";
+      bindAgentRename(element, (x, y) => options.onRenameAgent!(element.dataset.authorId!, x, y));
+    }
+  };
+  const authorSignature = (thread: AnnotationThread) => [thread.actor, ...(thread.replies ?? []).map(reply => reply.actor)].map(actor => options.identity?.(actor) ?? actor);
 
   let state: DerivedAnnotationState = { threads: [] };
   let editorView: EditorView | null = null;
@@ -543,6 +566,11 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       placements.get(composer)?.(); placements.delete(composer);
       makeDraggable(composer);
       composer.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+    },
+    refreshIdentities() {
+      if (destroyed) return;
+      renderRail();
+      for (const element of root.ownerDocument.querySelectorAll<HTMLElement>("[data-author-id]")) if (root.contains(element) || threadPopover?.contains(element)) signAuthor(element, element.dataset.authorId!);
     },
     createVisualDrawer(drawerRoot, onOpenChange) {
       return createAnnotationUi({ ...options, root: drawerRoot, visualDrawer: true,
@@ -659,7 +687,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     const details = renderThreadDetails(thread, orphaned);
     const popover = createElement("section", "wm-thread-popover");
     popover.setAttribute("role", "dialog");
-    popover.setAttribute("aria-label", `Comment by ${thread.actor}`);
+    popover.setAttribute("aria-label", `Comment by ${authorName(thread.actor)}`);
     const close = createElement("button", "wm-footnote-close");
     close.type = "button";
     close.textContent = "×";
@@ -768,7 +796,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     const textarea = createElement("textarea", "wm-annotation-textarea");
     textarea.rows = 2;
     textarea.placeholder = "Reply…";
-    textarea.setAttribute("aria-label", `Reply to ${thread.actor}`);
+    textarea.setAttribute("aria-label", `Reply to ${authorName(thread.actor)}`);
     const error = createElement("p", "wm-annotation-error");
     error.hidden = true;
     const actions = createElement("div", "wm-annotation-actions");
@@ -803,12 +831,12 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     const container = createElement("div", "wm-editable-annotation");
     container.dataset.messageId = targetId;
     messageBodies.set(container, value);
-    container.classList.toggle("is-assistant", actorMatches(actor, "assistant"));
-    // Agents sign their work in their own color; the human's messages stay uncolored.
-    if (!actorMatches(actor, localActor)) { container.classList.add("is-agent"); container.style.setProperty("--wm-agent-color", agentColor(actor)); }
+    // Agents sign their work with their own icon and color; the human's messages stay uncolored.
+    if (!actorMatches(actor, localActor)) container.classList.add("is-agent");
     const header = createElement("header", "wm-message-header");
     const author = createElement("span", "wm-message-author");
-    author.textContent = actor;
+    container.append(author);
+    signAuthor(author, actor);
     const meta = createElement("time", "wm-thread-time");
     meta.dateTime = createdAt;
     meta.title = formatTimestamp(createdAt);
@@ -946,26 +974,26 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   }
 
   function renderThread(thread: AnnotationThread, orphaned: boolean): HTMLElement {
-    const signature = JSON.stringify([thread, orphaned]);
+    const signature = JSON.stringify([thread, orphaned, authorSignature(thread)]);
     const cached = cards.get(thread.id);
     if (cached?.signature === signature) return cached.card;
     const latest = latestMessage(thread);
     const card = createElement("article", "wm-thread-card");
     card.dataset.threadId = thread.id;
-    card.dataset.lastAssistant = String(actorMatches(latest.actor, "assistant"));
+    card.dataset.lastAssistant = String(!actorMatches(latest.actor, localActor));
     if (thread.id === activeThreadId) card.classList.add("is-active");
     if (orphaned) card.classList.add("is-orphaned");
     if (thread.resolved) card.classList.add("is-resolved");
     const summary = createElement("button", "wm-thread-summary");
     summary.type = "button";
     summary.setAttribute("aria-expanded", String(thread.id === activeThreadId));
-    summary.setAttribute("aria-label", `Open thread started by ${thread.actor}`);
+    summary.setAttribute("aria-label", `Open thread started by ${authorName(thread.actor)}`);
     const identity = createElement("span", "wm-thread-identity");
     const dot = createElement("span", "wm-actor-dot");
     dot.setAttribute("aria-hidden", "true");
     const actor = createElement("span", "wm-thread-actor");
-    actor.textContent = latest.actor;
-    if (!actorMatches(latest.actor, localActor)) { actor.classList.add("is-agent"); actor.style.setProperty("--wm-agent-color", agentColor(latest.actor)); }
+    if (!actorMatches(latest.actor, localActor)) actor.classList.add("is-agent");
+    signAuthor(actor, latest.actor);
     identity.append(dot, actor);
     const labels = createElement("span", "wm-thread-labels");
     const status = createElement("span", "wm-thread-status");
@@ -989,7 +1017,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       const select = createElement("input", "wm-thread-select");
       select.type = "checkbox";
       select.checked = batchSelection.has(thread.id);
-      select.setAttribute("aria-label", `Select thread started by ${thread.actor}`);
+      select.setAttribute("aria-label", `Select thread started by ${authorName(thread.actor)}`);
       select.addEventListener("change", () => {
         if (select.checked) batchSelection.add(thread.id); else batchSelection.delete(thread.id);
         renderRail();
