@@ -25,6 +25,7 @@ import { Plugin } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose, replaceAll, callCommand } from "@milkdown/kit/utils";
 import { createCodeBlockCommand } from "@milkdown/kit/preset/commonmark";
+import { createTurnControls, type TurnAgent, type TurnPress } from "./turn-button";
 import { createAnnotationUi, captureAnchor, registerDocumentRevision, type AnnotationThread, type AnnotationUiController } from "./annotations-ui";
 import { apiErrorMessage } from "./api-error";
 import { createChromeControls } from "./chrome-controls";
@@ -146,6 +147,11 @@ let railResize: ReturnType<typeof createRailResize> | null = null;
 const threadSizing = createThreadSizing(async value => {
   applyAppearance(await api('api/preferences', { method: 'PUT', body: JSON.stringify(value) }));
 }, message => chrome.setNotice(message));
+const turnControls = createTurnControls({
+  request: actor => api<TurnPress>('api/turn', { method: 'POST', body: JSON.stringify({ actor }) }),
+  notice: message => chrome.setNotice(message),
+});
+let stopTurns: (() => void) | undefined;
 const fileActions = createFileActions({
   path: () => currentPath,
   notice: message => chrome.setNotice(message),
@@ -574,6 +580,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       root: annotationsRoot,
       sizingControl: threadSizing.root,
       fileControl: fileActions.root,
+      turnControl: turnControls.root,
       editorRoot,
       getEditorView,
       onNotice: (message) => chrome.setNotice(message),
@@ -756,6 +763,9 @@ async function start(): Promise<void> {
   hostOpensWebLinks = bootstrap.capabilities?.hostOpensWebLinks === true;
   revealAvailable = bootstrap.capabilities?.revealFile === true;
   fileActions.update(revealAvailable, readOnly, bootstrap.directoryPicker === true);
+  // Agent state is in daemon memory; short polls avoid holding a browser connection.
+  stopTurns?.();
+  stopTurns = pollPreferences('api/turns', (value: { agents: TurnAgent[] }) => turnControls.update(value.agents));
   stopFind?.();
   stopFind = bootstrap.capabilities?.pageFind ? installReaderFind(getEditorView) : undefined;
   installDiagramTrace();

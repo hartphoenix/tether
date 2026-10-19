@@ -35,4 +35,4 @@ When a customized copy needs your review, readers and Folio show **Review agent 
 
 Before applying your choice, Tether checks that both files still match what you reviewed. It then records the decision and clears the notice, so you don't need to find or delete proposal files. Tether continues to protect the customizations in a merged copy during later updates. To decide later, close the comparison.
 
-Leaving a comment doesn't start an agent turn. When you're ready, ask your agent to review the document, as shown in [getting started](../getting-started.md).
+Leaving a comment doesn't start an agent turn. When you're ready, ask your agent to review the document, as shown in [getting started](../getting-started.md). If your agents keep turn watchers armed, as the review skill describes, each one gets a **Go** button at the bottom of the threads drawer that starts its next turn.

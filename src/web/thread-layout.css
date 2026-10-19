@@ -181,3 +181,116 @@
 
 .wm-actor-dot { background: var(--wm-color-selected, #4678b7); }
 [data-last-assistant="true"] .wm-actor-dot { background: var(--wm-color-annotation, #bf7b18); }
+
+/* Agents sign their work in a stable palette color. Themes may override these on :root. */
+:root {
+  --tether-agent-1: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 135));
+  --tether-agent-2: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 270));
+  --tether-agent-3: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 45));
+  --tether-agent-4: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 180));
+  --tether-agent-5: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 315));
+  --tether-agent-6: oklch(from var(--wm-color-primary, #735b45) var(--wm-series-l, .6) var(--wm-series-c, .1) calc(h + 90));
+  --tether-go-size: 40px;
+  --tether-go-fg: var(--wm-color-background, #fffdf9);
+}
+.wm-editable-annotation.is-agent { isolation: isolate; }
+.wm-editable-annotation.is-agent::before {
+  content: "";
+  position: absolute;
+  inset: calc(-6px * var(--wm-ui-scale, 1)) calc(-8px * var(--wm-ui-scale, 1));
+  z-index: -1;
+  pointer-events: none;
+  border-left: calc(2px * var(--wm-ui-scale, 1)) solid var(--wm-agent-color);
+  border-radius: 0 calc(5px * var(--wm-ui-scale, 1)) calc(5px * var(--wm-ui-scale, 1)) 0;
+  background: color-mix(in srgb, var(--wm-agent-color) 8%, var(--wm-annotation-surface));
+}
+.wm-editable-annotation.is-agent .wm-message-author,
+.wm-thread-actor.is-agent { color: color-mix(in oklab, var(--wm-agent-color) 75%, currentColor); }
+
+/* Go buttons: one per waiting agent, stacked from the drawer's bottom-right corner. */
+.wm-turn-stack {
+  --wm-go-size: calc(var(--tether-go-size) * var(--wm-thread-ui-scale, 1));
+  --wm-go-gap: calc(10px * var(--wm-ui-scale, 1));
+  position: absolute;
+  z-index: 3;
+  right: calc(14px * var(--wm-ui-scale, 1));
+  bottom: calc(14px * var(--wm-ui-scale, 1));
+  display: flex;
+  max-width: calc(100% - 28px * var(--wm-ui-scale, 1));
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: var(--wm-go-gap);
+  pointer-events: none;
+}
+.wm-turn-agent { display: flex; min-width: 0; max-width: 100%; align-items: center; gap: calc(8px * var(--wm-ui-scale, 1)); --wm-agent-color: var(--wm-annotation-muted); }
+.wm-turn-agent[hidden] { display: none; }
+.wm-turn-caption {
+  overflow: hidden;
+  min-width: 0;
+  max-width: calc(160px * var(--wm-ui-scale, 1));
+  padding: calc(2px * var(--wm-ui-scale, 1)) calc(7px * var(--wm-ui-scale, 1));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--wm-annotation-surface) 88%, transparent);
+  color: color-mix(in oklab, var(--wm-agent-color) 70%, currentColor);
+  font-size: calc(11px * var(--wm-thread-ui-scale, 1));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wm-turn-caption:empty { display: none; }
+/* Narrow drawers keep the buttons and drop the captions. */
+@container (max-width: 220px) { .wm-turn-caption { display: none; } }
+.wm-annotation-rail.has-turn-control { container-type: inline-size; }
+.wm-turn-button {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--wm-go-size);
+  height: var(--wm-go-size);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--tether-go-fg);
+  background: var(--wm-agent-color);
+  box-shadow: var(--wm-shadow);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: transform 120ms ease-out, opacity 160ms ease-out;
+}
+.wm-turn-button .tether-icon { width: calc(var(--wm-go-size) * .5); height: calc(var(--wm-go-size) * .5); }
+.wm-turn-button:not(:disabled):hover { transform: scale(1.06); }
+.wm-turn-button:not(:disabled):active { transform: scale(.94); }
+.wm-annotation-rail .wm-turn-button:focus-visible { outline-color: var(--wm-agent-color); }
+.wm-turn-agent[data-state="none"] .wm-turn-button { cursor: default; opacity: .45; box-shadow: none; color: var(--wm-annotation-muted); background: transparent; border: calc(1.5px * var(--wm-ui-scale, 1)) dashed var(--wm-annotation-muted); }
+/* Working: the agent is taking its turn; a slow ring turns around the button. */
+.wm-turn-agent[data-state="working"] .wm-turn-button { cursor: progress; opacity: .7; }
+.wm-turn-agent[data-state="working"] .wm-turn-button::after {
+  content: "";
+  position: absolute;
+  inset: calc(-5px * var(--wm-ui-scale, 1));
+  border: calc(2px * var(--wm-ui-scale, 1)) dashed var(--wm-agent-color);
+  border-radius: 50%;
+  animation: wm-turn-working 6s linear infinite;
+}
+@keyframes wm-turn-working { to { rotate: 1turn; } }
+.wm-turn-agent.is-sent .wm-turn-button { animation: wm-turn-sent 600ms ease-out; }
+@keyframes wm-turn-sent {
+  0% { box-shadow: var(--wm-shadow), 0 0 0 0 color-mix(in srgb, var(--wm-agent-color) 80%, transparent); }
+  100% { box-shadow: var(--wm-shadow), 0 0 0 calc(14px * var(--wm-ui-scale, 1)) color-mix(in srgb, var(--wm-agent-color) 0%, transparent); }
+}
+/* Reserve room so the stack never covers the last thread card. */
+.wm-annotation-rail.has-turn-control { --wm-turn-rows: 1; }
+.wm-annotation-rail:has(.wm-turn-stack[data-count="2"]) { --wm-turn-rows: 2; }
+.wm-annotation-rail:has(.wm-turn-stack[data-count="3"]) { --wm-turn-rows: 3; }
+.wm-annotation-rail:has(.wm-turn-stack[data-count="4"]) { --wm-turn-rows: 4; }
+.wm-annotation-rail:has(.wm-turn-stack[data-count="5"]) { --wm-turn-rows: 5; }
+.wm-annotation-rail:has(.wm-turn-stack:not([data-count="1"], [data-count="2"], [data-count="3"], [data-count="4"], [data-count="5"])) { --wm-turn-rows: 6; }
+.wm-annotation-rail.has-turn-control .wm-annotation-rail-content {
+  padding-bottom: calc(var(--wm-turn-rows) * (var(--tether-go-size) * var(--wm-thread-ui-scale, 1) + 10px * var(--wm-ui-scale, 1)) + 8px * var(--wm-ui-scale, 1));
+}
+@media (prefers-reduced-motion: reduce) {
+  .wm-turn-button { transition: none; }
+  .wm-turn-button:not(:disabled):hover, .wm-turn-button:not(:disabled):active { transform: none; }
+  .wm-turn-agent.is-sent .wm-turn-button,
+  .wm-turn-agent[data-state="working"] .wm-turn-button::after { animation: none; }
+}

@@ -59,6 +59,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   "paseo.theme": { name: "paseo.theme", usage: "tether paseo theme <client-id> <theme-id|unknown>", min: 2, max: 2 },
   "paseo.status": { name: "paseo.status", usage: "tether paseo status", min: 0, max: 0 },
   "paseo.wait": { name: "paseo.wait", usage: "tether paseo wait [--after <cursor>] [--folio <version>] [--timeout <seconds>]", min: 0, max: 0, flags: { "--after": { value: true }, "--folio": { value: true }, "--timeout": { value: true } } },
+  "turn.wait": { name: "turn.wait", usage: "tether turn wait <file> --actor <actor> [--label <text>] [--after <cursor>] [--timeout <seconds>]", min: 1, max: 1, flags: { "--actor": { value: true }, "--label": { value: true }, "--after": { value: true }, "--timeout": { value: true } }, required: ["--actor"] },
   "paseo.ack": { name: "paseo.ack", usage: "tether paseo ack <intent-id>...", min: 1, max: Infinity },
   "wave.status": { name: "wave.status", usage: "mdreview wave status", min: 0, max: 0 },
   "wave.install": { name: "wave.install", usage: "mdreview wave install", min: 0, max: 0 },
@@ -98,7 +99,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
 
 function commandPrefix(argv: string[]): { name: string; start: number } {
   const [first, second] = argv;
-  if (["daemon", "cmux", "wave", "paseo", "document", "skills", "startup"].includes(first ?? "")) return { name: `${first}.${second ?? ""}`, start: 2 };
+  if (["daemon", "cmux", "wave", "paseo", "document", "skills", "startup", "turn"].includes(first ?? "")) return { name: `${first}.${second ?? ""}`, start: 2 };
   if (first === "recents" && second === "add") return { name: "recents.add", start: 2 };
   if (first === "folio" && second && commandSpecs[`folio.${second}`]) return { name: `folio.${second}`, start: 2 };
   return { name: first ?? "unknown", start: 1 };
@@ -162,6 +163,8 @@ export function parseCommand(argv: string[]): ParsedCommand {
     for (const [flag, value] of flags) {
       if (typeof value === "string" && Buffer.byteLength(value) > (flag === "--quote" ? 65536 : 8192)) usage(`${flag} is too long.`);
     }
+    const label = flags.get("--label");
+    if (typeof label === "string" && label.trim().length > 60) usage("--label must be 60 characters or fewer.");
     const retention = flags.get("--retention");
     if (typeof retention === "string" && retention !== "forever" && retention !== "immediate") positiveInteger(retention, "--retention");
     return { spec, positionals, flags, help: false };

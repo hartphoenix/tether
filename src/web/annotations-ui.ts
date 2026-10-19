@@ -5,6 +5,7 @@ import { placeOverlay } from './overlay';
 import { iconSvg } from "./icons";
 import { renderCommentBody } from "./comment-body";
 import { keepContentEndVisible, overlayScrollHeader } from "./scroll-geometry";
+import { agentColor } from "./agent-colors";
 import { Plugin, PluginKey, Selection } from "@milkdown/kit/prose/state";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
@@ -65,6 +66,8 @@ export interface AnnotationUiOptions {
   visualDrawer?: boolean;
   sizingControl?: HTMLElement;
   fileControl?: HTMLElement;
+  /** Anchored at the drawer's bottom-right corner; the scroll content reserves room for it. */
+  turnControl?: HTMLElement;
   /** Element into which the controller mounts its narrow rail. */
   root: HTMLElement;
   /** The rendered editor root, used for selecting anchors and footnotes. */
@@ -473,6 +476,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   const scroller = createElement("div", "wm-annotation-rail-scroll");
   scroller.append(content);
   rail.append(scroller);
+  if (options.turnControl) { rail.classList.add('has-turn-control'); rail.append(options.turnControl); }
   const stopEndRecovery = keepContentEndVisible(content, scroller);
   // Cards keep their parents across renders so CSS transitions can run.
   const orphanGroup = createElement("section", "wm-orphan-group");
@@ -542,7 +546,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     },
     createVisualDrawer(drawerRoot, onOpenChange) {
       return createAnnotationUi({ ...options, root: drawerRoot, visualDrawer: true,
-        editorRoot: undefined, getEditorView: undefined, sizingControl: undefined, fileControl: undefined,
+        editorRoot: undefined, getEditorView: undefined, sizingControl: undefined, fileControl: undefined, turnControl: undefined,
         onVisibleThreadsChange: undefined, onPendingCountChange: undefined,
         onSelectThread: undefined, onRailOpenChange: onOpenChange });
     },
@@ -791,6 +795,8 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     container.dataset.messageId = targetId;
     messageBodies.set(container, value);
     container.classList.toggle("is-assistant", actorMatches(actor, "assistant"));
+    // Agents sign their work in their own color; the human's messages stay uncolored.
+    if (!actorMatches(actor, localActor)) { container.classList.add("is-agent"); container.style.setProperty("--wm-agent-color", agentColor(actor)); }
     const header = createElement("header", "wm-message-header");
     const author = createElement("span", "wm-message-author");
     author.textContent = actor;
@@ -950,6 +956,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     dot.setAttribute("aria-hidden", "true");
     const actor = createElement("span", "wm-thread-actor");
     actor.textContent = latest.actor;
+    if (!actorMatches(latest.actor, localActor)) { actor.classList.add("is-agent"); actor.style.setProperty("--wm-agent-color", agentColor(latest.actor)); }
     identity.append(dot, actor);
     const labels = createElement("span", "wm-thread-labels");
     const status = createElement("span", "wm-thread-status");
