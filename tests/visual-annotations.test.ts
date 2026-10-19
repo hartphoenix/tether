@@ -1,3 +1,4 @@
+import { validateControlResponse } from "../src/server/lifecycle";
 import { test, expect } from 'bun:test';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -6,7 +7,7 @@ import { DocumentService } from '../src/documents/document-service';
 import { PrivateStore } from '../src/storage/private-store';
 import { bodyRevision, createAnchor, resolveAnchor } from '../src/core/annotation-ledger';
 import { encodePng, decodePng, renderEvidence } from '../src/documents/visual-png';
-import { validateRegion } from '../src/core/visual-anchor';
+import { validateRegion, validateVisual } from '../src/core/visual-anchor';
 import { AgentReads } from '../src/documents/agent-reads';
 const png = encodePng({ width: 30, height: 20, data: new Uint8Array(30 * 20 * 4).fill(255) });
 const hash = 'sha256:' + createHash('sha256').update(png).digest('hex');
@@ -19,6 +20,17 @@ function anchor() {
 test('visual rectangles reject non-finite, empty and out of bounds geometry', () => {
     for (const r of [{ x: NaN, y: 0, width: 1, height: 1 }, { x: 0, y: 0, width: 0, height: 1 }, { x: .8, y: 0, width: .3, height: 1 }])
         expect(() => validateRegion(r)).toThrow();
+});
+test('diagram element targets survive validation and reject malformed names', () => {
+    expect(validateVisual({ ...anchor().visual, targets: ['pele-node:Write draft', 'pele-edge:L_A_B_0'] }).targets).toEqual(['pele-node:Write draft', 'pele-edge:L_A_B_0']);
+    expect(validateVisual({ ...anchor().visual, target: 'pele-node:C' } as never).targets).toEqual(['pele-node:C']);
+    expect(validateVisual(anchor().visual).targets).toBeUndefined();
+    const box = { x: .2, y: .2, width: .1, height: .1 };
+    expect(validateVisual({ ...anchor().visual, targets: ['pele-point:A'], targetBox: box }).targetBox).toEqual(box);
+    expect(validateVisual({ ...anchor().visual, targetBox: box }).targetBox).toBeUndefined();
+    expect(() => validateVisual({ ...anchor().visual, targets: ['pele-point:A'], targetBox: { ...box, width: 2 } })).toThrow();
+    for (const targets of [[], [''], ['node'], [':A'], ['Pele-node:A'], ['pele-node:' + 'x'.repeat(513)], Array(33).fill('pele-node:A')])
+        expect(() => validateVisual({ ...anchor().visual, targets })).toThrow();
 });
 test('bounded PNG evidence produces readable overview and exact crop dimensions', () => {
     expect(decodePng(png).data.every(n => n === 255)).toBe(true);
@@ -70,7 +82,9 @@ test('visual creation, retained evidence, receipts, reanchor conflicts, package 
         const overview = await service.visual(grant, thread.id);
         expect(overview.verification).toBe('unverified');
         expect(decodePng(Buffer.from(await readFile(overview.artifact))).width).toBe(30);
-        expect(new AgentReads(store).context(grant.path, body, thread.id)).toMatchObject({ retrieval: 'visual', region: replacement.visual.region });
+        const context = new AgentReads(store).context(grant.path, body, thread.id);
+        expect(context).toMatchObject({ retrieval: 'visual', region: replacement.visual.region });
+        expect(validateControlResponse('/control/document/context', context)).toBe(true);
         await service.deleteConversation(grant.path);
         expect(store.db.query('SELECT COUNT(*) AS n FROM visual_evidence WHERE document_id=?').get(created.annotations.header!.documentId!)).toEqual({ n: 0 });
     }
@@ -115,6 +129,10 @@ test('source-aware block matching preserves unique moves and rejects a different
     const duplicate = { ...createAnchor(duplicates.projection, 7, 8, revision), visual: { ...a.visual, occurrences: 2 } };
     const survivor = markdownProjectionDetails('Middle\n\n![A](a.png)\n\nAfter');
     expect(locateVisualBlock(duplicate, survivor.projection, survivor.blocks)).toBeNull();
+    const edited = markdownProjectionDetails('Before\n\n![A](c.png)\n\nRewritten after');
+    expect(locateVisualBlock(a, edited.projection, edited.blocks)?.source).toBe('c.png');
+    const twoEdited = markdownProjectionDetails('Before\n\n![A](c.png)\n\n![A](d.png)\n\nRewritten after');
+    expect(locateVisualBlock(a, twoEdited.projection, twoEdited.blocks)?.source).toBe('c.png');
 });
 test('local image replacement without Markdown edits rejects stale capture and retains evidence', async () => {
     const root = await mkdtemp('/tmp/tether-image-revision-'), store = new PrivateStore(join(root, 'store.sqlite'));

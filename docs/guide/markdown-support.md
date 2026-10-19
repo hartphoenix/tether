@@ -45,7 +45,7 @@ Pinch an image to open it in the zoom viewer.
 
 ## Diagrams
 
-Tether renders Mermaid diagrams locally, using your theme's colors and code font. **Edit** shows a diagram's source, and an invalid diagram shows its source in place of the drawing. To expand a diagram, choose **Zoom** or pinch it. In the viewer, pinch or use the zoom buttons to zoom, scroll to pan, and press Escape or **Close** to return to the document.
+Tether renders Mermaid diagrams locally with [Pele](https://pele.run), using your theme's colors and reading font. Diagrams lay out again for narrow screens instead of shrinking, and on wide screens they can extend past the text column. Hover or tap an element to highlight what it connects to. To use the Mermaid library instead, add `diagrams: mermaid` to the document's frontmatter. **Edit** shows a diagram's source, and an invalid diagram shows its source in place of the drawing. To expand a diagram, choose **Zoom** or pinch it. In the viewer, pinch or use the zoom buttons to zoom, scroll to pan, and press Escape or **Close** to return to the document.
 
 ## Footnotes
 

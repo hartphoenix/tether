@@ -348,6 +348,38 @@ html[data-wm-scheme="light"] img[src$="#gh-dark-mode-only"] { display: none; }
 
 .wm-mermaid-error { padding: 12px; color: var(--wm-color-on-surface-variant, inherit); }
 
+/* Pele reads theme tokens live: color changes need no re-render; font changes refresh previews. */
+:root {
+  --pele-font: var(--wm-font-body, sans-serif);
+  --pele-font-mono: var(--wm-font-code, monospace);
+  --pele-bg: var(--wm-color-surface);
+  --pele-fg: var(--wm-color-on-surface);
+  /* Derived from body text, not on-surface-variant, which some themes keep too faint for labels. */
+  --pele-muted: color-mix(in oklab, var(--wm-color-on-surface) 74%, var(--wm-color-surface));
+  --pele-line: color-mix(in oklab, var(--wm-color-on-surface) 52%, var(--wm-color-surface));
+  --pele-surface: var(--wm-color-background);
+  --pele-surface-alt: var(--wm-color-surface-low);
+  --pele-border: color-mix(in oklab, var(--wm-color-outline) 85%, var(--wm-color-surface));
+  --pele-accent: var(--wm-color-primary);
+  --pele-critical: var(--wm-color-error);
+  --pele-error: var(--wm-color-error);
+  --pele-radius: 6px;
+  --pele-title-weight: 600;
+  --pele-heading-weight: 600;
+  --wm-series-l: .6; --wm-series-c: .1;
+  --pele-series-1: var(--wm-color-primary);
+  --pele-series-2: oklch(from var(--wm-color-primary) var(--wm-series-l) var(--wm-series-c) calc(h + 135));
+  --pele-series-3: oklch(from var(--wm-color-primary) var(--wm-series-l) var(--wm-series-c) calc(h + 270));
+  --pele-series-4: oklch(from var(--wm-color-primary) var(--wm-series-l) var(--wm-series-c) calc(h + 45));
+  --pele-series-5: oklch(from var(--wm-color-primary) var(--wm-series-l) var(--wm-series-c) calc(h + 180));
+  --pele-series-6: oklch(from var(--wm-color-primary) var(--wm-series-l) var(--wm-series-c) calc(h + 315));
+  --pele-series-7: oklch(from var(--wm-color-primary) var(--wm-series-l) var(--wm-series-c) calc(h + 90));
+  --pele-series-8: oklch(from var(--wm-color-primary) var(--wm-series-l) var(--wm-series-c) calc(h + 225));
+}
+html[data-wm-scheme="dark"] { --wm-series-l: .74; --wm-series-c: .09; }
+.wm-pele { overflow-x: visible; }
+.wm-pele svg { display: block; margin: 0 auto; }
+
 .wm-diagram-expand svg { width: 1em; height: 1em; margin-right: .35em; }
 .wm-diagram-viewer[open] {
   position: fixed; inset: 0; box-sizing: border-box; margin: 0; padding: 0; border: 0;
@@ -504,6 +536,21 @@ html[data-wm-scheme="light"] img[src$="#gh-dark-mode-only"] { display: none; }
 .wm-diagram-viewer .wm-diagram-controls { grid-column: 1 / -1; }
 .wm-diagram-viewer .wm-diagram-viewport { grid-column: 1; grid-row: 2; min-height: 0; }
 .wm-visual-drawer { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; overflow: hidden; }
+/* A new comment's composer takes the drawer's column until it is saved or cancelled. */
+.wm-diagram-viewer:has(.wm-region-composer) .wm-visual-drawer { display: none; }
 .wm-visual-drawer .wm-annotation-rail { position: relative; inset: auto; width: min(360px, 40vw); min-width: 0; height: 100%; max-height: 100%; box-sizing: border-box; }
 .wm-visual-drawer .wm-annotation-rail-header { display: flex; justify-content: flex-end; }
 @media (prefers-reduced-motion: reduce) { .wm-diagram-viewer[open] { transition: none; } }
+
+/* Hovering a diagram element while selecting previews the region a tap would choose. */
+.is-selecting-region .wm-region-overlay rect.is-candidate { stroke-dasharray: 4 3; fill: color-mix(in srgb, var(--wm-color-selected, #8dc7e8) 14%, transparent); }
+
+/* Tracing dims what an element does not touch and draws its connections in the accent.
+   Opacity and stroke transitions repaint only the small diagram SVG. */
+svg.pele .is-dimmed { opacity: .28; }
+svg.pele :is(.pele-node, .pele-edge, .pele-edge-label, .pele-sankey-node, .pele-sankey-link, .pele-slice, .pele-legend-item, .pele-task, .pele-point, .pele-commit, .pele-lifeline, .pele-cluster) { transition: opacity 200ms ease; }
+svg.pele :is(.pele-edge path, path.pele-edge, .pele-marker, .pele-node > :first-child) { transition: stroke 200ms ease, stroke-width 200ms ease, fill 200ms ease; }
+.wm-trace .pele-edge.is-traced { --_l: var(--wm-color-primary); }
+.wm-trace :is(.pele-edge.is-traced path:not(.pele-marker), path.pele-edge.is-traced) { stroke: var(--wm-color-primary); stroke-width: 2px; }
+.wm-trace .pele-node.is-traced > :first-child { stroke: var(--wm-color-primary); stroke-width: 2px; }
+@media (prefers-reduced-motion: reduce) { svg.pele * { transition: none !important; } }

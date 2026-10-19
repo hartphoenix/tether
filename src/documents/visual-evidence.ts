@@ -89,7 +89,7 @@ export async function visualOverview(store: PrivateStore, path: string, body: st
     await mkdir(folder, { recursive: true, mode: 0o700 });
     const artifactPath = join(folder, createHash('sha256').update(artifact).digest('hex') + '.png');
     await writeFile(artifactPath, artifact, { mode: 0o600 });
-    return { status: 'available', history: history ?? null, artifact: artifactPath, mimeType: 'image/png', mode, visualRevision: v.layoutRevision, evidence: v.evidence, width: v.width, height: v.height, ...status, regions: group.map((t, i) => ({ number: i + 1, threadId: t.id, comment: t.comment.body.slice(0, 1000), region: t.anchor.visual!.region })), nextOffset: offset + group.length < matching.length ? offset + group.length : null, operations: ['visual --mode crop', 'visual --mode clean'], load: 'Open the artifact path with your image/vision tool.' };
+    return { status: 'available', history: history ?? null, artifact: artifactPath, mimeType: 'image/png', mode, visualRevision: v.layoutRevision, evidence: v.evidence, width: v.width, height: v.height, ...status, regions: group.map((t, i) => ({ number: i + 1, threadId: t.id, comment: t.comment.body.slice(0, 1000), region: t.anchor.visual!.region, ...(t.anchor.visual!.targets ? { targets: t.anchor.visual!.targets } : {}) })), nextOffset: offset + group.length < matching.length ? offset + group.length : null, operations: ['visual --mode crop', 'visual --mode clean'], load: 'Open the artifact path with your image/vision tool.' };
 }
 /** Read only a currently referenced local asset; never fetch a remote image. */
 export async function currentImageRevision(path: string, body: string, source: string): Promise<string | undefined> {

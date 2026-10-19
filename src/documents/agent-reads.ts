@@ -6,7 +6,8 @@ import remarkGfm from 'remark-gfm';
 import GithubSlugger from 'github-slugger';
 import { prepareMarkdown } from '../core/markdown-codec';
 import { bodyRevision, type ReviewEvent } from "../core/index";
-import { markdownProjection } from "../server/quote-anchor";
+import { markdownProjection, markdownProjectionDetails } from "../server/quote-anchor";
+import { locateVisualBlock } from "../core/visual-anchor";
 import { PrivateStore, PrivateStoreConflictError, PrivateStoreDocumentNotFoundError, REVIEW_CURSOR_LIFETIME_MS } from "../storage/private-store";
 export type AgentPageOptions = {
     limit?: number;
@@ -340,7 +341,13 @@ export class AgentReads {
         if (!row)
             fail("Annotation thread not found.");
         const anchor = JSON.parse(row.anchor_json) as AnnotationAnchor, projection = markdownProjection(body);
-        if (anchor.visual) return { bodyRevision: revision, threadId, ...visualStatus(anchor,body,revision), visualRevision: anchor.visual.layoutRevision, region: anchor.visual.region, retrieval: "visual", maxBytes };
+        const radius = bound(options.radius, 300, 1, 10000);
+        if (anchor.visual) {
+            // Visual anchors share the text contract: nearby prose plus the block's source.
+            const details = markdownProjectionDetails(body), block = locateVisualBlock(anchor, details.projection, details.blocks, revision);
+            const contextStart = block ? Math.max(0, block.start - radius) : 0, text = block ? fitText(details.projection.slice(contextStart, block.end + radius), maxBytes - 900 - JSON.stringify(anchor.visual.targets ?? []).length) : "";
+            return { bodyRevision: revision, threadId, anchorStatus: block ? "located" : "orphaned", ...visualStatus(anchor,body,revision), projectionStart: block?.start ?? null, contextStart: block ? contextStart : null, text, truncated: Boolean(block) && contextStart + text.length < details.projection.length, visualRevision: anchor.visual.layoutRevision, region: anchor.visual.region, ...(anchor.visual.targets ? { targets: anchor.visual.targets } : {}), retrieval: "visual", maxBytes };
+        }
         let start = projection.indexOf(anchor.exact), count = 0, located = -1;
         // Context distinguishes repeated quotes using stored surrounding text when possible.
         while (start >= 0 && anchor.exact) {
@@ -351,7 +358,6 @@ export class AgentReads {
         }
         const status = count === 0 ? "orphaned" : count === 1 || located >= 0 ? "located" : "ambiguous";
         const position = status === "located" ? (located >= 0 ? located : projection.indexOf(anchor.exact)) : null;
-        const radius = bound(options.radius, 300, 1, 10000);
         const contextStart = position === null ? 0 : Math.max(0, position - radius), text = position === null ? "" : fitText(projection.slice(contextStart, position + anchor.exact.length + radius), maxBytes - 600);
         return { bodyRevision: revision, threadId, anchorStatus: status, occurrences: count, projectionStart: position, contextStart: position === null ? null : contextStart, text, truncated: position !== null && contextStart + text.length < projection.length, maxBytes };
     }

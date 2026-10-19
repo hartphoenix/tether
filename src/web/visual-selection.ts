@@ -1,6 +1,6 @@
 import type { AnnotationThread, AnnotationUiController } from './annotations-ui';
 import { iconSvg } from './icons';
-import { regionLayer, visualMatches } from './visual-regions';
+import { regionLayer, visualMatches, elementRegion, elementTarget, coveredTargets, targetsRegion } from './visual-regions';
 import { captureVisual } from './visual-capture';
 import { validateRegion, type Region } from '../core/visual-anchor';
 import type { AnnotationAnchor } from '../core/annotation-ledger';
@@ -9,7 +9,8 @@ export type VisualSelectionOptions = {
     threads: () => readonly AnnotationThread[];
     prepare: () => Promise<AnnotationAnchor>;
     isCurrent?: () => boolean;
-    save: (anchor: AnnotationAnchor, png: string, body: string, operationId: string) => Promise<void>;
+    /** `redraw` replaces the opened thread's region; otherwise the selection starts a new thread. */
+    save: (anchor: AnnotationAnchor, png: string, body: string, operationId: string, redraw: boolean) => Promise<void>;
     thread?: {
         id: string;
         body: string;
@@ -21,6 +22,9 @@ export type VisualSelectionOptions = {
     isThreadVisible?: () => boolean;
     regions?: () => {threadId: string; anchor: AnnotationAnchor; label: string; open: () => void}[];
 };
+/** Mermaid and Pele groups that make sense to comment on as a whole. */
+const SNAP_TARGETS = '.pele-node, .pele-edge-label, .pele-cluster-label, .pele-cluster, g.node, g.edgeLabel, g.cluster, .actor, .messageText, .note, .task, [data-id]';
+const SNAP_MARKS = 'rect, circle, ellipse, polygon';
 /** The pointer loop only maps coordinates and paints an SVG rectangle. */
 export function installVisualSelection(dialog: HTMLDialogElement, controls: HTMLElement, stage: HTMLElement, source: SVGSVGElement | HTMLImageElement, options: VisualSelectionOptions) {
     const threadPanel = document.createElement('div');
@@ -83,6 +87,15 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         y: number;
     } | null = null, pointer: number | null = null, region: Region | null = null, frame = 0, composer: HTMLElement | null = null, saving = false;
     let savedCurrent = false;
+    // A viewer opened from a thread still offers new comments; it redraws only a stale or requested region.
+    let redrawing = false;
+    const setRedrawing = (value: boolean) => {
+        redrawing = value;
+        select.hidden = false;
+        select.innerHTML = iconSvg('message-square') + (value ? 'Redraw selection' : 'Comment');
+        select.setAttribute('aria-label', value ? 'Redraw selection' : 'Comment');
+    };
+    let snapped: string | undefined;
     let capture: Awaited<ReturnType<typeof captureVisual>> | undefined, anchor: AnnotationAnchor | undefined;
     function align() {
         const b = source.getBoundingClientRect(), s = stage.getBoundingClientRect();
@@ -97,7 +110,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         rect.setAttribute('ry', String(bounds.height ? radius / bounds.height : 0));
         const visible = options.isThreadVisible?.() !== false;
         rect.setAttribute('visibility', region && visible ? 'visible' : 'hidden');
-        if (!visible) { status.textContent = ''; select.hidden = true; }
+        if (!visible && redrawing) { status.textContent = ''; select.hidden = true; }
         if (region)
             for (const [k, v] of Object.entries(region))
                 rect.setAttribute(k, String(v));
@@ -109,7 +122,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         select.setAttribute('aria-pressed', String(value));
         overlay.style.pointerEvents = value ? 'auto' : 'none';
         overlay.style.cursor = value ? 'crosshair' : '';
-        status.textContent = value ? 'select a region, or [esc] to cancel' : '';
+        status.textContent = value ? (source instanceof SVGSVGElement ? 'tap an element or draw a region, [esc] to cancel' : 'select a region, or [esc] to cancel') : '';
         paint();
     }
     function cancel() {
@@ -161,9 +174,38 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         const b = source.getBoundingClientRect();
         return { x: Math.max(0, Math.min(1, (event.clientX - b.left) / b.width)), y: Math.max(0, Math.min(1, (event.clientY - b.top) / b.height)) };
     };
+    /** A tap on a diagram element selects its box; drawing remains available everywhere. */
+    function snapRegion(e: PointerEvent): Region | null {
+        snapped = undefined;
+        if (!(source instanceof SVGSVGElement))
+            return null;
+        const hit = document.elementsFromPoint(e.clientX, e.clientY).find(el => el !== source && source.contains(el));
+        const named = hit?.closest(SNAP_TARGETS);
+        // Charts without element groups (bars, dots, labels) snap to the tapped mark itself.
+        const element = named && source.contains(named) ? named : hit?.closest('text') ?? (hit?.matches(SNAP_MARKS) ? hit : null);
+        if (!element)
+            return null;
+        const box = elementRegion(source, element);
+        // Backgrounds and plot areas are not marks.
+        if (!named && box && box.width * box.height > .25)
+            return null;
+        if (box)
+            snapped = elementTarget(element);
+        return box;
+    }
+    function hover(e: PointerEvent) {
+        if (!active || start || saving || e.pointerType === 'touch')
+            return;
+        region = snapRegion(e);
+        rect.classList.toggle('is-candidate', Boolean(region));
+        if (!frame)
+            frame = requestAnimationFrame(paint);
+    }
     function move(e: PointerEvent) {
         if (!start || e.pointerId !== pointer)
-            return;
+            return hover(e);
+        rect.classList.remove('is-candidate');
+        snapped = undefined;
         const p = point(e);
         region = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), width: Math.abs(start.x - p.x), height: Math.abs(start.y - p.y) };
         if (!frame)
@@ -176,12 +218,15 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         const latest = await captureVisual(source);
         if (latest.layoutRevision !== capture.layoutRevision)
             throw Error('The visual changed. Cancel and select a new region.');
-        const nextAnchor = { ...anchor, visual: { ...anchor.visual!, width: capture.width, height: capture.height, evidence: capture.evidence, layoutRevision: capture.layoutRevision, ...(capture.viewBox ? { viewBox: capture.viewBox } : {}), region: validateRegion(region) } };
-        await options.save(nextAnchor, capture.png, body, operationId);
-        if (options.thread) {
+        const { targets: _previous, targetBox: _previousBox, ...visual } = anchor.visual!;
+        const targets = snapped ? [snapped] : source instanceof SVGSVGElement ? coveredTargets(source, region) : undefined;
+        const drawnBox = !snapped && targets && source instanceof SVGSVGElement ? targetsRegion(source, targets) ?? undefined : undefined;
+        const nextAnchor = { ...anchor, visual: { ...visual, width: capture.width, height: capture.height, evidence: capture.evidence, layoutRevision: capture.layoutRevision, ...(capture.viewBox ? { viewBox: capture.viewBox } : {}), region: validateRegion(region), ...(targets ? { targets } : {}), ...(drawnBox ? { targetBox: drawnBox } : {}) } };
+        await options.save(nextAnchor, capture.png, body, operationId, redrawing);
+        if (redrawing && options.thread) {
             options.thread = { ...options.thread, anchor: nextAnchor };
             savedCurrent = true;
-            select.hidden = true;
+            setRedrawing(false);
         }
     }
     function compose() {
@@ -191,14 +236,14 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         const text = document.createElement('textarea');
         text.className = 'wm-annotation-textarea';
         text.rows = 3;
-        text.setAttribute('aria-label', options.thread ? 'Replacement region' : 'Comment');
+        text.setAttribute('aria-label', redrawing ? 'Replacement region' : 'Comment');
         text.placeholder = 'Comment on this region';
-        text.required = !options.thread;
+        text.required = !redrawing;
         const error = document.createElement('div');
         error.setAttribute('role', 'status');
         const save = document.createElement('button');
         save.type = 'submit';
-        save.textContent = options.thread ? 'Save selection' : 'Comment';
+        save.textContent = redrawing ? 'Save selection' : 'Comment';
         save.className = 'wm-button wm-button-primary';
         const discard = document.createElement('button');
         discard.type = 'button';
@@ -208,7 +253,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         const actions = document.createElement('div');
         actions.className = 'wm-annotation-actions';
         actions.append(discard, save);
-        if (!options.thread)
+        if (!redrawing)
             form.append(text);
         form.append(error, actions);
         dialog.append(form);
@@ -232,7 +277,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
                 save.disabled = discard.disabled = false;
             }
         };
-        if (options.thread)
+        if (redrawing)
             form.requestSubmit();
         else
             text.focus();
@@ -247,10 +292,22 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         region = null;
     });
     overlay.addEventListener('pointermove', move);
+    overlay.addEventListener('pointerleave', () => {
+        if (start || !rect.classList.contains('is-candidate'))
+            return;
+        rect.classList.remove('is-candidate');
+        region = null;
+        paint();
+    });
     overlay.addEventListener('pointerup', e => {
         if (!start || e.pointerId !== pointer)
             return;
-        move(e);
+        const tap = region === null || (region.width * overlay.getBoundingClientRect().width < 6 && region.height * overlay.getBoundingClientRect().height < 6);
+        if (tap)
+            region = snapRegion(e);
+        else
+            move(e);
+        rect.classList.remove('is-candidate');
         start = null;
         overlay.releasePointerCapture(e.pointerId);
         pointer = null;
@@ -270,7 +327,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
         paint();
     });
     select.onclick = () => void begin();
-    dialog.addEventListener("wm-redraw", () => void begin());
+    dialog.addEventListener("wm-redraw", () => { if (options.thread) setRedrawing(true); void begin(); });
     dialog.addEventListener('cancel', e => {
         if (active || composer || saving) {
             e.preventDefault();
@@ -309,9 +366,7 @@ export function installVisualSelection(dialog: HTMLDialogElement, controls: HTML
             if (current) {
                 paint();
             }
-            select.hidden = current;
-            select.textContent = 'Redraw selection';
-            select.setAttribute('aria-label', 'Redraw selection');
+            setRedrawing(!current);
         }
         if (options.startSelecting || (options.redraw && !savedCurrent))
             void begin();
