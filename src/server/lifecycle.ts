@@ -27,6 +27,8 @@ export class ControlRequestError extends Error {
   readonly code: string;
   readonly status: number;
   readonly details?: unknown;
+  /** The response body was cut off before it parsed; a read-only request may retry it. */
+  incomplete = false;
 
   constructor(code: string, message: string, status: number, details?: unknown) {
     super(message);
@@ -292,7 +294,11 @@ export async function controlRequest<T>(config: TetherConfig, pathname: string, 
       }
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
     payload = JSON.parse(Buffer.concat(chunks, bytes).toString("utf8"));
-  } catch (cause) { throw new ControlRequestError("invalid_response", "The daemon returned an invalid or incomplete response.", response.status, errorDetails(cause, recovery)); }
+  } catch (cause) {
+    const failure = new ControlRequestError("invalid_response", "The daemon returned an invalid or incomplete response.", response.status, errorDetails(cause, recovery));
+    failure.incomplete = true;
+    throw failure;
+  }
   if (!response.ok) {
     const issue = payload && typeof payload === "object" ? (payload as { error?: { code?: unknown; message?: unknown; details?: unknown } }).error : undefined;
     const details = { ...(response.status === 400 && issue?.code === "invalid_request" ? { outcome: "not_applied" } : {}), ...(issue?.details && typeof issue.details === "object" ? issue.details : issue?.details === undefined ? {} : { detail: issue.details }) };
