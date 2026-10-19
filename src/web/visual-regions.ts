@@ -97,11 +97,13 @@ export function regionLayer(source: SVGSVGElement | HTMLImageElement, parent: HT
     }
     parent.append(layer);
     const align = () => {
-        const b = source.getBoundingClientRect(), p = parent.getBoundingClientRect();
+        // Measure against the box that actually positions the layer: an inline image's parent is static.
+        const host = (layer.offsetParent as HTMLElement | null) ?? parent;
+        const b = source.getBoundingClientRect(), p = host.getBoundingClientRect();
         if (!b.width || !b.height) return;
-        // Document zoom scales the parent with a transform; convert screen pixels to its local pixels.
-        const k = parent.offsetWidth ? p.width / parent.offsetWidth : 1;
-        Object.assign(layer.style, { left: `${(b.left - p.left) / k + parent.scrollLeft}px`, top: `${(b.top - p.top) / k + parent.scrollTop}px`, width: `${b.width / k}px`, height: `${b.height / k}px` });
+        // Document zoom scales the host with a transform; convert screen pixels to its local pixels.
+        const k = host.offsetWidth ? p.width / host.offsetWidth : 1;
+        Object.assign(layer.style, { left: `${(b.left - p.left - host.clientLeft * k) / k + host.scrollLeft}px`, top: `${(b.top - p.top - host.clientTop * k) / k + host.scrollTop}px`, width: `${b.width / k}px`, height: `${b.height / k}px` });
         const placed: DOMRect[] = [];
         for (const badge of layer.querySelectorAll<HTMLElement>('.wm-visual-badge')) {
             badge.style.transform = '';
@@ -117,6 +119,8 @@ export function regionLayer(source: SVGSVGElement | HTMLImageElement, parent: HT
 
     };
     const observer = new ResizeObserver(align); observer.observe(source); observer.observe(parent);
+    // A static parent (inline image) leaves the layer in an ancestor's coordinates; reflow there moves the image.
+    if (layer.offsetParent && layer.offsetParent !== parent) observer.observe(layer.offsetParent);
     layer.querySelectorAll('.wm-visual-badge').forEach(badge => observer.observe(badge));
     align();
     return { align, remove: () => { observer.disconnect(); layer.remove(); } };
