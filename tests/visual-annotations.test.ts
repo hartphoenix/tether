@@ -129,6 +129,10 @@ test('source-aware block matching preserves unique moves and rejects a different
     const duplicate = { ...createAnchor(duplicates.projection, 7, 8, revision), visual: { ...a.visual, occurrences: 2 } };
     const survivor = markdownProjectionDetails('Middle\n\n![A](a.png)\n\nAfter');
     expect(locateVisualBlock(duplicate, survivor.projection, survivor.blocks)).toBeNull();
+    const edited = markdownProjectionDetails('Before\n\n![A](c.png)\n\nRewritten after');
+    expect(locateVisualBlock(a, edited.projection, edited.blocks)?.source).toBe('c.png');
+    const twoEdited = markdownProjectionDetails('Before\n\n![A](c.png)\n\n![A](d.png)\n\nRewritten after');
+    expect(locateVisualBlock(a, twoEdited.projection, twoEdited.blocks)?.source).toBe('c.png');
 });
 test('local image replacement without Markdown edits rejects stale capture and retains evidence', async () => {
     const root = await mkdtemp('/tmp/tether-image-revision-'), store = new PrivateStore(join(root, 'store.sqlite'));
