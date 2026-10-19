@@ -11,7 +11,7 @@ Start with `tether --help` to find a command group, then use focused help such a
 Pending identifies changed events without returning their bodies or anchors. Read each affected thread once when current text is needed. If you're missing passage context, ask for nearby text or an outline before reading the full document.
 
 ```sh
-tether pending /path/to/doc.md --actor assistant
+tether pending /path/to/doc.md --actor "Go button review"
 tether thread /path/to/doc.md THREAD_ID
 tether document context /path/to/doc.md THREAD_ID
 tether document outline /path/to/doc.md
@@ -26,27 +26,35 @@ Use `event FILE EVENT_ID` for immutable historical details when current thread t
 Acknowledgement records what the agent has reviewed. Resolution records whether the human still needs to read or act on a thread.
 
 ```sh
-tether reply /path/to/doc.md THREAD_ID --actor assistant --body-file /tmp/reply.txt --operation-id UNIQUE_ID --expected-thread-sequence THREAD_SEQUENCE
-tether acknowledge /path/to/doc.md --actor assistant --cursor REVIEWED_CURSOR --operation-id ANOTHER_UNIQUE_ID
+tether reply /path/to/doc.md THREAD_ID --actor "Go button review" --body-file /tmp/reply.txt --operation-id UNIQUE_ID --expected-thread-sequence THREAD_SEQUENCE
+tether acknowledge /path/to/doc.md --actor "Go button review" --cursor REVIEWED_CURSOR --operation-id ANOTHER_UNIQUE_ID
 ```
 
 If you retry an annotation change, keep the same operation ID and identical inputs. Look up its receipt with `tether operation <file> --operation-id <id>`. A missing receipt means `outcome_unknown`; the change may still have happened. A replayed receipt's `appliedSequence` is historical; refresh the thread before another guarded write.
 
 Use `--expected-thread-sequence` to reject stale replies, edits, deletions, resolutions, or reopenings. Both `edit` and `delete` take a thread ID and the original comment or reply ID. They append private review events; `delete` leaves the Markdown file alone.
 
-The `actor` value names the author without authenticating them. Pending results exclude that actor's events. The `consumer` value identifies whose acknowledgements to track and defaults to the actor. Use `--consumer` on pending and acknowledge to track reviewers independently, or use the exact same string to share progress. Case and whitespace matter.
+### Agent identity
+
+Review, turn and save commands sign their work with an agent ID, which never changes. The CLI takes it from `--agent-id`, then `PASEO_AGENT_ID` (as `paseo:ID`), then `CLAUDE_CODE_SESSION_ID` (as `claude:ID`). Without any of these, the daemon issues an ID at the first command and returns it as `agent: {id, name, issued: true, next}`; pass it with `--agent-id` on every later command. An issued ID whose command failed is discarded.
+
+`--actor` sets the agent's display name, such as the role it's working in. Names are unique, ignoring case, among agents seen in the last 24 hours; a name another such agent holds is refused with `agent_name_taken`. The human can rename an agent in the reader by right-clicking its name. After that, the agent's `--actor` no longer changes its name, and results include `agent: {id, name, next}` with the name the reader shows. `--actor human` signs as the human reader.
+
+Events, receipts and turn registrations store the ID as the author, and the reader shows the ID's current name, icon and color. Pending results exclude the agent's own events by ID. The `consumer` value identifies whose acknowledgements to track and defaults to the agent ID. Use `--consumer` on pending and acknowledge to track reviewers independently, or use the exact same string to share progress. Records written before agent IDs carry plain strings such as `assistant`, which serve as both ID and name.
+
+`document save` accepts optional `--actor` and `--agent-id`, which register or refresh the agent the same way.
 
 ## Turn signals
 
 The reader shows one **Go** button for each agent waiting on a document, stacked at the bottom of the threads drawer. A press signals that the human started that agent's next turn. It carries no instructions or thread selection, and it wakes no other agent. An agent waits with:
 
 ```sh
-tether turn wait /path/to/doc.md --actor ACTOR [--label TEXT] [--after CURSOR] [--timeout SECONDS]
+tether turn wait /path/to/doc.md --actor NAME [--agent-id ID] [--label TEXT] [--after CURSOR] [--timeout SECONDS]
 ```
 
-`--actor` names the agent and should match its review actor; the button and that actor's thread messages share a color. Agents on the same document need distinct actors. `--label` is a mode description of 60 characters or fewer, shown on the button.
+The agent signs the wait with its [agent ID](#agent-identity); its button shows that agent's icon and color, as its thread messages do, and is captioned with its current name. `--label` is a mode description of 60 characters or fewer, shown on the button instead of the name.
 
-The command waits until a press newer than `--after` exists, returning `{turn: {cursor, sequence, requestedAt, path, actor}}` immediately when one already does. Without `--after`, it waits for the next press. Without `--timeout`, it waits indefinitely; when the timeout elapses first it returns `{turn: null, cursor}`. After a press, the button shows the agent working until it runs `turn wait` again with the returned cursor; that re-arm ends the turn. An agent that stops waiting disappears after 60 seconds, or after two hours if it never re-arms after a press.
+The command waits until a press newer than `--after` exists, returning `{turn: {cursor, sequence, requestedAt, path, agentId}}` immediately when one already does. Without `--after`, it waits for the next press. Without `--timeout`, it waits indefinitely; when the timeout elapses first it returns `{turn: null, cursor}`. After a press, the button shows the agent working until it runs `turn wait` again with the returned cursor; that re-arm ends the turn. An agent that stops waiting disappears after 60 seconds, or after two hours if it never re-arms after a press.
 
 Presses and agent state live in daemon memory: a cursor names its daemon instance, and a cursor from an earlier daemon counts as no presses seen. The command reconnects if the daemon restarts or crashes. When the human stops Tether with `tether daemon stop` or **Quit Tether** in Folio, it returns `{turn: null, stopped: true}` without restarting the daemon.
 

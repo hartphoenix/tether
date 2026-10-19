@@ -3,7 +3,7 @@ name: tether-review
 description: Use Tether to create or revise Markdown documents, respond to document comments, and register/edit files for review. Use whenever Tether is requested, but not when a brief chat answer suffices.
 ---
 
-Use `tether` (`./mdreview` in a source checkout), actor `assistant`, and the reader's OS account and `TETHER_PROFILE`. Preserve the configured host. Inspect `ok`, exit status, and warnings; partial success can accompany an error. Use focused help, such as `tether reply --help`, for unfamiliar flags.
+Use `tether` (`./mdreview` in a source checkout) and the reader's OS account and `TETHER_PROFILE`. Name yourself for your role with `--actor NAME` (such as `"Go button design"`) and keep that name for the session. Names must be unique among active agents; if Tether refuses yours, choose one that's easy to tell apart. Tether signs your work with your host's agent ID. Pass `--agent-id ID` only when a result asks you to, and then on every later command. If a result says the human renamed you, use that name. Preserve the configured host. Inspect `ok`, exit status, and warnings; partial success can accompany an error. Use focused help, such as `tether reply --help`, for unfamiliar flags.
 
 ## Documents and attention
 
@@ -22,7 +22,7 @@ Bare `recents` opens Folio. Use `folio list` to discover registered documents. N
 Replace uppercase placeholders with returned values:
 
 ```sh
-tether pending FILE --actor assistant
+tether pending FILE --actor NAME
 tether thread FILE THREAD_ID
 ```
 
@@ -33,8 +33,8 @@ For historical text, `event FILE EVENT_ID` returns that immutable event. An edit
 Check `reviewState` even when `events` is empty. For `changed`, inspect `document diff FILE --from-revision ACKNOWLEDGED_BODY_REVISION`; if unavailable or insufficient, read relevant body/context. For `never_reviewed`, inspect relevant document content. Leave the cursor unacknowledged if necessary review remains.
 
 ```sh
-tether reply FILE THREAD_ID --actor assistant --body-file /tmp/reply.txt --operation-id UNIQUE_ID --expected-thread-sequence THREAD_SEQUENCE
-tether acknowledge FILE --actor assistant --cursor REVIEWED_CURSOR --operation-id ANOTHER_UNIQUE_ID
+tether reply FILE THREAD_ID --actor NAME --body-file /tmp/reply.txt --operation-id UNIQUE_ID --expected-thread-sequence THREAD_SEQUENCE
+tether acknowledge FILE --actor NAME --cursor REVIEWED_CURSOR --operation-id ANOTHER_UNIQUE_ID
 ```
 
 Acknowledge the last fully handled pending page's cursor after handling that page and preceding pages, including body review. Never fetch fresh pending merely for a newer cursor. Continuation tokens are not acknowledgement cursors. Reading alone does not acknowledge anything.
@@ -48,10 +48,10 @@ Keep passage-specific replies in threads and broader synthesis in the document. 
 While a Tether document is the working surface, keep a watcher armed in the background (for example, a background command your harness reports on exit):
 
 ```sh
-tether turn wait FILE --actor ACTOR [--label "SHORT MODE"] --after CURSOR
+tether turn wait FILE --actor NAME [--label "SHORT MODE"] --after CURSOR
 ```
 
-Use your review actor, so your button and signed replies share one color. Beside other agents on the same document, choose a distinct actor name; `--label` (60 characters or fewer) tells the human your mode. Omit `--after` on the first run. Your **Go** button in the threads drawer ends the wait with `turn`, which carries no instructions: take the next turn as the document, your instructions and context direct. Re-arming with `turn.cursor` ends your turn and readies your button. If the wait ends with `turn: null` (a timeout or an exit), re-arm with the latest cursor you hold, without messaging the human. After `stopped: true`, the human stopped Tether: don't re-arm until they ask.
+Use the same `--actor` as your reviews; your button shows your icon and color, as your replies do. `--label` (60 characters or fewer) tells the human your mode. Omit `--after` on the first run. Your **Go** button in the threads drawer ends the wait with `turn`, which carries no instructions: take the next turn as the document, your instructions and context direct. Re-arming with `turn.cursor` ends your turn and readies your button. If the wait ends with `turn: null` (a timeout or an exit), re-arm with the latest cursor you hold, without messaging the human. After `stopped: true`, the human stopped Tether: don't re-arm until they ask.
 
 ## Safe edits and recovery
 
