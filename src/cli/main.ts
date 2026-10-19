@@ -137,8 +137,9 @@ async function waitForTurn(config: TetherConfig, path: string, actor: string, la
       // `tether daemon stop` is deliberate: exit rather than start the daemon again.
       if (cause instanceof ControlRequestError && cause.code === "service_stopped") return { turn: null, stopped: true };
       // A restarting daemon is a reconnect, not a failure; its new instance treats the old cursor as 0.
+      // A cut-off body is retried too: the poll changes nothing on the daemon.
       const code = cause instanceof ControlRequestError ? cause.code : undefined;
-      const transient = cause instanceof ControlRequestError && (cause.status === 503 || code === "transport_unavailable" || code === "daemon_unavailable");
+      const transient = cause instanceof ControlRequestError && (cause.status === 503 || code === "transport_unavailable" || code === "daemon_unavailable" || code === "invalid_response");
       if (!transient || ++failures > 5 || Date.now() >= deadline) throw cause;
       await Bun.sleep(Math.min(1_000 * failures, deadline - Date.now()));
       continue;
