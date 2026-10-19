@@ -7,6 +7,10 @@ description: >-
 
 Use `tether-review` for document and comment handling.
 
+## Chat
+
+While a Tether document is the working surface, chat carries only what the document and its threads do not: the document link, actions the human must take outside Tether (commands to run, patches to apply) and blockers. Never summarize, restate or preview document or thread content in chat, including changes, findings, decisions and open questions. Use the fewest words that suffice; when nothing qualifies, link the document and stop.
+
 Maintain a shared account that the human and agent can inspect and rethink together. Choose its structure for its purpose, and reshape it when that purpose changes. Carry forward what still matters from the body and discussion.
 
 Use questions and feedback to refine explanations, test assumptions and discover what to investigate next. Let findings revise the questions as well as the answers. The human’s steering helps maintain perspective and intent; it need not signal a failure or a need for more rules.

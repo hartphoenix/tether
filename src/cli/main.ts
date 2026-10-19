@@ -121,6 +121,34 @@ async function bodyFile(path: string, dependencies: CliDependencies, limit = 256
   return readBoundedInput(path, limit);
 }
 
+type TurnWaitResult = { turn: { cursor: string; sequence: number; requestedAt: string; path: string; actor: string } } | { turn: null; cursor: string } | { turn: null; stopped: true };
+
+/** Chain bounded daemon long-polls until the human presses this agent's Go or the overall timeout elapses. */
+async function waitForTurn(config: TetherConfig, path: string, actor: string, label: string | undefined, after: string | undefined, timeoutMs: number): Promise<TurnWaitResult> {
+  const deadline = Date.now() + timeoutMs;
+  let cursor = after, failures = 0;
+  while (true) {
+    const pollMs = Math.max(0, Math.min(25_000, deadline - Date.now()));
+    let result: TurnWaitResult;
+    try {
+      result = await controlRequest<TurnWaitResult>(config, "/control/turn/wait", { path, actor, ...(label ? { label } : {}), ...(cursor === undefined ? {} : { after: cursor }), timeoutMs: pollMs }, { timeoutMs: pollMs + 10_000 });
+      failures = 0;
+    } catch (cause) {
+      // `tether daemon stop` is deliberate: exit rather than start the daemon again.
+      if (cause instanceof ControlRequestError && cause.code === "service_stopped") return { turn: null, stopped: true };
+      // A restarting daemon is a reconnect, not a failure; its new instance treats the old cursor as 0.
+      const code = cause instanceof ControlRequestError ? cause.code : undefined;
+      const transient = cause instanceof ControlRequestError && (cause.status === 503 || code === "transport_unavailable" || code === "daemon_unavailable");
+      if (!transient || ++failures > 5 || Date.now() >= deadline) throw cause;
+      await Bun.sleep(Math.min(1_000 * failures, deadline - Date.now()));
+      continue;
+    }
+    if (result.turn || "stopped" in result) return result;
+    cursor = result.cursor;
+    if (Date.now() >= deadline) return result;
+  }
+}
+
 function commandName(argv: string[]): string {
   if (argv[0] === "skills") return `skills.${argv[1] ?? ""}`;
   if (argv[0] === "daemon") return `daemon.${argv[1] ?? ""}`;
@@ -128,6 +156,7 @@ function commandName(argv: string[]): string {
   if (argv[0] === "wave") return `wave.${argv[1] ?? ""}`;
   if (argv[0] === "cmux") return `cmux.${argv[1] ?? ""}`;
   if (argv[0] === "paseo") return `paseo.${argv[1] ?? ""}`;
+  if (argv[0] === "turn") return `turn.${argv[1] ?? ""}`;
   if (argv[0] === "recents" && argv[1] === "add") return "recents.add";
   if (["pending", "thread", "reply", "resolve", "reopen", "acknowledge"].includes(argv[0] ?? "")) return `review.${argv[0]}`;
   return argv[0] ?? "unknown";
@@ -426,6 +455,12 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const folio = Number(optionalFlag(parsed, "--folio") ?? -1);
       if (!Number.isSafeInteger(after) || !Number.isSafeInteger(folio)) usage("--after and --folio must be integers.");
       return { response: success(command, await requestControl(config, `/control/hosts/${PASEO_HOST}/wait`, { after, folio, timeoutMs: seconds * 1000 }, { timeoutMs: seconds * 1000 + 10_000 })), exitCode: 0 };
+    }
+    if (command === "turn.wait") {
+      const timeout = optionalFlag(parsed, "--timeout");
+      const seconds = timeout === undefined ? Infinity : Number(timeout);
+      if (Number.isNaN(seconds) || seconds < 0) usage("--timeout must be a nonnegative number of seconds.");
+      return { response: success(command, await waitForTurn(config, resolve(parsed.positionals[0]!), requiredFlag(parsed, "--actor"), optionalFlag(parsed, "--label")?.trim(), optionalFlag(parsed, "--after"), seconds * 1000)), exitCode: 0 };
     }
     if (command === "paseo.ack") {
       return { response: success(command, await requestControl(config, `/control/hosts/${PASEO_HOST}/ack`, { ids: parsed.positionals })), exitCode: 0 };

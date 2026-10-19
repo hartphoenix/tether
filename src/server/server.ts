@@ -13,6 +13,7 @@ import { diagnosticText, diagnosticValue, errorDetails } from "../shared/diagnos
 import { preferencesFrom, storedPreferencesFrom, updatePreferences } from "../shared/themes";
 import { runtimeRoot } from "../runtime-paths";
 import { releaseNotesDocument, seedReleaseNotes, seedWelcome } from "../onboarding";
+import { MAX_LABEL_LENGTH, TurnSignals } from "./turns";
 import { UpdateService, writeUpdateState } from "./updates";
 import { listAgentSkillReviews, readAgentSkillReview, decideAgentSkillReview, decideTetherballOffer } from "../cli/agent-skills";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
@@ -283,6 +284,10 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   } }), hostAdapter);
   recents.subscribeFolio(() => pullQueue.folioChanged());
   const instanceId = crypto.randomUUID();
+  const turns = new TurnSignals(instanceId, now);
+  let deliberateStop = false;
+  const markDeliberateStop = () => { deliberateStop = true; turns.close(true); };
+  const stoppingError = () => deliberateStop ? error("service_stopped", "Tether was stopped.", 503) : error("service_stopping", "Tether is restarting.", 503);
   const tickets = new Map<string, { grant: DocumentSession; expiresAt: number; target?: HostTarget; resumeId?: string }>();
   const recentsTickets = new Map<string, { expiresAt: number; target?: HostTarget }>();
   const sessions = new Map<string, Session>();
@@ -584,6 +589,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (body.action !== "restart" && body.action !== "quit") throw invalidRequest("Unknown service action.");
       if (body.action === "restart" && !options.restart) throw invalidRequest("Restart is unavailable in this embedded test service.");
       if (body.action === "restart") await prepareCmuxBridgeRestart(config, instanceId);
+      if (body.action === "quit") markDeliberateStop();
       setTimeout(() => { void (body.action === "restart" ? options.restart!() : quit()).catch(() => {}); }, 250);
       return { restarting: body.action === "restart", quitting: body.action === "quit" };
     }
@@ -961,6 +967,16 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         const read = await service.read(session.grant);
         return json({ path: read.path, bodyRevision: read.bodyRevision, ledgerRevision: read.ledgerRevision, revision: read.bodyRevision });
       }
+      if (apiPath === "/turns" && request.method === "GET") return json({ agents: turns.agents(session.grant.path) });
+      // Wakes one agent; it carries no content beyond "the human started your next turn".
+      if (apiPath === "/turn" && request.method === "POST") {
+        const body = await requestJson(request);
+        if (typeof body.actor !== "string" || !body.actor.trim()) throw invalidRequest("A turn needs the agent's actor.");
+        const press = turns.request(session.grant.path, body.actor);
+        if (press === "unavailable") return error("agent_unavailable", `${body.actor} is not waiting on this document.`, 409);
+        if (press === "working") return error("agent_working", `${body.actor} is still taking its turn.`, 409);
+        return json(press);
+      }
       if (apiPath === "/release" && request.method === "POST") {
         const body = await requestJson(request);
         if (typeof body.clientId === "string") session.leases.delete(body.clientId);
@@ -1087,7 +1103,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     // The listener exists before SQLite views are reconstructed. A restored
     // browser must not mistake that interval for revoked authorization.
     try { await ready; } catch { return error("service_unavailable", "Tether could not finish starting.", 503); }
-    if (stopped) return error("service_stopping", "Tether is restarting.", 503);
+    if (stopped || deliberateStop) return stoppingError();
     if (pathname === "/favicon.png" && request.method === "GET") {
       return new Response(await readFile(resolve(runtimeRoot(), process.env.TETHER_INSTALL_ROOT ? "dist/favicon.png" : "src/web/favicon.png")), {
         headers: { "content-type": "image/png", "cache-control": "public, max-age=3600", "x-content-type-options": "nosniff" },
@@ -1384,12 +1400,25 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           if (typeof body.ticket !== "string" || !body.ticket) return error("invalid_request", "A launch ticket is required.", 400);
           return json({ cancelled: discardLaunchTicket(body.ticket) });
         }
+        if (pathname === "/control/turn/wait" && request.method === "POST") {
+          const body = await requestJson(request);
+          const timeoutMs = Math.min(Math.max(Number(body.timeoutMs ?? 0), 0), 25_000);
+          if (!Number.isFinite(timeoutMs) || (body.after !== undefined && typeof body.after !== "string")) throw invalidRequest("Invalid turn wait.");
+          if (typeof body.actor !== "string" || !body.actor.trim() || body.actor.length > 200) throw invalidRequest("A turn wait needs --actor.");
+          if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL_LENGTH)) throw invalidRequest(`A label must be ${MAX_LABEL_LENGTH} characters or fewer.`);
+          // Authorize the path, then release the grant so a long wait never extends file access.
+          const path = await withControlDocument(body, async (grant) => grant.path);
+          return json(await turns.wait(path, body.actor, (body.label as string | undefined)?.trim() || undefined, body.after as string | undefined, timeoutMs, request.signal));
+        }
         if (request.method === "POST" && (pathname.startsWith("/control/document/") || pathname.startsWith("/control/review/"))) {
           const body = await requestJson(request);
           return json(await documentOperation(pathname, body));
           }
         if (pathname === "/control/status" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId, origin: daemon.origin, pid: process.pid, sessions: sessions.size, version: releaseVersion });
-        if (pathname === "/control/stop" && request.method === "POST") { setTimeout(() => { void quit().catch(() => {}); }, 50); return json({ stopping: true }); }
+        if (pathname === "/control/stop" && request.method === "POST") {
+          // A deliberate stop tells waiting agents to exit instead of restarting the daemon.
+          markDeliberateStop();
+          setTimeout(() => { void quit().catch(() => {}); }, 50); return json({ stopping: true }); }
       } catch (cause) { return controlError(cause); }
       return error("not_found", "Control endpoint not found.", 404);
     }
@@ -1431,7 +1460,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   // Longer than the Folio stream keepalive (20s) so idle streams are not cut.
   try { bunServer = Bun.serve({ hostname: LOOPBACK, port: options.port ?? 0, idleTimeout: 60, fetch: (request: Request) => {
     if (request.headers.get("host") !== new URL(daemon.origin).host) return error("host_mismatch", "The request must use the Tether listener address.", 403);
-    if (stopped) return error("service_stopping", "Tether is restarting.", 503);
+    if (stopped || deliberateStop) return stoppingError();
     const pending = requestHandler(request).then(response => {
       response = new Response(response.body, { status: response.status, headers: response.headers });
       response.headers.set("referrer-policy", "no-referrer");
@@ -1502,6 +1531,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       for (const close of [...recentsStreamClosers]) close();
       clearTimeout(previewTimer);
       pullQueue.close();
+      turns.close();
       stopping = (async () => {
       await daemon.shared?.stop();
       await initialization;
@@ -1575,7 +1605,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           }
         }
         for (const [ticket, pending] of recentsTickets) if (pending.expiresAt <= current) recentsTickets.delete(ticket);
-        const active = options.keepAlive || sessions.size > 0 || recentsSessions.size > 0 || tickets.size > 0 || recentsTickets.size > 0 || pullQueue.anyPresent();
+        const active = options.keepAlive || sessions.size > 0 || recentsSessions.size > 0 || tickets.size > 0 || recentsTickets.size > 0 || pullQueue.anyPresent() || turns.waiting();
         if (active) { emptySince = 0; return; }
         if (emptySince === 0) emptySince = current;
         const grace = current - startedAt < startupGraceMs ? startupGraceMs : idleMs;

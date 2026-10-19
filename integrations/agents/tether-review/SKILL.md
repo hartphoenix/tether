@@ -43,6 +43,16 @@ If a page contains `fragment`, join `fragment.text` in offset order across conti
 
 Keep passage-specific replies in threads and broader synthesis in the document. Acknowledgement records review; resolution closes human attention. Leave answers/results open when the human still needs to read, decide, or act. Resolve completed instructions only when no review remains. Orphaned threads remain replyable.
 
+## Turn watcher
+
+While a Tether document is the working surface, keep a watcher armed in the background (for example, a background command your harness reports on exit):
+
+```sh
+tether turn wait FILE --actor ACTOR [--label "SHORT MODE"] --after CURSOR
+```
+
+Use your review actor, so your button and signed replies share one color. Beside other agents on the same document, choose a distinct actor name; `--label` (60 characters or fewer) tells the human your mode. Omit `--after` on the first run. Your **Go** button in the threads drawer ends the wait with `turn`, which carries no instructions: take the next turn as the document, your instructions and context direct. Re-arming with `turn.cursor` ends your turn and readies your button. If the wait ends with `turn: null` (a timeout or an exit), re-arm with the latest cursor you hold, without messaging the human. After `stopped: true`, the human stopped Tether: don't re-arm until they ask.
+
 ## Safe edits and recovery
 
 Use `thread.sequence` for guarded writes. Retry uncertain annotation mutations with the same operation ID and identical inputs, or inspect `operation FILE --operation-id ID`. A missing receipt means `outcome_unknown`. A replayed receipt's `appliedSequence` is historical; refresh the thread before the next guarded write.

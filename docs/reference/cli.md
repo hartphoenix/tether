@@ -36,6 +36,20 @@ Use `--expected-thread-sequence` to reject stale replies, edits, deletions, reso
 
 The `actor` value names the author without authenticating them. Pending results exclude that actor's events. The `consumer` value identifies whose acknowledgements to track and defaults to the actor. Use `--consumer` on pending and acknowledge to track reviewers independently, or use the exact same string to share progress. Case and whitespace matter.
 
+## Turn signals
+
+The reader shows one **Go** button for each agent waiting on a document, stacked at the bottom of the threads drawer. A press signals that the human started that agent's next turn. It carries no instructions or thread selection, and it wakes no other agent. An agent waits with:
+
+```sh
+tether turn wait /path/to/doc.md --actor ACTOR [--label TEXT] [--after CURSOR] [--timeout SECONDS]
+```
+
+`--actor` names the agent and should match its review actor; the button and that actor's thread messages share a color. Agents on the same document need distinct actors. `--label` is a mode description of 60 characters or fewer, shown on the button.
+
+The command waits until a press newer than `--after` exists, returning `{turn: {cursor, sequence, requestedAt, path, actor}}` immediately when one already does. Without `--after`, it waits for the next press. Without `--timeout`, it waits indefinitely; when the timeout elapses first it returns `{turn: null, cursor}`. After a press, the button shows the agent working until it runs `turn wait` again with the returned cursor; that re-arm ends the turn. An agent that stops waiting disappears after 60 seconds, or after two hours if it never re-arms after a press.
+
+Presses and agent state live in daemon memory: a cursor names its daemon instance, and a cursor from an earlier daemon counts as no presses seen. The command reconnects if the daemon restarts or crashes. When the human stops Tether with `tether daemon stop` or **Quit Tether** in Folio, it returns `{turn: null, stopped: true}` without restarting the daemon.
+
 ## Read and save a document
 
 Use `document context`, `outline`, or `diff` to read just what you need. When you need the full body and its revision, use `tether document read /path/to/doc.md`. Save a replacement body with:
