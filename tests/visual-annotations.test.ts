@@ -1,3 +1,4 @@
+import { validateControlResponse } from "../src/server/lifecycle";
 import { test, expect } from 'bun:test';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -81,7 +82,9 @@ test('visual creation, retained evidence, receipts, reanchor conflicts, package 
         const overview = await service.visual(grant, thread.id);
         expect(overview.verification).toBe('unverified');
         expect(decodePng(Buffer.from(await readFile(overview.artifact))).width).toBe(30);
-        expect(new AgentReads(store).context(grant.path, body, thread.id)).toMatchObject({ retrieval: 'visual', region: replacement.visual.region });
+        const context = new AgentReads(store).context(grant.path, body, thread.id);
+        expect(context).toMatchObject({ retrieval: 'visual', region: replacement.visual.region });
+        expect(validateControlResponse('/control/document/context', context)).toBe(true);
         await service.deleteConversation(grant.path);
         expect(store.db.query('SELECT COUNT(*) AS n FROM visual_evidence WHERE document_id=?').get(created.annotations.header!.documentId!)).toEqual({ n: 0 });
     }
