@@ -195,7 +195,8 @@ export async function statusDaemon(config = resolveConfig()): Promise<DaemonStat
   }
 }
 
-export async function stopDaemon(config = resolveConfig()): Promise<{ running: boolean; stopping: boolean }> {
+/** `deliberate` marks a user-requested stop, so waiting agents exit instead of reconnecting; restarts omit it. */
+export async function stopDaemon(config = resolveConfig(), options: { deliberate?: boolean } = {}): Promise<{ running: boolean; stopping: boolean }> {
   const { stopHostBridges } = await import("./stop-hosts");
   const cleanup = stopHostBridges(config);
   // Consume failure now while still stopping the service; report it afterward.
@@ -209,7 +210,7 @@ export async function stopDaemon(config = resolveConfig()): Promise<{ running: b
   const { readControlToken } = await import("./config");
   const token = await readControlToken(config);
   if (!token) throw new Error("Daemon control credential is unavailable.");
-  const response = await fetch(`${discovery.origin}/control/stop`, { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000) });
+  const response = await fetch(`${discovery.origin}/control/stop`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ deliberate: options.deliberate === true }), signal: AbortSignal.timeout(1000) });
   if (!response.ok) throw new Error((await response.text()) || "Unable to stop the daemon.");
   const issue = await helpers; if (issue) throw issue;
   return { running: true, stopping: true };

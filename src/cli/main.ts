@@ -467,7 +467,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     }
     if (argv[0] === "daemon" && argv[1] === "status") return { response: success(command, await statusDaemon(config)), exitCode: 0 };
     if (argv[0] === "daemon" && argv[1] === "stop") {
-      return { response: success(command, await stopDaemon(config)), exitCode: 0 };
+      return { response: success(command, await stopDaemon(config, { deliberate: true })), exitCode: 0 };
     }
     if (argv[0] === "cmux" && argv[1] === "status" && argv.length === 2) {
       const cmux = dependencies.cmuxHost ?? createCmuxHost();

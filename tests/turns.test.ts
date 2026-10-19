@@ -140,8 +140,19 @@ test("tether turn wait parses, returns its own press, and exits on a deliberate 
   const stopping = runCli(["turn", "wait", path, "--actor", "a", "--after", `${daemon.instanceId}:1`], { config });
   await Bun.sleep(300);
   const token = await readControlToken(config);
-  expect((await fetch(`${daemon.origin}/control/stop`, { method: "POST", headers: { authorization: `Bearer ${token}` } })).status).toBe(200);
+  expect((await fetch(`${daemon.origin}/control/stop`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ deliberate: true }) })).status).toBe(200);
   expect((await stopping).response).toMatchObject({ ok: true, data: { turn: null, stopped: true } });
+});
+
+test("a takeover or relocation stop releases waits without telling agents to stay stopped", async () => {
+  const { path, daemon } = await fixture();
+  const waiting = controlWait(daemon, { path, actor: "a", timeoutMs: 10_000 });
+  await Bun.sleep(100);
+  const token = await readControlToken(daemon.config);
+  expect((await fetch(`${daemon.origin}/control/stop`, { method: "POST", headers: { authorization: `Bearer ${token}` } })).status).toBe(200);
+  const released = await (await waiting).json() as Record<string, unknown>;
+  expect(released.stopped).toBeUndefined();
+  expect(released).toMatchObject({ turn: null, cursor: `${daemon.instanceId}:0` });
 });
 
 test("agent colors are stable palette slots", () => {

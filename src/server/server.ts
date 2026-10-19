@@ -1416,8 +1416,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           }
         if (pathname === "/control/status" && request.method === "GET") return json({ service: SERVICE_ID, protocol: PROTOCOL_VERSION, instanceId, origin: daemon.origin, pid: process.pid, sessions: sessions.size, version: releaseVersion });
         if (pathname === "/control/stop" && request.method === "POST") {
-          // A deliberate stop tells waiting agents to exit instead of restarting the daemon.
-          markDeliberateStop();
+          // A deliberate stop tells waiting agents to exit; a takeover or relocation restart lets them reconnect.
+          const body = await requestJson(request).catch(() => ({} as Record<string, unknown>));
+          if (body.deliberate === true) markDeliberateStop();
           setTimeout(() => { void quit().catch(() => {}); }, 50); return json({ stopping: true }); }
       } catch (cause) { return controlError(cause); }
       return error("not_found", "Control endpoint not found.", 404);
