@@ -85,7 +85,9 @@ export class TurnSignals {
     this.paths.set(path, agents);
     const key = actorKey(actor);
     let agent = agents.get(key);
-    if (!agent) agents.set(key, agent = { actor: actor.trim(), sequence: 0, requestedAt: "", state: "ready", since: this.now(), waiters: new Set() });
+    // An agent dropped while its watcher was away (a sleeping laptop) resumes from its cursor,
+    // so the next press is newer than anything it has already seen.
+    if (!agent) agents.set(key, agent = { actor: actor.trim(), sequence: this.sequenceOf(after), requestedAt: "", state: "ready", since: this.now(), waiters: new Set() });
     agent.label = label;
     const since = after === undefined ? agent.sequence : this.sequenceOf(after);
     const current = agent;

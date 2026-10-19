@@ -91,6 +91,24 @@ test("agents move ready to working to ready across a re-arm, and expire", async 
   expect(turns.agents("/d.md")).toEqual([]);
 });
 
+test("an agent dropped while its watcher was away resumes from its cursor", async () => {
+  let now = 1_000_000;
+  const turns = new TurnSignals("i", () => now);
+  await turns.wait("/d.md", "agent", undefined, undefined, 0);
+  turns.request("/d.md", "agent");
+  turns.request("/d.md", "agent");
+  await turns.wait("/d.md", "agent", undefined, "i:1", 0);
+  turns.request("/d.md", "agent");
+  expect(await turns.wait("/d.md", "agent", undefined, "i:1", 0)).toMatchObject({ turn: { sequence: 2 } });
+  // A sleeping laptop outlasts the grace, so the daemon forgets the agent.
+  await turns.wait("/d.md", "agent", undefined, "i:2", 0);
+  now += 2 * 60 * 60_000 + 1;
+  expect(turns.agents("/d.md")).toEqual([]);
+  const resumed = turns.wait("/d.md", "agent", undefined, "i:2", 5_000);
+  expect(turns.request("/d.md", "agent")).toEqual({ cursor: "i:3", sequence: 3, actor: "agent" });
+  expect(await resumed).toMatchObject({ turn: { cursor: "i:3", sequence: 3 } });
+});
+
 test("a deliberate stop releases waiters with stopped and refuses new waits", async () => {
   const turns = new TurnSignals("i");
   const open = turns.wait("/d.md", "agent", undefined, undefined, 5_000);
