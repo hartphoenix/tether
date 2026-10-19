@@ -81,5 +81,10 @@ export function locateVisualBlock(anchor: import('./annotation-ledger').Annotati
     if (same.length === 1 && visual.occurrences === 1)
         return same[0]!;
     const contextual = (same.length ? same : compatible).filter(context);
-    return contextual.length === 1 ? contextual[0]! : null;
+    if (contextual.length === 1)
+        return contextual[0]!;
+    // An edited block usually comes with edits on one side; accept one intact side when unique.
+    const before = (b: VisualBlock) => projection.slice(0, b.start).endsWith(anchor.prefix), after = (b: VisualBlock) => projection.slice(b.end).startsWith(anchor.suffix);
+    const sided = same.length || contextual.length ? [] : compatible.filter(b => before(b) || after(b));
+    return sided.length === 1 ? sided[0]! : null;
 }
