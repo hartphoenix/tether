@@ -160,8 +160,11 @@ async function waitForTurn(config: TetherConfig, path: string, actor: string, si
       // A cut-off body is retried too: the poll changes nothing on the daemon.
       const code = cause instanceof ControlRequestError ? cause.code : undefined;
       const transient = cause instanceof ControlRequestError && (cause.status === 503 || code === "transport_unavailable" || code === "daemon_unavailable" || code === "invalid_response");
-      if (!transient || ++failures > 5 || Date.now() >= deadline) throw cause;
-      await Bun.sleep(Math.min(1_000 * failures, deadline - Date.now()));
+      // A sleeping laptop can cut many polls in a row, so transient failures never exhaust the
+      // watcher; the backoff caps at 30 seconds instead.
+      if (!transient || Date.now() >= deadline) throw cause;
+      failures += 1;
+      await Bun.sleep(Math.min(1_000 * Math.min(failures, 30), deadline - Date.now()));
       continue;
     }
     if (result.turn || "stopped" in result) return finish(result);
