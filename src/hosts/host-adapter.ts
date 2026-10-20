@@ -22,7 +22,19 @@ export type OpenLocalFileRequest = { path: string; sourceUrl: string; target?: H
 /** `launchConsumed:false` releases the ticket; `notified` means the host only announced the document. */
 export type OpenViewResult = { launchConsumed: boolean; notified?: boolean };
 
+/** Acceptance and turn completion are separate host operations. Never retry a send implicitly. */
+export interface HostTurnDelivery {
+  supports(agentId: string): boolean;
+  inspect(agentId: string, signal: AbortSignal): Promise<"idle" | "running">;
+  send(agentId: string, text: string, signalId: string, signal: AbortSignal): Promise<void>;
+  messageOptions(signalId: string): { messageId: string; [key: string]: unknown };
+  wait(agentId: string, signal: AbortSignal): Promise<void>;
+  /** Local chat scope; remote hosts must never be inferred by agent ID alone. */
+  chatScope(agentId: string): { host: string; agent: string } | undefined;
+}
+
 export interface HostAdapter {
+  readonly turnDelivery?: HostTurnDelivery;
   readonly id: "wave" | "cmux" | "calyx" | "obsidian" | "browser" | "paseo";
   detect(): Promise<boolean>;
   capabilities(target?: HostTarget): HostCapabilities;

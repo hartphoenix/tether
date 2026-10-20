@@ -6,7 +6,8 @@ export class ChatStore {
   constructor(private db: Database) {
     db.exec(`CREATE TABLE IF NOT EXISTS chat_drafts(scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,ordinal INTEGER PRIMARY KEY AUTOINCREMENT,UNIQUE(scope,id));
       CREATE TABLE IF NOT EXISTS chat_submissions(scope TEXT PRIMARY KEY,id TEXT NOT NULL,payload TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS chat_deleted(scope TEXT PRIMARY KEY);`);
+      CREATE TABLE IF NOT EXISTS chat_deleted(scope TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS chat_accepted_drafts(scope TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(scope,id));`);
   }
   read(scope: string): ChatState {
     const rows = this.db.query("SELECT payload FROM chat_drafts WHERE scope=? ORDER BY ordinal").all(scope) as { payload: string }[];
@@ -27,6 +28,7 @@ export class ChatStore {
         case "read": return current;
         case "save": case "remove": {
           const id = op.kind === "save" ? op.draft.id : op.id;
+          if (op.kind === "save" && this.db.query("SELECT id FROM chat_accepted_drafts WHERE scope=? AND id=?").get(scope, id)) throw new ChatStateError("This annotation was delivered. Create a new annotation for further feedback.");
           if (pending?.draftIds.includes(id)) throw new ChatStateError("This annotation is awaiting delivery. Recover the batch before editing.");
           if (op.kind === "save") this.db.query("INSERT INTO chat_drafts(scope,id,payload) VALUES (?,?,?) ON CONFLICT(scope,id) DO UPDATE SET payload=excluded.payload").run(scope, id, JSON.stringify(op.draft));
           else this.db.query("DELETE FROM chat_drafts WHERE scope=? AND id=?").run(scope, id);
@@ -34,11 +36,12 @@ export class ChatStore {
         }
         case "capture": {
           if (pending) {
-            if (pending.id === op.id && pending.prose === op.prose && JSON.stringify(pending.attachments) === JSON.stringify(op.attachments)) return current;
+            if (pending.id === op.id && pending.prose === op.prose && JSON.stringify(pending.attachments) === JSON.stringify(op.attachments)
+              && pending.text === [op.prose.trim(), formatDrafts(current.drafts.filter(d => pending.draftIds.includes(d.id))), op.suffix].filter(Boolean).join("\n\n")) return current;
             throw new ChatStateError("An annotation batch is already awaiting delivery.");
           }
           if (!current.drafts.length) return current;
-          const submission: Submission = { id: op.id, prose: op.prose, text: [op.prose.trim(), formatDrafts(current.drafts)].filter(Boolean).join("\n\n"), attachments: op.attachments, draftIds: current.drafts.map(d => d.id), messageId: null, wire: null, state: "prepared" };
+          const submission: Submission = { id: op.id, prose: op.prose, text: [op.prose.trim(), formatDrafts(current.drafts), op.suffix].filter(Boolean).join("\n\n"), attachments: op.attachments, draftIds: current.drafts.map(d => d.id), messageId: null, wire: null, state: "prepared" };
           this.db.query("INSERT INTO chat_submissions(scope,id,payload) VALUES (?,?,?)").run(scope, op.id, JSON.stringify(submission));
           break;
         }
@@ -54,7 +57,10 @@ export class ChatStore {
           if (!pending) return current;
           const p = requirePending(op.id);
           if (p.state !== "dispatching" || p.messageId !== op.messageId) throw new ChatStateError("Acceptance identity mismatch.");
-          for (const id of p.draftIds) this.db.query("DELETE FROM chat_drafts WHERE scope=? AND id=?").run(scope, id);
+          for (const id of p.draftIds) {
+            this.db.query("INSERT OR IGNORE INTO chat_accepted_drafts VALUES (?,?)").run(scope, id);
+            this.db.query("DELETE FROM chat_drafts WHERE scope=? AND id=?").run(scope, id);
+          }
           this.db.query("DELETE FROM chat_submissions WHERE scope=? AND id=?").run(scope, p.id);
           break;
         }

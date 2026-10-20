@@ -2,8 +2,8 @@ import { turnIcon, turnIcons } from './turn-icons';
 import { identityColor, identityName, type IdentityLookup } from './identities';
 import { bindAgentRename } from './agent-rename';
 
-export type TurnAgent = { agentId: string; label?: string; state: 'ready' | 'working' };
-export type TurnPress = { cursor: string; sequence: number; agentId: string };
+export type TurnAgent = { agentId: string; label?: string; state: 'ready' | 'working' | 'queued' | 'unavailable'; reason?: string; signalId?: string; acceptedAt?: string };
+export type TurnPress = { signalId: string; cursor: string; sequence: number; agentId: string; state?: TurnAgent['state']; reason?: string };
 
 type Slot = { item: HTMLElement; button: HTMLButtonElement; caption: HTMLElement; icon?: string; agent?: TurnAgent; pending: boolean };
 
@@ -57,16 +57,16 @@ export function createTurnControls(options: {
     }
     const identity = options.identity?.(agent.agentId);
     const name = identityName(options.identity, agent.agentId);
-    const working = agent.state === 'working';
+    const status = agent.state === 'working' ? 'taking its turn' : agent.state === 'queued' ? 'queued until idle' : agent.state === 'unavailable' ? `unavailable: ${agent.reason ?? 'delivery unconfirmed'}` : '';
     item.dataset.state = agent.state;
     const color = identityColor(identity);
     if (color) item.style.setProperty('--wm-agent-color', color); else item.style.removeProperty('--wm-agent-color');
     if (identity?.icon && entry.icon !== identity.icon) { button.innerHTML = turnIcon(identity.icon); entry.icon = identity.icon; }
-    button.disabled = working || entry.pending;
+    button.disabled = agent.state !== 'ready' || entry.pending;
     const description = `${name}${agent.label ? `: ${agent.label}` : ''}`;
-    button.title = working ? `${description} (taking its turn)` : `Take the next turn: ${description}`;
-    button.setAttribute('aria-label', working ? `${name} is taking its turn` : `Take the next turn: ${name}`);
-    caption.textContent = agent.label ?? name;
+    button.title = status ? `${description} (${status})` : `Take the next turn: ${description}`;
+    button.setAttribute('aria-label', status ? `${name}: ${status}` : `Take the next turn: ${name}`);
+    caption.textContent = `${agent.label ?? name}${agent.state === 'queued' ? ' · queued' : agent.state === 'unavailable' ? ` · ${agent.reason ?? 'unavailable'}` : ''}`;
   };
 
   const press = async (entry: Slot) => {
@@ -75,8 +75,8 @@ export function createTurnControls(options: {
     entry.pending = true;
     render(entry);
     try {
-      await options.request(agent.agentId);
-      entry.agent = { ...agent, state: 'working' };
+      const result = await options.request(agent.agentId);
+      entry.agent = { ...agent, state: result.state ?? 'working', reason: result.reason };
       entry.item.classList.remove('is-sent');
       void entry.item.offsetWidth; // Restart the pulse.
       entry.item.classList.add('is-sent');

@@ -2,6 +2,7 @@ import type { HostCapabilities } from "../shared/contracts";
 import type { HostAdapter, HostTarget, OpenViewRequest, OpenViewResult } from "./host-adapter";
 import type { PullIntentInput, PullOrigin } from "./pull-queue";
 import { createBrowserHost } from "./browser";
+import { PaseoTurnDelivery } from "./paseo-turns";
 import { assertSharedReaderLink, type ReceiveReaderRequest, type ReceiveReaderResult } from "../remote/reader-receiver";
 
 export const PASEO_HOST = "paseo";
@@ -20,19 +21,20 @@ export function paseoLaunchTarget(env: NodeJS.ProcessEnv = process.env): HostTar
 }
 
 /**
- * Paseo cannot be driven from outside, so this adapter never opens anything
- * itself: it queues an intent that the Tether plugin inside Paseo pulls and
+ * Views go through intents that the Tether plugin inside Paseo pulls and
  * carries out. Opens made by the plugin on the user's behalf are `user`
  * intents; any other CLI open (an agent's) only notifies, so a host never
  * moves the user's focus unasked.
  */
 export class PaseoHostAdapter implements HostAdapter {
+  readonly turnDelivery: PaseoTurnDelivery;
   readonly id = "paseo" as const;
   private readonly env: NodeJS.ProcessEnv;
   private readonly fallback: HostAdapter;
 
   constructor(private readonly options: PaseoHostOptions) {
     this.env = options.env ?? process.env;
+    this.turnDelivery = new PaseoTurnDelivery({ env: this.env });
     this.fallback = options.fallback ?? createBrowserHost();
   }
 

@@ -45,13 +45,21 @@ Keep passage-specific replies in threads and broader synthesis in the document. 
 
 ## Turn watcher
 
-While a Tether document is the working surface, keep a watcher armed in the background (for example, a background command your harness reports on exit):
+While a Tether document is the working surface, use the same role name as your reviews. In Paseo (`PASEO_AGENT_ID` is present), register once, without a watcher:
 
 ```sh
-tether turn wait FILE --actor NAME [--label "SHORT MODE"] --after CURSOR
+tether turn register FILE --actor ROLE [--label "SHORT MODE"]
 ```
 
-Use the same `--actor` as your reviews; your button shows your icon and color, as your replies do. `--label` (60 characters or fewer) tells the human your mode. Omit `--after` on the first run. Your **Go** button in the threads drawer ends the wait with `turn`, which carries no instructions: take the next turn as the document, your instructions and context direct. Re-arming with `turn.cursor` ends your turn and readies your button. If the wait ends with `turn: null` (a timeout or an exit), re-arm with the latest cursor you hold, without messaging the human. After `stopped: true`, the human stopped Tether: don't re-arm until they ask.
+The host delivers Go and observes turn completion; don't re-arm. Remove your button with `tether turn unregister FILE --actor ROLE` when finished. A message consisting of `<tether-turn path="..." />` means the human pressed your Go button: take your next turn on that document as the document and your instructions direct. Staged chat annotations may precede the event; review them too.
+
+Elsewhere, keep a watcher armed in the background using a command your harness reports on exit:
+
+```sh
+tether turn wait FILE --actor ROLE [--label "SHORT MODE"] --after CURSOR
+```
+
+Omit `--after` initially. A `turn` result starts your next turn; an optional `annotations` field carries staged chat feedback. Re-arm with `turn.cursor` when done to ready the button. After `turn: null`, re-arm with your latest cursor without messaging the human. After `stopped: true`, don't re-arm until asked. Labels are at most 60 characters.
 
 ## Safe edits and recovery
 

@@ -49,7 +49,7 @@ test("each agent on a document receives only its own presses", async () => {
   const security = turns.wait("/doc.md", "security", "Security sweep", undefined, 5_000);
   const elegance = turns.wait("/doc.md", "elegance", undefined, undefined, 50);
   expect(turns.agents("/doc.md")).toEqual([{ agentId: "elegance", state: "ready" }, { agentId: "security", label: "Security sweep", state: "ready" }]);
-  expect(turns.request("/doc.md", "security")).toEqual({ cursor: "instance-a:1", sequence: 1, agentId: "security" });
+  expect(turns.request("/doc.md", "security")).toMatchObject({ signalId: expect.any(String), cursor: "instance-a:1", sequence: 1, agentId: "security" });
   expect(await security).toMatchObject({ turn: { cursor: "instance-a:1", sequence: 1, path: "/doc.md", agentId: "security" } });
   expect(await elegance).toEqual({ turn: null, cursor: "instance-a:0" });
   expect(turns.request("/doc.md", "security")).toBe("working");
@@ -104,7 +104,7 @@ test("an agent dropped while its watcher was away resumes from its cursor", asyn
   now += 2 * 60 * 60_000 + 1;
   expect(turns.agents("/d.md")).toEqual([]);
   const resumed = turns.wait("/d.md", "agent", undefined, "i:2", 5_000);
-  expect(turns.request("/d.md", "agent")).toEqual({ cursor: "i:3", sequence: 3, agentId: "agent" });
+  expect(turns.request("/d.md", "agent")).toMatchObject({ signalId: expect.any(String), cursor: "i:3", sequence: 3, agentId: "agent" });
   expect(await resumed).toMatchObject({ turn: { cursor: "i:3", sequence: 3 } });
 });
 
@@ -128,9 +128,9 @@ test("the reader sees agent state and presses wake only the chosen agent", async
   expect((await api("api/turn", { method: "POST", headers: { origin: "http://evil.invalid" }, body: JSON.stringify({ agentId: "security" }) })).status).toBe(403);
   expect((await api("api/turn", { method: "POST", body: JSON.stringify({ agentId: "nobody" }) })).status).toBe(409);
   const pressed = await (await api("api/turn", { method: "POST", body: JSON.stringify({ agentId: "security" }) })).json() as { cursor: string; sequence: number; agentId: string };
-  expect(pressed).toEqual({ cursor: `${daemon.instanceId}:1`, sequence: 1, agentId: "security" });
+  expect(pressed).toMatchObject({ signalId: expect.any(String), cursor: `${daemon.instanceId}:1`, sequence: 1, agentId: "security" });
   expect(await (await security).json()).toMatchObject({ turn: { cursor: pressed.cursor, sequence: 1, path, agentId: "security" } });
-  expect(await agents()).toEqual([{ agentId: "elegance", state: "ready" }, { agentId: "security", label: "Security sweep", state: "working" }]);
+  expect(await agents()).toMatchObject([{ agentId: "elegance", state: "ready" }, { agentId: "security", label: "Security sweep", state: "working" }]);
   expect(await (await api("api/turn", { method: "POST", body: JSON.stringify({ agentId: "security" }) })).json()).toMatchObject({ error: { code: "agent_working" } });
   expect(await (await controlWait(daemon, { path, actor: "security", after: pressed.cursor, timeoutMs: 20 })).json()).toEqual({ turn: null, cursor: pressed.cursor });
   expect((await agents()).find(agent => agent.agentId === "security")?.state).toBe("ready");

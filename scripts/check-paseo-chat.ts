@@ -3,6 +3,7 @@ import { chromium } from "playwright";
 import assert from "node:assert/strict";
 import { PrivateStore } from "../src/storage/private-store";
 import { ChatStore } from "../src/chat/store";
+import { captureTurnAnnotations } from "../src/server/turn-annotations";
 import { formatDrafts, parseChatRequest } from "../integrations/paseo/chat/model";
 const a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const build = await Bun.build({ entrypoints: ["integrations/paseo/chat/client.ts"], target: "browser" });
@@ -273,6 +274,14 @@ try {
   await page.waitForFunction(() => !document.querySelector('#a [data-tether-chat="badge"]'));
   assert.equal(saved().drafts.length, 0);
   assert.ok((await page.evaluate(() => (window as any).sent.at(-1).text)).includes('Commenting on the submitted quote.'));
+  // A Go press accepts outside the native composer; its open collection must
+  // refresh without a chat reload, another send, or a manual reconciliation.
+  store.operate({ host: "host", agent: a, operation: { kind: "save", draft: { id: "external-go", quote: "Go quote", feedback: "Go feedback" } } });
+  await page.waitForFunction(() => document.querySelector('#a summary')?.textContent === "1 annotation");
+  const external = captureTurnAnnotations(store, { host: "host", agent: a }, "external-signal", '<tether-turn path="/tmp/doc.md" />');
+  external.dispatch("external-signal", { messageId: "external-signal", activeTurnBehavior: "steer" }); external.accepted("external-signal");
+  await page.waitForFunction(() => document.querySelector('#a summary')?.textContent === "0 annotations");
+  assert.equal(await page.locator('#a [data-tether-chat="batch"] li').count(), 0);
   await page.evaluate(() => (window as any).stop());
   assert.equal(await page.locator('[data-tether-chat]').count(), 0);
   assert.equal(await page.evaluate(() => (window as any).native.sendAgentMessage === (window as any).original), true);

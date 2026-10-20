@@ -16,7 +16,7 @@ export function startChatAnnotations(client: PluginClientContext, getGeneration:
   if (document.querySelector('[data-tether-delivery-probe]') || global[ownership]) { collections.dispose(); return () => {}; }
   const owner = {}; global[ownership] = owner;
   const submitted = startSubmittedAnnotations();
-  type Chat = UiChat & { host: string; agent: string; busy: boolean; generation: string | null; direct?: string; queue?: QueueWriter };
+  type Chat = UiChat & { host: string; agent: string; busy: boolean; generation: string | null; direct?: string; queue?: QueueWriter; refreshing?: boolean; refreshedAt?: number };
   const chats = new Map<string, Chat>();
   const ui = startChatUi(chats, collections);
   const patched = new Map<NativeClient, { original: NativeClient["sendAgentMessage"]; wrapper: NativeClient["sendAgentMessage"]; deleteOriginal?: NativeClient["deleteAgent"]; deleteWrapper?: NativeClient["deleteAgent"] }>();
@@ -134,6 +134,14 @@ export function startChatAnnotations(client: PluginClientContext, getGeneration:
         void chat.ready.catch(() => {});
       }
       chat.input = input; install(c, chat);
+      // Go delivery can accept a batch outside this composer. Refresh through the
+      // controller's serial boundary so stale reads cannot overwrite local saves.
+      if (!chat.busy && !chat.refreshing && chat.generation === getGeneration() && Date.now() - (chat.refreshedAt ?? 0) >= 2_000) {
+        const active = chat;
+        active.refreshing = true;
+        void active.ready.then(() => active.controller.refresh()).catch(error => notice(active, String(error)))
+          .finally(() => { active.refreshing = false; active.refreshedAt = Date.now(); });
+      }
     }
     submitted.refresh(); ui.render();
   };

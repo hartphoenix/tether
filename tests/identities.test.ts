@@ -163,7 +163,7 @@ test("turn waits are keyed by agent ID and the reader presses one agent by ID", 
   const identities = (await (await api("api/identities?ids=claude%3Asession-a,claude%3Asession-b")).json() as { identities: Array<{ name: string; icon: string }> }).identities;
   expect(identities.map(identity => identity.name)).toEqual(["Builder", "Checker"]);
   expect(identities[0]!.icon).not.toBe(identities[1]!.icon);
-  expect(await (await api("api/turn", { method: "POST", body: JSON.stringify({ agentId: "claude:session-a" }) })).json()).toEqual({ cursor: `${daemon.instanceId}:1`, sequence: 1, agentId: "claude:session-a" });
+  expect(await (await api("api/turn", { method: "POST", body: JSON.stringify({ agentId: "claude:session-a" }) })).json()).toMatchObject({ signalId: expect.any(String), state: "working", cursor: `${daemon.instanceId}:1`, sequence: 1, agentId: "claude:session-a" });
   expect((await waitA).data).toMatchObject({ turn: { sequence: 1, path, agentId: "claude:session-a" } });
   expect((await waitB).data).toMatchObject({ turn: null });
 });

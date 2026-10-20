@@ -82,6 +82,8 @@ export const commandSpecs: Record<string, CommandSpec> = {
   "paseo.theme": { name: "paseo.theme", usage: "tether paseo theme <client-id> <theme-id|unknown>", min: 2, max: 2 },
   "paseo.status": { name: "paseo.status", usage: "tether paseo status", min: 0, max: 0 },
   "paseo.wait": { name: "paseo.wait", usage: "tether paseo wait [--after <cursor>] [--folio <version>] [--timeout <seconds>]", min: 0, max: 0, flags: { "--after": { value: true }, "--folio": { value: true }, "--timeout": { value: true } } },
+  "turn.register": { name: "turn.register", usage: "tether turn register <file> --actor <name> [--agent-id <id>] [--label <text>]", min: 1, max: 1, flags: { ...mutationActorFlags, "--label": { value: true } }, required: ["--actor"] },
+  "turn.unregister": { name: "turn.unregister", usage: "tether turn unregister <file> [--actor <name>] [--agent-id <id>]", min: 1, max: 1, flags: mutationActorFlags },
   "turn.wait": { name: "turn.wait", usage: "tether turn wait <file> --actor <name> [--agent-id <id>] [--label <text>] [--after <cursor>] [--timeout <seconds>]", min: 1, max: 1, flags: { "--actor": { value: true }, "--agent-id": { value: true }, "--label": { value: true }, "--after": { value: true }, "--timeout": { value: true } }, required: ["--actor"] },
   "paseo.ack": { name: "paseo.ack", usage: "tether paseo ack <intent-id>...", min: 1, max: Infinity },
   "wave.status": { name: "wave.status", usage: "mdreview wave status", min: 0, max: 0 },

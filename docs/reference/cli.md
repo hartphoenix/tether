@@ -46,17 +46,32 @@ Events, receipts and turn registrations store the ID as the author, and the read
 
 ## Turn signals
 
-The reader shows one **Go** button for each agent waiting on a document, stacked at the bottom of the threads drawer. A press signals that the human started that agent's next turn. It carries no instructions or thread selection, and it wakes no other agent. An agent waits with:
+The reader shows one **Go** button per registered agent on a document. Only a human reader press starts delivery. Agent registration does not grant authority to press buttons.
 
 ```sh
+tether turn register /path/to/doc.md --actor NAME [--agent-id ID] [--label TEXT]
+tether turn unregister /path/to/doc.md [--actor NAME] [--agent-id ID]
 tether turn wait /path/to/doc.md --actor NAME [--agent-id ID] [--label TEXT] [--after CURSOR] [--timeout SECONDS]
 ```
 
-The agent signs the wait with its [agent ID](#agent-identity); its button shows that agent's icon and color, as its thread messages do, and is captioned with its current name. `--label` is a mode description of 60 characters or fewer, shown on the button instead of the name.
+Commands use the [step-one agent identity](#agent-identity), including `paseo:PASEO_AGENT_ID`. `register` returns `{registration: {agentId, state, label?, reason?}}` without holding a watcher. Only hosts with delivery support can register; others use `wait`. Registrations survive the watcher grace and daemon restarts. `unregister` removes the caller's button and cancels held delivery/monitoring, returning `{removed: boolean}`; it does not interrupt an accepted agent turn. Outside a host environment, pass the same `--agent-id` used to register. Labels are at most 60 characters; icons, colors and names come from the identity registry.
 
-The command waits until a press newer than `--after` exists, returning `{turn: {cursor, sequence, requestedAt, path, agentId}}` immediately when one already does. Without `--after`, it waits for the next press. Without `--timeout`, it waits indefinitely; when the timeout elapses first it returns `{turn: null, cursor}`. After a press, the button shows the agent working until it runs `turn wait` again with the returned cursor; that re-arm ends the turn. An agent that stops waiting disappears after 60 seconds, or after two hours if it never re-arms after a press.
+| State | Meaning |
+| --- | --- |
+| `ready` | A press can be accepted. |
+| `queued` | A press is held pending host acceptance, including while the agent is busy. |
+| `working` | The host accepted the message, or an armed watcher received the press; turn completion is pending. |
+| `unavailable` | Delivery or completion could not be confirmed; `reason` explains why. No automatic replay. |
 
-Presses and agent state live in daemon memory: a cursor names its daemon instance, and a cursor from an earlier daemon counts as no presses seen. The command reconnects if the daemon restarts or crashes. When the human stops Tether with `tether daemon stop` or **Quit Tether** in Folio, it returns `{turn: null, stopped: true}` without restarting the daemon.
+`POST api/turn` returns `{signalId, cursor, sequence, agentId, state, reason?}`. `GET api/turns` returns `agents` with the state, optional `reason`, last `signalId`, and `acceptedAt` when acceptance was confirmed. Busy/unavailable buttons reject further presses. Press records and host registrations live in private SQLite; held work is **not** resumed after restart. Interrupted deliveries remain visibly unavailable, with their signal ID and a reason. Repeated registration does not dismiss uncertainty; review it before explicitly unregistering and registering again.
+
+Paseo delivery checks the exact agent with `paseo inspect`, queues busy agents using bounded `paseo wait`, and sends through the installed Paseo API with `messageId: signalId`. The payload is `<tether-turn path="ABSOLUTE_PATH" />`, preceded by any staged chat annotations using the composer's formatter. The API specifies `steer` to prevent interruption if another turn starts during the final idle-check/send race. Normal busy delivery waits until idle. Host acceptance is separate from completion: a subsequent idle wait readies the button. Missing, archived, permission-blocked agents, failed sends, or waits beyond two hours become unavailable. An idle registered agent is checked for availability when observed, at most once every 30 seconds.
+
+This local adapter uses `PASEO_CLI`, PATH, or the macOS app's bundled CLI; `PASEO_HOME` selects the local server and its annotation scope. API sends require the bundled macOS runtime and its SDK. Incompatible runtimes fail explicitly; there is no interrupting CLI-send fallback. No remote host routing or plugin event stream is implemented.
+
+Annotations are captured at press time, so later drafts stay for the next send. Batches use capture → dispatch → accepted. Acceptance removes only captured drafts, leaving newer annotations untouched. The open composer refreshes its private-store state. A failed/uncertain send retains the batch; **Check acceptance** in Paseo reconciles using the message ID and durable receipt. No uncertain batch is resent automatically.
+
+An armed watcher takes precedence over host delivery. The CLI confirms a parsed result through `/control/turn/received` before clearing its captured annotations; a lost response leaves the batch retained. The receipt is idempotent and survives daemon restart. A receipt failure still returns the turn and feedback with `annotationWarning`, without resending. `wait` returns `{turn: {signalId, cursor, sequence, requestedAt, path, agentId}, annotations?}` for a press newer than `--after`; without `--after`, it waits for the next press. Without `--timeout`, it waits indefinitely; timeout returns `{turn: null, cursor}`. Re-arming with the returned cursor ends a watcher-delivered turn. Watcher-only agents disappear after 60 seconds without a wait, or after two hours without a re-arm following a press. Watcher cursors name the daemon instance; old-instance cursors count as no presses seen. Watchers reconnect after a restart. A deliberate stop returns `{turn: null, stopped: true}` without restarting Tether.
 
 ## Read and save a document
 

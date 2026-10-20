@@ -5,7 +5,7 @@ export type Draft = { id: string; quote: string; feedback: string; from?: "user"
 export type Submission = { id: string; prose: string; text: string; attachments: unknown[]; draftIds: string[]; messageId: string | null; wire: string | null; state: "prepared" | "dispatching" };
 export type ChatState = { drafts: Draft[]; submission: Submission | null };
 export type Operation = { kind: "read" } | { kind: "save"; draft: Draft } | { kind: "remove"; id: string } | { kind: "deleteChat" }
-  | { kind: "capture"; id: string; prose: string; attachments: unknown[] }
+  | { kind: "capture"; id: string; prose: string; attachments: unknown[]; suffix?: string }
   | { kind: "dispatch"; id: string; messageId: string; text: string; options: unknown }
   | { kind: "accepted"; id: string; messageId: string } | { kind: "cancelPrepared"; id: string };
 export type ChatRequest = { generation?: string; host: string; agent: string; operation: Operation };
@@ -31,7 +31,7 @@ export function parseChatRequest(value: unknown): ChatRequest {
         && (a === undefined || record(a) && id(a.messageId) && string(a.text) && Number.isSafeInteger(a.start) && a.start >= 0 && Number.isSafeInteger(a.end) && a.end > a.start && string(a.prefix, 100) && string(a.suffix, 100));
       break;
     }
-    case "capture": valid = id(o.id) && string(o.prose) && Array.isArray(o.attachments) && o.attachments.length <= 100; break;
+    case "capture": valid = id(o.id) && string(o.prose) && Array.isArray(o.attachments) && o.attachments.length <= 100 && (o.suffix === undefined || string(o.suffix)); break;
     case "dispatch": valid = id(o.id) && id(o.messageId) && string(o.text) && record(o.options) && o.options.messageId === o.messageId; break;
     case "accepted": valid = id(o.id) && id(o.messageId); break;
     case "cancelPrepared": case "remove": valid = id(o.id); break;

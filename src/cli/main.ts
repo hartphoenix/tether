@@ -138,7 +138,7 @@ async function bodyFile(path: string, dependencies: CliDependencies, limit = 256
 }
 
 type IssuedAgent = { agent?: { id: string; issued?: boolean } };
-type TurnWaitResult = IssuedAgent & ({ turn: { cursor: string; sequence: number; requestedAt: string; path: string; agentId: string } } | { turn: null; cursor: string } | { turn: null; stopped: true });
+type TurnWaitResult = IssuedAgent & { annotations?: string; annotationWarning?: string } & ({ turn: { signalId?: string; cursor: string; sequence: number; requestedAt: string; path: string; agentId: string } } | { turn: null; cursor: string } | { turn: null; stopped: true });
 
 /** Chain bounded daemon long-polls until the human presses this agent's Go or the overall timeout elapses. */
 async function waitForTurn(config: TetherConfig, path: string, actor: string, signature: AgentSignature, label: string | undefined, after: string | undefined, timeoutMs: number): Promise<TurnWaitResult> {
@@ -167,6 +167,16 @@ async function waitForTurn(config: TetherConfig, path: string, actor: string, si
       failures += 1;
       await Bun.sleep(Math.min(1_000 * Math.min(failures, 30), deadline - Date.now()));
       continue;
+    }
+    if (result.turn?.signalId) {
+      try {
+        const received = await controlRequest<{ received: boolean }>(config, "/control/turn/received", { path, agentId: result.turn.agentId, signalId: result.turn.signalId }, { start: false });
+        if (!received.received) throw new Error("The daemon did not recognize the signal.");
+      } catch {
+        // Deliver the parsed feedback even if its receipt is lost. Retain the
+        // saved batch for review instead of hiding the turn behind an error.
+        result.annotationWarning = "Watcher receipt unconfirmed; saved annotations may still need acceptance review. No resend attempted.";
+      }
     }
     if (result.turn || "stopped" in result) return finish(result);
     cursor = result.cursor;
@@ -481,6 +491,12 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       const folio = Number(optionalFlag(parsed, "--folio") ?? -1);
       if (!Number.isSafeInteger(after) || !Number.isSafeInteger(folio)) usage("--after and --folio must be integers.");
       return { response: success(command, await requestControl(config, `/control/hosts/${PASEO_HOST}/wait`, { after, folio, timeoutMs: seconds * 1000 }, { timeoutMs: seconds * 1000 + 10_000 })), exitCode: 0 };
+    }
+    if (command === "turn.register" || command === "turn.unregister") {
+      return { response: success(command, await requestControl(config, `/control/turn/${command.split(".")[1]}`, {
+        path: resolve(parsed.positionals[0]!), ...(optionalFlag(parsed, "--actor") ? { actor: optionalFlag(parsed, "--actor") } : {}), ...signature,
+        ...(optionalFlag(parsed, "--label") ? { label: optionalFlag(parsed, "--label")!.trim() } : {}),
+      })), exitCode: 0 };
     }
     if (command === "turn.wait") {
       const timeout = optionalFlag(parsed, "--timeout");
