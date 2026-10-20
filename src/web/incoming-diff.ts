@@ -1,3 +1,4 @@
+import { reviewActionSvg } from './icons';
 import { smoothScroll } from "./motion";
 import { scrollViewportTop } from "./scroll-geometry";
 import type { Editor } from "@milkdown/kit/core";
@@ -47,6 +48,11 @@ type Action =
   | { type: 'end' };
 
 export const reviewKey = new PluginKey<ReviewState | null>('TETHER_CHANGE_REVIEW');
+const reviewCursors = Object.fromEntries(Object.entries(reviewActionSvg).map(([action, source]) => {
+  const svg = source.replace('<svg ', '<svg width="32" height="32" ')
+    .replaceAll('currentColor', '#222').replace(/(<svg[^>]*>)/, '$1<circle cx="128" cy="128" r="104" fill="white"/>');
+  return [action, `url("data:image/svg+xml,${encodeURIComponent(svg)}") 16 16, pointer`];
+}));
 const MAX_GAP_WORDS = 4;
 const IGNORE = { ignoreAttrs: { heading: ['id'] } };
 
@@ -325,8 +331,12 @@ class MarginLines {
         line.type = 'button';
         line.addEventListener('click', event => {
           event.preventDefault();
-          const current = reviewKey.getState(this.view.state)?.hunks.find(h => h.fromB === Number(line!.dataset.hunk));
-          if (current) markHunkSeen(this.view, current);
+          const state = reviewKey.getState(this.view.state);
+          const current = state?.hunks.find(h => h.fromB === Number(line!.dataset.hunk));
+          if (state && current) {
+            if (showsBefore(state, current)) revertHunk(this.view, current);
+            else markHunkSeen(this.view, current);
+          }
         });
         layer.append(line);
       }
@@ -334,7 +344,8 @@ class MarginLines {
       line.dataset.hunk = String(hunk.fromB);
       line.className = 'tether-review-line' + (before ? ' is-before' : '');
       line.style.cssText = `top:${(extent.top - box.top) / scale}px;height:${Math.max(extent.bottom - extent.top, 8) / scale}px;left:${left}px;--tether-review-color:${hunkColor(state, hunk)}`;
-      line.title = before ? 'Earlier wording · click to mark seen' : 'Click to mark seen';
+      line.title = before ? 'Click to revert change' : 'Click to mark as seen';
+      line.style.cursor = reviewCursors[before ? 'revert' : 'seen'];
       line.setAttribute('aria-label', line.title);
     }
     for (const extra of lines.slice(used)) extra.remove();
@@ -410,6 +421,14 @@ export function matchesIncomingDocument(editor: Editor, target: Node): boolean {
 /** Finish review: every remaining hunk counts as seen. */
 export function endIncomingDiff(view: EditorView): void {
   if (reviewState(view)) view.dispatch(view.state.tr.setMeta(reviewKey, { type: 'end' } satisfies Action));
+}
+/** Restore only changes still under review; seen hunks are already in the baseline. */
+export function revertAllHunks(view: EditorView): void {
+  const state = reviewState(view);
+  if (!state) return;
+  const tr = view.state.tr;
+  applyChanges(tr, state.base, computeDocDiff(view.state.doc, state.base, IGNORE));
+  view.dispatch(tr.setMeta(reviewKey, { type: 'end' } satisfies Action));
 }
 export function markHunkSeen(view: EditorView, hunk: Hunk): void {
   view.dispatch(view.state.tr.setMeta(reviewKey, { type: 'seen', hunk } satisfies Action));

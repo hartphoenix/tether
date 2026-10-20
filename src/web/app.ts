@@ -20,7 +20,7 @@ import { installMenuMotion } from "./motion";
 import { createRailResize } from "./rail-resize";
 import { updateControlStyles } from "./update-controls";
 import { mountUpdateNotice } from "./update-notice";
-import { iconSvg } from "./icons";
+import { iconSvg, reviewActionSvg } from "./icons";
 import { decreaseQuoteLevel } from "./editor-commands";
 import { Crepe } from "@milkdown/crepe";
 import { EditorStatus, editorStateOptionsCtx, editorViewCtx } from "@milkdown/kit/core";
@@ -39,7 +39,7 @@ import { createChromeControls } from "./chrome-controls";
 import { createCanvas } from './canvas';
 import { scrollSelectionIntoView } from './scroll-geometry';
 import './canvas.css';
-import { createIncomingNavigator, endIncomingDiff, incomingDiffPlugins, reviewKey, reviewState, startIncomingDiff, setReviewColors, setReviewAuthors, authorsFromChain, hunkBeforeText, hunkCommentRange, selectRange, showsBefore, type RevisionChain } from "./incoming-diff";
+import { createIncomingNavigator, endIncomingDiff, revertAllHunks, incomingDiffPlugins, reviewKey, reviewState, startIncomingDiff, setReviewColors, setReviewAuthors, authorsFromChain, hunkBeforeText, hunkCommentRange, selectRange, showsBefore, type RevisionChain } from "./incoming-diff";
 import { createChangeReviewMenu } from "./change-review-menu";
 import { documentLinkPath, localDocumentLink, opensAsDocument } from "./local-document-link";
 import { prepareMarkdown, restoreMarkdown } from "../core/markdown-codec";
@@ -109,6 +109,10 @@ const conflictBar = document.querySelector<HTMLElement>("#conflict")!;
 const conflictMessage = document.querySelector<HTMLElement>("#conflict-message")!;
 const reloadButton = document.querySelector<HTMLButtonElement>("#reload")!;
 const saveReviewButton = document.querySelector<HTMLButtonElement>("#save-review")!;
+const revertReviewButton = document.querySelector<HTMLButtonElement>("#revert-review")!;
+for (const [button, action] of [[saveReviewButton, 'seen'], [revertReviewButton, 'revert']] as const) {
+  button.insertAdjacentHTML('afterbegin', reviewActionSvg[action].replace('<svg ', '<svg aria-hidden="true" class="tether-icon" width="20" height="20" '));
+}
 const reviewNavigation = createIncomingNavigator(getEditorView);
 const nextChangeButton = document.querySelector<HTMLButtonElement>("#next-change")!;
 const previousChangeButton = document.querySelector<HTMLButtonElement>("#previous-change")!;
@@ -411,7 +415,8 @@ function syncReviewBar(): void {
   const view = getEditorView();
   const hunks = !conflicted && view ? reviewState(view)?.hunks.length ?? 0 : 0;
   const reviewing = hunks > 0;
-  nextChangeButton.hidden = previousChangeButton.hidden = saveReviewButton.hidden = !reviewing;
+  nextChangeButton.hidden = previousChangeButton.hidden = saveReviewButton.hidden = revertReviewButton.hidden = !reviewing;
+  revertReviewButton.disabled = readOnly;
   if (!reviewing) reviewNavigation.reset();
   reloadButton.hidden = reviewing;
   if (reviewing) conflictMessage.textContent = `${hunks} ${hunks === 1 ? "change" : "changes"} to review`;
@@ -1041,6 +1046,7 @@ async function exportReview(): Promise<void> {
   } catch (error) { chrome.setNotice(`Export failed: ${(error as Error).message}`, 0); }
 }
 saveReviewButton.addEventListener("click", () => { const view = getEditorView(); if (view) endIncomingDiff(view); syncReviewBar(); });
+revertReviewButton.addEventListener("click", () => { const view = getEditorView(); if (view && !readOnly) revertAllHunks(view); syncReviewBar(); });
 // Hosts that turn a page's new tab into their own tab let the reader open
 // documents directly, still inside the click, so no host round trip moves focus.
 let pageOpensLinks = false;

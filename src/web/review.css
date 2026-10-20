@@ -59,9 +59,16 @@
 :root[data-wm-designed] #conflict.is-review button:hover { background: var(--wm-color-hover); }
 :root[data-wm-designed] #conflict.is-review #save-review { border-color: var(--wm-color-primary); color: var(--wm-color-primary); }
 
-/* A comment made on earlier wording shows that wording above the current quote. */
+/* A comment made on earlier wording quotes the version it refers to. */
 .wm-thread-before { opacity: var(--wm-diff-ghost-opacity, .55); text-decoration: line-through; text-decoration-thickness: 1px; }
 .wm-thread-before::before { content: "Earlier: "; text-decoration: none; display: inline-block; font-weight: 600; margin-right: .25em; }
 
 /* Change-menu icons are stroked Lucide icons, unlike the filled insert-menu set. */
 .wm-insert-icon svg.tether-icon { fill: none; stroke: currentColor; }
+
+.wm-thread-conversation > .wm-thread-details + .wm-thread-details { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--wm-annotation-border, #d3c8bc); }
+.wm-thread-wording { margin: 0 0 8px; font-weight: 600; }
+
+#conflict :is(#save-review, #revert-review) { align-items: center; gap: 6px; }
+#conflict :is(#save-review, #revert-review):not([hidden]) { display: inline-flex; }
+#conflict :is(#save-review, #revert-review) svg { flex: none; }

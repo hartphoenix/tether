@@ -694,10 +694,34 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     const focused = previous?.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
     const view = currentView();
     const orphaned = Boolean(thread.orphaned || (view && !resolveAnchor(view.state.doc, thread.anchor)));
-    const details = renderThreadDetails(thread, orphaned);
+    // Use the same endpoint grouping as the inline count badge. Keep the
+    // underlying threads intact so replies and edits retain their targets.
+    const position = view && !orphaned ? resolveAnchor(view.state.doc, thread.anchor)?.ranges.at(-1)?.to : undefined;
+    const grouped = position == null ? [thread] : state.threads.filter(candidate =>
+      !candidate.deleted && !candidate.orphaned && !candidate.anchor.visual &&
+      resolveAnchor(view!.state.doc, candidate.anchor)?.ranges.at(-1)?.to === position);
+    const details = createElement("div", "wm-thread-conversation");
+    const messages: { createdAt: string; node: HTMLElement }[] = [];
+    for (const member of grouped) {
+      const section = renderThreadDetails(member, orphaned, grouped.length === 1);
+      section.dataset.conversationThreadId = member.id;
+      if (grouped.length > 1) {
+        const label = createElement("p", "wm-thread-wording");
+        label.textContent = member.before ?? member.anchor.before ? "Earlier wording" : "Current wording";
+        section.prepend(label);
+      }
+      if (grouped.length > 1) {
+        const replies = section.querySelector('.wm-thread-replies')!;
+        [...replies.children].forEach((node, index) => messages.push({ createdAt: member.replies![index]!.createdAt, node: node as HTMLElement }));
+        replies.remove();
+      }
+      messages.push({ createdAt: member.createdAt, node: section });
+    }
+    for (const message of messages.sort((a, b) => a.createdAt.localeCompare(b.createdAt))) details.append(message.node);
+    if (grouped.length > 1) details.append(conversationReplyForm(grouped));
     const popover = createElement("section", "wm-thread-popover");
     popover.setAttribute("role", "dialog");
-    popover.setAttribute("aria-label", `Comment by ${authorName(thread.actor)}`);
+    popover.setAttribute("aria-label", grouped.length > 1 ? "Conversation on this passage" : `Comment by ${authorName(thread.actor)}`);
     const close = createElement("button", "wm-footnote-close");
     close.type = "button";
     close.textContent = "×";
@@ -916,7 +940,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     return container;
   }
 
-  function renderThreadDetails(thread: AnnotationThread, orphaned: boolean): HTMLElement {
+  function renderThreadDetails(thread: AnnotationThread, orphaned: boolean, includeReply = true): HTMLElement {
     const details = createElement("div", "wm-thread-details");
     if (thread.anchor.visual) {
       // Region controls belong to the visual viewer, not the conversation.
@@ -930,23 +954,19 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
         editorRoot?.addEventListener('pointerup',()=>{setTimeout(()=>{const view=currentView();const anchor=view?captureAnchor(view):null;if(!anchor||signal.aborted)return;button.disabled=true;options.onReanchor!(thread,anchor).then(cancel).catch(e=>onNotice((e as Error).message)).finally(()=>{button.disabled=false;});},0);},{signal});
       };details.append(button);
     }
-    const quote = createElement("blockquote", "wm-thread-quote");
-    quote.textContent = thread.anchor.visual ? `${thread.anchor.visual.kind} region` : thread.anchor.exact || "(No quoted passage)";
-    if (!thread.anchor.visual && thread.anchor.exact.length > 180) {
+    const earlier = thread.before ?? thread.anchor.before;
+    const quotedText = earlier?.exact ?? thread.anchor.exact;
+    const quote = createElement("blockquote", "wm-thread-quote" + (earlier ? " wm-thread-before" : ""));
+    quote.textContent = thread.anchor.visual ? `${thread.anchor.visual.kind} region` : quotedText || "(No quoted passage)";
+    if (earlier) quote.title = "Earlier wording this comment was made on";
+    if (!thread.anchor.visual && quotedText.length > 180) {
       const context = createElement("details", "wm-thread-context");
       const summary = createElement("summary");
-      summary.textContent = `${thread.anchor.exact.slice(0, 160)}…`;
+      summary.textContent = `${quotedText.slice(0, 160)}…`;
       summary.title = "Expand quoted passage";
       context.append(summary, quote);
       details.append(context);
     } else if (!thread.anchor.visual) details.append(quote);
-    const earlier = thread.before ?? thread.anchor.before;
-    if (earlier) {
-      const before = createElement("blockquote", "wm-thread-quote wm-thread-before");
-      before.textContent = earlier.exact;
-      before.title = "Earlier wording this comment was made on";
-      quote.before(before);
-    }
     details.append(editableAnnotation(thread, thread.id, thread.body, "wm-thread-body", thread.actor, thread.createdAt, true));
     const replies = createElement("div", "wm-thread-replies");
     let previousDate = new Date(thread.createdAt).toDateString();
@@ -958,19 +978,30 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       replies.append(item);
     }
     details.append(replies);
-    const form = replyForm(thread);
-    details.append(form);
+    if (includeReply) details.append(conversationReplyForm([thread]));
+    return details;
+  }
+
+  function conversationReplyForm(threads: readonly AnnotationThread[]): HTMLElement {
+    // A shared composer always replies to the first thread, independent of
+    // which member opened the conversation. Existing messages keep their IDs.
+    const form = replyForm(threads[0]!);
+    const allResolved = threads.every(thread => thread.resolved);
     const stateButton = createElement("button", "wm-button wm-button-secondary");
     stateButton.type = "button";
-    stateButton.textContent = thread.resolved ? "Reopen" : "Resolve";
-    stateButton.addEventListener("click", () => {
-      const callback = thread.resolved ? onReopen : onResolve;
-      Promise.resolve(callback(thread)).catch((reason: unknown) => {
+    stateButton.textContent = allResolved ? "Reopen" : "Resolve";
+    stateButton.addEventListener("click", async () => {
+      try {
+        for (const thread of threads) {
+          if (allResolved) await onReopen(thread);
+          else if (!thread.resolved) await onResolve(thread);
+        }
+      } catch (reason) {
         onNotice(reason instanceof Error ? reason.message : "Comment state could not be changed.");
-      });
+      }
     });
     form.querySelector(".wm-annotation-actions")!.prepend(stateButton);
-    return details;
+    return form;
   }
 
   function needsUserAttention(thread: AnnotationThread): boolean {

@@ -33,7 +33,7 @@ try {
         const box = (await reader.locator(selector, { hasText: text }).first().boundingBox())!;
         await reader.mouse.click(box.x + 4, box.y + box.height / 2, { button: 'right' });
       };
-      for (const mode of ['revert-each', 'seen-each', 'mixed-done', 'toggle-comment', 'changed-again']) {
+      for (const mode of ['revert-each', 'seen-each', 'margin-revert', 'revert-all', 'seen-then-revert-all', 'mixed-done', 'toggle-comment', 'changed-again']) {
         console.log(`${name}: review ${mode}`);
         await writeFile(path, original); await reader.reload(); await reader.locator('.ProseMirror').waitFor();
         await reader.waitForTimeout(150);
@@ -46,7 +46,15 @@ try {
         check(await reader.locator('.tether-review-inserted', { hasText: 'incoming' }).count() === 3, 'inserted words not marked');
         check(await reader.locator('.tether-review-line').count() === 3, 'margin lines missing');
         check(await readFile(path, 'utf8') === incoming, 'starting review wrote the file');
-        if (mode === 'revert-each') {
+        check(await reader.getByRole('button', { name: 'Mark all as seen', exact: true }).isVisible(), 'mark all label missing');
+        check(await reader.locator('#save-review svg, #revert-review svg').count() === 2, 'bulk-action icons missing');
+        if (mode === 'revert-all' || mode === 'seen-then-revert-all') {
+          if (mode === 'seen-then-revert-all') {
+            await hunkLine(0).click();
+            await reader.waitForFunction(() => document.querySelectorAll('.tether-review-line').length === 2);
+          }
+          await reader.getByRole('button', { name: 'Revert all', exact: true }).click();
+        } else if (mode === 'revert-each') {
           for (const theme of ['tether', 'tether-dark']) {
             await reader.evaluate(async theme => { await fetch('api/preferences', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ theme }) }); }, theme);
             await reader.waitForFunction(theme => document.documentElement.dataset.wmTheme === theme, theme);
@@ -59,6 +67,20 @@ try {
             await reader.getByRole('menuitem', { name: 'Revert this change' }).click();
             await reader.waitForTimeout(word === 'Third' ? 0 : 100);
           }
+        } else if (mode === 'margin-revert') {
+          const line = hunkLine(0);
+          check(await line.getAttribute('title') === 'Click to mark as seen', 'current wording margin tooltip');
+          const seenCursor = await line.evaluate(el => getComputedStyle(el).cursor);
+          check(seenCursor.includes('data:image/svg+xml'), 'seen cursor missing');
+          await rightClick('.tether-review-inserted', 'incoming');
+          await reader.getByRole('menuitem', { name: 'Show earlier wording', exact: true }).click();
+          await reader.locator('.tether-review-line.is-before').waitFor();
+          check(await line.getAttribute('title') === 'Click to revert change', 'earlier wording margin tooltip');
+          const revertCursor = await line.evaluate(el => getComputedStyle(el).cursor);
+          check(revertCursor.includes('data:image/svg+xml') && revertCursor !== seenCursor, 'revert cursor missing or identical');
+          await line.click();
+          await reader.waitForFunction(() => document.querySelector('#conflict-message')?.textContent === '2 changes to review');
+          await reader.locator('#save-review').click();
         } else if (mode === 'seen-each') {
           for (const remaining of [2, 1, 0]) {
             await hunkLine(0).click();
@@ -70,6 +92,13 @@ try {
           await reader.waitForFunction(() => document.querySelector('#conflict-message')?.textContent === '2 changes to review');
           await reader.locator('#save-review').click();
         } else if (mode === 'toggle-comment') {
+          await rightClick('.tether-review-inserted', 'incoming');
+          await reader.getByRole('menuitem', { name: 'Comment', exact: true }).click();
+          await reader.locator('.wm-annotation-textarea').last().fill('Keep the incoming wording.');
+          await reader.locator('form:has(.wm-annotation-textarea) button[type="submit"]').last().click();
+          await reader.locator('.wm-annotation-count').first().waitFor();
+          // Let the preceding context-menu tap expire before starting a new pair.
+          await reader.waitForTimeout(500);
           // Two quick secondary clicks show the earlier wording in place.
           const box = (await reader.locator('.tether-review-inserted', { hasText: 'incoming' }).first().boundingBox())!;
           await reader.mouse.click(box.x + 4, box.y + box.height / 2, { button: 'right' });
@@ -90,8 +119,30 @@ try {
             if (!w.__reviewThread) w.__reviewThread = fetch('api/annotations?actor=human').then(r => r.json()).then(state => { w.__reviewThreadDone = state.annotations?.threads?.some((thread: any) => thread.comment.anchor?.before?.exact === 'original' && thread.comment.anchor.exact.includes('incoming')); w.__reviewThread = null; });
             return w.__reviewThreadDone === true;
           });
-          await reader.locator('.wm-thread-summary').first().click();
+          await reader.locator('.wm-thread-summary').last().click();
           await reader.locator('.wm-thread-before', { hasText: 'original' }).first().waitFor();
+          await reader.locator('#comment').click();
+          const badge = reader.locator('.wm-annotation-count').first();
+          await reader.waitForFunction(() => document.querySelector('.wm-annotation-count')?.textContent === '2');
+          await badge.click();
+          const conversation = reader.locator('.wm-thread-popover');
+          await conversation.getByText('Keep the incoming wording.', { exact: true }).waitFor();
+          await conversation.getByText('Why drop the original?', { exact: true }).waitFor();
+          check(await conversation.locator('.wm-thread-wording').allTextContents().then(labels => labels.join(',') === 'Current wording,Earlier wording'), 'wording labels missing');
+          const forms = conversation.locator('.wm-annotation-reply-form');
+          check(await forms.count() === 1, 'conversation must have one reply form');
+          check(await forms.evaluate(el => el === el.parentElement?.lastElementChild), 'reply form must be at the bottom');
+          check(await conversation.locator('.wm-thread-before').textContent() === 'original', 'earlier comment quotes current wording');
+          await forms.locator('textarea').fill('Reply to the whole conversation');
+          await forms.locator('button[type="submit"]').click();
+          await conversation.getByText('Reply to the whole conversation', { exact: true }).waitFor();
+          check(await badge.textContent() === '3', 'badge did not include grouped reply');
+          check(await forms.evaluate(el => el.previousElementSibling?.textContent?.includes('Reply to the whole conversation')), 'new reply must follow both original comments');
+          await forms.locator('textarea').fill('Keep this draft');
+          await reader.evaluate(() => dispatchEvent(new Event('online')));
+          await reader.waitForTimeout(700);
+          check(await forms.locator('textarea').inputValue() === 'Keep this draft', 'conversation draft lost');
+          await conversation.getByRole('button', { name: 'Close comment', exact: true }).click();
           check(await readFile(path, 'utf8') === incoming, 'commenting during review wrote the file');
           await reader.locator('#save-review').click();
         } else {
@@ -106,7 +157,9 @@ try {
         check(!await reader.locator('.tether-review-line, .tether-review-inserted').count(), 'review styling remained after review ended');
         if (mode === 'revert-each') check(!saved.includes('incoming') && saved.includes('Third original'), 'reverts did not save: ' + JSON.stringify(saved) + ' notice: ' + await reader.locator('#notice').textContent());
         if (mode === 'seen-each') check(saved === incoming, 'marking changes seen wrote the file');
-        if (mode === 'mixed-done') check(saved.includes('First original') && saved.includes('Second incoming') && saved.includes('Third incoming'), 'Done lost a revert');
+        if (mode === 'revert-all') check(saved.includes('First original') && saved.includes('Second original') && saved.includes('Third original') && !saved.includes('incoming'), 'Revert all did not restore the baseline');
+        if (mode === 'seen-then-revert-all') check(saved.includes('First incoming') && saved.includes('Second original') && saved.includes('Third original'), 'Revert all did not preserve the seen hunk');
+        if (mode === 'mixed-done' || mode === 'margin-revert') check(saved.includes('First original') && saved.includes('Second incoming') && saved.includes('Third incoming'), 'Done lost a revert');
         if (mode === 'toggle-comment') check(saved === incoming, 'Done wrote the file');
         if (mode === 'changed-again') check(saved === '# Changed again\n', 'a later disk change was overwritten');
       }
