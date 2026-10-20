@@ -92,7 +92,7 @@ export async function startPhoneStage(options: { port?: number; document?: strin
       let cookies = incoming.get("cookie") ?? "";
       for (const [real, stage] of names) cookies = cookies.replaceAll(stage + "=", real + "=");
       incoming.set("cookie", cookies);
-      const upstream = await gateway!.handle(new Request(origin + path + url.search, { method: request.method, headers: incoming,
+      const upstream = await gateway!.handle(new Request(origin + path + url.search, { method: request.method, headers: incoming, signal: request.signal,
         body: request.method !== "GET" ? await request.arrayBuffer() : undefined }), surface);
       const outgoing = new Headers(upstream.headers);
       // Only the local staging bridge permits framing and HTTP cookies. Production remains unchanged.

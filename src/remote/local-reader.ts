@@ -36,7 +36,7 @@ export class LocalReaderBackend implements ReaderBackend {
         }
         return fetch(target, { method: request.method, headers,
           body: ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer(),
-          redirect: "manual", signal: AbortSignal.any([controller.signal, request.signal, AbortSignal.timeout(30_000)]) });
+          redirect: "manual", signal: AbortSignal.any([controller.signal, request.signal, ...(target.pathname.endsWith("/api/turn-events") ? [] : [AbortSignal.timeout(30_000)])]) });
       },
       close: async () => { closed = true; controller.abort(); this.daemon.revokeSession(root.split("/")[2]!); },
     };

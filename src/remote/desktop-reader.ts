@@ -55,7 +55,7 @@ export class DesktopReaderBackend implements ReaderBackend {
         if (target.origin !== base.origin || !target.pathname.startsWith(base.pathname)) throw new Error("Invalid resource.");
         return fetch(target, { method: request.method, headers: { cookie, origin: base.origin, "content-type": "application/json", ...(request.headers.has("if-none-match") ? { "if-none-match": request.headers.get("if-none-match")! } : {}), ...(request.headers.has("x-tether-location-version") ? { "x-tether-location-version": request.headers.get("x-tether-location-version")! } : {}) },
           body: ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer(), redirect: "manual",
-          signal: AbortSignal.any([controller.signal, request.signal, AbortSignal.timeout(30_000)]) });
+          signal: AbortSignal.any([controller.signal, request.signal, ...(target.pathname.endsWith("/api/turn-events") ? [] : [AbortSignal.timeout(30_000)])]) });
       },
       close: async () => {
         if (controller.signal.aborted) return;

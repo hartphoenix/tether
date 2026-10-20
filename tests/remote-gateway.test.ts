@@ -264,3 +264,28 @@ test("phone can select themes but cannot edit the theme library or other prefere
   expect((await f.send("reader", "/reader/api/preferences", "PUT", { theme: "tether" }, session, { origin: AUTH })).status).toBe(403);
   expect(f.resources).toEqual(["api/preferences", "api/preferences"]);
 });
+
+test("the authenticated phone reader can press Go and revocation ends its event stream", async () => {
+  let aborted = false;
+  const requests: { resource: string; body?: unknown }[] = [];
+  const f = fixture({ open: async () => ({ close: async () => {}, request: async (resource, request) => {
+    requests.push({ resource, ...(request.body ? { body: await request.json() } : {}) });
+    if (resource === "api/turn-events") return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('event: turns\ndata: {"agents":[]}\n\n'));
+      request.signal.addEventListener("abort", () => { aborted = true; controller.close(); }, { once: true });
+    } }), { headers: { "content-type": "text/event-stream" } });
+    return Response.json({ signalId: "signal", state: "queued" });
+  } }) });
+  const session = await f.login();
+  const stream = await f.send("reader", "/reader/api/turn-events", "GET", undefined, session);
+  expect(stream.status).toBe(200);
+  expect(stream.headers.get("content-type")).toBe("text/event-stream");
+  const reader = stream.body!.getReader();
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain('"agents":[]');
+  const body = { agentId: "paseo:chosen-agent", operationId: "human-press" };
+  expect((await f.send("reader", "/reader/api/turn", "POST", body, session)).status).toBe(200);
+  expect(requests.at(-1)).toEqual({ resource: "api/turn", body });
+  f.gateway.revokeAll();
+  expect(aborted).toBe(true); expect((await reader.read()).done).toBe(true);
+  expect((await f.send("reader", "/reader/api/turn", "POST", body, session)).status).toBe(401);
+});

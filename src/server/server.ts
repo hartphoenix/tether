@@ -1114,7 +1114,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/turns" && request.method === "GET") return json({ agents: allTurnAgents(session.grant.path, session.grant.documentId!), identityRevision: privateStore.identities.revision() });
       if (apiPath === "/turn-events" && request.method === "GET") return turnEventStream(AbortSignal.any([request.signal, turnLifetime.signal]), fn => {
         const a = hostTurns.subscribe(fn), b = turns.subscribe(fn); return () => { a(); b(); };
-      }, () => ({ agents: allTurnAgents(session.grant.path, session.grant.documentId!), identityRevision: privateStore.identities.revision() }));
+      }, () => ({ agents: allTurnAgents(session.grant.path, session.grant.documentId!), identityRevision: privateStore.identities.revision() }), () => sessions.has(session.id));
       // Wakes one agent; it carries no content beyond "the human started your next turn".
       if (apiPath === "/turn" && request.method === "POST") {
         const body = await requestJson(request);
