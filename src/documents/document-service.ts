@@ -26,7 +26,8 @@ export type DocumentServiceOptions = {
   beforeBodyReplace?: (path: string) => void | Promise<void>;
 };
 export type AnnotationEventInput = { type: AnnotationEvent["type"]; actor: string; body?: string; anchor?: AnnotationAnchor; threadId?: string; targetId?: string; throughSeq?: number; bodyRevision?: string; [key: string]: unknown };
-export type SaveBodyInput = { expectedLocationVersion?: number; session?: DocumentSession | string; grant?: DocumentGrant | string; body?: string; content?: string; expectedBodyRevision: string };
+export type SaveBodyInput = { authorId?: string | null; expectedLocationVersion?: number; session?: DocumentSession | string; grant?: DocumentGrant | string; body?: string; content?: string; expectedBodyRevision: string };
+export type BodyTurn = { agentId: string; signalId: string };
 export type SaveBodyArguments = SaveBodyInput | [DocumentSession | string, string, string];
 export type AppendEventInput = {
   session?: DocumentSession | string; grant?: DocumentGrant | string; event?: AnnotationEventInput;
@@ -89,6 +90,7 @@ export class DocumentService {
   private readonly sessions = new Map<string, DocumentSession>();
   private readonly moves: DocumentMoves;
   private recovery?: Promise<void>;
+  private bodyTurns = new Map<string, BodyTurn[]>();
 
   constructor(options: DocumentServiceOptions = {}) {
     this.now = options.now ?? Date.now;
@@ -175,12 +177,46 @@ export class DocumentService {
     const current = await this.authorized(session);
     return { documentId: current.documentId, machineId: current.machineId, path: current.path, version: current.locationVersion };
   }
-  private async readSource(session: DocumentSession | string): Promise<{ path: string; source: string; reference: DocumentReference }> {
-    const location = await this.location(session), adapter = this.fileAccess(location.machineId);
-    await adapter.bind(location);
-    const {source} = await adapter.read(location);
-    this.assertAuthorized(session, location.path);
-    return {path: location.path, source, reference: {documentId:location.documentId}};
+  private observeBody(documentId: string, source: string): void {
+    const turns = this.bodyTurns.get(documentId) ?? [];
+    const sole = turns.length === 1 ? turns[0] : undefined;
+    this.store.bodyRevisions.record(documentId, source, sole?.agentId ?? null, this.now(), sole?.signalId ?? null);
+  }
+  private async readSource(session: DocumentSession | string, locked = false): Promise<{ path: string; source: string; reference: {documentId: string} }> {
+    const location = await this.location(session);
+    const read = async () => {
+      const adapter = this.fileAccess(location.machineId);
+      await adapter.bind(location);
+      const {source} = await adapter.read(location);
+      this.assertAuthorized(session, location.path);
+      this.observeBody(location.documentId, source);
+      return {path: location.path, source, reference: {documentId:location.documentId}};
+    };
+    return locked ? read() : this.queue.run(location.documentId, read);
+  }
+  /** Flush the departing turn before switching writers, including its final unpolled write. */
+  async setBodyTurns(documentId: string, turns: BodyTurn[]): Promise<void> {
+    const session = await this.openById(documentId, { existingReader: true });
+    try {
+      await this.queue.run(documentId, async () => {
+        let observed = false;
+        try { await this.readSource(session, true); observed = true; }
+        finally {
+          const previous = this.bodyTurns.get(documentId) ?? [];
+          if (JSON.stringify(previous) !== JSON.stringify(turns)) this.store.bodyRevisions.finish(documentId);
+          if (observed && turns.length) this.bodyTurns.set(documentId, turns);
+          else this.bodyTurns.delete(documentId);
+        }
+      });
+    } finally { this.close(session); }
+  }
+  async revisionChain(session: DocumentSession, from: string) {
+    await this.readSource(session);
+    return this.store.bodyRevisions.chain(session.documentId, from);
+  }
+  resetBodyTurns(): void {
+    this.bodyTurns.clear();
+    this.store.bodyRevisions.finishAll();
   }
   private annotationState(path: DocumentReference, revision: string): SerializableAnnotationState {
     const state = deriveAnnotationState(this.store.ledger(path, revision));
@@ -250,7 +286,11 @@ export class DocumentService {
     return { path, bodyRevision: bodyRevision(source), ledgerRevision: this.store.conversationRevision(reference) };
   }
   async read(session: DocumentSession | string): Promise<DocumentSnapshot> { return (await this.readExactSnapshot(session)).document; }
-  async readExactSnapshot(session: DocumentSession | string): Promise<ExactDocumentRead> { const value = await this.readSource(session); return { document: this.snapshot(value.reference, value.source), source: value.source }; }
+  async readExactSnapshot(session: DocumentSession | string): Promise<ExactDocumentRead> {
+    const value = await this.readSource(session);
+    this.store.bodyRevisions.publish(value.reference.documentId, bodyRevision(value.source));
+    return { document: this.snapshot(value.reference, value.source), source: value.source };
+  }
   async visual(session: DocumentSession | string, threadId: string, mode: "overview" | "crop" | "clean" = "overview", offset = 0, history?: number) {
     const { reference, source } = await this.readSource(session);
     return visualOverview(this.store, reference, source, bodyRevision(source), threadId, mode, offset, history, source => this.imageRevision(session, source));
@@ -279,8 +319,12 @@ export class DocumentService {
       this.assertAuthorized(session, location.path);
       const adapter = this.fileAccess(location.machineId); await adapter.bind(location);
       try {
+        const before = await adapter.read(location);
+        this.observeBody(location.documentId, before.source);
         const saved = await adapter.save(location, {body: nextBody, expectedBodyRevision: input.expectedBodyRevision});
         this.assertAuthorized(session, location.path);
+        this.store.bodyRevisions.finish(location.documentId);
+        this.store.bodyRevisions.record(location.documentId, saved.source, input.authorId ?? null, this.now());
         return this.snapshot({documentId: location.documentId}, saved.source);
       } catch (error) {
         if ((error as FileAccessError).code === "stale_revision") throw new DocumentConflictError((error as Error).message, (error as FileAccessError).details);
@@ -300,7 +344,7 @@ export class DocumentService {
     const session = await this.authorized(inputSession(input)), path: DocumentReference = {documentId: session.documentId};
     return this.queue.run(session.documentId, async () => {
       this.assertAuthorized(session, session.path);
-      const {source} = await this.readSource(session);
+      const {source} = await this.readSource(session, true);
       const revision = bodyRevision(source);
       const expectedBody = input.expectedBodyRevision ?? (typeof input.expectedRevision === "string" ? input.expectedRevision : undefined);
       const payloadHash = input.requestFingerprint !== undefined ? fingerprint(input.requestFingerprint) : eventInput.type === "ack"

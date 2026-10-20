@@ -30,14 +30,20 @@ test("clipboard prompts and CLI takeover preserve identity everywhere and sign n
     expect((await cli(["turn", "register", path, "--actor", "Other", "--if-empty"], "intruder")).error.code).toBe("turn_slot_filled");
     expect((await prompt()).status).toBe(400);
     expect((await prompt("?agentId=paseo%3Aold")).body.prompt).toContain("--role-id 'paseo:old' --expected-recipient 'paseo:old'");
+    expect((await prompt("?agentId=paseo%3Aold")).body.prompt.split("\n\n")).toHaveLength(2);
     expect((await cli(["turn", "register", other, "--actor", "Builder"])).ok).toBe(true);
     const args = ["turn", "takeover", path, "--role-id", "paseo:old", "--expected-recipient", "paseo:old"];
     const taken = await cli(args, "new");
     expect(taken.ok).toBe(true);
     expect(taken.data.identity).toEqual(identity);
     expect(taken.data.registrations).toHaveLength(2);
+    expect(taken.data.instructions.join("\n")).toContain("document read");
+    expect(taken.data.instructions.join("\n")).toContain("--actor 'Builder'");
+    expect(taken.data.instructions.join("\n")).toContain("Do not send a turn yourself");
     expect((await cli(args, "new")).ok).toBe(true); // Lost-response retry.
-    expect((await cli(args, "third")).error.code).toBe("agent_role_changed");
+    const stale = await cli(args, "third");
+    expect(stale.error.code).toBe("agent_role_changed");
+    expect(stale.error.details.instructions[0]).toContain("Stop and report");
     expect((await cli(["pending", path, "--actor", "Retired"], "old")).error.code).toBe("agent_role_reassigned");
     expect((await cli(["pending", path, "--actor", "Replacement"], "new")).ok).toBe(true);
     const note = join(directory, "reply.txt"); await writeFile(note, "Replacement's note.");

@@ -18,12 +18,14 @@ import { reviewNoteIconSvg } from "../../integrations/paseo/chat/icon";
 
 export interface InsertMenuItem { label: string; icon: string; run: () => void; }
 
+export type ContextMenuEntry = InsertMenuItem | { kind: "attribution"; label: string; badge: HTMLElement | null };
+
 export interface SelectionUiOptions {
   insertItems?: () => InsertMenuItem[];
   onNotice: (message: string) => void;
   onCodeComment?: (view: EditorView) => void;
   /** Items for a context menu at this event instead of the insert menu, or "handled" when the caller acted on it. */
-  contextItems?: (view: EditorView, event: MouseEvent) => InsertMenuItem[] | "handled" | null;
+  contextItems?: (view: EditorView, event: MouseEvent) => ContextMenuEntry[] | "handled" | null;
 }
 
 export interface SelectionUiController {
@@ -349,12 +351,22 @@ class SelectionUi implements SelectionUiController {
     }
   }
 
-  private openMenu(view: EditorView, x: number, y: number, items = this.insertItems(), label = "Insert"): void {
+  private openMenu(view: EditorView, x: number, y: number, items: ContextMenuEntry[] = this.insertItems(), label = "Insert"): void {
     this.selectionSnapshot = view.state.selection;
     const menu = element("div", "wm-context-menu wm-insert-menu");
     menu.setAttribute("role", "menu");
     menu.setAttribute("aria-label", label);
+    const authors = items.filter((item): item is Extract<ContextMenuEntry, { kind: string }> => "kind" in item);
+    if (authors.length) menu.setAttribute("aria-description", `Edited by ${authors.map(item => item.label).join(", ")}`);
     for (const action of items) {
+      if ("kind" in action) {
+        const heading = element("div", "wm-menu-attribution");
+        heading.setAttribute("role", "presentation");
+        if (action.badge) heading.append(action.badge);
+        heading.append(element("span", undefined, action.label));
+        menu.append(heading);
+        continue;
+      }
       const item = button("", "wm-menu-item");
       item.setAttribute("role", "menuitem");
       const icon = element("span", "wm-insert-icon");

@@ -182,3 +182,25 @@
 :root[data-wm-theme$="-dark"] .wm-field-label {
     color: #d7cabe;
 }
+
+/* Attribution is a quiet heading, outside the menu's action/focus sequence. */
+.wm-menu-attribution {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  min-height: 34px;
+  max-width: 280px;
+  font: inherit;
+  font-weight: 400;
+  color: color-mix(in srgb, currentColor 72%, transparent);
+  cursor: default;
+  overflow-wrap: anywhere;
+}
+.wm-menu-attribution .wm-agent-icon { flex: none; margin: 0; }
+.wm-menu-attribution + .wm-menu-item {
+  border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  margin-top: 3px;
+}

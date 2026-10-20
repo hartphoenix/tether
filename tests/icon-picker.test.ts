@@ -52,3 +52,60 @@ test('icon choices persist across restart; stale, invalid, and cross-origin writ
     expect((await Bun.file(statePath).json()).controls.find((row: { id: string }) => row.id === 'archive').targets).toHaveLength(2);
   } finally { picker.server.stop(true); await rm(dir, { recursive: true, force: true }); }
 });
+
+test('Go icon review includes earlier rounds and preserves selections and comments across restart', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tether-go-icons-'));
+  const source = join(dir, 'turn-icons');
+  await Bun.write(join(source, 'go-icons.md'), '# Go icons\n## Shipped rotation\n`catapult`\n## Explorations\n`kettle`\n');
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>';
+  await Bun.write(join(source, 'svg/catapult.svg'), svg);
+  await Bun.write(join(source, 'svg-rejected/kettle.svg'), svg);
+  const options = { port: 0, statePath: join(dir, 'selections.json'), turnIconsDirectory: source };
+  let picker = await startPicker(options);
+  try {
+    let origin = picker.server.url.origin;
+    const read = async () => (await fetch(`${origin}/api/go-icons`)).json();
+    const put = (body: unknown, from = origin) => fetch(`${origin}/api/go-icons`, { method: 'PUT', headers: { 'content-type': 'application/json', origin: from }, body: JSON.stringify(body) });
+    const initial = await read();
+    expect(initial.catalog).toHaveLength(2);
+    expect(initial.state.icons['svg/catapult'].selected).toBe(true);
+    expect(initial.state.icons['svg-rejected/kettle'].selected).toBe(false);
+    const state = initial.state;
+    state.icons['svg/catapult'] = { selected: false, comment: 'Too busy at small sizes' };
+    state.icons['svg-rejected/kettle'] = { selected: true, comment: 'Keep this one' };
+    expect((await put(state, 'https://example.com')).status).toBe(403);
+    expect((await put(state)).status).toBe(200);
+    expect((await put(state)).status).toBe(409);
+    state.revision++;
+    expect((await put({ ...state, icons: {} })).status).toBe(400);
+    expect((await put({ ...state, icons: { ...state.icons, 'svg/catapult': { selected: 'yes', comment: '' } } })).status).toBe(400);
+    picker.server.stop(true);
+    await Bun.write(join(source, 'svg/new-icon.svg'), svg);
+    picker = await startPicker(options); origin = picker.server.url.origin;
+    const restored = await read();
+    expect(restored.state.icons['svg/catapult']).toEqual(state.icons['svg/catapult']);
+    expect(restored.state.icons['svg-rejected/kettle']).toEqual(state.icons['svg-rejected/kettle']);
+    expect(restored.state.icons['svg/new-icon']).toEqual({ selected: false, comment: '' });
+    expect(restored.state.revision).toBe(2);
+    expect((await fetch(`${origin}/go-icons`)).status).toBe(200);
+    expect(await (await fetch(origin)).text()).toContain('href="/go-icons"');
+  } finally { picker.server.stop(true); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('icon dashboard supports the configured Paseo proxy without allowing other hosts or origins', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tether-icons-proxy-'));
+  const proxyOrigin = 'http://icons.test.localhost';
+  const picker = await startPicker({ port: 0, statePath: join(dir, 'selections.json'), proxyOrigin });
+  try {
+    const request = (path: string, init: RequestInit = {}) => fetch(new URL(path, picker.server.url), {
+      ...init, headers: { host: new URL(proxyOrigin).host, ...init.headers },
+    });
+    expect((await request('/')).status).toBe(200);
+    expect((await request('/go-icons')).status).toBe(200);
+    const { state } = await (await request('/api/bootstrap')).json();
+    const save = (origin: string) => request('/api/state', { method: 'PUT', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify(state) });
+    expect((await save('https://example.com')).status).toBe(403);
+    expect((await save(proxyOrigin)).status).toBe(200);
+    expect((await request('/', { headers: { host: 'unregistered.localhost' } })).status).toBe(403);
+  } finally { picker.server.stop(true); await rm(dir, { recursive: true, force: true }); }
+});

@@ -1,6 +1,7 @@
 import type { EditorView } from "@milkdown/kit/prose/view";
+import { identityColor, identityIcon, identityName, type IdentityLookup } from "./identities";
 import { iconSvg } from "./icons";
-import type { InsertMenuItem } from "./selection-ui";
+import type { ContextMenuEntry } from "./selection-ui";
 import { createDoubleSecondaryTap, hunkAtPoint, markHunkSeen, reviewState, revertHunk, showsBefore, toggleHunks, type Hunk } from "./incoming-diff";
 
 /**
@@ -11,6 +12,7 @@ import { createDoubleSecondaryTap, hunkAtPoint, markHunkSeen, reviewState, rever
  * a two-finger double tap arrives as that pair.
  */
 export function createChangeReviewMenu(options: {
+  identity?: IdentityLookup;
   getView: () => EditorView | null;
   closeMenus: () => void;
   onComment: (view: EditorView, hunk: Hunk) => void;
@@ -45,12 +47,24 @@ export function createChangeReviewMenu(options: {
 
   return {
     /** Menu items for a right-click on a hunk; null elsewhere. */
-    items(view: EditorView, event: MouseEvent): InsertMenuItem[] | null {
+    items(view: EditorView, event: MouseEvent): ContextMenuEntry[] | null {
       const state = reviewState(view);
       const hunk = state ? hunkAtPoint(view, event.clientX, event.clientY, event.target) : undefined;
       if (!state || !hunk) return null;
       const before = showsBefore(state, hunk);
+      const authors = new Set((state.authors ?? []).filter(span =>
+        span.from < hunk.toB && span.to > hunk.fromB
+      ).map(span => span.authorId));
+      if (!authors.size) authors.add(null);
+      const headings: ContextMenuEntry[] = [...authors].map(id => {
+        const identity = id ? options.identity?.(id) : undefined;
+        const badge = identityIcon(identity);
+        const color = identityColor(identity);
+        if (badge && color) badge.style.setProperty("--wm-agent-color", color);
+        return { kind: "attribution", label: id ? identityName(options.identity, id) : "Author unknown", badge };
+      });
       return [
+        ...headings,
         { label: "Comment", icon: iconSvg("message-square"), run: () => options.onComment(view, hunk) },
         { label: before ? "Show current wording" : "Show earlier wording", icon: iconSvg("arrow-down-up"), run: () => toggleHunks(view, [hunk]) },
         { label: "Mark seen", icon: iconSvg("square-check"), run: () => markHunkSeen(view, hunk) },

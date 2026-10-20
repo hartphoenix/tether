@@ -72,7 +72,9 @@ describe("private review storage", () => {
     const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
     const service = new DocumentService({ readText: async (path) => { markReadStarted(); await readGate; return readFile(path, "utf8"); } });
     const session = await service.open(file.path); const reading = service.read(session); await readStarted;
-    await service.deleteConversation(session.path); service.store.db.query("DELETE FROM documents WHERE path = ?").run(session.path);
+    // Service reads now serialize with saves/deletion to keep revision history ordered.
+    // Simulate an out-of-band removal while the filesystem read is suspended.
+    service.store.db.query("DELETE FROM documents WHERE path = ?").run(session.path);
     releaseRead();
     await expect(reading).rejects.toBeInstanceOf(DocumentAccessError);
     expect(service.store.documentForPath(session.path)).toBeNull();

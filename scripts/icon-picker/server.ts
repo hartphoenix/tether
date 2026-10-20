@@ -3,13 +3,16 @@ import { dirname, join, resolve } from 'node:path';
 import { resolveConfig } from '../../src/server/config';
 import { builtInThemes, builtInDesign, storedPreferencesFrom } from '../../src/shared/themes';
 import { rows } from './catalog';
+import { createGoPicker } from './go-icons';
 
 const root = resolve(import.meta.dir, '../..');
 const assets = join(root, 'node_modules/lucide-static/icons');
 export type Choice = { candidates: string[]; selected: string | null; showCurrent: boolean; draft: string };
 export type PickerState = { version: 1; revision: number; updatedAt: string; theme: string; scale: number; rows: Record<string, Choice> };
 
-export async function startPicker(options: { port?: number; statePath?: string } = {}) {
+export async function startPicker(options: { port?: number; proxyOrigin?: string; statePath?: string; turnIconsDirectory?: string } = {}) {
+  const proxy = options.proxyOrigin && new URL(options.proxyOrigin);
+  if (proxy && (proxy.protocol !== 'http:' || !proxy.hostname.endsWith('.localhost') || proxy.origin !== options.proxyOrigin)) throw new Error('Expected a local Paseo service origin.');
   const statePath = options.statePath ?? join(root, '.local/icon-picker/selections.json');
   const names = new Set((await readdir(assets)).filter(n => n.endsWith('.svg')).map(n => n.slice(0, -4)));
   const preferencesFile = Bun.file(resolveConfig().preferencesPath);
@@ -59,16 +62,28 @@ export async function startPicker(options: { port?: number; statePath?: string }
     await persist(state);
   }
   let writes = Promise.resolve();
+  let goPicker: ReturnType<typeof createGoPicker> | undefined;
   const server = Bun.serve({
     hostname: '127.0.0.1', port: options.port ?? 4319, maxRequestBodySize: 128 * 1024,
     async fetch(request) {
       const url = new URL(request.url);
-      if (url.host !== server.url.host || (request.headers.get('origin') && request.headers.get('origin') !== server.url.origin)) return new Response('Forbidden', { status: 403 });
+      const allowedOrigins = [server.url.origin, options.proxyOrigin];
+      if (!allowedOrigins.includes(url.origin) || request.headers.get('host') !== url.host ||
+        (request.headers.get('origin') && request.headers.get('origin') !== url.origin)) return new Response('Forbidden', { status: 403 });
       const json = (data: unknown, status = 200) => Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
+      if (url.pathname === '/api/go-icons') {
+        try {
+          goPicker ??= createGoPicker(options.turnIconsDirectory ?? join(root, '.local/turn-icons'), join(dirname(statePath), 'go-selections.json'));
+          return await (await goPicker)(request);
+        } catch (error) {
+          goPicker = undefined;
+          return json({ error: (error as Error).message }, 500);
+        }
+      }
       if (request.method === 'GET' && url.pathname === '/api/bootstrap') return json({ catalog, themes, state, statePath });
       if (request.method === 'GET' && url.pathname === '/api/state') return json(state);
       if (request.method === 'PUT' && url.pathname === '/api/state') {
-        if (request.headers.get('content-type') !== 'application/json' || request.headers.get('origin') !== server.url.origin) return json({ error: 'Same-origin JSON required' }, 403);
+        if (request.headers.get('content-type') !== 'application/json' || request.headers.get('origin') !== url.origin) return json({ error: 'Same-origin JSON required' }, 403);
         let answer!: Response;
         const work = writes.then(async () => {
           try {
@@ -85,7 +100,7 @@ export async function startPicker(options: { port?: number; statePath?: string }
       if (request.method !== 'GET') return new Response('Method not allowed', { status: 405 });
       const match = /^\/icons\/([a-z0-9-]+)\.svg$/.exec(url.pathname);
       if (match) return names.has(match[1]!) ? new Response(Bun.file(join(assets, `${match[1]}.svg`))) : new Response('Unknown Lucide icon', { status: 404 });
-      const staticFiles: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css' };
+      const staticFiles: Record<string, string> = { '/go-icons': 'go-icons.html', '/go-icons.js': 'go-icons.js', '/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css' };
       if (Object.hasOwn(staticFiles, url.pathname)) return new Response(Bun.file(join(import.meta.dir, staticFiles[url.pathname]!)), { headers: { 'Cache-Control': 'no-store' } });
       if (url.pathname === '/fonts.css') return new Response(Bun.file(join(root, 'src/web/fonts.css')));
       if (/^\/fonts\/[a-z0-9-]+\.woff2$/.test(url.pathname)) return new Response(Bun.file(join(root, 'src/web', url.pathname.slice(1))));
@@ -96,6 +111,8 @@ export async function startPicker(options: { port?: number; statePath?: string }
 }
 
 if (import.meta.main) {
-  const { server, statePath } = await startPicker();
-  console.log(`Icon picker: ${server.url}\nPreferences: ${statePath}`);
+  const { server, statePath } = await startPicker({ port: Number(process.env.PASEO_PORT ?? 4319), proxyOrigin: process.env.PASEO_URL });
+  console.log(`Icon picker: ${process.env.PASEO_URL ?? server.url}\nPreferences: ${statePath}`);
+  await new Promise<void>(resolve => { for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.once(signal, resolve); });
+  await server.stop();
 }

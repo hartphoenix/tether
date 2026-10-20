@@ -698,7 +698,10 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       : undefined;
     const code = usageError ? "usage" : coded ?? (cause instanceof ControlRequestError ? cause.code : "command_failed");
     const uncertain = cause && typeof cause === "object" && (cause as { details?: { outcome?: string } }).details?.outcome === "outcome_unknown";
-    const reported = completed.length ? operationError(cause, { outcome: uncertain ? "outcome_unknown" : "partially_applied", completed }) : cause;
+    let reported = completed.length ? operationError(cause, { outcome: uncertain ? "outcome_unknown" : "partially_applied", completed }) : cause;
+    if (command === "turn.takeover") reported = operationError(reported, {
+      instructions: ["Stop and report this result; do not claim the role was taken over or change the expected recipient to force it. For a stale assignment, obtain a fresh takeover prompt; for an uncertain outcome, inspect turn status before retrying."],
+    });
     return { response: failure(command, reported, code), exitCode: usageError ? 2 : 1 };
   }
 }

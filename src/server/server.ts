@@ -16,6 +16,7 @@ import { releaseNotesDocument, seedReleaseNotes, seedWelcome } from "../onboardi
 import { MAX_LABEL_LENGTH, TurnSignals } from "./turns";
 import { TurnStore } from "./turn-store";
 import { HostTurns, turnEventStream, type HostSignal } from "./host-turns";
+import { BodyAttribution } from "./body-attribution";
 import { captureTurnAnnotations } from "./turn-annotations";
 import { UpdateService, writeUpdateState } from "./updates";
 import { listAgentSkillReviews, readAgentSkillReview, decideAgentSkillReview, decideTetherballOffer } from "../cli/agent-skills";
@@ -23,7 +24,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path
 import { readFileSync, writeFileSync } from "node:fs";
 import { PrivateStore, type MutationReceipt, type DocumentReference, type PrivateDocumentRow } from "../storage/private-store";
 import { validAgentId } from "../storage/identities";
-import { turnAssignmentPrompt } from "./turn-prompt";
+import { turnAssignmentPrompt, takeoverInstructions } from "./turn-prompt";
 import { MAX_AGENT_ID_LENGTH, isHumanId, HUMAN_ID } from "../shared/agent-identity";
 import { ViewStore, cookieVerifier, verifiesCookie } from "./view-store";
 import { stopHostBridges } from "./stop-hosts";
@@ -304,6 +305,25 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     },
   });
   const hostTurns = new HostTurns(privateStore.db, now);
+  const bodyAttribution = new BodyAttribution(service, () => {
+    const documents = privateStore.db.query("SELECT id,path,machine_id FROM documents").all() as { id: string; path: string; machine_id: string }[];
+    const hosted = hostTurns.subscriptions();
+    return documents.flatMap(document => {
+      const subscriptions = hosted.filter(s => s.documentId === document.id);
+      const hostedIds = new Set(subscriptions.map(s => s.agentId));
+      const active = [
+        ...subscriptions.flatMap(s => {
+          const signal = s.signalId && hostTurns.signal(s.signalId);
+          return signal && signal.state === "accepted" ? [{ agentId: s.agentId, signalId: signal.signalId }] : [];
+        }),
+        ...(document.machine_id === privateStore.localMachineId ? turns.agents(document.path) : []).filter(a => !hostedIds.has(a.agentId) && a.state === "working" && a.signalId)
+          .map(a => ({ agentId: a.agentId, signalId: a.signalId! })),
+      ].sort((a, b) => a.agentId.localeCompare(b.agentId));
+      return subscriptions.length || active.length ? [{ documentId: document.id, turns: active }] : [];
+    });
+  });
+  const stopBodyHost = hostTurns.subscribe(() => { void bodyAttribution.sync(); });
+  const stopBodyWatcher = turns.subscribe(() => { void bodyAttribution.sync(); });
   const turnLifetime = new AbortController();
   let deliberateStop = false;
   const markDeliberateStop = () => { deliberateStop = true; turns.close(true); };
@@ -737,7 +757,12 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     const issue = body.issueAgentId === true;
     delete body.issueAgentId;
     if (!requested) {
-      if (hostId) privateStore.identities.touch(hostId, now());
+      if (hostId) {
+        const id = privateStore.identities.signingId(hostId);
+        privateStore.identities.touch(id, now());
+        body.actor = id;
+        return { id, created: false };
+      }
       return undefined;
     }
     if (isHumanId(requested)) { body.actor = HUMAN_ID; return { id: HUMAN_ID, created: false }; }
@@ -813,6 +838,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       if (!["claim", "accepted", "completed", "failed", "uncertain"].includes(String(body.action))) throw invalidRequest("Invalid host receipt action.");
       const signal = hostTurns.update(owner, hostId, turnIdentifier(body.token, "lease token"), turnIdentifier(body.signalId, "signal ID"), body.action as "claim" | "accepted" | "completed" | "failed" | "uncertain", { position: body.position, reason: typeof body.reason === "string" ? body.reason : undefined });
+      await bodyAttribution.sync();
       const scope = { host: signal.hostId, agent: (signal.recipientId ?? signal.agentId).slice(6) };
       const submission = chatStore.operate({ ...scope, operation: { kind: "read" } }).submission;
       if (submission?.id === signal.signalId) {
@@ -833,7 +859,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         hostTurns.takeOver(roleId, recipientId, hostId, owner, expectedRecipient);
         return result;
       }).immediate();
-      return { identity, recipientId, registrations: hostTurns.subscriptions().filter(s => s.agentId === roleId).map(({ documentId, path, label }) => ({ documentId, path, label })) };
+      await bodyAttribution.sync();
+      return { identity, recipientId, instructions: takeoverInstructions(identity, owner === "local" ? grant.path : `id:${grant.documentId}`),
+        registrations: hostTurns.subscriptions().filter(s => s.agentId === roleId).map(({ documentId, path, label }) => ({ documentId, path, label })) };
     });
     if (operation === "register") {
       const recipientId = validAgentId(body.agentId);
@@ -847,6 +875,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           hostTurns.register({ documentId: grant.documentId!, machineId: grant.machineId!, path: grant.path, agentId, recipientId, hostId, owner,
             label: body.label as string | undefined, behavior: "steer" });
           turns.unregister(grant.path, agentId);
+          await bodyAttribution.sync();
           return { registration: hostTurns.agents(grant.documentId!).find(s => s.agentId === agentId), identity: privateStore.identities.resolve([agentId], now())[0] };
         });
       });
@@ -854,7 +883,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     return withControlDocument(body, async grant => {
       if (operation === "status") return { agents: allTurnAgents(grant.path, grant.documentId!), availableIcons: privateStore.identities.availableIcons(now()), identityRevision: privateStore.identities.revision() };
       const agentId = operation === "unregister" ? privateStore.identities.signingId(validAgentId(body.agentId)) : validAgentId(body.agentId);
-      if (operation === "unregister") return { removed: hostTurns.unregister(grant.documentId!, agentId, owner) || turns.unregister(grant.path, agentId) };
+      if (operation === "unregister") {
+        const removed = hostTurns.unregister(grant.documentId!, agentId, owner) || turns.unregister(grant.path, agentId);
+        await bodyAttribution.sync();
+        return { removed };
+      }
       if (operation === "send") {
         if (!canSend) throw Object.assign(new Error("Only a human reader or explicitly authorized CLI may start a turn."), { status: 403, code: "human_action_required" });
         return hostPress(grant.documentId!, agentId, turnIdentifier(body.operationId, "operation ID"));
@@ -930,7 +963,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       if (pathname === "/control/document/save") {
         if (typeof body.body !== "string" || typeof body.expectedBodyRevision !== "string") throw invalidRequest("Document save requires body and expectedBodyRevision.");
-        const saved = await service.saveBody({ session: grant, body: body.body, expectedBodyRevision: body.expectedBodyRevision, expectedLocationVersion: typeof body.expectedLocationVersion === "number" ? body.expectedLocationVersion : undefined });
+        await bodyAttribution.flush();
+        const saved = await service.saveBody({ session: grant, body: body.body, authorId: typeof body.actor === "string" ? body.actor : null, expectedBodyRevision: body.expectedBodyRevision, expectedLocationVersion: typeof body.expectedLocationVersion === "number" ? body.expectedLocationVersion : undefined });
         return { documentId: saved.documentId, machineId: saved.machineId, locationVersion: saved.locationVersion, path: saved.path, bodyRevision: saved.bodyRevision };
       }
       if (pathname === "/control/review/comment") {
@@ -1014,6 +1048,17 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         return json({ protocol: PROTOCOL_VERSION, sessionId: session.id, sharedReader:session.shared === true, draft: session.shared ? null : views.draft(session.id), scroll: session.shared ? 0 : views.position(session.id), zoom: session.shared ? basePreferences.defaultDocumentZoom ?? 100 : views.zoom(session.id, basePreferences.defaultDocumentZoom ?? 100), document: { ...document, machine: privateStore.machines.get(session.grant.machineId) }, directoryPicker: !session.shared && Boolean(pickMoveDirectory), capabilities: {...hostAdapter.capabilities(session.target),...(session.grant.machineId !== privateStore.localMachineId ? {revealFile:false} : {})}, updateControls: true, preferences: displayPreferences(await hostThemes.preferences(themeClient(request, session.target), basePreferences)), actor: options.actor ?? "assistant" });
       }
       if (apiPath === "/machine" && request.method === "GET") return json({ machine: privateStore.machines.get(session.grant.machineId) });
+      if (apiPath === "/revisions" && request.method === "GET") {
+        const from = new URL(request.url).searchParams.get("from");
+        if (!from || !/^sha256:[a-f0-9]{64}$/.test(from)) throw invalidRequest("A body revision is required.");
+        await bodyAttribution.flush();
+        return json(await service.revisionChain(session.grant, from), { headers: { "cache-control": "no-store" } });
+      }
+      if (apiPath === "/reviewed" && request.method === "POST") {
+        const body = await requestJson(request);
+        if (typeof body.bodyRevision !== "string" || !/^sha256:[a-f0-9]{64}$/.test(body.bodyRevision)) throw invalidRequest("A body revision is required.");
+        return json({ saved: privateStore.bodyRevisions.reviewed(session.grant.documentId, body.bodyRevision) });
+      }
       if (apiPath === "/history" && request.method === "GET") {
         const query: Record<string,unknown> = Object.fromEntries(new URL(request.url).searchParams);
         for (const key of ["limit","maxBytes","beforeSequence"]) if (query[key] !== undefined) query[key] = Number(query[key]);
@@ -1066,7 +1111,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         const content = typeof body.content === "string" ? body.content : typeof body.body === "string" ? body.body : undefined;
         const expected = expectedBodyRevision(body);
         if (content === undefined || !expected) return error("invalid_request", "A body and expectedBodyRevision are required.", 400);
-        return json(await service.saveBody({ session: session.grant, body: content, expectedBodyRevision: expected, expectedLocationVersion:typeof body.expectedLocationVersion === "number" ? body.expectedLocationVersion : undefined }));
+        await bodyAttribution.flush();
+        return json(await service.saveBody({ session: session.grant, body: content, authorId: HUMAN_ID, expectedBodyRevision: expected, expectedLocationVersion:typeof body.expectedLocationVersion === "number" ? body.expectedLocationVersion : undefined }));
       }
       if (apiPath === "/annotations" && request.method === "GET") {
         const actor = new URL(request.url).searchParams.get("actor") ?? options.actor ?? "assistant";
@@ -1626,6 +1672,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           if (isHumanId(agentId)) throw invalidRequest("The human reader cannot register an agent turn.");
           if (pathname === "/control/turn/register") return json({ registration: await turns.register(signedPath.path, agentId, (body.label as string | undefined)?.trim() || undefined), ...(signedPath.agent ? { agent: signedPath.agent } : {}) });
           const waited = await turns.wait(signedPath.path, agentId, (body.label as string | undefined)?.trim() || undefined, body.after as string | undefined, timeoutMs, request.signal);
+          await bodyAttribution.sync();
           return json(signedPath.agent ? { ...waited, agent: signedPath.agent } : waited);
         }
         if (request.method === "POST" && (pathname.startsWith("/control/document/") || pathname.startsWith("/control/review/"))) {
@@ -1754,6 +1801,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       turnLifetime.abort();
       turns.close();
       stopping = (async () => {
+      stopBodyHost(); stopBodyWatcher();
+      await bodyAttribution.flush();
+      privateStore.bodyRevisions.finishAll();
       await daemon.shared?.stop();
       await initialization;
       await maintenance.catch(() => {});

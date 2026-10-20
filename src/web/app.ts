@@ -184,6 +184,7 @@ const identities = createIdentityCache({
 });
 setReviewColors(id => id ? identityColor(identities.get(id)) : undefined);
 const reviewMenu = createChangeReviewMenu({
+  identity: identities.get,
   getView: () => getEditorView(),
   closeMenus: () => selectionUi?.close(),
   onComment: (view, hunk) => {
@@ -757,6 +758,16 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
       queueMicrotask(syncReviewBar);
       // A revert can return the document to the version Milkdown's listener last saw, so save directly.
       if (view.state.doc !== previous.doc && reviewKey.getState(previous)) queueMicrotask(scheduleSave);
+      if (reviewKey.getState(previous) && !reviewKey.getState(view.state)) {
+        const generation = documentGeneration, path = currentPath;
+        queueMicrotask(async () => {
+          if (generation !== documentGeneration || path !== currentPath || !(await save())) return;
+          if (generation !== documentGeneration || path !== currentPath || reviewState(view)) return;
+          // Retention advances only after review finishes and any reverts are saved.
+          // An unavailable server leaves history retained for the next review.
+          await api('api/reviewed', { method: 'POST', body: JSON.stringify({ bodyRevision: currentBodyRevision }) }).catch(() => {});
+        });
+      }
     } }) }));
     nextCrepe.editor.use(headingAnchors).use(diagramViewer).use(footnoteOrdering).use(reviewBarPlugin).use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
     try { await nextCrepe.create(); }

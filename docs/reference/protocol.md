@@ -62,6 +62,16 @@ Use `document diff <file> --from-revision <revision>` to get a bounded change fr
 
 If a revision is unavailable, the result includes `revision_unavailable` and a bounded outline instead of the full document. Large changes report how many characters were omitted. Context results describe anchors as located, ambiguous, or orphaned against the current rendered text. Use the returned `nextOffset` for another outline page.
 
+### Reader body attribution
+
+The authenticated reader endpoint `GET api/revisions?from=BODY_REVISION` returns `{base, revisions}`. `base` contains `bodyRevision` and `body`; each subsequent revision contains `bodyRevision`, `parentRevision`, `authorId`, `savedAt` (Unix milliseconds), `body`, and `open`. Revisions run oldest first through the current disk body. An unavailable base returns `{base:null,revisions:[]}`; the reader uses neutral attribution.
+
+The private database retains body history across restarts and document moves. Signed `document save` calls record the caller's stable role ID, including after takeover; reader saves record the human. Direct disk changes are attributed to the sole active Go turn on that document. This is an inference from turn activity, not proof of which process wrote the file. Overlapping turns, writes outside a turn, and changes first observed after a restart are neutral.
+
+Unpublished disk observations within one turn coalesce into an open revision. Turn completion captures the final body and closes it. A body already returned to a reader remains available as a base, so a turn may contain more than one retained checkpoint. Explicit saves are separate revisions. The daemon observes disk bodies on reads and turn transitions; it does not preserve every intermediate filesystem write.
+
+`POST api/reviewed` with `{bodyRevision}` marks a completed reader review. The daemon retains that version, its 50 predecessors, and every later revision; failed or unfinished reviews do not advance retention. `GET api/identities?ids=…` resolves revision authors to current names, icons and colors, and `identityRevision` in reader change responses invalidates cached identities after renaming. These endpoints also work through authenticated shared readers.
+
 Use `quote-candidates <file> --quote <text>` to get bounded surrounding text and candidate IDs tied to a body revision. Pass your chosen `--candidate-id` and `--expected-body-revision` to `comment`, without calculating rendered offsets. You can use a unique quote directly. Tether always enforces a body precondition if you supply one.
 
 ## Limits and write guarantees

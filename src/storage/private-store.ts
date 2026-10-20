@@ -1,6 +1,7 @@
 import { hostname, tmpdir } from "node:os";
 import { Machines } from "./machines";
 import { Identities } from "./identities";
+import { BodyRevisions } from "./body-revisions";
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -77,6 +78,7 @@ export class PrivateStore {
   readonly localMachineId: string;
   readonly machines: Machines;
   readonly identities: Identities;
+  readonly bodyRevisions: BodyRevisions;
 
   constructor(path = ":memory:") {
     this.path = path;
@@ -209,6 +211,7 @@ export class PrivateStore {
     this.db.exec(`UPDATE review_observations SET observation_order=rowid WHERE observation_order=0;
       UPDATE acknowledgements SET observation_order=COALESCE((SELECT observation_order FROM review_observations WHERE review_observations.cursor=acknowledgements.cursor),0) WHERE observation_order=0;
       UPDATE observation_clock SET value=MAX(value,COALESCE((SELECT MAX(observation_order) FROM review_observations),0)) WHERE id=1;`);
+    this.bodyRevisions = new BodyRevisions(this.db);
     if (path !== ":memory:") chmodSync(path, 0o600);
   }
 
@@ -460,6 +463,8 @@ export class PrivateStore {
     if (!document) return false;
     const transact = this.db.transaction(() => {
       this.db.query("DELETE FROM visual_evidence WHERE document_id = ?").run(document.id);
+      this.db.query("DELETE FROM body_revisions WHERE document_id = ?").run(document.id);
+      this.db.query("DELETE FROM body_reviews WHERE document_id = ?").run(document.id);
       this.db.query("DELETE FROM mutations WHERE document_id = ?").run(document.id);
       this.db.query("DELETE FROM review_observations WHERE document_id = ?").run(document.id);
       this.db.query("DELETE FROM agent_continuations WHERE document_id = ?").run(document.id);

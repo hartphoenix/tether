@@ -93,6 +93,12 @@ try {
           await reader.locator('#save-review').click();
         } else if (mode === 'toggle-comment') {
           await rightClick('.tether-review-inserted', 'incoming');
+          check(await reader.locator('.wm-menu-attribution').textContent() === 'Author unknown', 'neutral attribution heading missing');
+          check(await reader.locator('.wm-context-menu [role="menuitem"]').count() === 4, 'heading entered action list');
+          check(await reader.locator('.wm-context-menu').getAttribute('aria-description') === 'Edited by Author unknown', 'menu attribution description missing');
+          check(await reader.evaluate(() => document.activeElement?.textContent) === 'Comment', 'header stole initial focus');
+          await reader.keyboard.press('ArrowUp');
+          check(await reader.evaluate(() => document.activeElement?.textContent) === 'Revert this change', 'keyboard navigation did not skip heading');
           await reader.getByRole('menuitem', { name: 'Comment', exact: true }).click();
           await reader.locator('.wm-annotation-textarea').last().fill('Keep the incoming wording.');
           await reader.locator('form:has(.wm-annotation-textarea) button[type="submit"]').last().click();

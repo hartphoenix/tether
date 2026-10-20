@@ -15,8 +15,13 @@ Range.prototype.getClientRects=()=>[] as any;
 let doc={path:'/tmp/workflow.md',body:'---\ntitle: Test\n---\n\n# Heading\r\n\n[Guide](guide.md) and `code`.\n\nA \\$100 stock costs **only** \\$3.\n\n- list\n',bodyRevision:'sha256:original',ledgerRevision:'empty',annotations:{threads:[]}};
 let preferences={theme:'tether',customThemes:[],uiScale:1,commentTextSize:16};
 const writes:string[]=[];
+let revisionChain: unknown = { base: null, revisions: [] };
+const reviewed: string[] = [];
 (globalThis as any).fetch=async(url:string,options:any={})=>{
  const path=new URL(url,w.location.href).pathname;
+ if(path.endsWith('/revisions'))return Response.json(revisionChain);
+ if(path.endsWith('/identities'))return Response.json({identities:[{id:'author',name:'Builder',icon:'balloon',colorSlot:2,kind:'agent'}],identityRevision:1});
+ if(path.endsWith('/reviewed')){reviewed.push(JSON.parse(options.body).bodyRevision);return Response.json({saved:true});}
  if(path.endsWith('/bootstrap'))return Response.json({document:doc,preferences,capabilities:{},scroll:0,zoom:100});
  if(path.endsWith('/preferences'))return Response.json(preferences);
  if(path.endsWith('/changes'))return Response.json({path:doc.path,bodyRevision:doc.bodyRevision,ledgerRevision:doc.ledgerRevision});
@@ -71,11 +76,14 @@ await wait(()=>!document.querySelector('.wm-source-editor'));
 if(writes.length!==1)throw new Error('Returning to reader rewrote source');
 // Reviewing external changes never rewrites them: the reader adopts the disk body and Done only ends review.
 const external='## Updated heading\n\nA \\$5 **price**.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n';
+revisionChain={base:{bodyRevision:doc.bodyRevision,body:doc.body},revisions:[{bodyRevision:'sha256:external',parentRevision:doc.bodyRevision,body:external,authorId:'author',open:false}]};
 doc={...doc,body:external,bodyRevision:'sha256:external'};
 w.dispatchEvent(new w.Event('pageshow'));
 await wait(()=>!document.querySelector<HTMLButtonElement>('#save-review')!.hidden);
+await wait(()=>[...document.querySelectorAll<HTMLElement>('.tether-review-inserted')].some(node=>node.getAttribute('style')?.includes('--tether-agent-2')));
 (document.querySelector('#save-review') as HTMLButtonElement).click();
 await wait(()=>document.querySelector<HTMLElement>('#conflict')!.hidden);
+await wait(()=>reviewed.includes('sha256:external'));
 await new Promise(resolve=>setTimeout(resolve,800));
 if(writes.length!==1)throw new Error('Reviewing external changes wrote the file: '+JSON.stringify(writes.slice(1)));
 (document.querySelector('#source') as HTMLButtonElement).click();
@@ -85,5 +93,5 @@ doc={...doc,body:'Newer disk content\n',bodyRevision:'sha256:newer'};
 conflictedSource.dispatch({changes:{from:conflictedSource.state.doc.length,insert:'Unsaved local change'}});
 await wait(()=>!document.querySelector<HTMLElement>('#conflict')!.hidden);
 if(Number(writes.length)!==1||!conflictedSource.state.sliceDoc().endsWith('Unsaved local change'))throw new Error('Source conflict lost a draft or overwrote disk');
-console.log('Reader workflows passed: exact source saves, review without rewrites, and source conflicts.');
+console.log('Reader workflows passed: exact source saves, attributed review without rewrites, review retention, and source conflicts.');
 w.dispatchEvent(new w.Event('pagehide'));dom.window.close();

@@ -3,6 +3,9 @@ import { editorViewCtx } from "@milkdown/kit/core";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { JSDOM } from "jsdom";
 import { validateAnnotationEvent, type CommentEvent } from "../src/core/annotation-ledger";
+import { PrivateStore } from "../src/storage/private-store";
+import { createChangeReviewMenu } from "../src/web/change-review-menu";
+import { bodyRevision } from "../src/core/index";
 
 let crepe: import("@milkdown/crepe").Crepe;
 let view: EditorView;
@@ -36,6 +39,48 @@ const text = () => view.state.doc.textContent;
 
 const before = "The 12 Lucide-style SVGs come from six concept sheets. Go icons shows them.\n\nAn unrelated paragraph stays.\n";
 const after = "Two rounds of icon exploration produced 47 candidates. Go icons groups them.\n\nAn unrelated paragraph stays.\n";
+
+test("stored revision chains paint each agent's surviving text with its resolved color", () => {
+  const store = new PrivateStore(), id = store.ensureDocument("/tmp/attributed-reader.md").id;
+  const base = "First old.\n\nDivider.\n\nLast old.\n";
+  const middle = "First Alice.\n\nDivider.\n\nLast old.\n";
+  const final = "First Alice.\n\nDivider.\n\nLast Bob.\n";
+  store.bodyRevisions.record(id, base, null, 1);
+  store.bodyRevisions.record(id, middle, "alice", 2);
+  store.bodyRevisions.record(id, final, "bob", 3);
+  const identities = store.identities.resolve(["alice", "bob"]);
+  expect(identities[0]!.colorSlot).not.toBe(identities[1]!.colorSlot);
+  review.setReviewColors(author => author === "alice" ? "#ff0000" : author === "bob" ? "#0000ff" : undefined);
+  load(base);
+  review.startIncomingDiff(crepe.editor, final, bodyRevision(base));
+  const spans = review.authorsFromChain(crepe.editor, store.bodyRevisions.chain(id, bodyRevision(base)), body => body)!;
+  expect(spans.map(span => span.authorId)).toEqual(["alice", "bob"]);
+  review.setReviewAuthors(view, spans);
+  const painted = [...view.dom.querySelectorAll<HTMLElement>(".tether-review-inserted")];
+  expect(painted.some(node => node.textContent?.includes("Alice") && node.getAttribute("style")?.includes("#ff0000"))).toBe(true);
+  expect(painted.some(node => node.textContent?.includes("Bob") && node.getAttribute("style")?.includes("#0000ff"))).toBe(true);
+  const menu = createChangeReviewMenu({ getView: () => view, closeMenus: () => {}, onComment: () => {}, identity: id => store.identities.resolve([id])[0] });
+  const headings = () => {
+    const target = document.createElement("span");
+    target.className = "tether-review-before";
+    target.dataset.hunk = String(review.reviewState(view)!.hunks[0]!.fromB);
+    return menu.items(view, { target, clientX: 0, clientY: 0 } as unknown as MouseEvent)!.filter(item => "kind" in item);
+  };
+  expect(headings().map(item => item.label)).toEqual(["alice"]);
+  expect(headings()[0]!.badge?.querySelector("svg")).toBeTruthy();
+  store.identities.rename("alice", "Renamed Alice");
+  expect(headings().map(item => item.label)).toEqual(["Renamed Alice"]);
+  const first = review.reviewState(view)!.hunks[0]!;
+  review.setReviewAuthors(view, [{ from: first.fromB, to: first.fromB + 1, authorId: "alice" }, { from: first.fromB + 1, to: first.toB, authorId: "bob" }]);
+  expect(headings().map(item => item.label)).toEqual(["Renamed Alice", "bob"]);
+  review.setReviewAuthors(view, null);
+  expect(headings().map(item => item.label)).toEqual(["Author unknown"]);
+  menu.destroy();
+  expect(review.authorsFromChain(crepe.editor, store.bodyRevisions.chain(id, bodyRevision(base)), body => body)).toEqual(spans);
+  review.endIncomingDiff(view);
+  review.setReviewColors(() => undefined);
+  store.close();
+});
 
 test("review adopts the incoming document and groups nearby changes into one hunk", () => {
   load(before);
