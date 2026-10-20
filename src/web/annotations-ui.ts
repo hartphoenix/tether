@@ -508,6 +508,12 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
   const railHeader = createRailHeader();
   rail.prepend(railHeader.header);
   const stopHeaderOverlay = overlayScrollHeader(scroller, railHeader.header);
+  const win = root.ownerDocument.defaultView!;
+  let runwayFrame = 0;
+  const runwayResize = win.ResizeObserver ? new win.ResizeObserver(() => {
+    if (!runwayFrame) runwayFrame = win.requestAnimationFrame(() => { runwayFrame = 0; updateThreadRunway(); });
+  }) : null;
+  for (const element of [scroller, content, railHeader.header]) runwayResize?.observe(element);
 
   const controller: AnnotationUiController & AnnotationUiControllerLike = {
     plugin: undefined as unknown as ReturnType<typeof createAnnotationPlugin>,
@@ -615,6 +621,8 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       for (const animation of threadAnimations.values()) animation.cancel();
       stopEndRecovery();
       stopHeaderOverlay();
+      runwayResize?.disconnect();
+      win.cancelAnimationFrame(runwayFrame);
       editorRoot?.removeEventListener("click", handleEditorClick);
       editorRoot?.removeEventListener("keydown", handleFootnoteKeydown);
       editorRoot?.ownerDocument.querySelector(".wm-footnote-popover")?.remove();
@@ -1077,6 +1085,15 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     for (const thread of selected) await onResolve(thread);
   }
 
+  function updateThreadRunway(): void {
+    if (!scroller.clientHeight) return;
+    // Leave the last thread below the glass header even at maximum scroll.
+    // Go-button clearance already contributes trailing space inside content.
+    const clearance = parseFloat(getComputedStyle(content).paddingBottom) || 0;
+    const padding = `${Math.max(28, scroller.clientHeight - railHeader.header.offsetHeight - clearance - 12)}px`;
+    if (scroller.style.paddingBottom !== padding) scroller.style.paddingBottom = padding;
+  }
+
   function updateExpansion(alignId?: string): void {
     stopThreadScroll();
     const before = new Map([...cards.values()].map(({ card }) => [card, card.getBoundingClientRect().height]));
@@ -1093,7 +1110,7 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
     }
     // A trailing runway permits even the last card to align below the header.
     // Retain it while that card stays anchored, including after collapse.
-    scroller.style.paddingBottom = `${Math.max(28, scroller.clientHeight - 80)}px`;
+    updateThreadRunway();
     const alignedCard = alignId ? cards.get(alignId)?.card : undefined;
     const viewportTop = Math.max(scroller.getBoundingClientRect().top, rail.querySelector('.wm-annotation-rail-header')?.getBoundingClientRect().bottom ?? 0) + 12;
     const destination = alignedCard ? scroller.scrollTop + alignedCard.getBoundingClientRect().top - viewportTop : undefined;

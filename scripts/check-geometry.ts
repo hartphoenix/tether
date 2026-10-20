@@ -309,6 +309,39 @@ async function selectionMenuScale(page: Page) {
   }
   console.log('PASS selection menu scale independent of document zoom');
 }
+async function threadDrawerBottom(page: Page) {
+  await page.goto(server.url.toString());
+  await page.waitForFunction(() => (window as any).ready);
+  await page.evaluate(() => {
+    const a = (window as any).audit;
+    const anchor = a.selectLink(0);
+    a.annotations.setState({ threads: Array.from({ length: 12 }, (_, i) => ({
+      id: `scroll-${i}`, actor: 'human', body: `Thread ${i}`, anchor,
+      createdAt: '2026-09-28T00:00:00Z',
+    })) });
+    a.annotations.setRailOpen(true);
+    a.annotations.openThread('scroll-11');
+    const rail = document.querySelector('.wm-annotation-rail')!;
+    rail.classList.add('has-turn-control');
+    const turns = document.createElement('div');
+    turns.className = 'wm-turn-stack'; turns.dataset.count = '3';
+    rail.append(turns);
+  });
+  for (const scale of [1, 1.5, .7]) {
+    await page.evaluate(scale => document.documentElement.style.setProperty('--wm-ui-scale', String(scale)), scale);
+    await page.waitForTimeout(300);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const bottom = await page.locator('.wm-annotation-rail-scroll').evaluate(el => {
+        el.scrollTop = el.scrollHeight;
+        return el.scrollTop;
+      });
+      await page.waitForTimeout(150);
+      const settled = await page.locator('.wm-annotation-rail-scroll').evaluate(el => el.scrollTop);
+      check(Math.abs(bottom - settled) < 1, `drawer bottom resets at scale ${scale}: ${bottom} -> ${settled}`);
+    }
+  }
+  console.log('PASS thread drawer bottom remains stable with Go-button clearance');
+}
 async function appearanceGeometry(page: Page) {
   await page.goto(server.url.toString());
   await page.waitForFunction(() => (window as any).ready);
@@ -455,6 +488,11 @@ try {
       console.log(`${name} ${browser.version()}`);
       if (process.env.TETHER_SIZING_CAPTURE || process.env.TETHER_SIZING_COMPARE) {
         await documentSizing(page, name);
+        await context.close();
+        continue;
+      }
+      await threadDrawerBottom(page);
+      if (process.argv.includes('--thread-drawer')) {
         await context.close();
         continue;
       }
