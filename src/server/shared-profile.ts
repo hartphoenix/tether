@@ -64,7 +64,7 @@ export async function startSharedProfile(daemon: TetherDaemon, config: SharedPro
     if (operation.startsWith("turn.")) {
       if (client.kind !== "agent") throw Object.assign(new Error("An enrolled agent connection is required."), { status: 403 });
       let owner = client.id;
-      if (["turn.register", "turn.unregister"].includes(operation) && typeof input.receiver === "string") {
+      if (["turn.register", "turn.unregister", "turn.takeover"].includes(operation) && typeof input.receiver === "string") {
         const receiver = auth.client(input.receiver);
         if (!receiver || receiver.kind !== "agent") throw Object.assign(new Error("Select an enrolled Paseo receiver."), { status: 403 });
         owner = receiver.id;
@@ -112,6 +112,11 @@ export async function startSharedProfile(daemon: TetherDaemon, config: SharedPro
   const reader = { ...daemon.library.reader, open: async (id: string, options?: { resume?: boolean }) => {
     const connection = await daemon.library.reader.open(id, options);
     return { close: () => connection.close(), request: async (resource: string, request: Request) => {
+      if (resource.split("?")[0] === "api/turn-prompt") {
+        const url = new URL(resource, "http://reader/");
+        url.searchParams.set("shared", "1");
+        return connection.request(`api/turn-prompt${url.search}`, request);
+      }
       if (resource === "api/diagrams" && request.method === "POST") {
         const { sharedJson } = await import("../remote/shared-auth");
         const body = await sharedJson(request);

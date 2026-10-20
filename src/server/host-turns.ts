@@ -5,6 +5,7 @@ export type { TurnBehavior, HostSubscription, HostSignal } from "../../integrati
 type Lease = { instance: string; token: string; until: number };
 const fail = (message: string, status = 409) => Object.assign(new Error(message), { code: "turn_conflict", status });
 const key = (documentId: string, agentId: string) => JSON.stringify([documentId, agentId]);
+const recipient = (subscription: HostSubscription) => subscription.recipientId ?? subscription.agentId;
 
 /** Durable human invitations. A claimed send is never implicitly replayed. */
 export class HostTurns {
@@ -39,12 +40,36 @@ export class HostTurns {
   register(input: HostSubscription): HostSubscription {
     const existing = this.subscriptions().find(s => s.documentId === input.documentId && s.agentId === input.agentId);
     if (existing && (existing.hostId !== input.hostId || existing.owner !== input.owner)) throw fail("The agent is registered to a different host connection.");
-    const preference = this.db.query("SELECT behavior FROM host_turn_behaviors WHERE id=?").get(JSON.stringify([input.owner, input.hostId, input.agentId])) as { behavior: TurnBehavior } | null;
+    if (existing && recipient(existing) !== recipient(input)) throw fail("Use role takeover to change the receiving session.");
+    const preference = this.db.query("SELECT behavior FROM host_turn_behaviors WHERE id=?").get(JSON.stringify([input.owner, input.hostId, recipient(input)])) as { behavior: TurnBehavior } | null;
     const subscription = { ...input, availability: existing?.availability, behavior: preference?.behavior ?? existing?.behavior ?? input.behavior, signalId: existing?.signalId };
     this.db.query("INSERT INTO host_turn_subscriptions VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload")
       .run(key(input.documentId, input.agentId), JSON.stringify(subscription));
     this.changed();
     return subscription;
+  }
+  /** Rebind every document without replaying invitations sent to the previous session. */
+  takeOver(agentId: string, recipientId: string, hostId: string, owner: string, expectedRecipient: string): void {
+    const subscriptions = this.subscriptions().filter(s => s.agentId === agentId);
+    if (!subscriptions.length) throw fail("This role has no Go registration.");
+    for (const s of subscriptions) {
+      if (s.owner !== owner) throw fail("This role belongs to a different connection.", 403);
+      if (recipient(s) !== expectedRecipient && !(recipient(s) === recipientId && s.hostId === hostId)) throw fail("The role changed. Copy a fresh role takeover prompt.");
+    }
+    this.db.transaction(() => {
+      for (const s of subscriptions) {
+        if (recipient(s) === recipientId && s.hostId === hostId) continue;
+        const signal = s.signalId && this.signal(s.signalId);
+        if (signal && !["completed", "failed"].includes(signal.state)) {
+          signal.state = "failed";
+          signal.reason = "Role taken over; invitation retired without replay. The previous session may already have received it.";
+          this.saveSignal(signal);
+        }
+        const next = { ...s, recipientId, hostId, signalId: undefined, availability: undefined };
+        this.db.query("UPDATE host_turn_subscriptions SET payload=? WHERE id=?").run(JSON.stringify(next), key(s.documentId, agentId));
+      }
+    })();
+    this.changed();
   }
   /** Upgrade an old host registration without replaying any historical send. */
   adopt(input: HostSubscription, previous?: { signalId: string; acceptedAt?: string; reason?: string; requestedAt?: string }): void {
@@ -140,7 +165,7 @@ export class HostTurns {
     if (action === "claim") {
       if (signal.state !== "pending") throw fail("Signal was already claimed; inspect acceptance instead of sending again.");
       // Different documents must not dispatch concurrent turns to the same agent.
-      if (this.snapshot(owner, hostId).signals.some(s => s.signalId !== signalId && s.agentId === signal.agentId && s.state !== "pending")) throw fail("Another document has an active delivery to this agent.");
+      if (this.snapshot(owner, hostId).signals.some(s => s.signalId !== signalId && recipient(s) === recipient(signal) && s.state !== "pending")) throw fail("Another document has an active delivery to this agent.");
       signal.state = "dispatching"; signal.position = input.position;
     } else if (action === "accepted") {
       if (!["dispatching", "uncertain", "accepted"].includes(signal.state)) throw fail("Signal is not awaiting acceptance.");
@@ -156,7 +181,7 @@ export class HostTurns {
   }
   availability(owner: string, hostId: string, token: string, agentId: string, reason?: string): void {
     this.checkLease(owner, hostId, token);
-    for (const s of this.subscriptions().filter(s => s.owner === owner && s.hostId === hostId && s.agentId === agentId)) {
+    for (const s of this.subscriptions().filter(s => s.owner === owner && s.hostId === hostId && recipient(s) === agentId)) {
       if (s.availability === reason) continue;
       s.availability = reason;
       this.db.query("UPDATE host_turn_subscriptions SET payload=? WHERE id=?").run(JSON.stringify(s), key(s.documentId, s.agentId));
@@ -165,7 +190,7 @@ export class HostTurns {
   }
   behavior(owner: string, hostId: string, agentId: string, behavior: TurnBehavior): void {
     this.db.query("INSERT INTO host_turn_behaviors VALUES(?,?) ON CONFLICT(id) DO UPDATE SET behavior=excluded.behavior").run(JSON.stringify([owner, hostId, agentId]), behavior);
-    for (const subscription of this.subscriptions().filter(s => s.owner === owner && s.hostId === hostId && s.agentId === agentId)) this.register({ ...subscription, behavior });
+    for (const subscription of this.subscriptions().filter(s => s.owner === owner && s.hostId === hostId && recipient(s) === agentId)) this.register({ ...subscription, behavior });
   }
   revoke(owner: string): void { for (const id of this.leases.keys()) if (JSON.parse(id)[0] === owner) this.leases.delete(id); }
 }

@@ -45,7 +45,7 @@ const { pathToFileURL } = require("node:url");
   try {
     if (process.argv[3] === "create") {
       const agents = [];
-      for (let i=0;i<2;i++) agents.push(await client.createAgent({provider:"tether-go-fixture",model:"fixture",cwd:${JSON.stringify(scratch)},title:"Tether transport fixture "+i}));
+      for (let i=0;i<3;i++) agents.push(await client.createAgent({provider:"tether-go-fixture",model:"fixture",cwd:${JSON.stringify(scratch)},title:"Tether transport fixture "+i}));
       process.stdout.write(JSON.stringify(agents.map(agent=>agent.id))); return;
     }
     if (process.argv[3] === "timeline") {
@@ -95,6 +95,18 @@ try {
   assert.equal(inputs[0].clientMessageId ?? inputs[0].messageId, signal.signalId);
   assert.deepEqual(JSON.parse(await inspect(1, "timeline", agents[1])), []);
   assert.equal(await hasCompletedReceipt(home, first.hostId, agents[0]!, { id: signal.signalId, messageId: signal.signalId, text: signal.text, prose: "", state: "dispatching", attachments: [], draftIds: [], wire: JSON.stringify({ text: signal.text, options: { messageId: signal.signalId, activeTurnBehavior: "steer" } }) }), true);
+  await controlRequest(tetherConfig, "/control/turn/takeover", { path: paths[0], roleId: `paseo:${agents[0]}`, expectedRecipient: `paseo:${agents[0]}`, agentId: `paseo:${agents[2]}`, hostId: first.hostId });
+  const replacement = await controlRequest<any>(tetherConfig, "/control/turn/send", { path: paths[0], agentId: `paseo:${agents[0]}`, operationId: "runtime-takeover" });
+  let replacementReady = false;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await controlRequest<any>(tetherConfig, "/control/turn/status", { path: paths[0] })).agents[0]?.state === "ready") { replacementReady = true; break; }
+    await Bun.sleep(200);
+  }
+  assert.ok(replacementReady, "Replacement session must complete the role's turn");
+  const replacementInputs = JSON.parse(await inspect(1, "timeline", agents[2]));
+  assert.equal(replacementInputs.length, 1);
+  assert.ok(replacementInputs[0].text.includes(replacement.signalId));
+  assert.equal(JSON.parse(await inspect(1, "timeline", agents[0])).length, 1, "Retired session must receive no new invitation");
   await host("plugin", "disable", "tether", "--json");
   const held = await controlRequest<any>(tetherConfig, "/control/turn/send", { path: paths[1], agentId: `paseo:${agents[1]}`, operationId: "runtime-held" });
   await run(resolve("tether"), ["daemon", "stop"]);

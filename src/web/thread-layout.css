@@ -241,6 +241,7 @@
 .wm-turn-agent { display: flex; min-width: 0; max-width: 100%; align-items: center; gap: calc(8px * var(--wm-ui-scale, 1)); --wm-agent-color: var(--wm-annotation-muted); }
 .wm-turn-agent[hidden] { display: none; }
 .wm-turn-caption {
+  pointer-events: auto;
   overflow: hidden;
   min-width: 0;
   max-width: calc(160px * var(--wm-ui-scale, 1));
@@ -278,6 +279,7 @@
 .wm-turn-button:not(:disabled):active { transform: scale(.94); }
 .wm-annotation-rail .wm-turn-button:focus-visible { outline-color: var(--wm-agent-color); }
 .wm-turn-agent[data-state="none"] .wm-turn-button { cursor: default; opacity: .45; box-shadow: none; color: var(--wm-annotation-muted); background: transparent; border: calc(1.5px * var(--wm-ui-scale, 1)) dashed var(--wm-annotation-muted); }
+.wm-turn-agent[data-state="none"] .wm-turn-button:not(:disabled) { cursor: pointer; opacity: .7; }
 /* Working: the agent is taking its turn; a slow ring turns around the button. */
 .wm-turn-agent[data-state="working"] .wm-turn-button { cursor: progress; opacity: .7; }
 .wm-turn-agent[data-state="queued"] .wm-turn-button { cursor: wait; opacity: .65; }

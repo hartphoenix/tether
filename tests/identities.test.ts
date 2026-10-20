@@ -38,6 +38,31 @@ async function fixture() {
 const agentA = { CLAUDE_CODE_SESSION_ID: "session-a" };
 const agentB = { CLAUDE_CODE_SESSION_ID: "session-b" };
 
+test("a taken-over role preserves its identity and name and rejects the retired session", () => {
+  const store = new PrivateStore();
+  const before = store.identities.claim("paseo:old", "Builder", 1000, "flame").identity;
+  expect(store.identities.takeOver("paseo:old", "paseo:new", "paseo:old", 2000)).toEqual(before);
+  expect(store.identities.signingId("paseo:new")).toBe("paseo:old");
+  expect(() => store.identities.signingId("paseo:old")).toThrow("taken over");
+  expect(store.identities.claim("paseo:old", "Different name", 2001).identity).toEqual(before);
+  expect(() => store.identities.takeOver("paseo:old", "paseo:third", "paseo:old")).toThrow("changed receivers");
+  expect(store.identities.takeOver("paseo:old", "paseo:new", "paseo:old")).toEqual(before);
+});
+test("new agents choose a free icon and receive the next color; occupied icons and recoloring are refused", () => {
+  const store = new PrivateStore();
+  const now = 1000;
+  const first = store.identities.claim("first", "First", now, "flame").identity;
+  const second = store.identities.claim("second", "Second", now + 1, "blender").identity;
+  expect(first.icon).toBe("flame");
+  expect(first.colorSlot).toBe(1);
+  expect(second.colorSlot).toBe(2);
+  expect(store.identities.availableIcons(now)).not.toContain("flame");
+  expect(() => store.identities.claim("third", "Third", now, "flame")).toThrow("held");
+  expect(() => store.identities.claim("first", "First", now, "cake-slice")).toThrow("keeps its icon");
+  expect(() => store.identities.claim("fourth", "Fourth", now, "missing")).toThrow("Choose an icon");
+  expect(store.identities.availableIcons(now + ACTIVE_AGENT_MS + 1)).toContain("flame");
+});
+
 test("the CLI signs with --agent-id, then Paseo's ID, then Claude Code's, else asks the daemon to issue one", () => {
   const env = { PASEO_AGENT_ID: "p1", CLAUDE_CODE_SESSION_ID: "c1" };
   expect(agentSignature("given", env)).toEqual({ agentId: "given" });

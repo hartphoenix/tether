@@ -23,6 +23,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path
 import { readFileSync, writeFileSync } from "node:fs";
 import { PrivateStore, type MutationReceipt, type DocumentReference, type PrivateDocumentRow } from "../storage/private-store";
 import { validAgentId } from "../storage/identities";
+import { turnAssignmentPrompt } from "./turn-prompt";
 import { MAX_AGENT_ID_LENGTH, isHumanId, HUMAN_ID } from "../shared/agent-identity";
 import { ViewStore, cookieVerifier, verifiesCookie } from "./view-store";
 import { stopHostBridges } from "./stop-hosts";
@@ -747,8 +748,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       try { return { id: legacy, created: privateStore.identities.claim(legacy, legacy, now()).created }; }
       catch (cause) { if ((cause as { code?: string }).code === "agent_name_taken") throw cause; return undefined; }
     }
-    const id = hostId ?? privateStore.identities.issue();
-    const claim = privateStore.identities.claim(id, requested, now());
+    const id = hostId ? privateStore.identities.signingId(hostId) : privateStore.identities.issue();
+    if (body.icon !== undefined && typeof body.icon !== "string") throw invalidRequest("An icon name must be a string.");
+    const claim = privateStore.identities.claim(id, requested, now(), body.icon as string | undefined);
     body.actor = id;
     if (!hostId) return { id, created: claim.created, note: { id, name: claim.identity.name, issued: true, next: `Tether issued you this agent ID. Pass --agent-id ${id} on every later Tether command.` } };
     if (claim.nameKept) return { id, created: claim.created, note: { id, name: claim.identity.name, next: `The human named you "${claim.identity.name}"; Tether shows that name instead of --actor.` } };
@@ -777,7 +779,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     const subscription = hostTurns.subscriptions().find(s => s.documentId === documentId && s.agentId === agentId);
     if (document && subscription && (subscription.path !== document.path || subscription.machineId !== document.machine_id)) hostTurns.register({ ...subscription, path: document.path, machineId: document.machine_id });
     return hostTurns.request(documentId, agentId, operationId, signal =>
-      captureTurnAnnotations(chatStore, { host: signal.hostId, agent: signal.agentId.slice(6) }, signal.signalId, signal.text).text);
+      captureTurnAnnotations(chatStore, { host: signal.hostId, agent: (signal.recipientId ?? signal.agentId).slice(6) }, signal.signalId, signal.text).text);
   };
   async function turnOperation(operation: string, body: Record<string, unknown>, owner = "local", canSend = false): Promise<unknown> {
     if (operation === "adapter") {
@@ -811,7 +813,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       if (!["claim", "accepted", "completed", "failed", "uncertain"].includes(String(body.action))) throw invalidRequest("Invalid host receipt action.");
       const signal = hostTurns.update(owner, hostId, turnIdentifier(body.token, "lease token"), turnIdentifier(body.signalId, "signal ID"), body.action as "claim" | "accepted" | "completed" | "failed" | "uncertain", { position: body.position, reason: typeof body.reason === "string" ? body.reason : undefined });
-      const scope = { host: signal.hostId, agent: signal.agentId.slice(6) };
+      const scope = { host: signal.hostId, agent: (signal.recipientId ?? signal.agentId).slice(6) };
       const submission = chatStore.operate({ ...scope, operation: { kind: "read" } }).submission;
       if (submission?.id === signal.signalId) {
         if (body.action === "claim") chatStore.operate({ ...scope, operation: { kind: "dispatch", id: signal.signalId, messageId: signal.signalId, text: signal.text, options: { messageId: signal.signalId, activeTurnBehavior: signal.behavior === "queue" ? "steer" : signal.behavior } } });
@@ -819,19 +821,39 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       }
       return signal;
     }
-    if (operation === "register") return signed(body, () => withControlDocument(body, async grant => {
-      const agentId = validAgentId(body.actor);
-      if (!agentId.startsWith("paseo:")) throw invalidRequest("This host needs turn wait.");
+    if (operation === "takeover") return withControlDocument(body, async grant => {
+      const roleId = validAgentId(body.roleId), recipientId = validAgentId(body.agentId);
+      const expectedRecipient = validAgentId(body.expectedRecipient);
       const hostId = turnIdentifier(body.hostId, "Paseo daemon ID");
-      if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL_LENGTH)) throw invalidRequest("Invalid turn label.");
-      hostTurns.register({ documentId: grant.documentId!, machineId: grant.machineId!, path: grant.path, agentId, hostId, owner,
-        label: body.label as string | undefined, behavior: "steer" });
-      turns.unregister(grant.path, agentId);
-      return { registration: hostTurns.agents(grant.documentId!).find(s => s.agentId === agentId) };
-    }));
+      if (!recipientId.startsWith("paseo:")) throw invalidRequest("Role takeover currently requires a Paseo receiving session.");
+      if (!hostTurns.subscriptions().some(s => s.documentId === grant.documentId && s.agentId === roleId)) throw invalidRequest("This role is not registered on the document.");
+      if (hostTurns.subscriptions().some(s => s.agentId !== roleId && (s.recipientId ?? s.agentId) === recipientId)) throw invalidRequest("This session already receives another role. Use a separate session for takeover.");
+      const identity = privateStore.db.transaction(() => {
+        const result = privateStore.identities.takeOver(roleId, recipientId, expectedRecipient, now());
+        hostTurns.takeOver(roleId, recipientId, hostId, owner, expectedRecipient);
+        return result;
+      }).immediate();
+      return { identity, recipientId, registrations: hostTurns.subscriptions().filter(s => s.agentId === roleId).map(({ documentId, path, label }) => ({ documentId, path, label })) };
+    });
+    if (operation === "register") {
+      const recipientId = validAgentId(body.agentId);
+      return withControlDocument(body, async grant => {
+        if (body.ifEmpty === true && allTurnAgents(grant.path, grant.documentId!).length) throw Object.assign(new Error("This document already has an agent. Copy its role takeover prompt or use the separate add-agent flow."), { code: "turn_slot_filled", status: 409 });
+        return signed(body, async () => {
+          const agentId = validAgentId(body.actor);
+          if (!recipientId.startsWith("paseo:")) throw invalidRequest("This host needs turn wait.");
+          const hostId = turnIdentifier(body.hostId, "Paseo daemon ID");
+          if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL_LENGTH)) throw invalidRequest("Invalid turn label.");
+          hostTurns.register({ documentId: grant.documentId!, machineId: grant.machineId!, path: grant.path, agentId, recipientId, hostId, owner,
+            label: body.label as string | undefined, behavior: "steer" });
+          turns.unregister(grant.path, agentId);
+          return { registration: hostTurns.agents(grant.documentId!).find(s => s.agentId === agentId), identity: privateStore.identities.resolve([agentId], now())[0] };
+        });
+      });
+    }
     return withControlDocument(body, async grant => {
-      if (operation === "status") return { agents: allTurnAgents(grant.path, grant.documentId!), identityRevision: privateStore.identities.revision() };
-      const agentId = validAgentId(body.agentId);
+      if (operation === "status") return { agents: allTurnAgents(grant.path, grant.documentId!), availableIcons: privateStore.identities.availableIcons(now()), identityRevision: privateStore.identities.revision() };
+      const agentId = operation === "unregister" ? privateStore.identities.signingId(validAgentId(body.agentId)) : validAgentId(body.agentId);
       if (operation === "unregister") return { removed: hostTurns.unregister(grant.documentId!, agentId, owner) || turns.unregister(grant.path, agentId) };
       if (operation === "send") {
         if (!canSend) throw Object.assign(new Error("Only a human reader or explicitly authorized CLI may start a turn."), { status: 403, code: "human_action_required" });
@@ -1112,6 +1134,15 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         return json({ path: read.path, bodyRevision: read.bodyRevision, ledgerRevision: read.ledgerRevision, revision: read.bodyRevision });
       }
       if (apiPath === "/turns" && request.method === "GET") return json({ agents: allTurnAgents(session.grant.path, session.grant.documentId!), identityRevision: privateStore.identities.revision() });
+      if (apiPath === "/turn-prompt" && request.method === "GET") {
+        const roleId = new URL(request.url).searchParams.get("agentId");
+        const subscription = roleId ? hostTurns.subscriptions().find(s => s.documentId === session.grant.documentId && s.agentId === roleId) : undefined;
+        if (roleId && !subscription) throw invalidRequest("Role takeover requires a durable host registration. Upgrade this role's registration first.");
+        if (!roleId && allTurnAgents(session.grant.path, session.grant.documentId!).length) throw invalidRequest("This document already has an assigned agent.");
+        return json({ prompt: turnAssignmentPrompt({ path: session.grant.path, profile: config.profile, executable: join(runtimeRoot(), "tether"),
+          ...(new URL(request.url).searchParams.get("shared") === "1" ? { sharedDocumentId: session.grant.documentId! } : {}),
+          ...(subscription ? { role: privateStore.identities.resolve([subscription.agentId], now())[0], recipientId: subscription.recipientId ?? subscription.agentId, label: subscription.label } : {}) }) }, { headers: { "cache-control": "no-store" } });
+      }
       if (apiPath === "/turn-events" && request.method === "GET") return turnEventStream(AbortSignal.any([request.signal, turnLifetime.signal]), fn => {
         const a = hostTurns.subscribe(fn), b = turns.subscribe(fn); return () => { a(); b(); };
       }, () => ({ agents: allTurnAgents(session.grant.path, session.grant.documentId!), identityRevision: privateStore.identities.revision() }), () => sessions.has(session.id));
@@ -1568,7 +1599,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const hostId = turnIdentifier(url.searchParams.get("hostId"), "host ID");
           return turnEventStream(AbortSignal.any([request.signal, turnLifetime.signal]), fn => hostTurns.subscribe(fn), () => hostTurns.snapshot("local", hostId));
         }
-        if (["/control/turn/adapter", "/control/turn/status", "/control/turn/send"].includes(pathname) && request.method === "POST") return json(await turnOperation(pathname.split("/").pop()!, await requestJson(request), "local", true));
+        if (["/control/turn/adapter", "/control/turn/status", "/control/turn/send", "/control/turn/takeover"].includes(pathname) && request.method === "POST") return json(await turnOperation(pathname.split("/").pop()!, await requestJson(request), "local", true));
         if (["/control/turn/wait", "/control/turn/register", "/control/turn/unregister", "/control/turn/received"].includes(pathname) && request.method === "POST") {
           const body = await requestJson(request);
           if (pathname === "/control/turn/register" && body.hostId) return json(await turnOperation("register", body));

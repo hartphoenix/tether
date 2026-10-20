@@ -499,15 +499,18 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         : { origin: discovery!.origin, credentialPath: config.controlPath, owner: "local", shared: false }), exitCode: 0 };
     }
     if (command === "turn.send" && ((dependencies.env ?? process.env).PASEO_AGENT_ID || (dependencies.env ?? process.env).CLAUDE_CODE_SESSION_ID || (dependencies.env ?? process.env).CODEX_THREAD_ID)) usage("Agent sessions may register or inspect turns; sends require the human's CLI.");
-    if (command === "turn.register" || command === "turn.unregister" || command === "turn.status" || command === "turn.send") {
+    if (command === "turn.register" || command === "turn.unregister" || command === "turn.status" || command === "turn.send" || command === "turn.takeover") {
       let hostId = optionalFlag(parsed, "--host-id") ?? (dependencies.env ?? process.env).TETHER_PASEO_HOST_ID;
-      if (command === "turn.register" && !hostId) {
+      if ((command === "turn.register" || command === "turn.takeover") && !hostId) {
         const raw = (dependencies.env ?? process.env).PASEO_HOME ?? join(homedir(), ".paseo");
         hostId = (await readFile(join(raw.startsWith("~/") ? join(homedir(), raw.slice(2)) : raw, "server-id"), "utf8")).trim();
       }
       return { response: success(command, await requestControl(config, `/control/turn/${command.split(".")[1]}`, {
         ...(hostId ? { hostId } : {}), ...((optionalFlag(parsed, "--receiver") ?? process.env.TETHER_RECEIVER ?? binding?.receiver) ? { receiver: optionalFlag(parsed, "--receiver") ?? process.env.TETHER_RECEIVER ?? binding?.receiver } : {}), ...(optionalFlag(parsed, "--operation-id") ? { operationId: optionalFlag(parsed, "--operation-id") } : {}),
         path: resolve(parsed.positionals[0]!), ...(optionalFlag(parsed, "--actor") ? { actor: optionalFlag(parsed, "--actor") } : {}), ...signature,
+        ...(optionalFlag(parsed, "--icon") ? { icon: optionalFlag(parsed, "--icon") } : {}),
+        ...(parsed.flags.has("--if-empty") ? { ifEmpty: true } : {}),
+        ...(optionalFlag(parsed, "--role-id") ? { roleId: optionalFlag(parsed, "--role-id"), expectedRecipient: optionalFlag(parsed, "--expected-recipient") } : {}),
         ...(optionalFlag(parsed, "--label") ? { label: optionalFlag(parsed, "--label")!.trim() } : {}),
       })), exitCode: 0 };
     }

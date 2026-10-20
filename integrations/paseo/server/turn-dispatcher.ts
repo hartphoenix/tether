@@ -39,7 +39,7 @@ export class TurnDispatcher {
   update(snapshot: TurnSnapshot): void {
     if (this.lifetime.aborted || snapshot.revision < this.snapshot.revision) return;
     this.snapshot = snapshot;
-    const agents = new Set(snapshot.subscriptions.map(s => s.agentId));
+    const agents = new Set(snapshot.subscriptions.map(s => s.recipientId ?? s.agentId));
     for (const [id, off] of this.watchers) if (!agents.has(id)) { off(); this.watchers.delete(id); }
     for (const id of agents) {
       if (!this.watchers.has(id)) this.watchers.set(id, this.host.agent(id.slice(6)).subscribe(() => this.wake(id)));
@@ -64,7 +64,7 @@ export class TurnDispatcher {
   }
   private async accepted(agent: TurnAgentHandle, signal: HostSignal): Promise<boolean> {
     try { if (await findTurnInput(agent, signal)) return true; } catch { /* A durable receipt is independent evidence. */ }
-    return hasCompletedReceipt(this.host.home, this.host.hostId, signal.agentId.slice(6), {
+    return hasCompletedReceipt(this.host.home, this.host.hostId, (signal.recipientId ?? signal.agentId).slice(6), {
       id: signal.signalId, messageId: signal.signalId, state: "dispatching", text: signal.text, prose: "", attachments: [], draftIds: [],
       wire: JSON.stringify({ text: signal.text, options: { messageId: signal.signalId, activeTurnBehavior: signal.behavior === "queue" ? "steer" : signal.behavior } }),
     });
@@ -78,7 +78,7 @@ export class TurnDispatcher {
     return false;
   }
   private async reconcile(agentId: string): Promise<void> {
-    const signals = this.snapshot.signals.filter(s => s.agentId === agentId).sort((a, b) => (a.state === "pending" ? 1 : 0) - (b.state === "pending" ? 1 : 0) || a.requestedAt.localeCompare(b.requestedAt));
+    const signals = this.snapshot.signals.filter(s => (s.recipientId ?? s.agentId) === agentId).sort((a, b) => (a.state === "pending" ? 1 : 0) - (b.state === "pending" ? 1 : 0) || a.requestedAt.localeCompare(b.requestedAt));
     const agent = this.host.agent(agentId.slice(6));
     const initial = (await agent.refresh())?.agent;
     const reason = !initial || initial.archivedAt ? "Paseo agent is missing or archived." : initial.pendingPermissions?.length ? "Paseo agent is waiting for permission." : !["idle", "running"].includes(initial.status) ? "Paseo agent is unavailable." : undefined;

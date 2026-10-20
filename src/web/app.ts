@@ -209,6 +209,14 @@ const turnControls = createTurnControls({
   notice: message => chrome.setNotice(message),
   identity: identities.get,
   rename: renameAgent,
+  copyAssignment: async agent => {
+    const text = api<{ prompt: string }>(`api/turn-prompt${agent ? `?agentId=${encodeURIComponent(agent.agentId)}` : ''}`).then(result => result.prompt);
+    // Start clipboard access within the click gesture, including Safari's async-content path.
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard.write) {
+      await navigator.clipboard.write([new ClipboardItem({ 'text/plain': text.then(value => new Blob([value], { type: 'text/plain' })) })]);
+    } else await navigator.clipboard.writeText(await text);
+    chrome.setNotice(agent ? 'Role takeover prompt copied.' : 'Agent assignment prompt copied.');
+  },
 });
 let stopTurns: (() => void) | undefined;
 const fileActions = createFileActions({

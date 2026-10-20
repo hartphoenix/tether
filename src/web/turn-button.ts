@@ -1,6 +1,7 @@
 import { turnIcon, turnIcons } from './turn-icons';
 import { identityColor, identityName, type IdentityLookup } from './identities';
 import { bindAgentRename } from './agent-rename';
+import { openAgentMenu } from './agent-menu';
 
 export type TurnAgent = { agentId: string; label?: string; state: 'ready' | 'working' | 'queued' | 'unavailable'; reason?: string; signalId?: string; acceptedAt?: string; behavior?: 'steer' | 'interrupt' | 'queue' };
 export type TurnPress = { signalId: string; cursor: string; sequence: number; agentId: string; state?: TurnAgent['state']; reason?: string };
@@ -17,6 +18,7 @@ export function createTurnControls(options: {
   notice: (message: string) => void;
   identity?: IdentityLookup;
   rename?: (agentId: string, x: number, y: number) => void;
+  copyAssignment?: (agent?: TurnAgent) => Promise<void>;
 }) {
   const root = document.createElement('div');
   root.className = 'wm-turn-stack';
@@ -40,7 +42,13 @@ export function createTurnControls(options: {
     existing = { item, button, caption, pending: false };
     const current = existing;
     button.addEventListener('click', () => { void press(current); });
-    if (key && options.rename) for (const target of [caption, button]) bindAgentRename(target, (x, y) => { if (current.agent) options.rename!(current.agent.agentId, x, y); });
+    if (key && options.rename) for (const target of [caption, button]) bindAgentRename(target, (x, y) => {
+      const agent = current.agent;
+      if (!agent) return;
+      if (!options.copyAssignment) { options.rename!(agent.agentId, x, y); return; }
+      openAgentMenu({ x, y, rename: () => options.rename!(agent.agentId, x, y),
+        takeover: () => options.copyAssignment!(agent), notice: options.notice });
+    });
     slots.set(key, existing);
     return existing;
   };
@@ -49,9 +57,9 @@ export function createTurnControls(options: {
     const { agent, button, item, caption } = entry;
     if (!agent) {
       item.dataset.state = 'none';
-      button.disabled = true;
-      button.title = 'No agent is waiting';
-      button.setAttribute('aria-label', 'No agent is waiting');
+      button.disabled = !options.copyAssignment || entry.pending;
+      button.title = options.copyAssignment ? 'Copy agent assignment prompt' : 'No agent is waiting';
+      button.setAttribute('aria-label', button.title);
       caption.textContent = '';
       return;
     }
@@ -71,6 +79,14 @@ export function createTurnControls(options: {
 
   const press = async (entry: Slot) => {
     const agent = entry.agent;
+    if (!agent && options.copyAssignment && !entry.pending) {
+      entry.pending = true;
+      render(entry);
+      try { await options.copyAssignment(); }
+      catch (error) { options.notice(`Could not copy assignment prompt: ${(error as Error).message}`); }
+      finally { entry.pending = false; render(entry); }
+      return;
+    }
     if (!agent || agent.state !== 'ready' || entry.pending) return;
     entry.pending = true;
     render(entry);

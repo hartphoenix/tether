@@ -38,6 +38,8 @@ export class Identities {
       id TEXT PRIMARY KEY, name TEXT NOT NULL, name_source TEXT NOT NULL CHECK(name_source IN ('agent','human')),
       icon TEXT NOT NULL, color_slot INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'agent' CHECK(kind IN ('agent','human')),
       created_at INTEGER NOT NULL, last_seen_at INTEGER);
+      CREATE TABLE IF NOT EXISTS role_receivers (role_id TEXT PRIMARY KEY, session_id TEXT UNIQUE NOT NULL);
+      CREATE TABLE IF NOT EXISTS retired_role_sessions (session_id TEXT PRIMARY KEY);
       INSERT OR IGNORE INTO settings(key,value) VALUES ('identity_revision','0');`);
   }
 
@@ -56,13 +58,45 @@ export class Identities {
 
   private rows(): Row[] { return this.db.query("SELECT * FROM identities").all() as Row[]; }
 
+  /** Host sessions may change; attribution and mention IDs never do. */
+  signingId(sessionId: string): string {
+    const binding = this.db.query("SELECT role_id FROM role_receivers WHERE session_id=?").get(sessionId) as { role_id: string } | null;
+    if (binding) return binding.role_id;
+    if (this.db.query("SELECT 1 FROM retired_role_sessions WHERE session_id=?").get(sessionId)) {
+      fail("agent_role_reassigned", "This session's role was taken over. Stop using its identity; the new session owns it.", 409);
+    }
+    return sessionId;
+  }
+
+  receiver(roleId: string): string {
+    return (this.db.query("SELECT session_id FROM role_receivers WHERE role_id=?").get(roleId) as { session_id: string } | null)?.session_id ?? roleId;
+  }
+
+  takeOver(roleId: string, sessionId: string, expectedReceiver: string, now = Date.now()): Identity {
+    validAgentId(roleId); validAgentId(sessionId);
+    if (!this.row(roleId)) fail("agent_role_missing", "The role no longer exists.", 409);
+    const current = this.receiver(roleId);
+    if (current !== expectedReceiver && current !== sessionId) fail("agent_role_changed", "The role has changed receivers. Copy a fresh role takeover prompt.", 409);
+    const other = this.db.query("SELECT role_id FROM role_receivers WHERE session_id=?").get(sessionId) as { role_id: string } | null;
+    if (other && other.role_id !== roleId) fail("agent_role_conflict", "This session already holds a different role.", 409);
+    this.db.query("INSERT OR IGNORE INTO retired_role_sessions VALUES(?)").run(current);
+    this.db.query("INSERT INTO role_receivers VALUES(?,?) ON CONFLICT(role_id) DO UPDATE SET session_id=excluded.session_id").run(roleId, sessionId);
+    this.db.query("UPDATE identities SET last_seen_at=? WHERE id=?").run(now, roleId);
+    return toIdentity(this.row(roleId)!);
+  }
+
   private conflict(name: string, id: string, now: number): Row | undefined {
     const key = nameKey(name);
     return this.rows().find(row => row.id !== id && row.last_seen_at !== null && row.last_seen_at >= now - ACTIVE_AGENT_MS && nameKey(row.name) === key);
   }
 
   /** Least recently used icon no active agent holds, else the least recently used of all; then a color unlike that icon's last holder. */
-  private assignment(now: number): { icon: string; colorSlot: number } {
+  availableIcons(now = Date.now()): string[] {
+    const held = new Set(this.rows().filter(row => row.last_seen_at !== null && row.last_seen_at >= now - ACTIVE_AGENT_MS).map(row => row.icon));
+    return AGENT_ICON_NAMES.filter(icon => !held.has(icon));
+  }
+
+  private assignment(now: number, requestedIcon?: string): { icon: string; colorSlot: number } {
     const rows = this.rows();
     const used = (row: Row) => row.last_seen_at ?? row.created_at;
     const held = new Set(rows.filter(row => row.last_seen_at !== null && row.last_seen_at >= now - ACTIVE_AGENT_MS).map(row => row.icon));
@@ -71,7 +105,9 @@ export class Identities {
     const free = AGENT_ICON_NAMES.filter(icon => !held.has(icon));
     const pool = free.length ? free : [...AGENT_ICON_NAMES];
     const age = (icon: string) => { const holder = lastUse.get(icon); return holder ? used(holder) : -Infinity; };
-    const icon = pool.reduce((best, next) => age(next) < age(best) ? next : best);
+    if (requestedIcon !== undefined && !AGENT_ICON_NAMES.includes(requestedIcon as typeof AGENT_ICON_NAMES[number])) fail("invalid_agent_icon", "Choose an icon returned by turn status.", 400);
+    if (requestedIcon !== undefined && held.has(requestedIcon)) fail("agent_icon_taken", "That icon is held by an active agent. Run turn status and choose an available icon.", 409);
+    const icon = requestedIcon ?? pool.reduce((best, next) => age(next) < age(best) ? next : best);
     const excluded = lastUse.get(icon)?.color_slot;
     const colorUse = new Map<number, number>();
     for (const row of rows) colorUse.set(row.color_slot, Math.max(colorUse.get(row.color_slot) ?? -Infinity, used(row)));
@@ -80,8 +116,8 @@ export class Identities {
     return { icon, colorSlot };
   }
 
-  private insert(id: string, name: string, now: number, lastSeen: number | null): Row {
-    const { icon, colorSlot } = this.assignment(now);
+  private insert(id: string, name: string, now: number, lastSeen: number | null, requestedIcon?: string): Row {
+    const { icon, colorSlot } = this.assignment(now, requestedIcon);
     this.db.query("INSERT INTO identities(id,name,name_source,icon,color_slot,kind,created_at,last_seen_at) VALUES(?,?,'agent',?,?,'agent',?,?)")
       .run(id, name, icon, colorSlot, now, lastSeen);
     this.bump();
@@ -99,18 +135,19 @@ export class Identities {
    * An agent's command: register or touch `id`, and adopt `name` unless the
    * human named this agent. A name another active agent holds is refused.
    */
-  claim(id: string, requestedName: string, now = Date.now()): AgentClaim {
+  claim(id: string, requestedName: string, now = Date.now(), requestedIcon?: string): AgentClaim {
     validAgentId(id);
     if (isHumanId(id)) fail("agent_id_reserved", `"${HUMAN_ID}" is reserved for the human reader.`, 409);
     const name = validName(requestedName);
     return this.db.transaction((): AgentClaim => {
       const existing = this.row(id);
-      const keep = existing?.name_source === "human";
+      if (existing && requestedIcon !== undefined && existing.icon !== requestedIcon) fail("agent_icon_fixed", "An existing identity keeps its icon. Omit --icon.", 409);
+      const keep = existing?.name_source === "human" || !!this.db.query("SELECT 1 FROM role_receivers WHERE role_id=?").get(id);
       if (!keep && existing?.name !== name) {
         const holder = this.conflict(name, id, now);
         if (holder) fail("agent_name_taken", `Another active agent is already named "${holder.name}". Choose a name for your role that's easy to tell apart from it, and pass it with --actor. If Tether issued you an agent ID earlier, pass that with --agent-id.`, 409);
       }
-      if (!existing) return { identity: toIdentity(this.insert(id, name, now, now)), created: true, nameKept: false };
+      if (!existing) return { identity: toIdentity(this.insert(id, name, now, now, requestedIcon)), created: true, nameKept: false };
       if (!keep && existing.name !== name) {
         this.db.query("UPDATE identities SET name=? WHERE id=?").run(name, id);
         this.bump();

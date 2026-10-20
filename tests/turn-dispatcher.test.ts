@@ -9,7 +9,7 @@ function fixture(behavior: "queue" | "steer" | "interrupt" = "steer") {
   const db = new Database(":memory:"), service = new HostTurns(db), lifetime = new AbortController();
   const entries: TimelinePage["entries"] = [];
   let status = "idle", permissions: unknown[] = [], lost = false, log = true;
-  const sends: { text: string; options: any }[] = [], watchers = new Set<() => void>();
+  const sends: { text: string; options: any }[] = [], watchers = new Set<() => void>(), accessed: string[] = [];
   const handle: TurnAgentHandle = {
     refresh: async () => ({ agent: { status, pendingPermissions: permissions } }),
     subscribe: fn => { watchers.add(fn); return () => { watchers.delete(fn); }; },
@@ -34,12 +34,12 @@ function fixture(behavior: "queue" | "steer" | "interrupt" = "steer") {
       return service.update("owner", "host", lease.token, input.signalId as string, input.action as any, input);
     }, events: async () => {},
   };
-  const dispatcher = new TurnDispatcher({ hostId: "host", home: "/nonexistent-tether-test", agent: () => handle, disconnected: () => () => {}, close: async () => {} },
+  const dispatcher = new TurnDispatcher({ hostId: "host", home: "/nonexistent-tether-test", agent: id => { accessed.push(id); return handle; }, disconnected: () => () => {}, close: async () => {} },
     transport, () => lease.token, lifetime.signal, [1, 1]);
   const off = service.subscribe(() => dispatcher.update(service.snapshot("owner", "host")));
   dispatcher.update(service.snapshot("owner", "host"));
   const settle = async () => { for (let i = 0; i < 10; i++) { await dispatcher.settled(); await Promise.resolve(); } };
-  return { service, handle, sends, entries, dispatcher, settle, transport,
+  return { service, handle, sends, entries, dispatcher, settle, transport, accessed,
     set: (value: { status?: string; permissions?: unknown[]; lost?: boolean; log?: boolean }) => {
       if (value.status) status = value.status; if (value.permissions) permissions = value.permissions;
       if (value.lost !== undefined) lost = value.lost; if (value.log !== undefined) log = value.log;
@@ -49,6 +49,25 @@ function fixture(behavior: "queue" | "steer" | "interrupt" = "steer") {
     close: () => { lifetime.abort(); dispatcher.stop(); off(); db.close(); },
   };
 }
+
+test("a role's Go press and lifecycle watcher follow its replacement session", async () => {
+  const f = fixture();
+  try {
+    await f.settle();
+    f.service.takeOver("paseo:agent", "paseo:replacement", "host", "owner", "paseo:agent");
+    await f.settle();
+    f.accessed.length = 0;
+    const signal = f.press();
+    await f.settle();
+    expect(f.accessed.length).toBeGreaterThan(0);
+    expect(f.accessed.every(id => id === "replacement")).toBe(true);
+    expect(f.sends).toHaveLength(1);
+    expect(f.service.signal(signal.signalId)?.agentId).toBe("paseo:agent");
+    expect(f.service.signal(signal.signalId)?.recipientId).toBe("paseo:replacement");
+    f.set({ status: "idle" }); await f.settle();
+    expect(f.service.agents("doc")[0]?.state).toBe("ready");
+  } finally { f.close(); }
+});
 
 test("event replay, stale lifecycle notifications and idle reconnects cause no duplicate sends", async () => {
   const f = fixture();

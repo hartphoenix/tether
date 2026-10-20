@@ -49,7 +49,8 @@ Events, receipts and turn registrations store the ID as the author, and the read
 The reader shows one **Go** button per registered agent on a document. A human reader press or an explicitly authorized local CLI send starts delivery. Agent registration does not grant authority to press buttons.
 
 ```sh
-tether turn register /path/to/doc.md --actor NAME [--agent-id ID] [--host-id PASEO_DAEMON_ID] [--label TEXT]
+tether turn register /path/to/doc.md --actor NAME [--agent-id ID] [--host-id PASEO_DAEMON_ID] [--label TEXT] [--icon ICON] [--if-empty]
+tether turn takeover /path/to/doc.md --role-id ROLE_ID --expected-recipient SESSION_ID [--host-id PASEO_DAEMON_ID]
 tether turn status /path/to/doc.md
 tether turn send /path/to/doc.md --agent-id ID --operation-id UNIQUE_ID
 tether turn unregister /path/to/doc.md [--actor NAME] [--agent-id ID]
@@ -57,6 +58,14 @@ tether turn wait /path/to/doc.md --actor NAME [--agent-id ID] [--label TEXT] [--
 ```
 
 Commands use the [step-one agent identity](#agent-identity), including `paseo:PASEO_AGENT_ID`. `register` returns `{registration: {agentId, state, label?, reason?}}` without holding a watcher. Only hosts with delivery support can register; others use `wait`. Registrations survive the watcher grace and daemon restarts. `unregister` removes the caller's button and cancels held delivery/monitoring, returning `{removed: boolean}`; it does not interrupt an accepted agent turn. Outside a host environment, pass the same `--agent-id` used to register. Labels are at most 60 characters; icons, colors and names come from the identity registry.
+
+`status` also returns `availableIcons`. A new identity can choose one with `register --icon`; the daemon assigns its color using the existing rotation. An existing identity keeps its icon. `--if-empty` refuses registration if any agent already occupies the document, so a copied empty-slot prompt cannot silently add a second agent.
+
+`takeover` requires a Paseo receiving session and a durable host registration. It transfers the role across all its registered documents, retaining the immutable ID, display name, icon, color, labels and review attribution. The CLI infers the new session from its environment; do not pass the old role ID as `--agent-id`. The result contains `{identity, recipientId, registrations}`. Later commands from the replacement session sign as the role automatically; the retired session is refused. A different current receiver causes a conflict; retrying for the same replacement is safe.
+
+Takeover retires outstanding invitations without replaying them. It does not stop work already begun by the previous session or transfer that session's private memory. Registrations owned by another connection cannot be taken over; preserve the configured Fly receiver. Future mention tokens can continue to target the unchanged role ID.
+
+`GET api/turn-prompt` returns an empty-slot assignment prompt; `?agentId=ROLE_ID` returns a role takeover prompt. These reads neither reassign the role nor start a turn. Shared-reader prompts use `id:UUID` and the agent's configured connection.
 
 | State | Meaning |
 | --- | --- |

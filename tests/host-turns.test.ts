@@ -3,6 +3,31 @@ import { Database } from "bun:sqlite";
 import { HostTurns, turnEventStream } from "../src/server/host-turns";
 
 const registration = { documentId: "doc-a", machineId: "machine-a", path: "/a.md", agentId: "paseo:agent-a", hostId: "host-a", owner: "local", behavior: "steer" as const };
+test("role takeover moves every registration, cancels unsent invitations, and fences stale receivers", () => {
+  const db = new Database(":memory:"), service = new HostTurns(db);
+  service.register({ ...registration, label: "Build" });
+  service.register({ ...registration, documentId: "doc-b" });
+  const old = service.request("doc-a", registration.agentId, "old");
+  expect(() => service.takeOver(registration.agentId, "paseo:new", "host-b", "other", registration.agentId)).toThrow("connection");
+  service.takeOver(registration.agentId, "paseo:new", "host-b", "local", registration.agentId);
+  expect(service.signal(old.signalId)?.state).toBe("failed");
+  expect(service.snapshot("local", "host-a").subscriptions).toHaveLength(0);
+  expect(service.snapshot("local", "host-b").subscriptions).toHaveLength(2);
+  expect(service.subscriptions().every(s => s.agentId === registration.agentId && s.recipientId === "paseo:new")).toBe(true);
+  expect(service.agents("doc-a")[0]?.label).toBe("Build");
+  service.behavior("local", "host-b", "paseo:new", "queue");
+  expect(service.agents("doc-a")[0]?.behavior).toBe("queue");
+  expect(() => service.takeOver(registration.agentId, "paseo:third", "host-b", "local", registration.agentId)).toThrow("changed");
+  const next = service.request("doc-a", registration.agentId, "new");
+  expect(next.recipientId).toBe("paseo:new");
+  const lease = service.lease("local", "host-b", "worker");
+  service.update("local", "host-b", lease.token, next.signalId, "claim");
+  service.takeOver(registration.agentId, "paseo:third", "host-b", "local", "paseo:new");
+  expect(service.signal(next.signalId)?.state).toBe("failed");
+  expect(() => service.verify("local", "host-b", lease.token, next.signalId)).toThrow("dispatchable");
+  expect(() => service.update("local", "host-b", lease.token, next.signalId, "accepted")).toThrow("current");
+  db.close();
+});
 test("host invitations survive service reconstruction, replay safely and require acceptance before completion", () => {
   const db = new Database(":memory:");
   let service = new HostTurns(db);

@@ -39,6 +39,10 @@ After a Tether update, reload the plugin in **Settings → Plugins**, or run the
 
 An agent registers on a document with `tether turn register FILE --actor NAME`. Press its Go button to start its next turn on that document. The Paseo daemon delivers the invitation even with the app closed; no agent watcher needs to stay running. Staged chat annotations go with the invitation, which appears as a Tether document chip in chat.
 
+Right-click a Go button or its role label to choose **Rename agent…** or **Copy role takeover prompt**. Paste the prompt into the replacement agent's chat. Takeover transfers that identity on every document, preserving its name, icon, color and attribution. It redirects future presses and retires outstanding invitations; it does not stop work already running in the old session.
+
+When a document has no assigned agent, click its empty Go placeholder to copy an assignment prompt. The receiving agent chooses a role name and an available icon; Tether assigns its color. The prompt refuses to fill a slot another agent has since occupied. Adding an additional role to an occupied document is separate from takeover.
+
 Delivery follows the composer's synchronized steer, interrupt or queue setting; before one has been supplied, it uses steer. Subscriptions and accepted presses survive service restarts. The plugin reconnects automatically, resumes unsent work, and checks uncertain deliveries without resending them. The button shows permission requests or delivery uncertainty when attention is needed. Fly uses the same behavior through the configured shared connection.
 
 ## Chat annotations
