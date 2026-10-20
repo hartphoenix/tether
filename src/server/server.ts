@@ -15,6 +15,7 @@ import { runtimeRoot } from "../runtime-paths";
 import { releaseNotesDocument, seedReleaseNotes, seedWelcome } from "../onboarding";
 import { MAX_LABEL_LENGTH, TurnSignals } from "./turns";
 import { TurnStore } from "./turn-store";
+import { HostTurns, turnEventStream, type HostSignal } from "./host-turns";
 import { captureTurnAnnotations } from "./turn-annotations";
 import { UpdateService, writeUpdateState } from "./updates";
 import { listAgentSkillReviews, readAgentSkillReview, decideAgentSkillReview, decideTetherballOffer } from "../cli/agent-skills";
@@ -109,6 +110,8 @@ export type TetherDaemon = {
   service: DocumentService;
   sessions: ReadonlyMap<string, Session>;
   library: ReturnType<typeof createSharedLibrary>;
+  hostTurns: HostTurns;
+  turnOperation: (operation: string, body: Record<string, unknown>, owner?: string, canSend?: boolean) => Promise<unknown>;
   shared?: { localControl: (action: string, body: Record<string, unknown>) => Promise<unknown>; stop: () => Promise<void> };
 };
 
@@ -289,8 +292,9 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   recents.subscribeFolio(() => pullQueue.folioChanged());
   const instanceId = crypto.randomUUID();
   const delivery = options.hostAdapter?.turnDelivery ?? paseoHost.turnDelivery;
+  const turnStore = new TurnStore(privateStore.db);
   const turns = new TurnSignals(instanceId, now, {
-    delivery, store: new TurnStore(privateStore.db),
+    delivery, store: turnStore,
     capture: (agentId, signalId, event) => captureTurnAnnotations(chatStore, delivery?.chatScope(agentId), signalId, event),
     acknowledgeAnnotations: (agentId, signalId) => {
       const scope = delivery?.chatScope(agentId);
@@ -298,6 +302,8 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       chatStore.operate({ ...scope, operation: { kind: "accepted", id: signalId, messageId: signalId } });
     },
   });
+  const hostTurns = new HostTurns(privateStore.db, now);
+  const turnLifetime = new AbortController();
   let deliberateStop = false;
   const markDeliberateStop = () => { deliberateStop = true; turns.close(true); };
   const stoppingError = () => deliberateStop ? error("service_stopped", "Tether was stopped.", 503) : error("service_stopping", "Tether is restarting.", 503);
@@ -758,6 +764,83 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     return signature?.note && result && typeof result === "object" && !Array.isArray(result) ? { ...result, agent: signature.note } : result;
   }
 
+  const turnIdentifier = (value: unknown, name: string) => {
+    if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,255}$/.test(value)) throw invalidRequest(`A valid ${name} is required.`);
+    return value;
+  };
+  const allTurnAgents = (path: string, documentId: string) => {
+    const hosted = hostTurns.agents(documentId), ids = new Set(hosted.map(agent => agent.agentId));
+    return [...hosted, ...turns.agents(path).filter(agent => !ids.has(agent.agentId))];
+  };
+  const hostPress = (documentId: string, agentId: string, operationId: string) => {
+    const document = privateStore.documentById(documentId);
+    const subscription = hostTurns.subscriptions().find(s => s.documentId === documentId && s.agentId === agentId);
+    if (document && subscription && (subscription.path !== document.path || subscription.machineId !== document.machine_id)) hostTurns.register({ ...subscription, path: document.path, machineId: document.machine_id });
+    return hostTurns.request(documentId, agentId, operationId, signal =>
+      captureTurnAnnotations(chatStore, { host: signal.hostId, agent: signal.agentId.slice(6) }, signal.signalId, signal.text).text);
+  };
+  async function turnOperation(operation: string, body: Record<string, unknown>, owner = "local", canSend = false): Promise<unknown> {
+    if (operation === "adapter") {
+      const hostId = turnIdentifier(body.hostId, "host ID");
+      if (body.action === "lease") {
+        const lease = hostTurns.lease(owner, hostId, turnIdentifier(body.instance, "adapter instance"));
+        if (owner === "local") for (const legacy of turnStore.restore()) {
+          let localHost: string | undefined;
+          try { localHost = paseoHost.turnDelivery.chatScope(legacy.agentId)?.host; } catch { continue; }
+          const document = privateStore.documentForPath(legacy.path);
+          if (localHost !== hostId || !document) continue;
+          hostTurns.adopt({ documentId: document.id, path: document.path, machineId: document.machine_id, agentId: legacy.agentId, hostId, owner, label: legacy.label, behavior: "steer" },
+            legacy.state !== "ready" && legacy.signalId ? { signalId: legacy.signalId, acceptedAt: legacy.acceptedAt, reason: legacy.reason } : undefined);
+          turns.unregister(legacy.path, legacy.agentId);
+        }
+        return lease;
+      }
+      if (body.action === "release") { hostTurns.release(owner, hostId, turnIdentifier(body.token, "lease token")); return { released: true }; }
+      if (body.action === "availability") {
+        hostTurns.availability(owner, hostId, turnIdentifier(body.token, "lease token"), validAgentId(body.agentId), typeof body.reason === "string" ? body.reason.slice(0, 400) : undefined);
+        return { updated: true };
+      }
+      if (body.action === "verify") {
+        hostTurns.verify(owner, hostId, turnIdentifier(body.token, "lease token"), turnIdentifier(body.signalId, "signal ID"));
+        return { verified: true };
+      }
+      if (body.action === "behavior") {
+        if (!["steer", "interrupt", "queue"].includes(String(body.behavior))) throw invalidRequest("Invalid send behavior.");
+        hostTurns.behavior(owner, hostId, validAgentId(body.agentId), body.behavior as "steer" | "interrupt" | "queue");
+        return { updated: true };
+      }
+      if (!["claim", "accepted", "completed", "failed", "uncertain"].includes(String(body.action))) throw invalidRequest("Invalid host receipt action.");
+      const signal = hostTurns.update(owner, hostId, turnIdentifier(body.token, "lease token"), turnIdentifier(body.signalId, "signal ID"), body.action as "claim" | "accepted" | "completed" | "failed" | "uncertain", { position: body.position, reason: typeof body.reason === "string" ? body.reason : undefined });
+      const scope = { host: signal.hostId, agent: signal.agentId.slice(6) };
+      const submission = chatStore.operate({ ...scope, operation: { kind: "read" } }).submission;
+      if (submission?.id === signal.signalId) {
+        if (body.action === "claim") chatStore.operate({ ...scope, operation: { kind: "dispatch", id: signal.signalId, messageId: signal.signalId, text: signal.text, options: { messageId: signal.signalId, activeTurnBehavior: signal.behavior === "queue" ? "steer" : signal.behavior } } });
+        if (body.action === "accepted") chatStore.operate({ ...scope, operation: { kind: "accepted", id: signal.signalId, messageId: signal.signalId } });
+      }
+      return signal;
+    }
+    if (operation === "register") return signed(body, () => withControlDocument(body, async grant => {
+      const agentId = validAgentId(body.actor);
+      if (!agentId.startsWith("paseo:")) throw invalidRequest("This host needs turn wait.");
+      const hostId = turnIdentifier(body.hostId, "Paseo daemon ID");
+      if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL_LENGTH)) throw invalidRequest("Invalid turn label.");
+      hostTurns.register({ documentId: grant.documentId!, machineId: grant.machineId!, path: grant.path, agentId, hostId, owner,
+        label: body.label as string | undefined, behavior: "steer" });
+      turns.unregister(grant.path, agentId);
+      return { registration: hostTurns.agents(grant.documentId!).find(s => s.agentId === agentId) };
+    }));
+    return withControlDocument(body, async grant => {
+      if (operation === "status") return { agents: allTurnAgents(grant.path, grant.documentId!), identityRevision: privateStore.identities.revision() };
+      const agentId = validAgentId(body.agentId);
+      if (operation === "unregister") return { removed: hostTurns.unregister(grant.documentId!, agentId, owner) || turns.unregister(grant.path, agentId) };
+      if (operation === "send") {
+        if (!canSend) throw Object.assign(new Error("Only a human reader or explicitly authorized CLI may start a turn."), { status: 403, code: "human_action_required" });
+        return hostPress(grant.documentId!, agentId, turnIdentifier(body.operationId, "operation ID"));
+      }
+      throw invalidRequest("Unknown turn operation.");
+    });
+  }
+
   async function documentOperation(pathname: string, body: Record<string, unknown>): Promise<unknown> {
     if (/^\/control\/(?:review\/(?:pending|comment|reply|resolve|reopen|edit|delete|reanchor|acknowledge)|document\/save)$/.test(pathname)) return signed(body, () => unsignedOperation(pathname, body));
     return unsignedOperation(pathname, body);
@@ -1028,12 +1111,19 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
         const read = await service.read(session.grant);
         return json({ path: read.path, bodyRevision: read.bodyRevision, ledgerRevision: read.ledgerRevision, revision: read.bodyRevision });
       }
-      if (apiPath === "/turns" && request.method === "GET") return json({ agents: turns.agents(session.grant.path), identityRevision: privateStore.identities.revision() });
+      if (apiPath === "/turns" && request.method === "GET") return json({ agents: allTurnAgents(session.grant.path, session.grant.documentId!), identityRevision: privateStore.identities.revision() });
+      if (apiPath === "/turn-events" && request.method === "GET") return turnEventStream(AbortSignal.any([request.signal, turnLifetime.signal]), fn => {
+        const a = hostTurns.subscribe(fn), b = turns.subscribe(fn); return () => { a(); b(); };
+      }, () => ({ agents: allTurnAgents(session.grant.path, session.grant.documentId!), identityRevision: privateStore.identities.revision() }));
       // Wakes one agent; it carries no content beyond "the human started your next turn".
       if (apiPath === "/turn" && request.method === "POST") {
         const body = await requestJson(request);
         const agentId = typeof body.agentId === "string" ? body.agentId : body.actor;
         if (typeof agentId !== "string" || !agentId.trim()) throw invalidRequest("A turn needs the agent's ID.");
+        if (hostTurns.agents(session.grant.documentId!).some(s => s.agentId === agentId)) {
+          const signal = hostPress(session.grant.documentId!, agentId, body.operationId === undefined ? crypto.randomUUID() : turnIdentifier(body.operationId, "operation ID"));
+          return json({ signalId: signal.signalId, agentId, ...hostTurns.agents(session.grant.documentId!).find(s => s.agentId === agentId) });
+        }
         const press = turns.request(session.grant.path, agentId);
         const name = () => privateStore.identities.resolve([agentId], now())[0]!.name;
         if (press === "unavailable") return error("agent_unavailable", turns.agents(session.grant.path).find(agent => agent.agentId === agentId)?.reason ?? `${name()} is not waiting on this document.`, 409);
@@ -1474,19 +1564,20 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           if (typeof body.ticket !== "string" || !body.ticket) return error("invalid_request", "A launch ticket is required.", 400);
           return json({ cancelled: discardLaunchTicket(body.ticket) });
         }
+        if (pathname === "/control/turn/events" && request.method === "GET") {
+          const hostId = turnIdentifier(url.searchParams.get("hostId"), "host ID");
+          return turnEventStream(AbortSignal.any([request.signal, turnLifetime.signal]), fn => hostTurns.subscribe(fn), () => hostTurns.snapshot("local", hostId));
+        }
+        if (["/control/turn/adapter", "/control/turn/status", "/control/turn/send"].includes(pathname) && request.method === "POST") return json(await turnOperation(pathname.split("/").pop()!, await requestJson(request), "local", true));
         if (["/control/turn/wait", "/control/turn/register", "/control/turn/unregister", "/control/turn/received"].includes(pathname) && request.method === "POST") {
           const body = await requestJson(request);
+          if (pathname === "/control/turn/register" && body.hostId) return json(await turnOperation("register", body));
+          if (pathname === "/control/turn/unregister") return json(await turnOperation("unregister", body));
           if (pathname === "/control/turn/received") {
             const agentId = validAgentId(body.agentId);
             if (typeof body.signalId !== "string" || body.signalId.length > 200) throw invalidRequest("A signal ID is required.");
             const path = await withControlDocument(body, async grant => grant.path);
             return json({ received: turns.received(path, agentId, body.signalId) });
-          }
-          if (pathname === "/control/turn/unregister") {
-            const agentId = body.agentId === undefined ? undefined : validAgentId(body.agentId);
-            if (!agentId || isHumanId(agentId)) throw invalidRequest("Unregister needs your host agent ID or --agent-id from registration.");
-            const path = await withControlDocument(body, async grant => grant.path);
-            return json({ removed: turns.unregister(path, agentId) });
           }
           if (pathname === "/control/turn/register" && (typeof body.agentId !== "string" || !delivery.supports(body.agentId))) throw invalidRequest("This host cannot deliver turns. Use turn wait instead.");
           const timeoutMs = Math.min(Math.max(Number(body.timeoutMs ?? 0), 0), 25_000);
@@ -1588,6 +1679,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     instanceId,
     config,
     service,
+    hostTurns, turnOperation,
     library: createSharedLibrary({
       service, recents, instanceId, documentOperation,
       preferences: async client => displayPreferences(await hostThemes.preferences(client, await preferences())),
@@ -1628,6 +1720,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       for (const close of [...recentsStreamClosers]) close();
       clearTimeout(previewTimer);
       pullQueue.close();
+      turnLifetime.abort();
       turns.close();
       stopping = (async () => {
       await daemon.shared?.stop();
@@ -1702,7 +1795,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           }
         }
         for (const [ticket, pending] of recentsTickets) if (pending.expiresAt <= current) recentsTickets.delete(ticket);
-        const active = options.keepAlive || sessions.size > 0 || recentsSessions.size > 0 || tickets.size > 0 || recentsTickets.size > 0 || pullQueue.anyPresent() || turns.waiting();
+        const active = options.keepAlive || sessions.size > 0 || recentsSessions.size > 0 || tickets.size > 0 || recentsTickets.size > 0 || pullQueue.anyPresent() || turns.waiting() || hostTurns.subscriptions().length > 0;
         if (active) { emptySince = 0; return; }
         if (emptySince === 0) emptySince = current;
         const grace = current - startedAt < startupGraceMs ? startupGraceMs : idleMs;

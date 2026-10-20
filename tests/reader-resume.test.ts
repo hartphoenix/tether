@@ -12,6 +12,7 @@ test("the actual reader recovers its draft before post-mount requests, and prese
   const writes: Array<{ route: string; body: any }> = [];
   Object.assign(win, {
     structuredClone, TextEncoder, TextDecoder,
+    EventSource: class extends win.EventTarget { close() {} },
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
     ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
     IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} },

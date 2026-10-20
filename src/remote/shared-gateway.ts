@@ -117,6 +117,7 @@ export class SharedGateway {
     const reader = /^\/reader\/d\/([A-Za-z0-9_-]+)\/(.*)$/.exec(url.pathname);
     if (reader && this.options.reader) {
       const documentId = reader[1]!, resource = reader[2]!;
+      if (resource === "api/turn" && client.kind !== "browser") throw new SharedAccessError("human_action_required", "Only the human reader may start a turn.", 403);
       if (resource === "restore" && request.method === "POST") {
         if (requestOrigin !== expected.origin) throw new SharedAccessError("origin_mismatch", "Restoring requires the profile origin.");
         await this.options.dispatch("document.restore", { documentId }, client);

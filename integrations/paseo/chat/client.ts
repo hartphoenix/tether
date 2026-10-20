@@ -1,3 +1,4 @@
+import { turnBehaviorRpc } from "../shared/contracts";
 import type { CollectionHost } from "./collections";
 /// <reference lib="dom" />
 import type { PluginClientContext } from "@getpaseo/plugin/client";
@@ -18,6 +19,7 @@ export function startChatAnnotations(client: PluginClientContext, getGeneration:
   const submitted = startSubmittedAnnotations();
   type Chat = UiChat & { host: string; agent: string; busy: boolean; generation: string | null; direct?: string; queue?: QueueWriter; refreshing?: boolean; refreshedAt?: number };
   const chats = new Map<string, Chat>();
+  const behaviors = new Map<string, { value: string; at: number; pending: boolean }>();
   const ui = startChatUi(chats, collections);
   const patched = new Map<NativeClient, { original: NativeClient["sendAgentMessage"]; wrapper: NativeClient["sendAgentMessage"]; deleteOriginal?: NativeClient["deleteAgent"]; deleteWrapper?: NativeClient["deleteAgent"] }>();
   const queues = new Map<QueueWriter, { original: QueueWriter["write"]; wrapper: QueueWriter["write"] }>();
@@ -91,6 +93,16 @@ export function startChatAnnotations(client: PluginClientContext, getGeneration:
     for (const input of inputs()) {
       const c = composer(input); if (!c) continue;
       const key = scope(c); let chat = chats.get(key);
+      const behavior = c.defaultSendBehavior;
+      const generation = getGeneration();
+      if (generation && ["steer", "interrupt", "queue"].includes(behavior)) {
+        const value = `${generation}:${behavior}`, previous = behaviors.get(key);
+        if (!previous?.pending && previous?.value !== value && Date.now() - (previous?.at ?? 0) > 5_000) {
+          const record = { value: previous?.value ?? "", at: Date.now(), pending: true }; behaviors.set(key, record);
+          void client.rpc(turnBehaviorRpc, { generation, hostId: c.voiceServerId, agentId: c.voiceAgentId, behavior: behavior as "steer" | "interrupt" | "queue" })
+            .then(() => { record.value = value; }, () => {}).finally(() => { record.pending = false; });
+        }
+      }
       if (!chat) {
         let generation: string | null = null;
         const controller = new ChatController(operation => client.rpc(chatRpc, { generation: generation ?? undefined, host: c.voiceServerId, agent: c.voiceAgentId, operation }), update);

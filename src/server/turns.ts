@@ -29,6 +29,8 @@ export class TurnSignals {
   private readonly hostTails = new Map<string, Promise<void>>();
   private readonly lifetime = new AbortController();
   private stopped = false;
+  private listeners = new Set<() => void>();
+  subscribe(fn: () => void): () => void { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; }
   constructor(private readonly instanceId: string, private readonly now: () => number = Date.now, private readonly options: Options = {}) {
     for (const saved of options.store?.restore() ?? []) {
       const agents = this.paths.get(saved.path) ?? new Map<string, Agent>();
@@ -60,6 +62,7 @@ export class TurnSignals {
     return { agentId, ...(label ? { label } : {}), state, ...(reason ? { reason } : {}), ...(signalId ? { signalId } : {}), ...(acceptedAt ? { acceptedAt } : {}) };
   }
   private save(path: string, agent: Agent): void {
+    for (const listener of this.listeners) queueMicrotask(listener);
     if (agent.registered) this.options.store?.save({ path, ...this.snapshot(agent) });
     if (agent.signalId && agent.requestedAt) this.options.store?.record({ path, ...this.snapshot(agent), signalId: agent.signalId, requestedAt: agent.requestedAt, via: agent.via, annotations: agent.annotations?.annotations });
   }

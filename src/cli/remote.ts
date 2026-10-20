@@ -175,12 +175,12 @@ export function remoteAddress(value: string, machineId?: string): Record<string,
 }
 
 export async function remoteControl<T>(connection: SharedCredential, parsed: ParsedCommand, route: string, input: Record<string, unknown>): Promise<T> {
-  if (!/^\/control\/(document|review|folio)\//.test(route)) throw new Error("This command is local to the service machine.");
+  if (!/^\/control\/(document|review|folio|turn)\//.test(route)) throw new Error("This command is local to the service machine.");
   let operation = route.slice("/control/".length).replaceAll("/", ".");
   const machineId = optionalFlag(parsed, "--machine") ?? connection.machineId ?? undefined;
   let body = { ...input };
   if (operation === "document.save") body.expectedLocationVersion = positiveInteger(requiredFlag(parsed, "--expected-location-version"), "--expected-location-version");
-  if (operation.startsWith("document.") || operation.startsWith("review.")) {
+  if (operation.startsWith("document.") || operation.startsWith("review.") || operation.startsWith("turn.")) {
     delete body.path;
     body = { ...body, ...remoteAddress(parsed.positionals[0]!, machineId), ...(parsed.flags.has("--restore") ? { restoreArchived: true } : {}) };
   }

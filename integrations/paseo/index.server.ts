@@ -1,3 +1,4 @@
+import { startTurnAdapter } from "./server/turn-adapter";
 import { sharedTransport } from "./server/transport";
 import { registerChat, runChat } from "./chat/server";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
@@ -5,12 +6,12 @@ import { Hub } from "./server/hub";
 import { paseoLookup } from "./server/paseo-lookup";
 import { ProcessPool } from "./server/process-pool";
 import { createTetherRunner, resolveTether } from "./server/tether-cli";
-import { ackRpc, folioViewRpc, openRpc, openNoticeRpc, pinRpc, pumpRpc, themeRpc, tetherSettings, type Connection, type PumpBatch } from "./shared/contracts";
+import { turnStatusRpc, turnBehaviorRpc, ackRpc, folioViewRpc, openRpc, openNoticeRpc, pinRpc, pumpRpc, themeRpc, tetherSettings, type Connection, type PumpBatch } from "./shared/contracts";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(tetherSettings);
   const pool = new ProcessPool();
-  type Session = { sharedConnection: string; connection: Connection; controller: AbortController; hub: Hub };
+  type Session = { sharedConnection: string; connection: Connection; controller: AbortController; hub: Hub; turns: ReturnType<typeof startTurnAdapter> };
   let current: Session | null = null;
   let disposed = false, subscribed = false, buttons = true, readerPanels = false;
   const clear = () => {
@@ -18,6 +19,7 @@ export default function contribute(server: PluginServerContext) {
     current = null;
     previous?.hub.stop();
     previous?.controller.abort();
+    return previous?.turns.done;
   };
   const apply = (state: Awaited<ReturnType<typeof settings.read>>) => {
     if (disposed) return;
@@ -40,7 +42,7 @@ export default function contribute(server: PluginServerContext) {
       buttons: () => buttons,
       readerPanels: () => readerPanels,
     });
-    current = { connection, controller, hub, sharedConnection: values.sharedConnection };
+    current = { connection, controller, hub, sharedConnection: values.sharedConnection, turns: startTurnAdapter(run, values.sharedConnection, controller.signal) };
     hub.start();
   };
   let initialized!: () => void;
@@ -83,6 +85,8 @@ export default function contribute(server: PluginServerContext) {
     if (current !== session) return current ? current.hub.pump(-1, false) : unavailable();
     return result;
   });
+  server.handle(turnStatusRpc, async () => { await loaded; return current?.turns.status() ?? { connected: false }; });
+  server.handle(turnBehaviorRpc, input => operate(input, ({ turns }) => turns.behavior(input.hostId, input.agentId, input.behavior)));
   server.handle(ackRpc, input => operate(input, async ({ hub }) => ({ acknowledged: await hub.ack(input.ids) })));
   server.handle(openRpc, (input, context) => operate(input, async session => { attach(session, context); await session.hub.open(input.documentId ? `id:${input.documentId}` : input.path!, input.workspaceId); return { queued: true }; }));
   server.handle(openNoticeRpc, input => operate(input, async ({ hub }) => { await hub.openNotice(input.documentId, input.workspaceId); return { queued: true }; }));
@@ -101,8 +105,13 @@ export default function contribute(server: PluginServerContext) {
     return result;
   });
 
-  server.before("agent.session_open", ({ request }) => request.workspaceId
-    ? { ...request, env: { ...request.env, TETHER_PASEO_WORKSPACE_ID: request.workspaceId } }
-    : undefined);
-  return () => { disposed = true; clear(); initialized(); unsubscribe(); };
+  const turnHooks = ["agent.turn_started", "agent.turn_ended", "agent.permission_requested", "agent.permission_resolved", "agent.archived"] as const;
+  const stopTurnHooks = turnHooks.map(name => server.on(name, event => current?.turns.wake(event.agent.id)));
+  server.before("agent.session_open", ({ request }) => ({ ...request, env: { ...request.env,
+    ...(request.workspaceId ? { TETHER_PASEO_WORKSPACE_ID: request.workspaceId } : {}),
+    ...(current ? { TETHER_PROFILE: request.env.TETHER_PROFILE ?? current.connection.profile,
+      ...(current.sharedConnection ? { TETHER_CONNECTION: request.env.TETHER_CONNECTION ?? current.sharedConnection } : {}),
+      ...(current.turns.status().hostId ? { TETHER_PASEO_HOST_ID: current.turns.status().hostId! } : {}) } : {}),
+  } }));
+  return async () => { disposed = true; const stopping = clear(); initialized(); unsubscribe(); for (const stop of stopTurnHooks) stop(); await stopping; };
 }

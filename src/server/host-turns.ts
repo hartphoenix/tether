@@ -1,15 +1,7 @@
 import type { Database } from "bun:sqlite";
 
-export type TurnBehavior = "steer" | "interrupt" | "queue";
-export type HostSubscription = {
-  documentId: string; path: string; machineId: string; agentId: string; hostId: string;
-  owner: string; label?: string; behavior: TurnBehavior; signalId?: string;
-};
-export type HostSignal = HostSubscription & {
-  signalId: string; operationId: string; requestedAt: string; text: string;
-  state: "pending" | "dispatching" | "accepted" | "completed" | "failed" | "uncertain";
-  acceptedAt?: string; reason?: string; position?: unknown;
-};
+import type { TurnBehavior, HostSubscription, HostSignal } from "../../integrations/paseo/shared/turns";
+export type { TurnBehavior, HostSubscription, HostSignal } from "../../integrations/paseo/shared/turns";
 type Lease = { instance: string; token: string; until: number };
 const fail = (message: string, status = 409) => Object.assign(new Error(message), { code: "turn_conflict", status });
 const key = (documentId: string, agentId: string) => JSON.stringify([documentId, agentId]);
@@ -22,6 +14,7 @@ export class HostTurns {
   constructor(private db: Database, private now = Date.now) {
     db.exec(`CREATE TABLE IF NOT EXISTS host_turn_subscriptions (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS host_turn_signals (id TEXT PRIMARY KEY, operation_id TEXT UNIQUE NOT NULL, payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS host_turn_behaviors (id TEXT PRIMARY KEY, behavior TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS host_turn_meta (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL);
       INSERT OR IGNORE INTO host_turn_meta VALUES(1,0);`);
     this.revision = (db.query("SELECT revision FROM host_turn_meta").get() as { revision: number }).revision;
@@ -46,16 +39,29 @@ export class HostTurns {
   register(input: HostSubscription): HostSubscription {
     const existing = this.subscriptions().find(s => s.documentId === input.documentId && s.agentId === input.agentId);
     if (existing && (existing.hostId !== input.hostId || existing.owner !== input.owner)) throw fail("The agent is registered to a different host connection.");
-    const subscription = { ...input, signalId: existing?.signalId };
+    const preference = this.db.query("SELECT behavior FROM host_turn_behaviors WHERE id=?").get(JSON.stringify([input.owner, input.hostId, input.agentId])) as { behavior: TurnBehavior } | null;
+    const subscription = { ...input, availability: existing?.availability, behavior: preference?.behavior ?? existing?.behavior ?? input.behavior, signalId: existing?.signalId };
     this.db.query("INSERT INTO host_turn_subscriptions VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload")
       .run(key(input.documentId, input.agentId), JSON.stringify(subscription));
     this.changed();
     return subscription;
   }
+  /** Upgrade an old host registration without replaying any historical send. */
+  adopt(input: HostSubscription, previous?: { signalId: string; acceptedAt?: string; reason?: string; requestedAt?: string }): void {
+    if (this.subscriptions().some(s => s.documentId === input.documentId && s.agentId === input.agentId)) return;
+    this.register(input);
+    if (!previous) return;
+    const signal: HostSignal = { ...input, ...previous, operationId: `legacy:${previous.signalId}`, state: "uncertain",
+      requestedAt: previous.requestedAt ?? new Date(this.now()).toISOString(), text: "",
+      reason: previous.reason ?? "Previous host delivery needs acceptance review; no resend attempted." };
+    this.saveSignal(signal);
+    this.db.query("UPDATE host_turn_subscriptions SET payload=? WHERE id=?").run(JSON.stringify({ ...input, signalId: signal.signalId }), key(input.documentId, input.agentId));
+    this.changed();
+  }
   unregister(documentId: string, agentId: string, owner?: string): boolean {
     const subscription = this.subscriptions().find(s => s.documentId === documentId && s.agentId === agentId);
     if (!subscription) return false;
-    if (owner && subscription.owner !== owner) throw fail("This registration belongs to a different connection.", 403);
+    if (owner && owner !== "local" && subscription.owner !== owner) throw fail("This registration belongs to a different connection.", 403);
     const signal = subscription.signalId && this.signal(subscription.signalId);
     if (signal && !["completed", "failed"].includes(signal.state)) {
       signal.state = "failed"; signal.reason = "Registration removed; delivery may already have been accepted.";
@@ -92,10 +98,10 @@ export class HostTurns {
   agents(documentId: string) {
     return this.subscriptions().filter(s => s.documentId === documentId).map(s => {
       const signal = s.signalId ? this.signal(s.signalId) : undefined;
-      const state = !signal || signal.state === "completed" ? "ready" : signal.state === "pending" ? "queued"
+      const state = s.availability ? "unavailable" : !signal || signal.state === "completed" || signal.state === "failed" ? "ready" : signal.state === "pending" ? "queued"
         : signal.state === "accepted" ? "working" : "unavailable";
-      return { agentId: s.agentId, label: s.label, behavior: s.behavior, state, signalId: signal?.signalId, acceptedAt: signal?.acceptedAt,
-        reason: signal?.reason ?? (signal?.state === "dispatching" ? "Confirming host acceptance" : undefined) };
+      return { agentId: s.agentId, label: s.label, behavior: signal && !["completed", "failed"].includes(signal.state) ? signal.behavior : s.behavior, state, signalId: signal?.signalId, acceptedAt: signal?.acceptedAt,
+        reason: s.availability ?? signal?.reason ?? (signal?.state === "dispatching" ? "Confirming host acceptance" : undefined) };
     });
   }
   lease(owner: string, hostId: string, instance: string): { token: string; until: number } {
@@ -105,9 +111,18 @@ export class HostTurns {
     this.leases.set(id, next);
     return next;
   }
+  release(owner: string, hostId: string, token: string): void {
+    const id = key(owner, hostId);
+    if (this.leases.get(id)?.token === token) this.leases.delete(id);
+  }
   private checkLease(owner: string, hostId: string, token: string): void {
     const lease = this.leases.get(key(owner, hostId));
     if (!lease || lease.token !== token || lease.until <= this.now()) throw fail("The host lease expired.");
+  }
+  verify(owner: string, hostId: string, token: string, signalId: string): void {
+    this.checkLease(owner, hostId, token);
+    const signal = this.signal(signalId);
+    if (!signal || signal.owner !== owner || signal.hostId !== hostId || signal.state !== "dispatching" || !this.subscriptions().some(s => s.signalId === signalId)) throw fail("Signal is no longer dispatchable.");
   }
   snapshot(owner: string, hostId: string) {
     const subscriptions = this.subscriptions().filter(s => s.owner === owner && s.hostId === hostId);
@@ -139,7 +154,17 @@ export class HostTurns {
     }
     this.saveSignal(signal); this.changed(); return signal;
   }
+  availability(owner: string, hostId: string, token: string, agentId: string, reason?: string): void {
+    this.checkLease(owner, hostId, token);
+    for (const s of this.subscriptions().filter(s => s.owner === owner && s.hostId === hostId && s.agentId === agentId)) {
+      if (s.availability === reason) continue;
+      s.availability = reason;
+      this.db.query("UPDATE host_turn_subscriptions SET payload=? WHERE id=?").run(JSON.stringify(s), key(s.documentId, s.agentId));
+      this.changed();
+    }
+  }
   behavior(owner: string, hostId: string, agentId: string, behavior: TurnBehavior): void {
+    this.db.query("INSERT INTO host_turn_behaviors VALUES(?,?) ON CONFLICT(id) DO UPDATE SET behavior=excluded.behavior").run(JSON.stringify([owner, hostId, agentId]), behavior);
     for (const subscription of this.subscriptions().filter(s => s.owner === owner && s.hostId === hostId && s.agentId === agentId)) this.register({ ...subscription, behavior });
   }
   revoke(owner: string): void { for (const id of this.leases.keys()) if (JSON.parse(id)[0] === owner) this.leases.delete(id); }

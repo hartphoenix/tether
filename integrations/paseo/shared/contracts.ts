@@ -132,3 +132,7 @@ export const themeRpc = defineRpc({
   input: z.object({ ...generationInput, clientId: z.string().uuid(), theme: z.string().max(128).nullable(), tetherPath: z.string().max(32768), profile: idSchema }),
   output: z.object({ updated: z.boolean() }),
 });
+
+export const turnBehaviorRpc = defineRpc({ name: "tether.turn-behavior", input: z.object({ generation: z.string(), hostId: z.string(), agentId: z.string(), behavior: z.enum(["steer", "interrupt", "queue"]) }), output: z.object({ updated: z.boolean() }) });
+
+export const turnStatusRpc = defineRpc({ name: "tether.turn-status", input: z.object({}), output: z.object({ connected: z.boolean(), stage: z.string().optional(), connections: z.number().optional(), hostId: z.string().optional() }) });

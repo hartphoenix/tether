@@ -2,7 +2,7 @@ import { turnIcon, turnIcons } from './turn-icons';
 import { identityColor, identityName, type IdentityLookup } from './identities';
 import { bindAgentRename } from './agent-rename';
 
-export type TurnAgent = { agentId: string; label?: string; state: 'ready' | 'working' | 'queued' | 'unavailable'; reason?: string; signalId?: string; acceptedAt?: string };
+export type TurnAgent = { agentId: string; label?: string; state: 'ready' | 'working' | 'queued' | 'unavailable'; reason?: string; signalId?: string; acceptedAt?: string; behavior?: 'steer' | 'interrupt' | 'queue' };
 export type TurnPress = { signalId: string; cursor: string; sequence: number; agentId: string; state?: TurnAgent['state']; reason?: string };
 
 type Slot = { item: HTMLElement; button: HTMLButtonElement; caption: HTMLElement; icon?: string; agent?: TurnAgent; pending: boolean };
@@ -57,13 +57,13 @@ export function createTurnControls(options: {
     }
     const identity = options.identity?.(agent.agentId);
     const name = identityName(options.identity, agent.agentId);
-    const status = agent.state === 'working' ? 'taking its turn' : agent.state === 'queued' ? 'queued until idle' : agent.state === 'unavailable' ? `unavailable: ${agent.reason ?? 'delivery unconfirmed'}` : '';
+    const status = agent.state === 'working' ? 'taking its turn' : agent.state === 'queued' ? (agent.behavior === 'queue' ? 'queued until idle' : 'waiting for host') : agent.state === 'unavailable' ? `unavailable: ${agent.reason ?? 'delivery unconfirmed'}` : '';
     item.dataset.state = agent.state;
     const color = identityColor(identity);
     if (color) item.style.setProperty('--wm-agent-color', color); else item.style.removeProperty('--wm-agent-color');
     if (identity?.icon && entry.icon !== identity.icon) { button.innerHTML = turnIcon(identity.icon); entry.icon = identity.icon; }
     button.disabled = agent.state !== 'ready' || entry.pending;
-    const description = `${name}${agent.label ? `: ${agent.label}` : ''}`;
+    const description = `${name}${agent.label ? `: ${agent.label}` : ''}${agent.behavior ? ` · ${agent.behavior}` : ''}${agent.state === 'ready' && agent.reason ? ` · ${agent.reason}` : ''}`;
     button.title = status ? `${description} (${status})` : `Take the next turn: ${description}`;
     button.setAttribute('aria-label', status ? `${name}: ${status}` : `Take the next turn: ${name}`);
     caption.textContent = `${agent.label ?? name}${agent.state === 'queued' ? ' · queued' : agent.state === 'unavailable' ? ` · ${agent.reason ?? 'unavailable'}` : ''}`;

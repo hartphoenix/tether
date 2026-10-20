@@ -29,6 +29,7 @@ const build=await Bun.build({entrypoints:['./src/web/app.ts'],target:'browser',f
 if(!build.success)throw new Error(String(build.logs));
 (w as any).fetch=globalThis.fetch;
 (w as any).structuredClone=structuredClone;
+(w as any).EventSource = class extends w.EventTarget { close() {} };
 (w as any).TextEncoder=TextEncoder;
 (w as any).TextDecoder=TextDecoder;
 (w as any).ResizeObserver=(globalThis as any).ResizeObserver;

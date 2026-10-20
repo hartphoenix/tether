@@ -82,7 +82,10 @@ export const commandSpecs: Record<string, CommandSpec> = {
   "paseo.theme": { name: "paseo.theme", usage: "tether paseo theme <client-id> <theme-id|unknown>", min: 2, max: 2 },
   "paseo.status": { name: "paseo.status", usage: "tether paseo status", min: 0, max: 0 },
   "paseo.wait": { name: "paseo.wait", usage: "tether paseo wait [--after <cursor>] [--folio <version>] [--timeout <seconds>]", min: 0, max: 0, flags: { "--after": { value: true }, "--folio": { value: true }, "--timeout": { value: true } } },
-  "turn.register": { name: "turn.register", usage: "tether turn register <file> --actor <name> [--agent-id <id>] [--label <text>]", min: 1, max: 1, flags: { ...mutationActorFlags, "--label": { value: true } }, required: ["--actor"] },
+  "paseo.turn-connection": { name: "paseo.turn-connection", usage: "tether paseo turn-connection [--connection <file>]", min: 0, max: 0, flags: { "--connection": { value: true } } },
+  "turn.status": { name: "turn.status", usage: "tether turn status <file>", min: 1, max: 1 },
+  "turn.send": { name: "turn.send", usage: "tether turn send <file> --agent-id <id> --operation-id <id>", min: 1, max: 1, flags: { "--agent-id": { value: true }, "--operation-id": { value: true } }, required: ["--agent-id", "--operation-id"] },
+  "turn.register": { name: "turn.register", usage: "tether turn register <file> --actor <name> [--agent-id <id>] [--label <text>]", min: 1, max: 1, flags: { ...mutationActorFlags, "--label": { value: true }, "--host-id": { value: true } }, required: ["--actor"] },
   "turn.unregister": { name: "turn.unregister", usage: "tether turn unregister <file> [--actor <name>] [--agent-id <id>]", min: 1, max: 1, flags: mutationActorFlags },
   "turn.wait": { name: "turn.wait", usage: "tether turn wait <file> --actor <name> [--agent-id <id>] [--label <text>] [--after <cursor>] [--timeout <seconds>]", min: 1, max: 1, flags: { "--actor": { value: true }, "--agent-id": { value: true }, "--label": { value: true }, "--after": { value: true }, "--timeout": { value: true } }, required: ["--actor"] },
   "paseo.ack": { name: "paseo.ack", usage: "tether paseo ack <intent-id>...", min: 1, max: Infinity },
@@ -123,7 +126,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
 };
 
 for (const spec of Object.values(commandSpecs)) {
-  if (spec.name.startsWith("document.") || spec.name.startsWith("folio.") || ["open", "recents.add", "folio", "recents", "pending", "thread", "threads", "event", "operation", "quote-candidates", "comment", "reply", "resolve", "reopen", "edit", "delete", "acknowledge"].includes(spec.name)) {
+  if (spec.name.startsWith("turn.") || spec.name.startsWith("document.") || spec.name.startsWith("folio.") || ["open", "recents.add", "folio", "recents", "pending", "thread", "threads", "event", "operation", "quote-candidates", "comment", "reply", "resolve", "reopen", "edit", "delete", "acknowledge"].includes(spec.name)) {
     spec.flags = { ...spec.flags, "--connection": { value: true }, "--machine": { value: true }, "--receiver": { value: true }, "--workspace": { value: true }, "--restore": {}, "--expected-location-version": { value: true } };
   }
 }

@@ -54,6 +54,27 @@ function request(connection:ReaderConnection,resource:string,body?:unknown,metho
   }));
 }
 
+test("Fly Go binds the shared document, file machine and host connection independently", async () => {
+  const f = await fixture();
+  await f.daemon.turnOperation("register", { documentId: f.remote.documentId, agentId: "paseo:remote-agent", actor: "Remote reviewer", hostId: "remote-host" }, "plugin-client");
+  const reader = await f.library.reader.open(f.remote.documentId);
+  try {
+    const state = await request(reader, "api/turns");
+    expect((await state.json()).agents[0]).toMatchObject({ agentId: "paseo:remote-agent", state: "ready" });
+    const pressed = await request(reader, "api/turn", { agentId: "paseo:remote-agent", operationId: "phone-press" });
+    expect(pressed.status).toBe(200);
+    const pending = f.daemon.hostTurns.snapshot("plugin-client", "remote-host").signals[0]!;
+    expect(pending).toMatchObject({ documentId: f.remote.documentId, machineId: "remote-machine", path: f.remotePath, hostId: "remote-host" });
+    expect(pending.text).toContain(`document-id="${f.remote.documentId}"`);
+    expect(f.daemon.hostTurns.snapshot("other-client", "remote-host").signals).toEqual([]);
+    expect(f.daemon.hostTurns.snapshot("plugin-client", "other-host").signals).toEqual([]);
+    await expect(f.daemon.turnOperation("send", { documentId: f.remote.documentId, agentId: "paseo:remote-agent", operationId: "agent-press" }, "plugin-client")).rejects.toMatchObject({ status: 403 });
+    const lease = await f.daemon.turnOperation("adapter", { hostId: "remote-host", action: "lease", instance: "worker" }, "plugin-client") as { token: string };
+    f.daemon.hostTurns.revoke("plugin-client");
+    await expect(f.daemon.turnOperation("adapter", { hostId: "remote-host", action: "claim", token: lease.token, signalId: pending.signalId }, "plugin-client")).rejects.toThrow("expired");
+  } finally { await reader.close(); }
+});
+
 test("shared registration, UUID operations and browser annotations use one central conversation", async () => {
   const f = await fixture(), before = await stat(f.remotePath);
   const catalog = await f.library.dispatch("folio.list",{view:"all"}) as {files:Array<{id:string;machineId:string}>};

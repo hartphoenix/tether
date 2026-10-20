@@ -1,3 +1,4 @@
+import { subscribeTurns } from "./turn-events";
 import { pollPreferences } from "./preferences-poll";
 import { mountReaderLayout } from "./reader-layout";
 import { formatMachinePath, type FileMachine } from "../shared/machine-path";
@@ -181,7 +182,7 @@ function renameAgent(id: string, x: number, y: number): void {
   } });
 }
 const turnControls = createTurnControls({
-  request: agentId => api<TurnPress>('api/turn', { method: 'POST', body: JSON.stringify({ agentId }) }),
+  request: agentId => api<TurnPress>('api/turn', { method: 'POST', body: JSON.stringify({ agentId, operationId: crypto.randomUUID() }) }),
   notice: message => chrome.setNotice(message),
   identity: identities.get,
   rename: renameAgent,
@@ -926,9 +927,9 @@ async function start(): Promise<void> {
   hostOpensWebLinks = bootstrap.capabilities?.hostOpensWebLinks === true;
   revealAvailable = bootstrap.capabilities?.revealFile === true;
   fileActions.update(revealAvailable, readOnly || sharedReader, bootstrap.directoryPicker === true);
-  // Agent state is in daemon memory; short polls avoid holding a browser connection.
+  // Host-owned turn status arrives without periodic Go requests.
   stopTurns?.();
-  stopTurns = pollPreferences('api/turns', (value: { agents: TurnAgent[]; identityRevision?: number }) => {
+  stopTurns = subscribeTurns('api/turn-events', (value: { agents: TurnAgent[]; identityRevision?: number }) => {
     identities.want(value.agents.map(agent => agent.agentId));
     identities.observe(value.identityRevision);
     turnControls.update(value.agents);

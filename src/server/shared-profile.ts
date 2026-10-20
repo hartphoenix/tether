@@ -1,3 +1,4 @@
+import { turnEventStream } from "./host-turns";
 import { sourceRevision } from "./build-revision";
 import { SetupAttempts } from "../remote/setup-attempts";
 import { hostname } from "node:os";
@@ -52,7 +53,7 @@ export async function startSharedProfile(daemon: TetherDaemon, config: SharedPro
   registerConnectors();
   const delivery = new ReaderDelivery(config.origin, id => auth.client(id));
   const pluginSeen = new Map<string, number>();
-  const unsubscribe = auth.onRevoke(id => { pluginSeen.delete(id); broker.revokeClient(id); delivery.revoke(id); });
+  const unsubscribe = auth.onRevoke(id => { pluginSeen.delete(id); daemon.hostTurns.revoke(id); broker.revokeClient(id); delivery.revoke(id); });
   const built = await Bun.build({ entrypoints: [join(import.meta.dir, "../remote/shared-auth-browser.ts")], target: "browser", format: "esm", minify: true });
   if (!built.success) throw new AggregateError(built.logs, "Shared authentication build failed.");
   const renderer = await createDiagramRenderer();
@@ -60,6 +61,16 @@ export async function startSharedProfile(daemon: TetherDaemon, config: SharedPro
   const stopFolio = daemon.library.subscribe(() => { folioVersion++; });
   const dispatch = async (operation: string, input: Record<string, unknown>, client: SharedClient) => {
     registerConnectors();
+    if (operation.startsWith("turn.")) {
+      if (client.kind !== "agent") throw Object.assign(new Error("An enrolled agent connection is required."), { status: 403 });
+      let owner = client.id;
+      if (["turn.register", "turn.unregister"].includes(operation) && typeof input.receiver === "string") {
+        const receiver = auth.client(input.receiver);
+        if (!receiver || receiver.kind !== "agent") throw Object.assign(new Error("Select an enrolled Paseo receiver."), { status: 403 });
+        owner = receiver.id;
+      }
+      return daemon.turnOperation(operation.slice(5), input, owner, false);
+    }
     if (operation === "plugin.connection") return { clientId: client.id, libraryId, origin: config.origin };
     if (operation === "machines.list") return { machines: auth.machines.list().map(machine => ({ ...machine, local: machine.id === daemon.service.store.localMachineId })) };
     if (operation === "plugin.folio") return { url: `${config.origin}/folio/`, sharedOrigin: config.origin, expiresAt: Date.now() + 60_000 };
@@ -191,6 +202,12 @@ export async function startSharedProfile(daemon: TetherDaemon, config: SharedPro
       if (client.kind !== "browser" || request.method !== "POST") throw Object.assign(new Error("Owner browser verification is required."), { code: "owner_required", status: 403 });
       const { sharedJson } = await import("../remote/shared-auth");
       return Response.json(await manage(new URL(request.url).pathname.slice("/folio/api/fly/".length), await sharedJson(request), client.id));
+    }
+    if (new URL(request.url).pathname === "/api/turn-events" && request.method === "GET") {
+      if (client.kind !== "agent") return Response.json({ error: "Agent connection required" }, { status: 403 });
+      const hostId = new URL(request.url).searchParams.get("hostId");
+      if (!hostId || !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,255}$/.test(hostId)) return Response.json({ error: "Host ID required" }, { status: 400 });
+      return turnEventStream(request.signal, fn => { const a = daemon.hostTurns.subscribe(fn), b = auth.onRevoke(id => { if (id === client.id) fn(); }); return () => { a(); b(); }; }, () => daemon.hostTurns.snapshot(client.id, hostId), () => !!auth.client(client.id));
     }
     if (new URL(request.url).pathname.startsWith("/connector/")) { registerConnectors(); return broker.handle(request, client.id); }
     if (new URL(request.url).pathname === "/folio/api/machines" && request.method === "GET") return Response.json((await dispatch("machines.list", {}, client) as {machines: unknown[]}).machines);

@@ -9,7 +9,8 @@ import { commandResult } from "./results";
 import { realpath, readFile, readlink, unlink, rename } from "node:fs/promises";
 import { readBoundedInput, writeExport } from "./io";
 import { usageText, commandSpecs, CliUsageError, parseCommand, requiredFlag, optionalFlag, readOptions, focusPreference, positiveInteger, usage } from "./commands";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, join } from "node:path";
+import { homedir } from "node:os";
 import { resolveConfig, type TetherConfig } from "../server/config";
 import { cancelLaunch, controlRecentsLaunch, controlRequest, ControlRequestError, ensureDaemon, statusDaemon, stopDaemon } from "../server/lifecycle";
 import { createBrowserHost } from "../hosts/browser";
@@ -492,8 +493,20 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
       if (!Number.isSafeInteger(after) || !Number.isSafeInteger(folio)) usage("--after and --folio must be integers.");
       return { response: success(command, await requestControl(config, `/control/hosts/${PASEO_HOST}/wait`, { after, folio, timeoutMs: seconds * 1000 }, { timeoutMs: seconds * 1000 + 10_000 })), exitCode: 0 };
     }
-    if (command === "turn.register" || command === "turn.unregister") {
+    if (command === "paseo.turn-connection") {
+      const discovery = connection ? undefined : await ensureDaemon({ config });
+      return { response: success(command, connection ? { origin: connection.origin, credentialPath: resolve(connectionPath!), owner: connection.clientId, shared: true }
+        : { origin: discovery!.origin, credentialPath: config.controlPath, owner: "local", shared: false }), exitCode: 0 };
+    }
+    if (command === "turn.send" && ((dependencies.env ?? process.env).PASEO_AGENT_ID || (dependencies.env ?? process.env).CLAUDE_CODE_SESSION_ID || (dependencies.env ?? process.env).CODEX_THREAD_ID)) usage("Agent sessions may register or inspect turns; sends require the human's CLI.");
+    if (command === "turn.register" || command === "turn.unregister" || command === "turn.status" || command === "turn.send") {
+      let hostId = optionalFlag(parsed, "--host-id") ?? (dependencies.env ?? process.env).TETHER_PASEO_HOST_ID;
+      if (command === "turn.register" && !hostId) {
+        const raw = (dependencies.env ?? process.env).PASEO_HOME ?? join(homedir(), ".paseo");
+        hostId = (await readFile(join(raw.startsWith("~/") ? join(homedir(), raw.slice(2)) : raw, "server-id"), "utf8")).trim();
+      }
       return { response: success(command, await requestControl(config, `/control/turn/${command.split(".")[1]}`, {
+        ...(hostId ? { hostId } : {}), ...((optionalFlag(parsed, "--receiver") ?? process.env.TETHER_RECEIVER ?? binding?.receiver) ? { receiver: optionalFlag(parsed, "--receiver") ?? process.env.TETHER_RECEIVER ?? binding?.receiver } : {}), ...(optionalFlag(parsed, "--operation-id") ? { operationId: optionalFlag(parsed, "--operation-id") } : {}),
         path: resolve(parsed.positionals[0]!), ...(optionalFlag(parsed, "--actor") ? { actor: optionalFlag(parsed, "--actor") } : {}), ...signature,
         ...(optionalFlag(parsed, "--label") ? { label: optionalFlag(parsed, "--label")!.trim() } : {}),
       })), exitCode: 0 };

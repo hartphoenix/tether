@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { HostTurns } from "../src/server/host-turns";
+import { HostTurns, turnEventStream } from "../src/server/host-turns";
 
 const registration = { documentId: "doc-a", machineId: "machine-a", path: "/a.md", agentId: "paseo:agent-a", hostId: "host-a", owner: "local", behavior: "steer" as const };
 test("host invitations survive service reconstruction, replay safely and require acceptance before completion", () => {
@@ -56,4 +56,23 @@ test("document and host identity fence registration, operation replay and concur
   expect(() => service.update("local", "host-a", lease.token, b.signalId, "claim")).toThrow("active delivery");
   expect(service.snapshot("other", "host-a").signals).toEqual([]);
   db.close();
+});
+
+test("revoking a stream closes it and removing a claimed subscription blocks its final send check", async () => {
+  const db = new Database(":memory:"), service = new HostTurns(db), lifetime = new AbortController();
+  service.register(registration);
+  let live = true;
+  const stream = turnEventStream(lifetime.signal, fn => service.subscribe(fn), () => service.snapshot("local", "host-a"), () => live);
+  const reader = stream.body!.getReader();
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain('"subscriptions"');
+  const signal = service.request("doc-a", "paseo:agent-a", "stream-press");
+  await reader.read();
+  const lease = service.lease("local", "host-a", "adapter");
+  service.update("local", "host-a", lease.token, signal.signalId, "claim");
+  await reader.read();
+  live = false;
+  service.unregister("doc-a", "paseo:agent-a");
+  expect((await reader.read()).done).toBe(true);
+  expect(() => service.verify("local", "host-a", lease.token, signal.signalId)).toThrow("dispatchable");
+  lifetime.abort(); db.close();
 });

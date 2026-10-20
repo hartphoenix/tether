@@ -1,3 +1,4 @@
+import { registerTurnChip } from "./client/turn-chip";
 import { createComposerCollections } from "./chat/pill";
 import { getState } from "./client/state";
 import { startChatAnnotations } from "./chat/client";
@@ -13,6 +14,7 @@ import { tetherThemes } from "./client/themes";
 import { disposeFolioViews } from "./client/web-folio";
 
 export default function contribute(client: PluginClientContext) {
+  const stopTurnChip = registerTurnChip(client);
   const removeThemes = tetherThemes.map(theme => client.addTheme(theme));
   client.addWorkspacePanel({ id: FOLIO_PANEL, title: "Folio", icon: "BookOpen", context: "workspace", locations: ["explorer"], Component: FolioPanel });
   client.addSettingsScreen({ id: "tether", title: "Settings", icon: "BookOpen", Component: SettingsScreen });
@@ -25,6 +27,7 @@ export default function contribute(client: PluginClientContext) {
     for (const removeTheme of removeThemes) removeTheme();
     disposeFolioViews();
     clearThemeReports();
+    stopTurnChip();
     stopChat();
     stopButtons();
     stopPump();

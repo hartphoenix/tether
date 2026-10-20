@@ -21,6 +21,7 @@ function setup(read: () => Promise<unknown> = async () => ({ status: "ready", va
     registerSettings: () => ({ read, subscribe: (listener: typeof update) => { update = listener; return () => {}; } }),
     handle: (contract: { name: string }, handler: (input: any) => Promise<unknown>) => handlers.set(contract.name, handler),
     before: () => {},
+    on: () => () => {},
   } as unknown as Parameters<typeof contribute>[0]);
   cleanups.push(cleanup);
   const call = (name: string, input: any) => handlers.get(`tether.${name}`)!(input, { paseo: {} });

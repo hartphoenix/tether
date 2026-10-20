@@ -6,6 +6,7 @@
 
 - [Install](#install)
 - [Folio and documents](#folio-and-documents)
+- [Go](#go)
 - [Chat annotations](#chat-annotations)
 - [Settings](#settings)
 - [Compatibility](#compatibility)
@@ -33,6 +34,12 @@ After a Tether update, reload the plugin in **Settings → Plugins**, or run the
 - **Agent documents.** When an agent runs `tether open` or `tether recents add` in a workspace, that workspace's Tether button shows the document's name, and clicking the button opens it. Agents never move your focus.
 - **Focus mode.** With a reader focused, `⌘-⇧-F` hides the other panes and gives the threads drawer more room. Press it again to restore them.
 - **Themes.** Once the plugin is installed, Paseo's **Appearance** settings list Tether Light, Tether Dark, Light Treason and Dark Academia; your current theme doesn't change. In a reader's theme menu, **Inherit Paseo theme** makes Tether follow your Paseo palette.
+
+## Go
+
+An agent registers on a document with `tether turn register FILE --actor NAME`. Press its Go button to start its next turn on that document. The Paseo daemon delivers the invitation even with the app closed; no agent watcher needs to stay running. Staged chat annotations go with the invitation, which appears as a Tether document chip in chat.
+
+Delivery follows the composer's synchronized steer, interrupt or queue setting; before one has been supplied, it uses steer. Subscriptions and accepted presses survive service restarts. The plugin reconnects automatically, resumes unsent work, and checks uncertain deliveries without resending them. The button shows permission requests or delivery uncertainty when attention is needed. Fly uses the same behavior through the configured shared connection.
 
 ## Chat annotations
 
@@ -63,4 +70,4 @@ Open **Settings → Plugins → Tether → ⋯ → Settings**. The screen shows 
 
 ## Compatibility
 
-The plugin requires Paseo 0.11.2 or later and was tested with 0.11.2. Tether doesn't block later Paseo releases. Its embedded Folio, reader panels and chat annotations rely on parts of Paseo's desktop app outside the supported plugin API, so a later Paseo release can break them. If that happens, the basic document list still works, and turning off custom panels opens readers as browser tabs.
+The plugin requires Paseo 0.11.2 or later and has package coverage on 0.11.2 and Go adapter runtime coverage on 0.11.4. Tether doesn't block later Paseo releases. Its embedded Folio, reader panels and chat annotations rely on parts of Paseo's desktop app outside the supported plugin API, so a later Paseo release can break them. If that happens, the basic document list still works, and turning off custom panels opens readers as browser tabs.
