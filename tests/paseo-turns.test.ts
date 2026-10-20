@@ -183,9 +183,9 @@ test("register and unregister CLI use step-one identity and reader-only press au
   await daemon.ready;
   cleanup.push(() => daemon.stop());
   const args = [document, "--actor", "Go Paseo delivery", "--agent-id", id];
-  expect((await runCli(["turn", "register", ...args], { config })).response).toMatchObject({ ok: true, data: { registration: { agentId: id, state: "ready" } } });
-  expect((await runCli(["turn", "unregister", ...args], { config })).response).toMatchObject({ ok: true, data: { removed: true } });
-  expect((await runCli(["turn", "unregister", ...args], { config })).response).toMatchObject({ ok: true, data: { removed: false } });
+  expect((await runCli(["turn", "register", ...args], { config, env: { PASEO_HOME: f.root } })).response).toMatchObject({ ok: true, data: { registration: { agentId: id, state: "ready" } } });
+  expect((await runCli(["turn", "unregister", ...args], { config, env: { PASEO_HOME: f.root } })).response).toMatchObject({ ok: true, data: { removed: true } });
+  expect((await runCli(["turn", "unregister", ...args], { config, env: { PASEO_HOME: f.root } })).response).toMatchObject({ ok: true, data: { removed: false } });
   expect((await fetch(`${daemon.origin}/control/turn/register`, { method: "POST", body: JSON.stringify({path: document, actor:'untrusted', agentId: id}) })).status).toBe(403);
 });
 
