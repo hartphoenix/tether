@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 export async function buildPaseoPlugin(destination: string, version: string): Promise<void> {
   const root = resolve(import.meta.dir, "..");
   await mkdir(destination, { recursive: true });
-  const external = ["@getpaseo/plugin", "@getpaseo/plugin/server", "@getpaseo/plugin/client", "@getpaseo/plugin/client/ui", "@getpaseo/plugin/client/react-native", "react", "react/jsx-runtime", "react-native", "zod"];
+  const external = ["@getpaseo/plugin", "@getpaseo/plugin/server", "@getpaseo/plugin/client", "@getpaseo/plugin/client/ui", "@getpaseo/plugin/client/react-native", "react", "react/jsx-runtime", "react-native", "@tanstack/react-query", "zod"];
   for (const [entry, target, name] of [["index.client.tsx", "browser", "index.client.ts"], ["index.server.ts", "node", "index.server.ts"]] as const) {
     const build = await Bun.build({ entrypoints: [resolve(root, "integrations/paseo", entry)], target, external, jsx: { runtime: "automatic", development: false }, define: { "process.env.NODE_ENV": '"production"' } });
     if (!build.success) throw new Error(build.logs.join("\n"));
