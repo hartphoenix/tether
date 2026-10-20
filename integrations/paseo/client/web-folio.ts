@@ -76,11 +76,13 @@ function launchUrl(value: string, kind: ViewKind): URL {
   const url = localUrl(value, kind);
   const themeClient = url.searchParams.get("themeClient");
   const surfaces = url.searchParams.getAll("surface");
-  const allowed = kind === "reader" ? ["ticket", "themeClient", "surface"] : ["ticket", "themeClient"];
+  const allowed = kind === "reader" ? ["ticket", "themeClient", "surface"] : ["ticket", "themeClient", "embedded"];
+  const embedded = url.searchParams.getAll("embedded");
   if (url.pathname !== launchPaths[kind] || url.searchParams.getAll("ticket").length !== 1 || !url.searchParams.get("ticket")
     || url.searchParams.getAll("themeClient").length > 1
     || (themeClient !== null && !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(themeClient))
     || surfaces.length > 1 || surfaces.some(surface => surface !== "panel")
+    || embedded.length > 1 || embedded.some(value => value !== "1")
     || [...url.searchParams.keys()].some(key => !allowed.includes(key))) throw new Error("Invalid Tether launch");
   return url;
 }

@@ -80,6 +80,24 @@ test("theme-aware launches attach and cache only the final authenticated session
   expect(guests[1]!.src).toBe(session);
 });
 
+test("embedded local Folio launches attach and retain embedded mode when cached", async () => {
+  const url = new URL(themedLaunch(ticket().url));
+  url.searchParams.set("embedded", "1");
+  const first = mount({ launch: async () => ({ ...ticket(), url: url.href }) });
+  await tick();
+  expect(guests).toHaveLength(1);
+  expect(guests[0]!.src).toBe(url.href);
+  const embeddedSession = `${session}&embedded=1`;
+  guests[0]!.ready(embeddedSession);
+  expect(first.states.at(-1)).toBe("ready");
+  first.dispose();
+  const next = mount();
+  expect(next.launches).toBe(0);
+  expect(guests[1]!.src).toBe(embeddedSession);
+  guests[1]!.ready(embeddedSession);
+  expect(next.states.at(-1)).toBe("ready");
+});
+
 test("connection and workspace identities do not reuse each other's sessions", async () => {
   const keys = [
     folioViewKey("host", "", "preview", "a"), folioViewKey("host", "", "preview", "b"),
@@ -238,6 +256,7 @@ test("load failure, missing DOM, mount exceptions, expired launch, and rejected 
 test("only local launch URLs and same-origin session navigations are accepted", async () => {
   for (const url of ["https://example.com/recents/launch?ticket=x", `${origin}/wrong?ticket=x`, `${origin}/recents/launch`, `${origin}/recents/launch?ticket=x&extra=y`,
     `${origin}/recents/launch?ticket=x&themeClient=invalid`, `${origin}/recents/launch?ticket=x&themeClient=`,
+    `${origin}/recents/launch?ticket=x&embedded=0`, `${origin}/recents/launch?ticket=x&embedded=1&embedded=1`,
     `${origin}/recents/launch?ticket=x&themeClient=${crypto.randomUUID()}&themeClient=${crypto.randomUUID()}`,
     `${origin}/recents/launch?ticket=x&ticket=y`]) {
     const invalid = mount({ launch: async () => ({ ...ticket(), url }) });
