@@ -1,0 +1,74 @@
+/* Incoming-change review. Changed words keep the body's typeface and take
+   their author's color at a medium weight; authored bold stays heavier. */
+.tether-review-inserted {
+  color: var(--tether-review-color);
+  font-weight: 520;
+}
+:is(h1, h2, h3, h4, h5, h6, strong, b, th) .tether-review-inserted,
+.tether-review-inserted :is(strong, b) { font-weight: inherit; }
+.tether-review-inserted-block { box-shadow: -3px 0 0 var(--tether-review-color); }
+
+/* Earlier wording replaces the current text in place; removed words are ghosts. */
+.tether-review-hidden { display: none !important; }
+.tether-review-before { cursor: context-menu; }
+.tether-review-before-block { display: block; }
+.tether-review-before-block > :first-child { margin-top: 0; }
+.tether-review-ghost { opacity: var(--wm-diff-ghost-opacity, .45); }
+.tether-review-before-block .tether-review-ghost:is(p, li, h1, h2, h3, h4, h5, h6, pre, blockquote) { opacity: var(--wm-diff-ghost-opacity, .45); }
+
+/* Margin lines sit outside the text column, like a code editor's change gutter. */
+.tether-review-lines { position: absolute; inset: 0 auto auto 0; width: 0; height: 0; pointer-events: none; }
+.tether-review-lines .tether-review-line {
+  position: absolute;
+  width: 11px;
+  margin: 0 0 0 -4px;
+  padding: 0;
+  border: 0;
+  background: linear-gradient(var(--tether-review-color), var(--tether-review-color)) center / 3px 100% no-repeat;
+  border-radius: 2px;
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: .9;
+}
+.tether-review-lines .tether-review-line:is(:hover, :focus-visible) { background-size: 5px 100%; opacity: 1; outline: none; }
+.tether-review-lines .tether-review-line.is-before { background-image: repeating-linear-gradient(var(--tether-review-color) 0 4px, transparent 4px 7px); }
+.tether-review-lines .tether-review-line.is-before::after {
+  content: "before";
+  position: absolute;
+  top: 0;
+  right: 14px;
+  font: 500 11px/1.5 var(--wm-font-ui, system-ui, sans-serif);
+  color: var(--tether-review-color);
+  white-space: nowrap;
+}
+
+/* The review bar follows the theme; a real conflict keeps its warning colors. */
+#conflict.is-review {
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+  background: Canvas;
+  color: CanvasText;
+}
+#conflict.is-review button { border-color: color-mix(in srgb, CanvasText 22%, transparent); background: transparent; }
+#conflict.is-review button:hover { background: color-mix(in srgb, CanvasText 8%, transparent); }
+:root[data-wm-designed] #conflict.is-review {
+  border-bottom-color: var(--wm-color-outline);
+  background: var(--wm-color-surface);
+  color: var(--wm-color-on-surface);
+}
+:root[data-wm-designed] #conflict.is-review button { border-color: var(--wm-color-outline); }
+:root[data-wm-designed] #conflict.is-review button:hover { background: var(--wm-color-hover); }
+:root[data-wm-designed] #conflict.is-review #save-review { border-color: var(--wm-color-primary); color: var(--wm-color-primary); }
+
+/* A comment made on earlier wording quotes the version it refers to. */
+.wm-thread-before { opacity: var(--wm-diff-ghost-opacity, .55); text-decoration: line-through; text-decoration-thickness: 1px; }
+.wm-thread-before::before { content: "Earlier: "; text-decoration: none; display: inline-block; font-weight: 600; margin-right: .25em; }
+
+/* Change-menu icons are stroked Lucide icons, unlike the filled insert-menu set. */
+.wm-insert-icon svg.tether-icon { fill: none; stroke: currentColor; }
+
+.wm-thread-conversation > .wm-thread-details + .wm-thread-details { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--wm-annotation-border, #d3c8bc); }
+.wm-thread-wording { margin: 0 0 8px; font-weight: 600; }
+
+#conflict :is(#save-review, #revert-review) { align-items: center; gap: 6px; }
+#conflict :is(#save-review, #revert-review):not([hidden]) { display: inline-flex; }
+#conflict :is(#save-review, #revert-review) svg { flex: none; }

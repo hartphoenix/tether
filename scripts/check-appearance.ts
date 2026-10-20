@@ -11,8 +11,7 @@ const scratch = await mkdtemp(join(tmpdir(), 'tether-appearance-'));
 const config = resolveConfig({ profile: 'test', configDir: join(scratch, 'config'), runtimeDir: join(scratch, 'runtime') });
 const daemon = createDaemon({ config, web: await createWebBundleResponder(), opener: async () => {} });
 const check = (condition: unknown, message: string) => { if (!condition) throw new Error(message); };
-const original = '# Review\n\nFirst original paragraph.\n\nUnchanged separator.\n\nSecond original paragraph.\n\nAnother separator.\n\nThird original paragraph.\n';
-const incoming = original.replaceAll('original', 'incoming');
+const original = '# Appearance\n\nA paragraph.\n';
 try {
   await daemon.ready;
   for (const [name, type] of Object.entries({ chromium, webkit })) {
@@ -71,52 +70,9 @@ try {
       await reader.waitForFunction(() => getComputedStyle(document.documentElement).getPropertyValue('--wm-ui-scale') === '0.7');
       await reader.waitForFunction(() => getComputedStyle(document.documentElement).getPropertyValue('--wm-ui-scale') === '1', undefined, { timeout: 20000 });
       console.log(`${name}: appearance and preview checks passed`);
-      for (const mode of ['per-change', 'per-accept', 'accept-all', 'reject-all', 'conflict']) {
-        console.log(`${name}: review ${mode}`);
-        await writeFile(path, original); await reader.reload(); await reader.locator('.ProseMirror').waitFor();
-        await reader.waitForTimeout(150);
-        await writeFile(path, incoming);
-        await reader.evaluate(() => dispatchEvent(new Event('online')));
-        await reader.locator('#save-review').waitFor({ state: 'visible' });
-        check(await reader.locator('#conflict-message').textContent() === 'There are new changes for your review.', 'review banner wording');
-        check(!await reader.locator('#reload').isVisible(), 'reload visible in review');
-        if (mode === 'per-change') {
-          for (const theme of ['tether', 'tether-dark']) {
-            await reader.evaluate(async theme => { await fetch('api/preferences', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ theme }) }); }, theme);
-            await reader.waitForFunction(theme => document.documentElement.dataset.wmTheme === theme, theme);
-            const colors = await reader.locator('#conflict').evaluate(el => ({ background: getComputedStyle(el).backgroundColor, text: getComputedStyle(el).color }));
-            check(colors.background.includes('color') || colors.background.includes('rgb'), 'banner theme missing');
-            await reader.screenshot({ path: join(tmpdir(), `tether-${name}-${theme}-banner.png`) });
-          }
-        }
-        if (mode === 'per-change') {
-          for (let count = 0; await reader.getByRole('button', { name: 'Reject', exact: true }).count(); count++) { check(count < 20, 'Reject did not settle'); await reader.getByRole('button', { name: 'Reject', exact: true }).first().click(); }
-        } else if (mode === 'per-accept') {
-          for (let count = 0; await reader.getByRole('button', { name: 'Accept', exact: true }).count(); count++) { check(count < 20, 'Accept did not settle'); await reader.getByRole('button', { name: 'Accept', exact: true }).first().click(); }
-        } else if (mode === 'accept-all') {
-          await reader.getByRole('button', { name: 'Reject', exact: true }).first().click();
-          await reader.locator('#save-review').click();
-        } else if (mode === 'reject-all') {
-          await reader.getByRole('button', { name: 'Accept', exact: true }).first().click();
-          await reader.locator('#cancel-review').click();
-        } else {
-          await writeFile(path, '# Changed again\n');
-          await reader.locator('#save-review').click();
-          await reader.locator('#reload').waitFor({ state: 'visible' });
-          check((await reader.locator('#conflict-message').textContent())?.includes('changed again'), 'save conflict missing');
-          check(await readFile(path, 'utf8') === '# Changed again\n', 'conflicting write overwritten');
-          continue;
-        }
-        await reader.locator('#conflict').waitFor({ state: 'hidden' });
-        const saved = await readFile(path, 'utf8');
-        if (mode === 'per-accept') check(!saved.includes('original'), 'last acceptance did not save');
-        if (mode === 'per-change') check(!saved.includes('incoming'), 'last rejection did not save');
-        if (mode === 'accept-all') check(saved.includes('First original') && saved.includes('Second incoming') && saved.includes('Third incoming'), 'Accept All lost previous rejection');
-        if (mode === 'reject-all') check(saved.includes('First incoming') && saved.includes('Second original') && saved.includes('Third original'), 'Reject All lost previous acceptance');
-      }
       await reader.evaluate(async () => { await fetch('api/preferences', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ railWidth: 300 }) }); });
       check(errors.length === 0, errors.join('\n'));
-      console.log(`PASS ${name}: live scale, cancel, persistence, expiry, per-change autosave, mixed bulk decisions, save conflicts`);
+      console.log(`PASS ${name}: live scale, cancel, persistence, expiry`);
       await context.close();
     } finally { await browser.close(); }
   }

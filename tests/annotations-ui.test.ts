@@ -609,3 +609,19 @@ test('fresh selections spanning repeated blocks paint every selected block', () 
     ]);
   }
 });
+
+test('collapsed earlier-wording comments preview the earlier quote', () => {
+  installDom();
+  const root = document.createElement('div'); document.body.append(root);
+  const earlier = 'The earlier plan used the orchard entrance. '.repeat(6);
+  const current = 'The current plan uses the greenhouse entrance. '.repeat(6);
+  const ui = createAnnotationUi({ root });
+  ui.setState({ threads: [thread({ anchor: anchor(current, { before: { exact: earlier, bodyRevision } }) })] });
+  ui.openThread('c-1');
+  const popover = document.querySelector('.wm-thread-popover')!;
+  expect(popover.querySelector('.wm-thread-context summary')?.textContent).toBe(earlier.slice(0, 160) + '…');
+  expect(popover.querySelector('.wm-thread-before')?.textContent).toBe(earlier);
+  expect(popover.textContent).not.toContain('The current plan');
+  expect(popover.querySelectorAll('.wm-annotation-reply-form')).toHaveLength(1);
+  ui.destroy();
+});

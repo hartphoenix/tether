@@ -48,3 +48,10 @@ const icons = {
 export function iconSvg(name: keyof typeof icons): string {
   return icons[name];
 }
+
+// Phosphor Icons (MIT), regular weight; see licenses/phosphor-icons-LICENSE.txt.
+// Cursor variants use an opaque white disc for contrast on every theme.
+export const reviewActionSvg = {
+  seen: "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 256 256\"><rect width=\"256\" height=\"256\" fill=\"none\"/><polyline points=\"88 136 112 160 168 104\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"16\"/><circle cx=\"128\" cy=\"128\" r=\"96\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"16\"/></svg>",
+  revert: "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 256 256\"><circle cx=\"128\" cy=\"128\" r=\"96\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"16\"/><g transform=\"translate(51 51) scale(.6)\"><rect width=\"256\" height=\"256\" fill=\"none\"/><polyline points=\"80 136 32 88 80 40\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"16\"/><path d=\"M80,200h88a56,56,0,0,0,56-56h0a56,56,0,0,0-56-56H32\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"16\"/></g></svg>"
+} as const;

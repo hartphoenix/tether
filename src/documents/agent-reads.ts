@@ -359,7 +359,7 @@ export class AgentReads {
         const status = count === 0 ? "orphaned" : count === 1 || located >= 0 ? "located" : "ambiguous";
         const position = status === "located" ? (located >= 0 ? located : projection.indexOf(anchor.exact)) : null;
         const contextStart = position === null ? 0 : Math.max(0, position - radius), text = position === null ? "" : fitText(projection.slice(contextStart, position + anchor.exact.length + radius), maxBytes - 600);
-        return { bodyRevision: revision, threadId, anchorStatus: status, occurrences: count, projectionStart: position, contextStart: position === null ? null : contextStart, text, truncated: position !== null && contextStart + text.length < projection.length, maxBytes };
+        return { bodyRevision: revision, threadId, anchorStatus: status, occurrences: count, projectionStart: position, contextStart: position === null ? null : contextStart, text, truncated: position !== null && contextStart + text.length < projection.length, ...(anchor.before ? { before: anchor.before } : {}), maxBytes };
     }
     diff(path: DocumentReference, body: string, fromRevision: string, options: {
         maxBytes?: number;
