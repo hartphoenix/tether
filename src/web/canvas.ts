@@ -22,7 +22,8 @@ export function createCanvas(view: EditorView, notice?: HTMLElement, updateButto
     header ? header.after(notice) : scroller.before(notice);
     notice.dispatchEvent(new win.Event("tether-notice-mounted"));
   }
-  const stopHeaderOverlay = header ? overlayScrollHeader(scroller, header) : () => {};
+  const reviewBar = document.querySelector<HTMLElement>('#conflict');
+  const stopHeaderOverlay = overlayScrollHeader(scroller, ...[header, reviewBar].filter((node): node is HTMLElement => node !== null));
   let scale = 1;
   let destroyed = false;
   let frame = 0;

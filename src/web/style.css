@@ -47,8 +47,8 @@ body {
 #conflict:not([hidden]) { display: flex; }
 #conflict span { flex: 1; }
 
-#editor { min-width: 0; min-height: 0; height: 100%; }
-#workspace { flex: 1; min-height: 0; --wm-rail-width: 0px; display: grid; grid-template-columns: minmax(0, 1fr) var(--wm-rail-width); transition: grid-template-columns 200ms ease-out; }
+#editor { grid-column: 1; grid-row: 2; min-width: 0; min-height: 0; height: 100%; }
+#workspace { flex: 1; min-height: 0; --wm-rail-width: 0px; display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr) var(--wm-rail-width); transition: grid-template-columns 200ms ease-out; }
 
 #workspace:has(.wm-annotation-rail[data-open="true"]) {
   --wm-rail-width: var(--wm-saved-rail-width, 300px);
@@ -56,7 +56,8 @@ body {
   grid-template-columns: minmax(0, 1fr) var(--wm-rail-width);
 }
 
-#annotations { min-width: 0; }
+#conflict { grid-column: 1; grid-row: 1; min-width: 0; }
+#annotations { grid-column: 2; grid-row: 1 / 3; min-width: 0; }
 
 #workspace .wm-annotation-rail {
   position: fixed;
@@ -154,7 +155,11 @@ body {
   top: 0;
   left: 0;
   flex-wrap: nowrap;
-  background: color-mix(in srgb, var(--crepe-color-surface, var(--crepe-color-background)) 70%, transparent);
+}
+
+.milkdown .milkdown-top-bar,
+:root #workspace > #conflict.is-review {
+  background: color-mix(in srgb, var(--wm-color-surface, var(--crepe-color-surface, var(--crepe-color-background))) 70%, transparent);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
 }
@@ -250,7 +255,6 @@ body {
 
   #workspace:has(.wm-annotation-rail[data-open="true"]) {
     --wm-rail-width: 0px;
-    display: block;
   }
 
   #workspace .wm-annotation-rail {

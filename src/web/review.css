@@ -42,22 +42,46 @@
   white-space: nowrap;
 }
 
-/* The review bar follows the theme; a real conflict keeps its warning colors. */
-#conflict.is-review {
-  border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
-  background: Canvas;
-  color: CanvasText;
+/* A companion to the top bar; true save conflicts retain their warning style. */
+#conflict .wm-review-context { flex: 1; }
+:root #conflict.is-review {
+  gap: calc(12px * var(--wm-ui-scale));
+  padding: calc(3px * var(--wm-ui-scale)) calc(12px * var(--wm-ui-scale));
+  min-height: calc(36px * var(--wm-ui-scale));
+  flex-wrap: wrap;
+  font: calc(14px * var(--wm-ui-scale))/1.3 var(--wm-review-ui-font, 'Hanken Grotesk', system-ui, sans-serif);
+  border-bottom: 1px solid color-mix(in srgb, var(--wm-color-outline, CanvasText) 20%, transparent);
+  color: var(--wm-color-on-surface, CanvasText);
 }
-#conflict.is-review button { border-color: color-mix(in srgb, CanvasText 22%, transparent); background: transparent; }
-#conflict.is-review button:hover { background: color-mix(in srgb, CanvasText 8%, transparent); }
-:root[data-wm-designed] #conflict.is-review {
-  border-bottom-color: var(--wm-color-outline);
-  background: var(--wm-color-surface);
-  color: var(--wm-color-on-surface);
+#conflict.is-review .wm-review-context,
+#conflict.is-review :is(.wm-review-navigation, .wm-review-actions):not([hidden]) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: calc(4px * var(--wm-ui-scale));
 }
-:root[data-wm-designed] #conflict.is-review button { border-color: var(--wm-color-outline); }
-:root[data-wm-designed] #conflict.is-review button:hover { background: var(--wm-color-hover); }
-:root[data-wm-designed] #conflict.is-review #save-review { border-color: var(--wm-color-primary); color: var(--wm-color-primary); }
+#conflict.is-review .wm-review-context { flex: 1 1 auto; gap: calc(12px * var(--wm-ui-scale)); }
+#conflict.is-review #conflict-message { flex: none; font-weight: 500; }
+#conflict.is-review .wm-review-navigation { color: var(--wm-color-on-surface-variant, inherit); }
+:root #conflict.is-review button:not([hidden]) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: calc(28px * var(--wm-ui-scale));
+  min-height: calc(28px * var(--wm-ui-scale));
+  gap: calc(6px * var(--wm-ui-scale));
+  padding: calc(4px * var(--wm-ui-scale)) calc(6px * var(--wm-ui-scale));
+  border: 0;
+  border-radius: calc(4px * var(--wm-ui-scale));
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+}
+:root #conflict.is-review button:hover { background: var(--wm-color-hover, color-mix(in srgb, CanvasText 8%, transparent)); }
+:root #conflict.is-review button:focus-visible { outline: 2px solid var(--wm-color-primary, Highlight); outline-offset: 1px; }
+:root #conflict.is-review #save-review { color: var(--wm-color-primary, Highlight); }
+#conflict.is-review .wm-review-icon { width: calc(16px * var(--wm-ui-scale)); height: calc(16px * var(--wm-ui-scale)); flex: none; fill: currentColor; stroke: none; }
 
 /* A comment made on earlier wording quotes the version it refers to. */
 .wm-thread-before { opacity: var(--wm-diff-ghost-opacity, .55); text-decoration: line-through; text-decoration-thickness: 1px; }
@@ -68,7 +92,3 @@
 
 .wm-thread-conversation > .wm-thread-details + .wm-thread-details { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--wm-annotation-border, #d3c8bc); }
 .wm-thread-wording { margin: 0 0 8px; font-weight: 600; }
-
-#conflict :is(#save-review, #revert-review) { align-items: center; gap: 6px; }
-#conflict :is(#save-review, #revert-review):not([hidden]) { display: inline-flex; }
-#conflict :is(#save-review, #revert-review) svg { flex: none; }

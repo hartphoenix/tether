@@ -2,12 +2,12 @@ import type { EditorView } from '@milkdown/kit/prose/view';
 
 type Rect = { left: number; right: number; top: number; bottom: number };
 
-/** Overlap a stationary sibling header without hiding the initial content. */
-export function overlayScrollHeader(scroller: HTMLElement, header: HTMLElement): () => void {
-  const measure = () => scroller.style.setProperty('--wm-scroll-header-height', `${header.offsetHeight}px`);
+/** Overlap stationary headers without hiding the initial content. */
+export function overlayScrollHeader(scroller: HTMLElement, ...headers: HTMLElement[]): () => void {
+  const measure = () => scroller.style.setProperty('--wm-scroll-header-height', `${headers.reduce((height, header) => height + header.offsetHeight, 0)}px`);
   const win = scroller.ownerDocument.defaultView!;
   const observer = win.ResizeObserver ? new win.ResizeObserver(measure) : null;
-  observer?.observe(header);
+  headers.forEach(header => observer?.observe(header));
   measure();
   return () => { observer?.disconnect(); scroller.style.removeProperty('--wm-scroll-header-height'); };
 }

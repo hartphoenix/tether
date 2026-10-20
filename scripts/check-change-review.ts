@@ -48,6 +48,44 @@ try {
         check(await readFile(path, 'utf8') === incoming, 'starting review wrote the file');
         check(await reader.getByRole('button', { name: 'Mark all as seen', exact: true }).isVisible(), 'mark all label missing');
         check(await reader.locator('#save-review svg, #revert-review svg').count() === 2, 'bulk-action icons missing');
+        if (mode === 'revert-each') {
+          check(await reader.locator('#previous-change svg, #next-change svg').count() === 2, 'navigation icons missing');
+          await reader.waitForFunction(() => {
+            const bar = document.querySelector('#conflict')!.getBoundingClientRect();
+            return Math.abs(document.querySelector('.wm-document-scroll')!.getBoundingClientRect().top - bar.top) < 1;
+          });
+          const glass = await reader.evaluate(() => {
+            const style = (selector: string) => getComputedStyle(document.querySelector(selector)!);
+            return [style('#conflict').backdropFilter, style('.milkdown-top-bar').backdropFilter];
+          });
+          check(glass[0] === 'blur(12px)' && glass[0] === glass[1], 'review glass differs from top bar');
+          await reader.locator('#comment').click();
+          await reader.waitForTimeout(250);
+          const drawerLayout = await reader.evaluate(() => {
+            const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+            const bar = rect('#conflict'), rail = rect('.wm-annotation-rail'), editor = rect('#editor');
+            return { top: rail.top, barTop: bar.top, edge: bar.right - rail.left, editorTop: editor.top - bar.bottom };
+          });
+          check(Object.values(drawerLayout).every(value => Math.abs(value) < 1), 'review bar overlaps full-height drawer: ' + JSON.stringify(drawerLayout));
+          await reader.locator('#comment').click();
+          await reader.waitForTimeout(250);
+          check(await reader.locator('#conflict').evaluate(el => Math.abs(el.getBoundingClientRect().right - innerWidth) < 1), 'review bar does not expand after closing drawer');
+          const metrics = await reader.evaluate(() => {
+            const root = document.documentElement, bar = document.querySelector<HTMLElement>('#conflict')!;
+            const button = document.querySelector<HTMLElement>('#save-review')!;
+            const oldScale = root.style.getPropertyValue('--wm-ui-scale'), oldPrimary = root.style.getPropertyValue('--wm-color-primary');
+            root.style.setProperty('--wm-ui-scale', '1');
+            const normal = parseFloat(getComputedStyle(bar).fontSize);
+            root.style.setProperty('--wm-ui-scale', '1.25');
+            root.style.setProperty('--wm-color-primary', '#8844aa');
+            const result = { normal, scaled: parseFloat(getComputedStyle(bar).fontSize), icon: document.querySelector('#previous-change svg')!.getBoundingClientRect().width, accent: getComputedStyle(button).color, border: getComputedStyle(button).borderTopWidth };
+            if (oldScale) root.style.setProperty('--wm-ui-scale', oldScale); else root.style.removeProperty('--wm-ui-scale');
+            if (oldPrimary) root.style.setProperty('--wm-color-primary', oldPrimary); else root.style.removeProperty('--wm-color-primary');
+            return result;
+          });
+          check(metrics.normal === 14 && metrics.scaled === 17.5 && metrics.icon === 20, 'review interface scale mismatch: ' + JSON.stringify(metrics));
+          check(metrics.accent === 'rgb(136, 68, 170)' && metrics.border === '0px', 'review controls ignore theme or retain boxes: ' + JSON.stringify(metrics));
+        }
         if (mode === 'revert-all' || mode === 'seen-then-revert-all') {
           if (mode === 'seen-then-revert-all') {
             await hunkLine(0).click();
@@ -59,7 +97,7 @@ try {
             await reader.evaluate(async theme => { await fetch('api/preferences', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ theme }) }); }, theme);
             await reader.waitForFunction(theme => document.documentElement.dataset.wmTheme === theme, theme);
             const colors = await reader.locator('#conflict').evaluate(el => ({ background: getComputedStyle(el).backgroundColor, page: getComputedStyle(document.querySelector('.milkdown-top-bar')!).backgroundColor }));
-            check(colors.background !== 'rgb(56, 47, 30)', 'review banner kept conflict colors');
+            check(colors.background === colors.page, 'review surface differs from top bar: ' + JSON.stringify(colors));
             await reader.screenshot({ path: join(tmpdir(), `tether-${name}-${theme}-review.png`) });
           }
           for (const word of ['First', 'Second', 'Third']) {

@@ -82,6 +82,47 @@ test("stored revision chains paint each agent's surviving text with its resolved
   store.close();
 });
 
+test("whole-word display fills retained letters without changing exact author spans", () => {
+  for (const [base, next, word] of [
+    ["## Design\n", "## Diagnosis\n", "Diagnosis"],
+    ["A cat.\n", "A bobcat.\n", "bobcat"],
+    ["A cat.\n", "A cats.\n", "cats"],
+    ["Use `Design`.\n", "Use `Diagnosis`.\n", "Diagnosis"],
+  ]) {
+    load(base!);
+    const original = view.state.doc;
+    review.startIncomingDiff(crepe.editor, next!);
+    const spans = review.attributeRevisions(original, [{ doc: view.state.doc, authorId: "alice" }]);
+    const exact = JSON.stringify(spans);
+    review.setReviewColors(id => id === "alice" ? "purple" : undefined);
+    review.setReviewAuthors(view, spans);
+    const painted = [...view.dom.querySelectorAll<HTMLElement>(".tether-review-inserted")];
+    expect(painted.map(node => node.textContent).join("")).toContain(word!);
+    expect(painted.every(node => node.style.getPropertyValue("--tether-review-color") === "purple")).toBe(true);
+    expect(JSON.stringify(review.reviewState(view)!.authors)).toBe(exact);
+    review.setReviewAuthors(view, spans.map(span => ({ ...span, authorId: null })));
+    expect([...view.dom.querySelectorAll<HTMLElement>(".tether-review-inserted")].every(node => node.style.getPropertyValue("--tether-review-color").startsWith("var(--wm-color-primary"))).toBe(true);
+  }
+  review.endIncomingDiff(view);
+  review.setReviewColors(() => undefined);
+});
+
+test("a genuinely mixed-author word is neutral and retains both contributors", () => {
+  load("A cat.\n");
+  const base = view.state.doc;
+  const middle = review.parseIncomingDocument(crepe.editor, "A cats.\n")!;
+  review.startIncomingDiff(crepe.editor, "A bobcats.\n");
+  const spans = review.attributeRevisions(base, [{doc: middle, authorId: "alice"}, {doc: view.state.doc, authorId: "bob"}]);
+  review.setReviewColors(id => id === "alice" ? "purple" : id === "bob" ? "blue" : undefined);
+  review.setReviewAuthors(view, spans);
+  expect(new Set(spans.map(span => span.authorId))).toEqual(new Set(["alice", "bob"]));
+  const painted = [...view.dom.querySelectorAll<HTMLElement>(".tether-review-inserted")];
+  expect(painted.map(node => node.textContent).join("")).toContain("bobcats");
+  expect(painted.every(node => node.style.getPropertyValue("--tether-review-color").startsWith("var(--wm-color-primary"))).toBe(true);
+  review.endIncomingDiff(view);
+  review.setReviewColors(() => undefined);
+});
+
 test("review adopts the incoming document and groups nearby changes into one hunk", () => {
   load(before);
   review.startIncomingDiff(crepe.editor, after, "sha256:" + "1".repeat(64));

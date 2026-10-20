@@ -21,7 +21,7 @@ import { installMenuMotion } from "./motion";
 import { createRailResize } from "./rail-resize";
 import { updateControlStyles } from "./update-controls";
 import { mountUpdateNotice } from "./update-notice";
-import { iconSvg, reviewActionSvg } from "./icons";
+import { iconSvg, reviewToolbarSvg } from "./icons";
 import { decreaseQuoteLevel } from "./editor-commands";
 import { Crepe } from "@milkdown/crepe";
 import { EditorStatus, editorStateOptionsCtx, editorViewCtx } from "@milkdown/kit/core";
@@ -111,8 +111,8 @@ const conflictMessage = document.querySelector<HTMLElement>("#conflict-message")
 const reloadButton = document.querySelector<HTMLButtonElement>("#reload")!;
 const saveReviewButton = document.querySelector<HTMLButtonElement>("#save-review")!;
 const revertReviewButton = document.querySelector<HTMLButtonElement>("#revert-review")!;
-for (const [button, action] of [[saveReviewButton, 'seen'], [revertReviewButton, 'revert']] as const) {
-  button.insertAdjacentHTML('afterbegin', reviewActionSvg[action].replace('<svg ', '<svg aria-hidden="true" class="tether-icon" width="20" height="20" '));
+for (const [id, action] of [['save-review', 'seen'], ['revert-review', 'revert'], ['previous-change', 'previous'], ['next-change', 'next']] as const) {
+  document.getElementById(id)!.insertAdjacentHTML('afterbegin', reviewToolbarSvg[action].replace('<svg ', '<svg aria-hidden="true" class="wm-review-icon" '));
 }
 const reviewNavigation = createIncomingNavigator(getEditorView);
 const nextChangeButton = document.querySelector<HTMLButtonElement>("#next-change")!;
@@ -426,6 +426,7 @@ function syncReviewBar(): void {
   const hunks = !conflicted && view ? reviewState(view)?.hunks.length ?? 0 : 0;
   const reviewing = hunks > 0;
   nextChangeButton.hidden = previousChangeButton.hidden = saveReviewButton.hidden = revertReviewButton.hidden = !reviewing;
+  for (const group of conflictBar.querySelectorAll<HTMLElement>(".wm-review-navigation, .wm-review-actions")) group.hidden = !reviewing;
   revertReviewButton.disabled = readOnly;
   if (!reviewing) reviewNavigation.reset();
   reloadButton.hidden = reviewing;
