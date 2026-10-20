@@ -186,15 +186,27 @@ export function hunkColor(state: ReviewState, hunk: Hunk): string {
   for (const span of state.authors) if (span.from < Math.max(hunk.toB, hunk.fromB + 1) && span.to > hunk.fromB) found.add(span.authorId);
   return found.size === 1 ? colorFor([...found][0]!) ?? NEUTRAL : NEUTRAL;
 }
-/** Split an inserted range by author so each piece takes its writer's color. */
-function coloredPieces(state: ReviewState, from: number, to: number): { from: number; to: number; color: string }[] {
-  if (!state.authors) return [{ from, to, color: NEUTRAL }];
+/** Expand only display coverage; the revision chain keeps exact character ownership. */
+function wordAuthors(doc: Node, spans: readonly AuthorSpan[]): AuthorSpan[] {
+  const expanded: AuthorSpan[] = [];
+  for (const span of spans) doc.nodesBetween(span.from, span.to, (node, pos) => {
+    if (!node.isTextblock) return true;
+    const from = Math.max(span.from, pos + 1), to = Math.min(span.to, pos + 1 + node.content.size);
+    if (to > from) expanded.push({ ...snapToWords(doc, from, to), authorId: span.authorId });
+    return false;
+  });
+  return expanded;
+}
+/** A word with several contributing authors stays neutral, rather than striped. */
+function coloredPieces(authors: readonly AuthorSpan[] | null, from: number, to: number): { from: number; to: number; color: string }[] {
+  if (!authors) return [{ from, to, color: NEUTRAL }];
   const cuts = new Set([from, to]);
-  for (const span of state.authors) { if (span.from > from && span.from < to) cuts.add(span.from); if (span.to > from && span.to < to) cuts.add(span.to); }
+  for (const span of authors) { if (span.from > from && span.from < to) cuts.add(span.from); if (span.to > from && span.to < to) cuts.add(span.to); }
   const points = [...cuts].sort((a, b) => a - b), pieces = [];
   for (let i = 0; i < points.length - 1; i++) {
     const [a, b] = [points[i]!, points[i + 1]!];
-    const author = state.authors.find(span => span.from <= a && span.to >= b)?.authorId ?? null;
+    const contributors = new Set(authors.filter(span => span.from < b && span.to > a).map(span => span.authorId));
+    const author = contributors.size === 1 ? [...contributors][0]! : null;
     pieces.push({ from: a, to: b, color: colorFor(author) ?? NEUTRAL });
   }
   return pieces;
@@ -202,6 +214,7 @@ function coloredPieces(state: ReviewState, from: number, to: number): { from: nu
 
 function buildDecorations(doc: Node, state: ReviewState): DecorationSet {
   const decorations: Decoration[] = [];
+  const authors = state.authors ? wordAuthors(doc, state.authors) : null;
   for (const hunk of state.hunks) {
     if (showsBefore(state, hunk)) {
       const hidden = hunk.inline ? { from: hunk.fromB, to: hunk.toB } : blockRange(doc, hunk.fromB, hunk.toB);
@@ -216,7 +229,7 @@ function buildDecorations(doc: Node, state: ReviewState): DecorationSet {
     for (const change of hunk.changes) {
       if (change.toB <= change.fromB) continue;
       const range = snapToWords(doc, change.fromB, change.toB);
-      for (const piece of coloredPieces(state, range.from, range.to)) {
+      for (const piece of coloredPieces(authors, range.from, range.to)) {
         const attrs = { class: 'tether-review-inserted', style: `--tether-review-color: ${piece.color}` };
         decorations.push(Decoration.inline(piece.from, piece.to, attrs));
         // Atoms and code blocks don't take inline styling; mark the whole node.
