@@ -1,9 +1,8 @@
 import { Crepe } from '@milkdown/crepe';
 import { editorViewCtx, parserCtx } from '@milkdown/kit/core';
-import { diffPluginKey, getPendingChanges } from '@milkdown/kit/plugin/diff';
 import { configureMarkdownSerialization } from '../../src/web/markdown-serialization';
 import { configureFootnotes, footnoteOrdering } from '../../src/web/footnotes';
-import { incomingDiffPlugins, startIncomingDiff, acceptIncomingDiff } from '../../src/web/incoming-diff';
+import { incomingDiffPlugins, startIncomingDiff, endIncomingDiff, reviewState } from '../../src/web/incoming-diff';
 import { headingAnchors } from '../../src/web/heading-anchors';
 
 const crepe = new Crepe({ root: '#editor', defaultValue: 'Ready.', features: { [Crepe.Feature.BlockEdit]: false } });
@@ -31,12 +30,12 @@ const view = crepe.editor.ctx.get(editorViewCtx);
     const doc = crepe.editor.ctx.get(parserCtx)(before)!;
     view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content));
     startIncomingDiff(crepe.editor, after);
-    const diff = diffPluginKey.getState(view.state)!;
-    const changes = getPendingChanges(diff).map(change => ({
-      removed: view.state.doc.textBetween(change.fromA, change.toA),
-      added: diff.newDoc.textBetween(change.fromB, change.toB),
+    const review = reviewState(view)!;
+    const changes = review.changes.map(change => ({
+      removed: review.base.textBetween(change.fromA, change.toA),
+      added: view.state.doc.textBetween(change.fromB, change.toB),
     }));
-    acceptIncomingDiff(crepe.editor);
+    endIncomingDiff(view);
     return changes;
   },
 };

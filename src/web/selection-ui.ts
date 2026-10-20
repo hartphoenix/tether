@@ -22,6 +22,8 @@ export interface SelectionUiOptions {
   insertItems?: () => InsertMenuItem[];
   onNotice: (message: string) => void;
   onCodeComment?: (view: EditorView) => void;
+  /** Items for a context menu at this event instead of the insert menu, or "handled" when the caller acted on it. */
+  contextItems?: (view: EditorView, event: MouseEvent) => InsertMenuItem[] | "handled" | null;
 }
 
 export interface SelectionUiController {
@@ -104,6 +106,7 @@ class SelectionUi implements SelectionUiController {
   private readonly notice: (message: string) => void;
   private readonly insertItems: () => InsertMenuItem[];
   private readonly codeComment: (view: EditorView) => void;
+  private readonly contextItems: NonNullable<SelectionUiOptions["contextItems"]>;
   private readonly onDocumentKeydown = (event: KeyboardEvent): void => {
     if (event.key === "Escape" && (this.overlay || this.codeCommentToolbar)) {
       event.preventDefault();
@@ -127,6 +130,7 @@ class SelectionUi implements SelectionUiController {
     this.notice = options.onNotice ?? NOOP;
     this.insertItems = options.insertItems ?? (() => []);
     this.codeComment = options.onCodeComment ?? NOOP;
+    this.contextItems = options.contextItems ?? (() => null);
     if (typeof document !== "undefined") {
       document.addEventListener("keydown", this.onDocumentKeydown, true);
       document.addEventListener("pointerdown", this.onDocumentPointerdown, true);
@@ -309,6 +313,9 @@ class SelectionUi implements SelectionUiController {
     event.preventDefault();
     this.editorView = view;
     this.close();
+    const items = this.contextItems(view, event);
+    if (items === "handled") return true;
+    if (items) { this.openMenu(view, event.clientX, event.clientY, items, "Change"); return true; }
     const coords = view.posAtCoords({ left: event.clientX, top: event.clientY });
     if (coords && !this.selectionIncludes(view.state.selection, coords.pos)) {
       const selection = this.selectionAt(view, coords.pos);
@@ -342,12 +349,12 @@ class SelectionUi implements SelectionUiController {
     }
   }
 
-  private openMenu(view: EditorView, x: number, y: number): void {
+  private openMenu(view: EditorView, x: number, y: number, items = this.insertItems(), label = "Insert"): void {
     this.selectionSnapshot = view.state.selection;
     const menu = element("div", "wm-context-menu wm-insert-menu");
     menu.setAttribute("role", "menu");
-    menu.setAttribute("aria-label", "Insert");
-    for (const action of this.insertItems()) {
+    menu.setAttribute("aria-label", label);
+    for (const action of items) {
       const item = button("", "wm-menu-item");
       item.setAttribute("role", "menuitem");
       const icon = element("span", "wm-insert-icon");

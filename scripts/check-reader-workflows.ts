@@ -68,21 +68,21 @@ if(writes[0]!==input.state.sliceDoc())throw new Error('Source save normalized th
 (document.querySelector('#source') as HTMLButtonElement).click();
 await wait(()=>!document.querySelector('.wm-source-editor'));
 if(writes.length!==1)throw new Error('Returning to reader rewrote source');
-// Accepting every external change preserves its source formatting byte-for-byte.
+// Reviewing external changes never rewrites them: the reader adopts the disk body and Done only ends review.
 const external='## Updated heading\n\nA \\$5 **price**.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n';
 doc={...doc,body:external,bodyRevision:'sha256:external'};
 w.dispatchEvent(new w.Event('pageshow'));
 await wait(()=>!document.querySelector<HTMLButtonElement>('#save-review')!.hidden);
 (document.querySelector('#save-review') as HTMLButtonElement).click();
-await wait(()=>writes.length===2);
-if(writes[1]!==external)throw new Error('Accept All rewrote external formatting: '+JSON.stringify({actual:writes[1],external}));
 await wait(()=>document.querySelector<HTMLElement>('#conflict')!.hidden);
+await new Promise(resolve=>setTimeout(resolve,800));
+if(writes.length!==1)throw new Error('Reviewing external changes wrote the file: '+JSON.stringify(writes.slice(1)));
 (document.querySelector('#source') as HTMLButtonElement).click();
 await wait(()=>!!document.querySelector('.wm-source-editor'));
 const conflictedSource=EditorView.findFromDOM(document.querySelector('.wm-source-editor')!)!;
 doc={...doc,body:'Newer disk content\n',bodyRevision:'sha256:newer'};
 conflictedSource.dispatch({changes:{from:conflictedSource.state.doc.length,insert:'Unsaved local change'}});
 await wait(()=>!document.querySelector<HTMLElement>('#conflict')!.hidden);
-if(Number(writes.length)!==2||!conflictedSource.state.sliceDoc().endsWith('Unsaved local change'))throw new Error('Source conflict lost a draft or overwrote disk');
-console.log('Reader workflows passed: exact source saves, byte-preserving Accept All, and source conflicts.');
+if(Number(writes.length)!==1||!conflictedSource.state.sliceDoc().endsWith('Unsaved local change'))throw new Error('Source conflict lost a draft or overwrote disk');
+console.log('Reader workflows passed: exact source saves, review without rewrites, and source conflicts.');
 w.dispatchEvent(new w.Event('pagehide'));dom.window.close();

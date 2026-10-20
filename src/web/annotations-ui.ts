@@ -41,6 +41,8 @@ export interface AnnotationThread {
   createdAt: string;
   body: string;
   anchor: AnnotationAnchor;
+  /** Earlier wording the comment was made on during change review. */
+  before?: AnnotationAnchor["before"];
   replies?: readonly AnnotationReply[];
   resolved?: boolean;
   /** A derived orphan flag is accepted, but the resolver also verifies it. */
@@ -761,7 +763,9 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       event.preventDefault();
       const body = textarea.value;
       const view = currentView();
-      const resolvedAnchor = anchor ? (view ? currentAnchor(view.state.doc, anchor) : anchor) : (view ? captureAnchor(view) : null);
+      const located = anchor ? (view ? currentAnchor(view.state.doc, anchor) : anchor) : (view ? captureAnchor(view) : null);
+      // Re-locating the passage keeps the earlier wording a review comment was made on.
+      const resolvedAnchor = located && anchor?.before ? { ...located, before: anchor.before } : located;
       if (!resolvedAnchor) {
         error.textContent = "Couldn’t locate the selected passage. Close this comment and select it again.";
         error.hidden = false;
@@ -936,6 +940,13 @@ export function createAnnotationUi(options: AnnotationUiOptions): AnnotationUiCo
       context.append(summary, quote);
       details.append(context);
     } else if (!thread.anchor.visual) details.append(quote);
+    const earlier = thread.before ?? thread.anchor.before;
+    if (earlier) {
+      const before = createElement("blockquote", "wm-thread-quote wm-thread-before");
+      before.textContent = earlier.exact;
+      before.title = "Earlier wording this comment was made on";
+      quote.before(before);
+    }
     details.append(editableAnnotation(thread, thread.id, thread.body, "wm-thread-body", thread.actor, thread.createdAt, true));
     const replies = createElement("div", "wm-thread-replies");
     let previousDate = new Date(thread.createdAt).toDateString();

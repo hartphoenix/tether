@@ -67,18 +67,17 @@ if(Number(attempts)!==2||Number(writes)!==1)throw new Error('An unconfirmed save
 await wait(()=>Number(writes)===2);
 await Bun.sleep(0); // Let the explicit save response finish before switching views.
 if(!doc.body.includes('Second draft.'))throw new Error('Explicit retry lost the active draft');
-// Accept All uses the same unknown-write recovery contract.
+// Reviewing an external revision adopts it without writing; reverts go through the ordinary save above.
 (document.querySelector('#source') as HTMLButtonElement).click();
 await wait(()=>!document.querySelector('.wm-source-editor'));
 doc={...doc,body:'## External revision\n\nUpdated remotely.\n',bodyRevision:'sha256:external'};
 w.dispatchEvent(new w.Event('pageshow'));
 await wait(()=>!document.querySelector<HTMLButtonElement>('#save-review')!.hidden);
-drop='after';const prior=verifies;
+const priorAttempts=Number(attempts);
 (document.querySelector('#save-review') as HTMLButtonElement).click();
-await wait(()=>document.querySelector('#notice')!.textContent!.includes('Save not yet confirmed'));
-w.dispatchEvent(new w.Event('pageshow'));
-await wait(()=>verifies>prior&&document.querySelector('#notice')!.textContent!.includes('matches your edit'));
-if(Number(attempts)!==4||Number(writes)!==3)throw new Error('Reviewed save was replayed');
+await wait(()=>document.querySelector<HTMLElement>('#conflict')!.hidden);
+await Bun.sleep(800);
+if(Number(attempts)!==priorAttempts)throw new Error('Reviewing an external revision wrote the file');
 // Unavailable file context never masquerades as a current body; central threads still load.
 unavailable=true;w.dispatchEvent(new w.Event('pageshow'));
 await wait(()=>!!document.querySelector('#historical-reviews'));
@@ -87,5 +86,5 @@ const detail=document.querySelector<HTMLDetailsElement>('#historical-reviews det
 await wait(()=>detail.textContent!.includes('Historical response.'));
 unavailable=false;w.dispatchEvent(new w.Event('pageshow'));
 await wait(()=>!document.querySelector('#historical-reviews')&&!(document.querySelector('#editor') as HTMLElement).hidden);
-console.log('Shared reader workflows passed: lost-response verification, explicit retry, reviewed saves, location fences and body-free history.');
+console.log('Shared reader workflows passed: lost-response verification, explicit retry, write-free review, location fences and body-free history.');
 w.dispatchEvent(new w.Event('pagehide'));dom.window.close();

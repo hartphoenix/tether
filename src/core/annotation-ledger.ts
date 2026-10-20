@@ -11,6 +11,8 @@ export type Revision = `sha256:${string}`;
 
 export type AnnotationAnchor = {
   visual?: VisualAnchor;
+  /** Earlier wording a comment was made on while reviewing a change; the anchor itself targets the current text. */
+  before?: { exact: string; bodyRevision: string };
   exact: string;
   prefix: string;
   suffix: string;
@@ -232,7 +234,12 @@ function validateAnchor(value: unknown, line?: number): AnnotationAnchor {
     throw new AnnotationLedgerError("invalid-event", "An anchor end must not precede its start.", line);
   }
   const bodyRevisionValue = requiredRevision(value.bodyRevision, "anchor.bodyRevision", line);
-  return { exact, prefix, suffix, projectionStart, projectionEnd, bodyRevision: bodyRevisionValue, ...(value.visual !== undefined ? { visual: validateVisual(value.visual as VisualAnchor) } : {}) };
+  return { exact, prefix, suffix, projectionStart, projectionEnd, bodyRevision: bodyRevisionValue, ...(value.visual !== undefined ? { visual: validateVisual(value.visual as VisualAnchor) } : {}), ...(value.before !== undefined ? { before: validateBefore(value.before, line) } : {}) };
+}
+
+function validateBefore(value: unknown, line?: number): NonNullable<AnnotationAnchor["before"]> {
+  if (!isRecord(value)) throw new AnnotationLedgerError("invalid-event", "An anchor's earlier wording must be an object.", line);
+  return { exact: requiredString(value.exact, "anchor.before.exact", line), bodyRevision: requiredRevision(value.bodyRevision, "anchor.before.bodyRevision", line) };
 }
 
 function requiredStringAllowEmpty(value: unknown, field: string, line?: number): string {

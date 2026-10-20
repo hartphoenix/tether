@@ -30,16 +30,17 @@ import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose, replaceAll, callCommand } from "@milkdown/kit/utils";
 import { createCodeBlockCommand } from "@milkdown/kit/preset/commonmark";
 import { createTurnControls, type TurnAgent, type TurnPress } from "./turn-button";
-import { createIdentityCache, identityName } from "./identities";
+import { createIdentityCache, identityColor, identityName } from "./identities";
 import { openAgentRename } from "./agent-rename";
 import type { Identity } from "../shared/agent-identity";
-import { createAnnotationUi, captureAnchor, registerDocumentRevision, type AnnotationThread, type AnnotationUiController } from "./annotations-ui";
+import { createAnnotationUi, captureAnchor, captureRange, registerDocumentRevision, type AnnotationThread, type AnnotationUiController } from "./annotations-ui";
 import { apiErrorMessage } from "./api-error";
 import { createChromeControls } from "./chrome-controls";
 import { createCanvas } from './canvas';
 import { scrollSelectionIntoView } from './scroll-geometry';
 import './canvas.css';
-import { createIncomingNavigator, acceptIncomingDiff, cancelIncomingDiff, incomingDiffActive, incomingDiffPlugins, startIncomingDiff, matchesIncomingDocument } from "./incoming-diff";
+import { createIncomingNavigator, endIncomingDiff, incomingDiffPlugins, reviewKey, reviewState, startIncomingDiff, setReviewColors, setReviewAuthors, authorsFromChain, hunkBeforeText, hunkCommentRange, selectRange, showsBefore, type RevisionChain } from "./incoming-diff";
+import { createChangeReviewMenu } from "./change-review-menu";
 import { documentLinkPath, localDocumentLink, opensAsDocument } from "./local-document-link";
 import { prepareMarkdown, restoreMarkdown } from "../core/markdown-codec";
 import { createSelectionUi, reviewNoteIconSvg, type SelectionUiController } from "./selection-ui";
@@ -56,6 +57,7 @@ import "./chrome.css";
 import "./selection-ui.css";
 import "./themes.css";
 import "./style.css";
+import "./review.css";
 import "./fonts.css";
 import "./theme-maker.css";
 import "./thread-layout.css";
@@ -79,7 +81,6 @@ type DocumentResponse = {
 type AnnotationResponse = {
   path: string; bodyRevision: string; ledgerRevision: string; annotations: AnnotationState; pending?: unknown[]; events?: unknown[];
 };
-type IncomingReview = { bodyRevision: string; ledgerRevision: string; frontmatter: string; body: string; editorDoc?: ProseMirrorNode };
 
 for (const slot of document.querySelectorAll<HTMLElement>("[data-icon]")) {
   slot.outerHTML = iconSvg(slot.dataset.icon as Parameters<typeof iconSvg>[0]);
@@ -113,7 +114,6 @@ const nextChangeButton = document.querySelector<HTMLButtonElement>("#next-change
 const previousChangeButton = document.querySelector<HTMLButtonElement>("#previous-change")!;
 nextChangeButton.addEventListener("click", () => reviewNavigation.move(1));
 previousChangeButton.addEventListener("click", () => reviewNavigation.move(-1));
-const cancelReviewButton = document.querySelector<HTMLButtonElement>("#cancel-review")!;
 
 let crepe: Crepe | null = null;
 let canvas: ReturnType<typeof createCanvas> | null = null;
@@ -143,7 +143,6 @@ notice.after(saveConfirmation);
 let conflicted = false;
 let switching = false;
 let disconnected = false;
-let incomingReview: IncomingReview | null = null;
 let documentGeneration = 0;
 let readOnly = false;
 let ledgerReadOnly = false;
@@ -171,7 +170,27 @@ const threadSizing = createThreadSizing(async value => {
 }, message => chrome.setNotice(message));
 const identities = createIdentityCache({
   fetch: ids => api<{ identities: Identity[]; identityRevision: number }>(`api/identities?ids=${ids.map(encodeURIComponent).join(',')}`),
-  changed: () => { annotationUi?.refreshIdentities(); turnControls.refreshIdentities(); },
+  changed: () => {
+    annotationUi?.refreshIdentities(); turnControls.refreshIdentities();
+    // Repaint review colors; a rename relabels without changing who wrote what.
+    const view = getEditorView(), state = view ? reviewState(view) : null;
+    if (view && state?.authors) setReviewAuthors(view, [...state.authors]);
+  },
+});
+setReviewColors(id => id ? identityColor(identities.get(id)) : undefined);
+const reviewMenu = createChangeReviewMenu({
+  getView: () => getEditorView(),
+  closeMenus: () => selectionUi?.close(),
+  onComment: (view, hunk) => {
+    const state = reviewState(view);
+    const range = hunkCommentRange(view, hunk);
+    selectRange(view, range);
+    const anchor = captureRange(view.state.doc, range.from, range.to, currentBodyRevision);
+    if (!anchor) { chrome.setNotice("Couldn’t select this change to comment on."); return; }
+    // A comment made on the earlier wording keeps that wording with it.
+    const before = state && showsBefore(state, hunk) ? hunkBeforeText(view, hunk) : "";
+    annotationUi?.openCommentComposer(before && state?.baseRevision ? { ...anchor, before: { exact: before, bodyRevision: state.baseRevision } } : anchor);
+  },
 });
 /** Hart renames an agent wherever its name appears; the reader then relabels every message. */
 function renameAgent(id: string, x: number, y: number): void {
@@ -387,27 +406,27 @@ function currentMarkdown(): string {
 function currentContent(markdown: string): string {
   return sourceEditor ? markdown : restoreMarkdown(markdown, currentFrontmatter);
 }
-function setReviewControls(reviewing: boolean): void {
-  nextChangeButton.hidden = previousChangeButton.hidden = !reviewing;
+/** The bar shows a conflict when there is one, otherwise the count of changes still to review. */
+function syncReviewBar(): void {
+  const view = getEditorView();
+  const hunks = !conflicted && view ? reviewState(view)?.hunks.length ?? 0 : 0;
+  const reviewing = hunks > 0;
+  nextChangeButton.hidden = previousChangeButton.hidden = saveReviewButton.hidden = !reviewing;
   if (!reviewing) reviewNavigation.reset();
-  saveReviewButton.hidden = !reviewing;
-  cancelReviewButton.hidden = !reviewing;
   reloadButton.hidden = reviewing;
-  saveReviewButton.disabled = false;
-  cancelReviewButton.disabled = false;
+  if (reviewing) conflictMessage.textContent = `${hunks} ${hunks === 1 ? "change" : "changes"} to review`;
+  conflictBar.classList.toggle("is-review", reviewing);
+  conflictBar.hidden = !conflicted && !reviewing;
 }
 function showConflict(message = "This file changed elsewhere. Your unsaved version has not been overwritten."): void {
   conflicted = true;
   conflictMessage.textContent = message;
-  conflictBar.hidden = false;
-  setReviewControls(Boolean(incomingReview));
+  syncReviewBar();
   if (saveTimer != null) clearTimeout(saveTimer);
 }
 function clearConflict(): void {
   conflicted = false;
-  incomingReview = null;
-  conflictBar.hidden = true;
-  setReviewControls(false);
+  syncReviewBar();
 }
 function normalizeThreads(state: AnnotationState): AnnotationThread[] {
   return (state.threads ?? []).map((thread) => ({
@@ -416,6 +435,7 @@ function normalizeThreads(state: AnnotationState): AnnotationThread[] {
     createdAt: thread.comment.createdAt,
     body: thread.comment.body,
     anchor: thread.anchor ?? thread.comment.anchor,
+    before: thread.comment.anchor?.before,
     replies: thread.replies,
     resolved: thread.status === "resolved",
     orphaned: thread.orphan?.status === "orphan" || thread.orphan?.status === "ambiguous",
@@ -445,7 +465,7 @@ const draftPersistence = new DraftPersistence(async (mutation) => {
 function scheduleSave(): void {
   if (readOnly || switching || initializing || sharedReader && disconnected) return;
   void persistDraft();
-  if (currentMarkdown() === savedEditorMarkdown || conflicted || incomingReview || unconfirmedSave) return;
+  if (currentMarkdown() === savedEditorMarkdown || conflicted || unconfirmedSave) return;
   if (saveTimer != null) clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => void save(), 600);
 }
@@ -468,7 +488,7 @@ function isUnconfirmedSaveFailure(failure: { status?: number; code?: string; det
 async function save(): Promise<boolean> {
   if (!crepe || !currentPath) return true;
   if (readOnly) return false;
-  if (conflicted || incomingReview || unconfirmedSave) return false;
+  if (conflicted || unconfirmedSave) return false;
   if (saveInFlight) { saveAgain = true; return false; }
   const markdown = currentMarkdown();
   const savedDoc = sourceEditor ? undefined : getEditorView()?.state.doc;
@@ -590,6 +610,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     const nextSelectionUi = createSelectionUi({
       insertItems: () => insertItems,
       onNotice: (message) => chrome.setNotice(message),
+      contextItems: (view, event) => reviewMenu.items(view, event),
       onCodeComment: (view) => {
         const anchor = captureAnchor(view, currentBodyRevision);
         if (anchor) nextAnnotationUi.openCommentComposer(anchor);
@@ -717,12 +738,13 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
     nextCrepe.editor.config(configureFootnotes);
     nextCrepe.editor.config(configureMarkdownSerialization);
     nextCrepe.editor.config(ctx => ctx.update(editorStateOptionsCtx, previous => options => initialReaderSelection(previous(options))));
-    const completionPlugin = $prose(() => new Plugin({ view: () => ({ update() {
-      if (incomingReview && !reviewSaving && !incomingDiffActive(nextCrepe.editor)) {
-        queueMicrotask(() => { if (crepe === nextCrepe) void saveReviewed(); });
-      }
+    const reviewBarPlugin = $prose(() => new Plugin({ view: () => ({ update(view, previous) {
+      if (reviewKey.getState(view.state) === reviewKey.getState(previous) || crepe !== nextCrepe) return;
+      queueMicrotask(syncReviewBar);
+      // A revert can return the document to the version Milkdown's listener last saw, so save directly.
+      if (view.state.doc !== previous.doc && reviewKey.getState(previous)) queueMicrotask(scheduleSave);
     } }) }));
-    nextCrepe.editor.use(headingAnchors).use(diagramViewer).use(footnoteOrdering).use(completionPlugin).use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
+    nextCrepe.editor.use(headingAnchors).use(diagramViewer).use(footnoteOrdering).use(reviewBarPlugin).use(nextSelectionUi.plugin).use(annotationPlugin).use(incomingDiffPlugins);
     try { await nextCrepe.create(); }
     catch (error) { nextSelectionUi.destroy(); nextAnnotationUi.destroy(); throw error; }
     crepe = nextCrepe;
@@ -766,7 +788,7 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
 }
 
 async function beginIncomingReview(generation = documentGeneration, path = currentPath): Promise<void> {
-  if (!crepe || !currentPath || incomingReview || saveInFlight) return;
+  if (!crepe || !currentPath || saveInFlight) return;
   const disk = await api<DocumentResponse>("api/file");
   if (generation !== documentGeneration || path !== currentPath) return;
   if (disk.bodyRevision === currentBodyRevision) {
@@ -774,59 +796,36 @@ async function beginIncomingReview(generation = documentGeneration, path = curre
     return;
   }
   if (sourceEditor) { showConflict(); return; }
-  if (currentMarkdown() !== savedEditorMarkdown) { showConflict(); return; }
+  if (saveInFlight || currentMarkdown() !== savedEditorMarkdown) { showConflict(); return; }
+  // The editor adopts the disk version; review draws what changed over it.
   const prepared = prepareMarkdown(disk.body);
-  incomingReview = { bodyRevision: disk.bodyRevision, ledgerRevision: disk.ledgerRevision, frontmatter: prepared.frontmatter, body: disk.body };
-  const target = startIncomingDiff(crepe.editor, prepared.editorMarkdown);
-  if (!target) { incomingReview = null; showConflict(); return; }
-  incomingReview.editorDoc = target;
+  const baseRevision = currentBodyRevision;
+  const adopted = startIncomingDiff(crepe.editor, prepared.editorMarkdown, baseRevision);
+  if (!adopted) { showConflict(); return; }
+  currentFrontmatter = prepared.frontmatter;
+  currentBodyRevision = disk.bodyRevision;
+  diskBody = disk.body;
   currentLedgerRevision = disk.ledgerRevision;
+  savedEditorMarkdown = currentMarkdown();
+  registerDocumentRevision(adopted, disk.bodyRevision);
   applyAnnotationState(disk.annotations);
-  showConflict("There are new changes for your review.");
-  if (!incomingDiffActive(crepe.editor)) void saveReviewed();
+  await draftPersistence.clear();
+  syncReviewBar();
+  void loadReviewAuthors(generation, path);
 }
-let reviewSaving = false;
-async function saveReviewed(): Promise<void> {
-  if (!crepe || !incomingReview || reviewSaving || incomingDiffActive(crepe.editor)) return;
-  reviewSaving = true;
-  const generation = documentGeneration;
-  const review = incomingReview;
-  const markdown = currentMarkdown();
-  const attempted = { markdown, body: review.editorDoc && matchesIncomingDocument(crepe.editor, review.editorDoc) ? review.body : restoreMarkdown(markdown, review.frontmatter), baseRevision: review.bodyRevision, frontmatter: review.frontmatter };
-  saveReviewButton.disabled = true;
-  cancelReviewButton.disabled = true;
-  try {
-    const markdown = currentMarkdown();
-    const savedDoc = sourceEditor ? undefined : getEditorView()?.state.doc;
-    const result = await api<DocumentResponse>("api/file", {
-      method: "PUT",
-      body: JSON.stringify({ content: attempted.body, expectedBodyRevision: attempted.baseRevision, expectedLocationVersion: currentLocationVersion }),
-    });
-    if (generation !== documentGeneration) return;
-    currentFrontmatter = review.frontmatter;
-    currentBodyRevision = result.bodyRevision;
-    diskBody = result.body;
-    currentLedgerRevision = result.ledgerRevision;
-    savedEditorMarkdown = markdown;
-    if (savedDoc) registerDocumentRevision(savedDoc, result.bodyRevision);
-    clearConflict();
-    if (currentMarkdown() === markdown) await draftPersistence.clear();
-    else scheduleSave();
-    await refreshAnnotations();
-  } catch (error) {
-    if (generation !== documentGeneration) return;
-    const failure = error as Error & { status?: number; code?: string; details?: {outcome?:string} };
-    if (sharedReader && isUnconfirmedSaveFailure(failure)) {
-      unconfirmedSave = attempted;
-      currentFrontmatter = attempted.frontmatter;
-      clearConflict();
-      chrome.setNotice("Save not yet confirmed. Your reviewed edit is retained here.", 0);
-      return;
-    }
-    incomingReview = null;
-    chrome.setNotice(`Reviewed save failed: ${(error as Error).message}`, 0);
-    showConflict("The disk changed again during review. Reload it before continuing.");
-  } finally { reviewSaving = false; }
+/** Color changes by author once the daemon can say who wrote each revision. */
+async function loadReviewAuthors(generation: number, path: string): Promise<void> {
+  const view = getEditorView(), state = view ? reviewState(view) : null;
+  if (!crepe || !view || !state?.baseRevision) return;
+  const target = view.state.doc;
+  let chain: RevisionChain;
+  try { chain = await api<RevisionChain>(`api/revisions?from=${encodeURIComponent(state.baseRevision)}`); }
+  catch { return; }
+  if (generation !== documentGeneration || path !== currentPath || getEditorView()?.state.doc !== target) return;
+  const spans = authorsFromChain(crepe.editor, chain, body => prepareMarkdown(body).editorMarkdown);
+  if (!spans) return;
+  identities.want(spans.map(span => span.authorId).filter((id): id is string => Boolean(id)));
+  setReviewAuthors(view, spans);
 }
 async function lease(generation = documentGeneration, path = currentPath, signal?: AbortSignal): Promise<void> {
   try {
@@ -1003,7 +1002,9 @@ commentButton.addEventListener("click", () => {
 sourceButton.addEventListener('click', async () => {
   sourceButton.disabled = true;
   try {
-    if (!crepe || conflicted || incomingReview) { chrome.setNotice('Resolve the file conflict before switching views.'); return; }
+    if (!crepe || conflicted) { chrome.setNotice('Resolve the file conflict before switching views.'); return; }
+    const reviewView = getEditorView();
+    if (reviewView && reviewState(reviewView)) { chrome.setNotice('Finish reviewing changes before switching views.'); return; }
     if (!readOnly && !(await save())) return;
     if (sourceEditor) {
       const fraction = sourceEditor.scroller.scrollTop / Math.max(1, sourceEditor.scroller.scrollHeight - sourceEditor.scroller.clientHeight);
@@ -1039,10 +1040,7 @@ async function exportReview(): Promise<void> {
     link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (error) { chrome.setNotice(`Export failed: ${(error as Error).message}`, 0); }
 }
-saveReviewButton.addEventListener("click", () => { if (crepe && incomingReview) acceptIncomingDiff(crepe.editor); });
-cancelReviewButton.addEventListener("click", () => {
-  if (crepe && incomingReview) cancelIncomingDiff(crepe.editor);
-});
+saveReviewButton.addEventListener("click", () => { const view = getEditorView(); if (view) endIncomingDiff(view); syncReviewBar(); });
 // Hosts that turn a page's new tab into their own tab let the reader open
 // documents directly, still inside the click, so no host round trip moves focus.
 let pageOpensLinks = false;
