@@ -165,7 +165,7 @@ export class Hub {
       this.assertActive();
       if (!workspaceId || !intent.url) { acknowledged.push(intent.id); continue; }
       this.held.set(intent.id, { intent: { id: intent.id, url: intent.url, workspaceId, ...(intent.path ? { path: intent.path } : {}), ...(intent.documentId ? { documentId: intent.documentId } : {}) }, leaseUntil: 0, expiresAt: intent.expiresAt,
-        notices: new Map([...this.notices].filter(([, notice]) => !notice.sharedReader && (intent.documentId ? notice.documentId === intent.documentId : notice.path === intent.path))),
+        notices: new Map([...this.notices].filter(([, notice]) => !notice.sharedReader && (notice.documentId ? notice.documentId === intent.documentId : notice.path === intent.path))),
       });
       this.changed();
     }

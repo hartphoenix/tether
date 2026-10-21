@@ -162,7 +162,9 @@ describe("plugin hub", () => {
       intent("a3", 3, { origin: "agent", path: "/other.md", target: { workspaceId: "ws-c" } }),
     ], instanceId: "d1" });
     await settle();
-    tether.push({ cursor: 4, folio: 0, intents: [intent("u1", 4)], instanceId: "d1" });
+    // CLI launches carry an ID even when recents-add announcements only carry a path.
+    // Reusing a mounted reader need not produce another Folio refresh.
+    tether.push({ cursor: 4, folio: 0, intents: [intent("u1", 4, { documentId: crypto.randomUUID() })], instanceId: "d1" });
     await settle();
     const offered = await hub.pump(-1, true);
     expect(Object.keys(offered.notices)).toHaveLength(3);
@@ -185,6 +187,19 @@ describe("plugin hub", () => {
     await settle();
     await hub.ack(["u1"]);
     expect((await hub.pump(-1, false)).notices["ws-a"]?.path).toBe("/w/a/doc.md");
+    hub.stop();
+  });
+
+  test("launch acknowledgement does not clear a different document ID at the same path", async () => {
+    const tether = fakeTether(), hub = new Hub({ run: tether.run });
+    const documentId = crypto.randomUUID();
+    tether.push({ cursor: 2, folio: 0, intents: [
+      intent("a1", 1, { origin: "agent", documentId }),
+      intent("u1", 2, { documentId: crypto.randomUUID() }),
+    ], instanceId: "d1" });
+    await hub.pullOnce();
+    await hub.ack(["u1"]);
+    expect((await hub.pump(-1, false)).notices["ws-a"]?.documentId).toBe(documentId);
     hub.stop();
   });
 
