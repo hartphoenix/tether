@@ -1,6 +1,6 @@
 /** Go-button actions, including keyboard context-menu access. */
 export function openAgentMenu(options: {
-  x: number; y: number; rename(): void; takeover(): Promise<void>; notice(message: string): void;
+  x: number; y: number; rename(): void; takeover(): Promise<void>; add(): Promise<void>; notice(message: string): void;
 }): void {
   document.querySelector<HTMLElement>('.wm-agent-menu')?.dispatchEvent(new Event('dismiss'));
   const menu = document.createElement('div');
@@ -24,6 +24,7 @@ export function openAgentMenu(options: {
   for (const [label, action] of [
     ['Rename agent…', options.rename],
     ['Copy role takeover prompt', options.takeover],
+    ['Add another agent', options.add],
   ] as const) {
     const button = document.createElement('button');
     button.type = 'button';

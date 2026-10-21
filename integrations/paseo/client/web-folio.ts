@@ -1,3 +1,5 @@
+import { observePaneVisibility } from "./view-visibility";
+import { getState, subscribeState } from "./state";
 import type { FolioView } from "../shared/contracts";
 
 // Experimental desktop adapter: Paseo has no public embedded-browser component.
@@ -10,6 +12,7 @@ type Guest = {
   addEventListener(name: string, listener: Listener): void;
   removeEventListener(name: string, listener: Listener): void;
   remove(): void;
+  executeJavaScript?(script: string): Promise<unknown>;
   getWebContentsId?(): number;
   dispatchEvent?(event: Event): boolean;
 };
@@ -92,8 +95,6 @@ function launchUrl(value: string, kind: ViewKind): URL {
 // the registration when the webview is destroyed. Without it, the view keeps every shortcut and ⌘R
 // reloads the whole app. Registration also lists the view in agents' browser tools, as Paseo's own
 // browser tabs already are.
-const browserNonce = Math.random().toString(36).slice(2, 10);
-let browserCount = 0;
 function registerShortcuts(guest: Guest, browserId: string, workspaceId: string | undefined): void {
   const register = typeof window === "undefined" ? undefined : window.paseoDesktop?.browser?.registerAttachedBrowser;
   if (!workspaceId || typeof register !== "function" || typeof guest.getWebContentsId !== "function") return;
@@ -124,11 +125,32 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
     let committedUrl: string | undefined;
     let domReady = false;
     const listeners = new Map<string, Listener>();
+    let visible = true;
+    let lastHostState = "";
+    let stopVisibility = () => {};
+    let stopState = () => {};
+    const sendHostState = () => {
+      if (!live() || !domReady || !finalUrl || !guest?.executeJavaScript) return;
+      const state = getState();
+      // The plugin's authenticated shared connection carries only an invalidation
+      // token here. Each page still fetches through its own scoped session.
+      const folioRevision = visible && kind === "folio" && state.status.connected && !sharedOrigin && state.folioRevision !== undefined
+        ? JSON.stringify([state.connection?.generation, state.status.tether, state.folioRevision]) : undefined;
+      const payload = JSON.stringify({ visible, folioRevision });
+      if (payload === lastHostState) return;
+      lastHostState = payload;
+      const retryOnNextState = () => { if (lastHostState === payload) lastHostState = ""; };
+      try {
+        void guest.executeJavaScript(`window.__tetherHostState = ${payload}; window.dispatchEvent(new Event("tether-host-state"));`).catch(retryOnNextState);
+      } catch { retryOnNextState(); }
+    };
     let timer: ReturnType<typeof setTimeout>;
     const live = () => active && !disposed;
     const stop = () => {
       active = false;
       clearTimeout(timer);
+      stopVisibility();
+      stopState();
       if (guest) {
         for (const [name, listener] of listeners) guest.removeEventListener(name, listener);
         guest.remove();
@@ -178,6 +200,7 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
           committedUrl = finalUrl;
           options.onSession?.(finalUrl);
           options.onState("ready");
+          sendHostState();
         };
         // webview will-navigate cannot be cancelled. The page emits a bounded
         // console-message request instead; no preload or Node access is needed.
@@ -198,6 +221,7 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
         listen("did-start-navigation", event => {
           if (!live() || !event.isMainFrame || event.isInPlace) return;
           domReady = false;
+          lastHostState = "";
           finalUrl = undefined;
           clearTimeout(timer);
           timer = setTimeout(fail, options.loadTimeoutMs ?? (sharedOrigin ? 120_000 : 5_000));
@@ -224,7 +248,7 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
         });
         listen("render-process-gone", fail);
         // A reattached guest gets a new WebContents, so each attachment registers again under the same ID.
-        const browserId = `tether-${kind}-${browserNonce}-${++browserCount}`;
+        const browserId = crypto.randomUUID();
         listen("did-attach", () => { if (live()) registerShortcuts(guest!, browserId, options.workspaceId); });
         // Paseo marks a pane focused on a bubbling `focusin`; focusing a guest doesn't produce one, so focus mode
         // and pane commands would act on the previously focused pane. Paseo's browser tabs mark their pane themselves.
@@ -238,6 +262,8 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
         clearTimeout(timer);
         timer = setTimeout(fail, options.loadTimeoutMs ?? (sharedOrigin ? 120_000 : 5_000));
         (container as Container).appendChild(guest);
+        stopVisibility = observePaneVisibility(container, value => { visible = value; sendHostState(); });
+        stopState = subscribeState(sendHostState);
       } catch { fail(); }
     };
     if (cached) attach(cached);

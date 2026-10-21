@@ -238,6 +238,7 @@ export function validateControlResponse(pathname: string, payload: unknown): boo
   if (pathname === "/control/document/outline") return typeof value.bodyRevision === "string" && Array.isArray(value.headings);
   if (pathname === "/control/document/context") return typeof value.bodyRevision === "string" && typeof value.anchorStatus === "string" && typeof value.text === "string";
   if (pathname === "/control/document/diff") return typeof value.bodyRevision === "string" && typeof value.status === "string";
+  if (pathname === "/control/document/create") return typeof value.path === "string" && value.created === true && ["applied", "partially_applied"].includes(value.outcome as string);
   if (pathname === "/control/document/save") return typeof value.bodyRevision === "string";
   if (pathname === "/control/document/move") return typeof value.path === "string" && typeof value.previousPath === "string" && typeof value.documentId === "string" && value.outcome === "applied";
   if (pathname === "/control/review/quote-candidates") return typeof value.bodyRevision === "string" && typeof value.omitted === "boolean" && Array.isArray(value.candidates) && value.candidates.every(item => item && typeof item === "object" && typeof item.candidateId === "string" && typeof item.before === "string" && typeof item.after === "string");

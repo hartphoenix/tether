@@ -50,6 +50,7 @@ export function createSharedLibrary(options: Options) {
   async function dispatch(operation: string, body: Record<string, unknown>): Promise<unknown> {
     const route = `/control/${operation.replaceAll(".", "/")}`;
     validateControlInput(body, route);
+    if (operation === "document.create") throw invalidRequest("Document creation requires a local profile on the file machine.");
     if (["document.save", "document.verify-save"].includes(operation) && (!Number.isSafeInteger(body.expectedLocationVersion) || Number(body.expectedLocationVersion) < 1)) throw invalidRequest("The location version returned by document read is required for this save.");
     if (operation === "document.register") return register(body);
     if (operation === "document.history") {

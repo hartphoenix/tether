@@ -8,12 +8,12 @@ test("empty Go copies assignment; context menu offers rename and takeover withou
   const previous = keys.map(key => Object.getOwnPropertyDescriptor(globalThis, key));
   for (const key of keys) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: dom.window[key] });
   try {
-    let presses = 0, copies = 0, renames = 0, copiedId: string | undefined;
+    let presses = 0, copies = 0, renames = 0, copiedId: string | undefined, added = false;
     const controls = createTurnControls({
       request: async () => { presses++; throw new Error("Unexpected send"); },
       notice: () => {},
       rename: () => { renames++; },
-      copyAssignment: async agent => { copies++; copiedId = agent?.agentId; },
+      copyAssignment: async (agent, additional) => { copies++; copiedId = agent?.agentId; added = additional === true; },
     });
     document.body.append(controls.root);
     const placeholder = controls.root.querySelector("button")!;
@@ -27,7 +27,7 @@ test("empty Go copies assignment; context menu offers rename and takeover withou
     button.dispatchEvent(new dom.window.MouseEvent("contextmenu", { bubbles: true }));
     const menu = document.querySelector('[role="menu"]')!;
     const actions = menu.querySelectorAll("button");
-    expect(Array.from(actions, item => item.textContent)).toEqual(["Rename agent…", "Copy role takeover prompt"]);
+    expect(Array.from(actions, item => item.textContent)).toEqual(["Rename agent…", "Copy role takeover prompt", "Add another agent"]);
     actions[1]!.click();
     await Promise.resolve();
     expect(copies).toBe(2);
@@ -37,6 +37,12 @@ test("empty Go copies assignment; context menu offers rename and takeover withou
     (document.querySelector('[role="menuitem"]') as HTMLButtonElement).click();
     await Promise.resolve();
     expect(renames).toBe(1);
+    button.dispatchEvent(new dom.window.MouseEvent("contextmenu", { bubbles: true }));
+    (document.querySelectorAll('[role="menuitem"]')[2] as HTMLButtonElement).click();
+    await Promise.resolve();
+    expect(added).toBe(true);
+    expect(copiedId).toBeUndefined();
+    expect(copies).toBe(3);
     expect(presses).toBe(0);
   } finally {
     keys.forEach((key, index) => {

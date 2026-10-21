@@ -15,7 +15,8 @@ export const tetherThemes = [
       "border": "#dde8e4",
       "accent": "#1b6b68",
       "mutedForeground": "#62676b",
-      "ring": "#818580"
+      // Paseo 0.12 light themes paint the selected sidebar row with ring; it also sets extra-muted text.
+      "ring": "#a6b0ac"
     }
   },
   {
@@ -46,7 +47,7 @@ export const tetherThemes = [
       "accent": "#46667d",
       // Paseo uses these for navigation labels and subdued header text.
       "mutedForeground": "#556371",
-      "ring": "#596571"
+      "ring": "#a5aeb6"
     }
   },
   {

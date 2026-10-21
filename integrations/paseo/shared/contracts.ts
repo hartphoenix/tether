@@ -59,6 +59,7 @@ export type HubStatus = z.infer<typeof statusSchema>;
 export const pumpBatchSchema = z.object({
   connection: connectionSchema.nullable(),
   revision: z.number(),
+  folioRevision: z.number().optional(),
   intents: z.array(intentSchema),
   folio: z.array(folioEntrySchema).nullable(),
   notices: z.record(z.string(), noticeSchema),

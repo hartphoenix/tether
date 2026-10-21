@@ -211,8 +211,15 @@ async function topology(page: Page, scale: number) {
   await page.waitForTimeout(150);
   check(await page.evaluate(() => Math.abs(document.querySelector('.wm-canvas-stage')!.getBoundingClientRect().height - document.querySelector('.wm-canvas-scene')!.getBoundingClientRect().height) < 1.1), 'stage lost height after rail reflow');
   await page.evaluate(() => document.querySelector('.wm-annotation-rail')?.remove());
-  await page.locator('.milkdown-code-block').scrollIntoViewIfNeeded();
-  await page.waitForTimeout(250);
+  // Removing the rail can still reflow the canvas after the initial scroll.
+  // Keep the target in view until virtualization has mounted its editor.
+  await page.waitForFunction(() => {
+    const block = document.querySelector<HTMLElement>('.milkdown-code-block');
+    block?.scrollIntoView({ block: 'center' });
+    const scroller = block?.querySelector<HTMLElement>('.cm-scroller');
+    const box = scroller?.getBoundingClientRect();
+    return Boolean(box && box.width > 0 && box.height > 0 && box.bottom > 0 && box.top < innerHeight);
+  }, undefined, { timeout: 10000 });
   const code = await page.evaluate(() => {
     const node = document.querySelector<HTMLElement>('.cm-scroller')!;
     node.scrollLeft = 200;

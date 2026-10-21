@@ -9,17 +9,18 @@
     "mdreview": "./mdreview"
   },
   "scripts": {
-    "test": "bun test",
+    "test": "bun scripts/test-desktop.ts",
     "icons:pick": "bun scripts/icon-picker/server.ts",
-    "check": "bun test && bunx tsc --noEmit && bun run check:reader && bun run build:web",
+    "check": "bun run test && bunx tsc --noEmit && bun run check:reader && bun run build:web",
     "check:reader": "bun scripts/check-reader-model.ts && bun scripts/check-reader-workflows.ts && bun scripts/check-shared-reader.ts",
-    "check:geometry": "bun scripts/check-geometry.ts && bun scripts/check-code-block-lifecycle.ts && bun scripts/check-code-block-annotations.ts && bun scripts/check-settings-scroll.ts",
+    "check:geometry": "bun scripts/check-geometry.ts && bun scripts/check-code-block-lifecycle.ts && bun scripts/check-code-block-annotations.ts && bun scripts/check-settings-scroll.ts --desktop",
     "build:web": "bun scripts/build-web.ts",
     "build:release": "bun scripts/build-release.ts",
     "stage:phone": "bun scripts/phone-reader-stage.ts",
     "stage:settings": "bun scripts/settings-stage.ts",
     "check:settings-stage": "bun scripts/check-settings-stage.ts",
-    "stage:phone:setup": "bun scripts/setup-phone-stage.ts"
+    "stage:phone:setup": "bun scripts/setup-phone-stage.ts",
+    "check:suspension": "bun scripts/check-view-suspension.ts"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.0",

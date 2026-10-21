@@ -1,8 +1,8 @@
 # Local phone staging
 
-## Current review
+## Suspended
 
-The mobile reader now owns theme selection, including custom themes without editing controls. The staging sidebar and gateway no longer override that selection. Mobile implementations must refresh and verify the configured staging service before completion.
+Phone staging and phone/mobile verification are suspended project-wide until Hart explicitly changes this policy. Do not start, restart, refresh, or set up the phone server, and do not run the checks below. The procedures remain as reference for when phone work is explicitly re-enabled; shared reader and Folio changes do not override the suspension.
 
 ## Launch in Paseo
 
@@ -26,14 +26,14 @@ Without Paseo, run `bun run stage:phone` and open `http://127.0.0.1:8415/`. To p
 
 ## Refresh after mobile changes
 
-Treat updating this preview as part of each mobile implementation, including changes to shared reader code that affect mobile. After the relevant checks pass:
+After Hart explicitly re-enables phone work, use this procedure when refreshing the preview:
 
 1. Inspect the checkout's existing `phone` service with `paseo script ls --cwd /absolute/path/to/tether`. Preserve its launcher arguments, Folio profile, and service URL; Paseo may assign a new internal port. If multiple workspaces share the checkout, use `paseo workspace ls --json`, inspect their scripts with `--workspace <workspace-id>`, and target the workspace that owns the existing staging instance. Pass that same workspace selector to stop and start. If `paseo` is absent from `PATH` on macOS, use `/Applications/Paseo.app/Contents/Resources/bin/paseo` when installed.
 2. Stop and start that service with `paseo script stop phone --cwd /absolute/path/to/tether` followed by `paseo script start phone --cwd /absolute/path/to/tether`. Source and web assets are rebuilt at startup; committing is not required. For a standalone service, restart it through its existing process supervisor with the same arguments.
 3. Check the service listing and request `/health` at its service URL; expect `{"service":"tether-phone-stage"}`. Verify the changed behavior in the refreshed preview, using simulated sign-in when needed. Do not create comments in a real desktop profile merely to smoke-test a toolbar.
 4. Give the existing staging URL in the completion reply. Do not focus or reload the user's active tab; use a separate automated browser for verification. Report any restart or verification blocker rather than claiming staging is current.
 
-If staging has not been configured, use the setup procedure above. Restarting disposable staging removes its sample comments and requires simulated sign-in again; desktop-profile conversations persist. Local staging refresh is authorized as part of implementation. The separately supervised live passkey reader and signed releases have their own deployment authorization; these commands do not update them.
+If staging has not been configured, use the setup procedure above. Restarting disposable staging removes its sample comments and requires simulated sign-in again; desktop-profile conversations persist. Local staging refresh is currently suspended, including during implementation. The separately supervised live passkey reader and signed releases have their own deployment authorization; these commands do not update them.
 
 `AGENTS.md` and this guide are tracked contributor files available in a Git clone. `scripts/build-release.ts` assembles an explicit runtime package: it copies `docs/getting-started.md` and `docs/assets`, but neither the root agent instructions nor `docs/contributing`. Keep contributor workflow instructions here, outside the shipped integration skills.
 

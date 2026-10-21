@@ -28,5 +28,5 @@ export const chatCss = `
 [data-tether-chat="batch"] > p:empty { display:none; }
 [data-tether-chat="batch"] > div { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-top:4px; padding:4px 12px; border-top:1px solid var(--colors-border); }
 [data-tether-chat="batch"] > div button { border-color:transparent; border-radius:12px; min-height:32px; padding:0 12px; font-size:14px; color:var(--colors-foreground-muted); }
-::highlight(tether-chat-pending) { background:color-mix(in srgb,var(--colors-accent) 24%,transparent); }
+::highlight(tether-chat-pending) { background:var(--tc-highlight,color-mix(in srgb,var(--colors-accent) 24%,transparent)); }
 `;

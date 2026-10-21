@@ -20,6 +20,10 @@ export class HostTurns {
       INSERT OR IGNORE INTO host_turn_meta VALUES(1,0);`);
     this.revision = (db.query("SELECT revision FROM host_turn_meta").get() as { revision: number }).revision;
   }
+  connected(owner: string, hostId: string): boolean {
+    const lease = this.leases.get(key(owner, hostId));
+    return !!lease && lease.until > this.now();
+  }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private changed(): void {
     this.db.query("UPDATE host_turn_meta SET revision=revision+1").run();
@@ -196,7 +200,7 @@ export class HostTurns {
 }
 
 /** Snapshots recover every durable state transition; event IDs are resume hints, not acknowledgements. */
-export function turnEventStream(signal: AbortSignal, subscribe: (fn: () => void) => () => void, snapshot: () => unknown, live: () => boolean = () => true): Response {
+export function turnEventStream(signal: AbortSignal, subscribe: (fn: () => void) => () => void, snapshot: () => unknown, live: () => boolean = () => true, browser = false): Response {
   let close = () => {};
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -210,7 +214,11 @@ export function turnEventStream(signal: AbortSignal, subscribe: (fn: () => void)
       };
       const off = subscribe(send);
       const timer = setInterval(() => { if (!live()) close(); else if (!closed) controller.enqueue(encoder.encode(": heartbeat\n\n")); }, 15_000);
-      close = () => { if (closed) return; closed = true; clearInterval(timer); off(); signal.removeEventListener("abort", close); try { controller.close(); } catch {} };
+      // HTTP/1 browser pools are shared by all reader panels. Release the slot
+      // periodically so six open panels cannot block Folio, saves or leases.
+      const expiry = browser ? setTimeout(() => close(), 2000) : undefined;
+      if (browser) controller.enqueue(encoder.encode("retry: 5000\n\n"));
+      close = () => { if (closed) return; closed = true; clearInterval(timer); clearTimeout(expiry); off(); signal.removeEventListener("abort", close); try { controller.close(); } catch {} };
       signal.addEventListener("abort", close, { once: true });
       if (signal.aborted) close(); else send();
     },

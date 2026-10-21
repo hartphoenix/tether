@@ -1,4 +1,7 @@
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
+import { pasteTextInput } from "../web/text-paste";
+
+document.addEventListener("paste", pasteTextInput);
 
 const status = document.querySelector<HTMLElement>("#status")!;
 async function post(path: string, value: unknown) {

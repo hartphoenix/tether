@@ -13,7 +13,7 @@ try {
   for (const engine of [chromium, webkit]) {
     const browser = await engine.launch();
     try {
-      for (const width of [960, 375]) {
+      for (const width of (process.argv.includes('--desktop') ? [960] : [960, 375])) {
         const page = await browser.newPage({ viewport: { width, height: 600 } });
         const waitForScroll = async (label: string, condition: () => boolean) => {
           try { await page.waitForFunction(condition, {}, { timeout: 2000 }); }
@@ -45,5 +45,5 @@ try {
       }
     } finally { await browser.close(); }
   }
-  console.log('Settings scrolling passed: wheel down/up, bottom reachability, and PageDown in Chromium and WebKit at desktop and narrow widths.');
+  console.log(`Settings scrolling passed: wheel down/up, bottom reachability, and PageDown in Chromium and WebKit (${process.argv.includes('--desktop') ? 'desktop' : 'desktop and narrow widths'}).`);
 } finally { server.stop(); }

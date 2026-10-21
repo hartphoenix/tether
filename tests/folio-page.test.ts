@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { JSDOM } from "jsdom";
 import { folioHtml, folioTheme } from "../src/web/folio-page";
 
-function runPage(snapshot: Record<string, unknown>, savedView?: string, settingsOnly = false) {
+function runPage(snapshot: Record<string, unknown>, savedView?: string, settingsOnly = false, hostState?: { visible: boolean; folioRevision?: string }) {
   const html = folioHtml({ pickerAvailable: true, settingsOnly });
   const dom = new JSDOM(html, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://127.0.0.1/r/test/" });
   Object.defineProperty(dom.window.HTMLDialogElement.prototype, "showModal", { configurable: true, value: function(this: HTMLDialogElement) { this.open = true; } });
@@ -10,11 +10,15 @@ function runPage(snapshot: Record<string, unknown>, savedView?: string, settings
   if (savedView !== undefined) dom.window.localStorage.setItem("tether.folio.view.v1", savedView);
   const withIds = (value: Record<string, unknown>): Record<string, unknown> => ({ ...value, files: (value.files as Array<Record<string, unknown>>).map(file => ({ ...file, id: file.id ?? file.path })) });
   let currentSnapshot = withIds(snapshot);
+  const reads: string[] = [];
+  (dom.window as any).__tetherHostState = hostState;
   const requests: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
   let currentTheme: Record<string, unknown> = folioTheme({});
   Object.defineProperty(dom.window, "setInterval", { value: () => 0 });
   Object.defineProperty(dom.window, "fetch", { configurable: true, value: async (input: string | URL, init?: RequestInit) => {
     const endpoint = String(input).split("/api/")[1] ?? "";
+    reads.push(endpoint);
+    if (endpoint === "presence") return Response.json({ instanceId: currentSnapshot.instanceId, preferences: currentTheme });
     if (endpoint === "fly/status") return Response.json({ configured: false, enabled: false, machines: [], clients: [], attempts: [] });
     if (endpoint === "snapshot") return Response.json({ ...currentSnapshot, preferences: currentTheme });
     if (endpoint === "preferences") return Response.json(currentTheme);
@@ -39,7 +43,7 @@ function runPage(snapshot: Record<string, unknown>, savedView?: string, settings
     dom.window.dispatchEvent(new dom.window.Event('online'));
     await Bun.sleep(0);
   };
-  return { dom, html, requests, refresh, theme: async (value: Record<string, unknown>) => { currentTheme = value; await refresh(); } };
+  return { dom, html, requests, reads, refresh, theme: async (value: Record<string, unknown>) => { currentTheme = value; await refresh(); } };
 }
 
 test("Folio retains the original recovery dialog if refreshing after an action failure disconnects", async () => {
@@ -466,4 +470,33 @@ test("batch unpin follows pin and unpins the selection", async () => {
   await Bun.sleep(0);
   expect(requests.find(request => request.body.action === "unpin")?.body.documentIds).toEqual(["/a.md", "/b.md"]);
   dom.window.close();
+});
+
+
+test("hidden Folio waits for visibility, coalesces host invalidations and retains unchanged rows", async () => {
+  const page = runPage({ sequence: 1, instanceId: "daemon", files: [{ id: "one", path: "/one.md", name: "One", view: "active" }] }, undefined, false, { visible: false, folioRevision: "1" });
+  const { dom, reads } = page;
+  const host = (visible: boolean, revision: string) => {
+    (dom.window as any).__tetherHostState = { visible, folioRevision: revision };
+    dom.window.dispatchEvent(new dom.window.Event("tether-host-state"));
+  };
+  try {
+    await Bun.sleep(10);
+    expect(reads.filter(x => x === "snapshot")).toHaveLength(0);
+    host(false, "2"); host(false, "3");
+    await Bun.sleep(10);
+    expect(reads.filter(x => x === "snapshot")).toHaveLength(0);
+    host(true, "3"); await Bun.sleep(10);
+    expect(reads.filter(x => x === "snapshot")).toHaveLength(1);
+    const row = dom.window.document.querySelector(".file");
+    host(true, "3"); await Bun.sleep(10);
+    expect(reads.filter(x => x === "snapshot")).toHaveLength(1);
+    host(true, "4"); await Bun.sleep(10);
+    expect(reads.filter(x => x === "snapshot")).toHaveLength(2);
+    expect(dom.window.document.querySelector(".file") === row).toBe(true);
+    host(false, "4"); await page.refresh();
+    expect(reads.filter(x => x === "snapshot")).toHaveLength(2);
+    host(true, "4"); await Bun.sleep(10);
+    expect(reads.filter(x => x === "snapshot")).toHaveLength(3);
+  } finally { dom.window.close(); }
 });

@@ -64,7 +64,7 @@ export async function startSharedProfile(daemon: TetherDaemon, config: SharedPro
     if (operation.startsWith("turn.")) {
       if (client.kind !== "agent") throw Object.assign(new Error("An enrolled agent connection is required."), { status: 403 });
       let owner = client.id;
-      if (["turn.register", "turn.unregister", "turn.takeover"].includes(operation) && typeof input.receiver === "string") {
+      if (["turn.register", "turn.unregister", "turn.takeover", "turn.assign", "turn.resume"].includes(operation) && typeof input.receiver === "string") {
         const receiver = auth.client(input.receiver);
         if (!receiver || receiver.kind !== "agent") throw Object.assign(new Error("Select an enrolled Paseo receiver."), { status: 403 });
         owner = receiver.id;

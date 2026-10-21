@@ -93,6 +93,17 @@
 .wm-overflow-trigger:focus-visible,
 .wm-comment-button:focus-visible { outline: calc(2px * var(--wm-ui-scale, 1)) solid var(--crepe-color-primary); outline-offset: calc(1px * var(--wm-ui-scale, 1)); }
 
+/* The threads toggle carries the full-colour Tether mark, so its states use background and ring rather than icon colour. */
+.wm-threads-button {
+  width: calc(34px * var(--wm-ui-scale, 1));
+  height: calc(34px * var(--wm-ui-scale, 1));
+  padding: calc(2px * var(--wm-ui-scale, 1));
+  border-radius: calc(6px * var(--wm-ui-scale, 1));
+}
+.wm-threads-button .tether-mark { display: block; width: calc(30px * var(--wm-ui-scale, 1)); height: calc(30px * var(--wm-ui-scale, 1)); flex-shrink: 0; }
+.wm-threads-button.is-active, .wm-threads-button[aria-pressed="true"] { background: var(--crepe-color-hover); box-shadow: inset 0 0 0 calc(1.5px * var(--wm-ui-scale, 1)) var(--crepe-color-primary); }
+.wm-threads-button:focus-visible { outline-offset: calc(-2px * var(--wm-ui-scale, 1)); }
+
 .wm-pending-count {
   position: absolute;
   top: calc(-2px * var(--wm-ui-scale, 1));
@@ -105,6 +116,15 @@
   font-size: calc(7px * var(--wm-ui-scale, 1));
   font-weight: 700;
   line-height: calc(10px * var(--wm-ui-scale, 1));
+}
+.wm-threads-button .wm-pending-count {
+  top: 0;
+  right: calc(-2px * var(--wm-ui-scale, 1));
+  min-width: calc(15px * var(--wm-ui-scale, 1));
+  box-shadow: 0 0 0 calc(1.5px * var(--wm-ui-scale, 1)) var(--crepe-color-surface);
+  font-size: calc(9px * var(--wm-ui-scale, 1));
+  line-height: calc(13px * var(--wm-ui-scale, 1));
+  text-align: center;
 }
 
 .wm-notice {

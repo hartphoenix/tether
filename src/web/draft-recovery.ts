@@ -9,33 +9,60 @@ export type DraftMutation =
   | { method: "DELETE" };
 
 type DraftUpdate = DraftPayload & {
+  scope?: string;
   editorMarkdown: string;
   savedEditorMarkdown: string;
 };
 
 export class DraftPersistence {
-  private writes: Promise<void> = Promise.resolve();
+  private persisted: string | undefined;
+  private running = false;
+  private pending?: { mutation: DraftMutation; key: string; force: boolean; waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }> };
 
   constructor(private readonly send: (mutation: DraftMutation) => Promise<void>) {}
 
   update(update: DraftUpdate, strict = false): Promise<void> {
-    return this.enqueue(update.editorMarkdown === update.savedEditorMarkdown
+    const mutation: DraftMutation = update.editorMarkdown === update.savedEditorMarkdown
       ? { method: "DELETE" }
-      : {
-          method: "POST",
-          draft: { body: update.body, baseRevision: update.baseRevision, scroll: update.scroll },
-        }, strict);
+      : { method: "POST", draft: { body: update.body, baseRevision: update.baseRevision, scroll: update.scroll } };
+    return this.enqueue(mutation, JSON.stringify([update.scope, mutation]), strict);
   }
 
   clear(): Promise<void> {
-    return this.enqueue({ method: "DELETE" });
+    // Explicit reload/save cleanup must also remove drafts from another view.
+    return this.enqueue({ method: "DELETE" }, "clear", false, true);
   }
 
-  private enqueue(mutation: DraftMutation, strict = false): Promise<void> {
-    const write = this.writes.then(() => this.send(mutation));
-    // A failed request must not prevent later recovery writes from running.
-    this.writes = write.catch(() => {});
-    return strict ? write : this.writes;
+  private enqueue(mutation: DraftMutation, key: string, strict: boolean, force = false): Promise<void> {
+    const write = new Promise<void>((resolve, reject) => {
+      const waiters = this.pending?.waiters ?? [];
+      waiters.push({ resolve, reject });
+      this.pending = { mutation, key, force, waiters };
+    });
+    void this.drain();
+    return strict ? write : write.catch(() => {});
+  }
+
+  private async drain(): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+    try {
+      while (this.pending) {
+        const next = this.pending;
+        this.pending = undefined;
+        try {
+          if (next.force || next.key !== this.persisted) {
+            await this.send(next.mutation);
+            this.persisted = next.key;
+          }
+          for (const waiter of next.waiters) waiter.resolve();
+        } catch (error) {
+          // A failed/ambiguous write cannot establish server state.
+          this.persisted = undefined;
+          for (const waiter of next.waiters) waiter.reject(error);
+        }
+      }
+    } finally { this.running = false; }
   }
 }
 

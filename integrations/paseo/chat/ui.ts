@@ -1,3 +1,4 @@
+import { pasteTextInput } from "../../../src/web/text-paste";
 import { contrastRatio } from "../../../src/shared/themes";
 import type { CollectionHost } from "./collections";
 import { commentWindowCss } from "../../../src/shared/comment-window";
@@ -54,6 +55,7 @@ export function startChatUi(chats: Map<string, UiChat>, collections: CollectionH
     const node = document.createElement("section"); node.dataset.tetherChat = "card"; node.setAttribute("role", "dialog"); node.setAttribute("aria-label", "Comment on passage");
     node.classList.add("tether-comment-window");
     const field = document.createElement("textarea"); field.value = draft.feedback; field.placeholder = "Comment..."; field.setAttribute("aria-label", "Comment");
+    field.addEventListener("paste", pasteTextInput);
     field.readOnly = !!chat.controller.state.submission?.draftIds.includes(draft.id);
     const error = document.createElement("p"); error.setAttribute("role", "status");
     if (field.readOnly) error.textContent = "Awaiting delivery. Recover the batch before editing.";
@@ -103,7 +105,10 @@ export function startChatUi(chats: Map<string, UiChat>, collections: CollectionH
     const css = getComputedStyle(document.documentElement);
     const background = css.getPropertyValue("--colors-surface0").trim().toLowerCase();
     const foreground = css.getPropertyValue("--colors-foreground").trim().toLowerCase();
-    const palette = Object.values(themePresets).find(p => p.colors.background.toLowerCase() === background && p.colors["on-background"].toLowerCase() === foreground)?.colors;
+    const preset = Object.values(themePresets).find(p => p.colors.background.toLowerCase() === background && p.colors["on-background"].toLowerCase() === foreground);
+    const palette = preset?.colors;
+    // Custom highlights inherit from the transcript, so their color lives on the root. Match the reader's annotation mix.
+    document.documentElement.style.setProperty("--tc-highlight", palette ? `color-mix(in srgb,${palette.annotation} ${preset!.base === "tether-dark" ? 58 : 42}%,transparent)` : "color-mix(in srgb,var(--colors-accent) 24%,transparent)");
     const vars: Record<string, string> = {
       annotation: palette?.annotation ?? "var(--colors-accent)",
       "on-annotation": palette ? (contrastRatio(palette.annotation, '#18212b') >= contrastRatio(palette.annotation, '#ffffff') ? '#18212b' : '#ffffff') : "var(--colors-accent-foreground)",
@@ -211,7 +216,7 @@ export function startChatUi(chats: Map<string, UiChat>, collections: CollectionH
   document.addEventListener("pointerdown", outside, true); document.addEventListener("keydown", keydown, true); document.addEventListener("click", clickPassage);
   window.addEventListener("resize", resize); document.addEventListener("scroll", hideMenu, true);
   return { flush, render, refreshMarks, dispose() {
-    stopped = true; collections.dispose(); observer.disconnect(); geometryObserver?.disconnect(); clearTimeout(markTimer); close(); clearMarks(); menu.remove(); style.remove();
+    stopped = true; collections.dispose(); observer.disconnect(); geometryObserver?.disconnect(); clearTimeout(markTimer); close(); clearMarks(); menu.remove(); style.remove(); document.documentElement.style.removeProperty("--tc-highlight");
     for (const p of panels.values()) p.node.remove();
     (globalThis as any).CSS?.highlights?.delete("tether-chat-pending");
     document.removeEventListener("selectionchange", selectionChanged); document.removeEventListener("pointerdown", outside, true); document.removeEventListener("keydown", keydown, true); document.removeEventListener("click", clickPassage);

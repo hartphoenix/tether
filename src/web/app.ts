@@ -1,3 +1,5 @@
+import { pasteTextInput } from "./text-paste";
+import { viewIsVisible } from "./view-activity";
 import { subscribeTurns } from "./turn-events";
 import { pollPreferences } from "./preferences-poll";
 import { mountReaderLayout } from "./reader-layout";
@@ -63,6 +65,8 @@ import "./fonts.css";
 import "./theme-maker.css";
 import "./thread-layout.css";
 import "./phone-reader.css";
+
+document.addEventListener("paste", pasteTextInput);
 
 type ServerComment = { id: string; seq: number; actor: string; createdAt: string; body: string; anchor: AnnotationThread["anchor"] };
 type ServerReply = { id: string; seq: number; actor: string; createdAt: string; body: string };
@@ -210,13 +214,13 @@ const turnControls = createTurnControls({
   notice: message => chrome.setNotice(message),
   identity: identities.get,
   rename: renameAgent,
-  copyAssignment: async agent => {
-    const text = api<{ prompt: string }>(`api/turn-prompt${agent ? `?agentId=${encodeURIComponent(agent.agentId)}` : ''}`).then(result => result.prompt);
+  copyAssignment: async (agent, additional) => {
+    const text = api<{ prompt: string }>(`api/turn-prompt${additional ? '?add=1' : agent ? `?agentId=${encodeURIComponent(agent.agentId)}` : ''}`).then(result => result.prompt);
     // Start clipboard access within the click gesture, including Safari's async-content path.
     if (typeof ClipboardItem !== 'undefined' && navigator.clipboard.write) {
       await navigator.clipboard.write([new ClipboardItem({ 'text/plain': text.then(value => new Blob([value], { type: 'text/plain' })) })]);
     } else await navigator.clipboard.writeText(await text);
-    chrome.setNotice(agent ? 'Role takeover prompt copied.' : 'Agent assignment prompt copied.');
+    chrome.setNotice(additional ? 'New agent assignment prompt copied.' : agent ? 'Role takeover prompt copied.' : 'Agent assignment prompt copied.');
   },
 });
 let stopTurns: (() => void) | undefined;
@@ -411,10 +415,19 @@ function getEditorView(): EditorView | null {
   catch { return null; }
   return view;
 }
+let serializedDoc: EditorView["state"]["doc"] | undefined;
+let serializedMarkdown = "";
 function currentMarkdown(): string {
   if (sourceEditor) return sourceEditor.value;
   if (!crepe || crepe.editor.status !== EditorStatus.Created) return savedEditorMarkdown;
-  try { return crepe.getMarkdown(); }
+  try {
+    const doc = getEditorView()?.state.doc;
+    if (doc && doc === serializedDoc) return serializedMarkdown;
+    const markdown = crepe.getMarkdown();
+    serializedDoc = doc;
+    serializedMarkdown = markdown;
+    return markdown;
+  }
   catch { return savedEditorMarkdown; }
 }
 function currentContent(markdown: string): string {
@@ -489,6 +502,7 @@ async function persistDraft(strict = false): Promise<void> {
   if (!crepe || !currentPath || switching || initializing || readOnly) return;
   const markdown = currentMarkdown();
   await draftPersistence.update({
+    scope: currentPath,
     editorMarkdown: markdown,
     savedEditorMarkdown,
     body: currentContent(markdown),
@@ -1119,7 +1133,7 @@ document.addEventListener("keydown", (event) => {
 const connection = createReconnectLoop({
   intervalMs: 1500,
   run: async signal => {
-    if (document.hidden) return;
+    if (!viewIsVisible()) return;
     if (!initialized) {
       try { await start(); }
       catch (error) { if (location.pathname.startsWith("/reader/d/")) await showHistoricalReviews(query => api(`api/history${query ? `?${query}` : ""}`), document.body).catch(() => {}); throw error; }
@@ -1130,12 +1144,18 @@ const connection = createReconnectLoop({
   },
   onError: error => chrome.setNotice(`${initialized ? "Disconnected" : "Startup failed"}: ${(error as Error).message}`, 0),
 });
-addEventListener("pageshow", () => { if (!document.hidden) connection.wake(); });
-addEventListener("online", () => { if (!document.hidden) connection.wake(); });
-addEventListener("visibilitychange", () => {
-  if (document.hidden) { persistPosition(true); void persistDraft(); connection.pause(); }
+addEventListener("pageshow", () => { if (viewIsVisible()) connection.wake(); });
+addEventListener("online", () => { if (viewIsVisible()) connection.wake(); });
+let lastViewVisibility = viewIsVisible();
+const updateViewVisibility = () => {
+  const visible = viewIsVisible();
+  if (visible === lastViewVisibility) return;
+  lastViewVisibility = visible;
+  if (!viewIsVisible()) { persistPosition(true); void persistDraft(); connection.pause(); }
   else connection.wake();
-});
+};
+document.addEventListener("visibilitychange", updateViewVisibility);
+addEventListener("tether-host-state", updateViewVisibility);
 addEventListener("pagehide", event => {
   persistPosition(true);
   connection.pause();
@@ -1155,7 +1175,7 @@ addEventListener("pagehide", event => {
   threadSizing.destroy();
   fileActions.destroy();
 });
-if (!document.hidden) connection.wake();
+if (viewIsVisible()) connection.wake();
 
 
 const updateStyle = document.createElement("style");

@@ -152,3 +152,103 @@ test("a registration removed after claim cannot cross the host send boundary", a
     expect(f.service.agents("doc")).toEqual([]);
   } finally { f.close(); }
 });
+
+for (const behavior of ["steer", "interrupt", "queue"] as const) {
+  test(`closed sessions resume only on Go (${behavior})`, async () => {
+    const f = fixture(behavior);
+    try {
+      const refetch = f.handle.timeline.refetch;
+      let restores = 0;
+      f.handle.timeline.refetch = async options => {
+        restores++;
+        f.set({ status: "idle" });
+        return refetch(options);
+      };
+      f.set({ status: "closed" }); await f.settle();
+      expect(f.service.agents("doc")[0]?.state).toBe("ready");
+      expect(restores).toBe(0);
+      const signal = f.press(); await f.settle();
+      expect(restores).toBe(1);
+      expect(f.sends).toHaveLength(1);
+      expect(f.sends[0]!.options.messageId).toBe(signal.signalId);
+      f.dispatcher.update(f.service.snapshot("owner", "host")); await f.settle();
+      expect(f.sends).toHaveLength(1);
+    } finally { f.close(); }
+  });
+}
+
+test("closed archived and permission-blocked sessions never restore", async () => {
+  for (const blocked of [{ archivedAt: "2026-01-01" }, { pendingPermissions: [{}] }]) {
+    const f = fixture();
+    try {
+      let reads = 0;
+      f.handle.refresh = async () => ({ agent: { status: "closed", ...blocked } });
+      f.handle.timeline.refetch = async () => { reads++; throw Error("must not restore"); };
+      f.press(); await f.settle();
+      expect(f.service.agents("doc")[0]?.state).toBe("unavailable");
+      expect(reads).toBe(0); expect(f.sends).toHaveLength(0);
+    } finally { f.close(); }
+  }
+});
+
+test("restoration failure is visible and does not retry in the background", async () => {
+  const f = fixture();
+  try {
+    let attempts = 0;
+    f.set({ status: "closed" });
+    f.handle.timeline.refetch = async () => { attempts++; throw Error("provider unavailable"); };
+    const signal = f.press(); await f.settle();
+    expect(f.service.signal(signal.signalId)?.state).toBe("failed");
+    expect(f.service.signal(signal.signalId)?.reason).toContain("could not restore");
+    f.dispatcher.wake("paseo:agent"); await f.settle();
+    expect(attempts).toBe(1); expect(f.sends).toHaveLength(0);
+  } finally { f.close(); }
+});
+
+test("restoration rechecks archive, permissions and queue status before claiming", async () => {
+  for (const state of [{ status: "idle", archivedAt: "2026-01-01" }, { status: "idle", pendingPermissions: [{}] }, { status: "running" }]) {
+    const f = fixture("queue");
+    try {
+      f.set({ status: "closed" });
+      const refetch = f.handle.timeline.refetch;
+      f.handle.timeline.refetch = async options => {
+        f.handle.refresh = async () => ({ agent: state });
+        return refetch(options);
+      };
+      const signal = f.press(); await f.settle();
+      expect(f.sends).toHaveLength(0);
+      expect(f.service.signal(signal.signalId)?.state).toBe("pending");
+    } finally { f.close(); }
+  }
+});
+
+test("a closed session with an uncertain send recovers evidence without resending", async () => {
+  const f = fixture();
+  try {
+    f.set({ lost: true, log: false }); const signal = f.press(); await f.settle();
+    expect(f.service.signal(signal.signalId)?.state).toBe("uncertain");
+    f.set({ status: "closed" }); await f.settle();
+    expect(f.sends).toHaveLength(1);
+    expect(f.service.signal(signal.signalId)?.state).toBe("uncertain");
+    f.entries.push({ seq: 1, item: { type: "user_message", clientMessageId: signal.signalId } });
+    f.set({ status: "idle" }); await f.settle();
+    expect(f.service.signal(signal.signalId)?.state).toBe("completed");
+    expect(f.sends).toHaveLength(1);
+  } finally { f.close(); }
+});
+
+test("archival after claim is rechecked before sending", async () => {
+  const f = fixture();
+  try {
+    const command = f.transport.command;
+    f.transport.command = async input => {
+      const result = await command(input);
+      if (input.action === "claim") f.handle.refresh = async () => ({ agent: { status: "closed", archivedAt: "2026-01-01" } });
+      return result;
+    };
+    const signal = f.press(); await f.settle();
+    expect(f.sends).toHaveLength(0);
+    expect(f.service.signal(signal.signalId)?.state).toBe("failed");
+    expect(f.service.signal(signal.signalId)?.reason).toContain("archived");
+  } finally { f.close(); }
+});

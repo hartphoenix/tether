@@ -41,6 +41,7 @@ export function createReconnectLoop(options: {
   }
   return {
     wake() { if (disposed) return; paused = false; void tick(); },
+    refresh() { if (disposed) return; paused = false; if (running) wakePending = true; else void tick(); },
     pause() { paused = true; clear(); controller?.abort(); },
     dispose() { disposed = true; clear(); controller?.abort(); },
   };

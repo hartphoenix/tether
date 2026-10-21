@@ -6,6 +6,12 @@ import { createDaemon } from '../src/server/server';
 import { resolveConfig } from '../src/server/config';
 import { createWebBundleResponder } from '../src/web/bundle';
 
+async function deadline<T>(work: Promise<T>, ms: number, description: () => string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  try { return await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(Error(description())), ms); })]); }
+  finally { clearTimeout(timer!); }
+}
+
 // Incoming-change review in a real browser: hunks, margin lines, the earlier-wording toggle, review comments and Done.
 const scratch = await mkdtemp(join(tmpdir(), 'tether-review-'));
 const config = resolveConfig({ profile: 'test', configDir: join(scratch, 'config'), runtimeDir: join(scratch, 'runtime') });
@@ -18,12 +24,15 @@ try {
   for (const [name, type] of Object.entries({ chromium, webkit })) {
     if (process.env.TETHER_CHECK_ENGINE && process.env.TETHER_CHECK_ENGINE !== name) continue;
     const browser = await type.launch({ headless: true });
+    let phase = 'opening context';
     try {
+      await deadline((async () => {
       const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
       const reader = await context.newPage();
       const errors: string[] = [];
       reader.on('pageerror', error => { if (name === 'webkit' && /\/api\/draft due to access control checks/.test(error.message)) return; errors.push(error.message); });
       reader.setDefaultTimeout(12000);
+      await context.tracing.start({ screenshots: true, snapshots: true });
       const path = join(scratch, `${name}.md`);
       await writeFile(path, original);
       await reader.goto(daemon.mintTicket(await daemon.service.open(path)).url);
@@ -34,7 +43,8 @@ try {
         await reader.mouse.click(box.x + 4, box.y + box.height / 2, { button: 'right' });
       };
       for (const mode of ['revert-each', 'seen-each', 'margin-revert', 'revert-all', 'seen-then-revert-all', 'mixed-done', 'toggle-comment', 'changed-again']) {
-        console.log(`${name}: review ${mode}`);
+        phase = `review ${mode}`;
+        console.log(`${name}: ${phase}`);
         await writeFile(path, original); await reader.reload(); await reader.locator('.ProseMirror').waitFor();
         await reader.waitForTimeout(150);
         await writeFile(path, incoming);
@@ -209,7 +219,17 @@ try {
       }
       check(errors.length === 0, errors.join('\n'));
       console.log(`PASS ${name}: hunk reverts, seen lines, Done, earlier wording, review comments, mid-review changes`);
+      await context.tracing.stop();
       await context.close();
-    } finally { await browser.close(); }
+      })(), 120000, () => `${name} stalled during ${phase}`);
+    } catch (error) {
+      const trace = join(tmpdir(), `tether-review-${name}-${Date.now()}.zip`);
+      for (const context of browser.contexts()) await deadline(context.tracing.stop({ path: trace }), 5000, () => "Trace capture timed out").catch(() => {});
+      console.error(`Failed ${name} operation:`, error, `Trace: ${trace}`);
+      throw error;
+    } finally { await deadline(browser.close(), 10000, () => "Browser cleanup timed out").catch(error => console.error(error)); }
   }
-} finally { await daemon.stop(); await rm(scratch, { recursive: true, force: true }); }
+} finally {
+  await deadline(daemon.stop(), 10000, () => "Test daemon cleanup timed out");
+  await rm(scratch, { recursive: true, force: true });
+}

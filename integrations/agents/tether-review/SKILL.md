@@ -9,7 +9,15 @@ Use `tether` (`./mdreview` in a source checkout) and the reader's OS account and
 
 Use Tether for work the user may discuss, decide, or track in separate parts. Reuse the relevant document and its comment threads; use a linked companion for a separate purpose. Keep proposals distinct from accepted decisions. After substantive revisions, replace the short “Current review” section near the top with changed sections and remaining decisions. Links are available to help readers navigate: Current review can link to the sections it names, and wikilinks can connect companion and related documents. Preserve unresolved content and active anchors.
 
-Register finished documents without opening a view:
+For a new local document, put its body in a temporary file and create it through the CLI:
+
+```sh
+tether document create /absolute/path/document.md --body-file /tmp/draft.md
+```
+
+In Paseo this registers your Go button and adds the document to Folio. Reuse the returned identity name for `--actor`; no separate `turn register` is needed. Creation refuses existing paths. On partial setup, preserve the created file and follow the returned recovery arguments. Outside Paseo, the response explains the unassigned Go state. Use the existing read/save flow for revisions.
+
+Register existing documents without opening a view:
 
 ```sh
 tether recents add /absolute/path/document.md

@@ -10,12 +10,14 @@ import { FOLIO_PANEL, startPump } from "./client/pump";
 import { readerPanelComponent } from "./client/reader-panel";
 import { startReaderPanels } from "./client/reader-panels";
 import { SettingsScreen } from "./client/settings-screen";
+import { startSidebarSelection } from "./client/sidebar-selection";
 import { tetherThemes } from "./client/themes";
 import { disposeFolioViews } from "./client/web-folio";
 
 export default function contribute(client: PluginClientContext) {
   const stopTurnChip = registerTurnChip(client);
   const removeThemes = tetherThemes.map(theme => client.addTheme(theme));
+  const stopSidebarSelection = startSidebarSelection();
   client.addWorkspacePanel({ id: FOLIO_PANEL, title: "Folio", icon: "BookOpen", context: "workspace", locations: ["explorer"], Component: FolioPanel });
   client.addSettingsScreen({ id: "tether", title: "Settings", icon: "BookOpen", Component: SettingsScreen });
   // Before the pump, so restored reader tabs resolve and the first batch finds the panel opener.
@@ -25,6 +27,7 @@ export default function contribute(client: PluginClientContext) {
   const stopChat = startChatAnnotations(client, () => getState().connection?.generation ?? null, createComposerCollections(client));
   return () => {
     for (const removeTheme of removeThemes) removeTheme();
+    stopSidebarSelection();
     disposeFolioViews();
     clearThemeReports();
     stopTurnChip();

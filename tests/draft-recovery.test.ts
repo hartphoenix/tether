@@ -32,7 +32,7 @@ test("serializes POST and DELETE so a newer draft is not lost", async () => {
   firstRequest.resolve();
   await Promise.all([oldWrite, undo, newerWrite]);
 
-  expect(calls.map(({ method }) => method)).toEqual(["POST", "DELETE", "POST"]);
+  expect(calls.map(({ method }) => method)).toEqual(["POST", "POST"]);
   expect(state.stored).toEqual({ body: "newer edit", baseRevision: "rev-1", scroll: 3 });
 });
 
@@ -90,4 +90,22 @@ test("explicit update preparation reports a failed draft write and still permits
   await expect(persistence.update(draft, true)).rejects.toThrow("offline");
   fail = false;
   await persistence.update(draft, true);
+});
+
+
+test("unchanged persisted drafts are skipped, but failures retry and scopes stay separate", async () => {
+  let fail = false;
+  const calls: DraftMutation[] = [];
+  const persistence = new DraftPersistence(async mutation => { calls.push(mutation); if (fail) throw Error("offline"); });
+  const draft = { scope: "one", editorMarkdown: "edit", savedEditorMarkdown: "saved", body: "edit", baseRevision: "rev", scroll: 5 };
+  await persistence.update(draft, true);
+  await persistence.update(draft, true);
+  expect(calls).toHaveLength(1);
+  fail = true;
+  await expect(persistence.update({ ...draft, body: "next" }, true)).rejects.toThrow("offline");
+  fail = false;
+  await persistence.update(draft, true);
+  expect(calls).toHaveLength(3);
+  await persistence.update({ ...draft, scope: "two" }, true);
+  expect(calls).toHaveLength(4);
 });

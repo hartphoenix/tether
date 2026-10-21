@@ -59,6 +59,7 @@ export class Hub {
   private running = false;
   private stopped = false;
   private revision = 0;
+  private folioRevision = 0;
   private cursor = 0;
   private folioVersion = -1;
   private instanceId: string | null = null;
@@ -218,6 +219,7 @@ export class Hub {
       openedAt: typeof file.openedAt === "number" ? file.openedAt : 0,
     }));
     this.folio = entries;
+    this.folioRevision += 1;
     // A notice lasts until its document is opened anywhere, which records a newer open.
     for (const [workspaceId, notice] of this.notices) {
       if (!notice.sharedReader && (entries.find(entry => notice.documentId ? entry.documentId === notice.documentId : entry.path === notice.path)?.openedAt ?? 0) > notice.at) this.notices.delete(workspaceId);
@@ -256,6 +258,7 @@ export class Hub {
     return {
       connection: this.options.connection ?? null,
       revision: this.revision,
+      folioRevision: this.folioRevision,
       intents,
       folio: this.folio,
       notices: this.options.buttons?.() === false ? {} : Object.fromEntries([...this.notices].map(([workspaceId, notice]) => [workspaceId, this.notice(notice)])),
@@ -318,6 +321,8 @@ export class Hub {
   async theme(clientId: string, theme: string | null): Promise<{ updated: boolean }> {
     this.assertActive();
     await this.transport.theme(clientId, theme);
+    this.folioRevision += 1;
+    this.changed();
     return { updated: true };
   }
 

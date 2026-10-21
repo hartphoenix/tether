@@ -15,7 +15,7 @@ export default function contribute(server: any) {
           } });
           else if (input.type === "session.open") {
             emit({ type: "session.opened", requestId: input.requestId, sessionId: input.sessionId, capabilities: ["prompt.message", "session.persistence"],
-              restoration: "core", persistence: { version: 1, data: {} }, cwd: input.config.cwd });
+              restoration: "core", persistence: { version: 1, data: "tether-transport-fixture" }, cwd: input.config.cwd });
             emit({ type: "session.ready", requestId: input.requestId, sessionId: input.sessionId });
           } else if (input.type === "session.prompt") {
             // Repeated turn IDs deliberately exercise Tether's signal-based correlation.

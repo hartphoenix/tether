@@ -49,6 +49,9 @@ Events, receipts and turn registrations store the ID as the author, and the read
 The reader shows one **Go** button per registered agent on a document. A human reader press or an explicitly authorized local CLI send starts delivery. Agent registration does not grant authority to press buttons.
 
 ```sh
+tether turn assign handoff:REFERENCE [--name NAME] [--icon ICON]
+tether turn takeover handoff:REFERENCE
+tether turn resume handoff:REFERENCE
 tether turn register /path/to/doc.md --actor NAME [--agent-id ID] [--host-id PASEO_DAEMON_ID] [--label TEXT] [--icon ICON] [--if-empty]
 tether turn takeover /path/to/doc.md --role-id ROLE_ID --expected-recipient SESSION_ID [--host-id PASEO_DAEMON_ID]
 tether turn status /path/to/doc.md
@@ -65,7 +68,13 @@ Commands use the [step-one agent identity](#agent-identity), including `paseo:PA
 
 Takeover retires outstanding invitations without replaying them. It does not stop work already begun by the previous session or transfer that session's private memory. Registrations owned by another connection cannot be taken over; preserve the configured Fly receiver. Future mention tokens can continue to target the unchanged role ID.
 
-`GET api/turn-prompt` returns an empty-slot assignment prompt; `?agentId=ROLE_ID` returns a role takeover prompt. The takeover prompt contains one sentence and the guarded command; onboarding instructions arrive in the successful command result. These reads neither reassign the role nor start a turn. Shared-reader prompts use `id:UUID` and the agent's configured connection.
+`GET api/turn-prompt` returns an empty-slot assignment prompt; `?agentId=ROLE_ID` returns a role takeover prompt. The Go context menu’s **Add another agent** action uses `?add=1` to copy an assignment prompt that permits an additional registration and confirms the copy. This flow refuses a caller already registered on the document; existing roles remain assigned. Each contains one sentence and a command with a handoff reference. References expire after seven days and survive daemon restarts. They select an operation; the existing control credential still authorizes it. Local prompts retain the profile and executable; shared prompts use the agent's configured connection.
+
+`assign` and handoff-based `takeover` require a connected Paseo turn adapter. Assignment atomically checks the empty slot, preserves an existing caller identity or creates one using the document title, available icon and color rotation. Optional `--name` and `--icon` apply to new identities. Both commands return identity, registrations, document text, a bounded pending page and up to three thread pages in `context`. `context.next` contains CLI argument arrays for remaining pages; use the same executable, profile and connection. Review the content before acknowledging its cursor.
+
+The daemon stores the mutation and handoff receipt together. Repeating the same command verifies the current receiver and retrieves context without repeating assignment. The CLI automatically retries once after an uncertain response. If setup succeeds but context retrieval fails, the result reports `outcome: applied`, an `onboarding_incomplete` warning and `resume` arguments. `turn resume` only verifies the receipt and reads context. A different caller, expired reference or subsequently changed assignment is refused.
+
+Connection failures distinguish unverified access from stale assignments. A network-restricted shell may block localhost even when the daemon is healthy; these commands do not bypass that restriction or change session permissions. Use an authorized connection or permission retry.
 
 | State | Meaning |
 | --- | --- |
@@ -89,6 +98,16 @@ Annotations are captured at press time, so later drafts stay for the next send. 
 Hosts without persistent delivery use the watcher fallback; an existing host registration remains authoritative. The CLI confirms a parsed result through `/control/turn/received` before clearing its captured annotations; a lost response leaves the batch retained. The receipt is idempotent and survives daemon restart. A receipt failure still returns the turn and feedback with `annotationWarning`, without resending. `wait` returns `{turn: {signalId, cursor, sequence, requestedAt, path, agentId}, annotations?}` for a press newer than `--after`; without `--after`, it waits for the next press. Without `--timeout`, it waits indefinitely; timeout returns `{turn: null, cursor}`. Re-arming with the returned cursor ends a watcher-delivered turn. Watcher-only agents disappear after 60 seconds without a wait, or after two hours without a re-arm following a press. Watcher cursors name the daemon instance; old-instance cursors count as no presses seen. Watchers reconnect after a restart. A deliberate stop returns `{turn: null, stopped: true}` without restarting Tether.
 
 ## Read and save a document
+
+Create a new document in an existing directory with one command:
+
+```sh
+tether document create /path/to/new.md --body-file /tmp/draft.md
+```
+
+In a local Paseo agent session, this also registers its Go button and adds the document to Folio without opening a view or sending a turn. It reuses the creator’s stable role, including after takeover. A new role gets a title-derived name, an available icon and the next color; optional `--name` and `--icon` override defaults only for a new identity. The response includes the identity to use for `--actor`, registration and review context, just like `turn assign`. No separate registration command is needed.
+
+Creation refuses existing files, symlinks and retained Tether records, including missing files with an existing record. A disconnected Paseo adapter fails before file creation. If later setup fails, `created: true`, `outcome: partially_applied`, warnings and `resume` arguments explain what remains; preserve the created file and finish assignment with the same CLI/profile. After a lost response, inspect `document read` and `turn status` before doing anything else; repeating creation never overwrites a file. Outside Paseo, creation succeeds with explicit unassigned Go status. Shared connections are not supported for creation; use a local profile on the file machine. Opening, importing or adding an existing file to Folio never claims its creator role.
 
 Use `document context`, `outline`, or `diff` to read just what you need. When you need the full body and its revision, use `tether document read /path/to/doc.md`. Save a replacement body with:
 

@@ -45,8 +45,12 @@ const { pathToFileURL } = require("node:url");
   try {
     if (process.argv[3] === "create") {
       const agents = [];
-      for (let i=0;i<3;i++) agents.push(await client.createAgent({provider:"tether-go-fixture",model:"fixture",cwd:${JSON.stringify(scratch)},title:"Tether transport fixture "+i}));
+      for (let i=0;i<4;i++) agents.push(await client.createAgent({provider:"tether-go-fixture",model:"fixture",cwd:${JSON.stringify(scratch)},title:"Tether transport fixture "+i}));
       process.stdout.write(JSON.stringify(agents.map(agent=>agent.id))); return;
+    }
+    if (process.argv[3] === "metadata") {
+      const result = await client.fetchAgent(process.argv[4]);
+      process.stdout.write(JSON.stringify(result)); return;
     }
     if (process.argv[3] === "timeline") {
       const page = await client.fetchAgentTimeline(process.argv[4],{direction:"tail",limit:128,projection:"canonical"});
@@ -74,6 +78,15 @@ try {
   const first = JSON.parse(await inspect());
   assert.ok(first.hostId);
   const agents: string[] = JSON.parse(await inspect(1, "create"));
+  const creatorPath = join(scratch, "created.md"), creatorBody = join(scratch, "created-body.txt");
+  await writeFile(creatorBody, "# Creator fixture\n");
+  const created = JSON.parse(await run(resolve("tether"), ["document", "create", creatorPath, "--body-file", creatorBody], { PASEO_AGENT_ID: agents[3], TETHER_PASEO_HOST_ID: first.hostId }));
+  assert.equal(created.ok, true);
+  assert.equal(created.data.go.registered, true);
+  assert.equal(created.data.recipientId, `paseo:${agents[3]}`);
+  assert.equal(created.data.identity.name, "Creator fixture");
+  assert.equal((await controlRequest<any>(tetherConfig, "/control/turn/status", { path: creatorPath })).agents[0].agentId, created.data.identity.id);
+  assert.deepEqual(JSON.parse(await inspect(1, "timeline", agents[3])), [], "Creation must not send a turn");
   const paths = [join(scratch, "one.md"), join(scratch, "two.md")];
   for (let i=0;i<2;i++) {
     await writeFile(paths[i]!, "# Disposable transport check\n");
@@ -130,7 +143,28 @@ try {
   await host("daemon", "stop");
   await host("daemon", "start", "--timeout", "30");
   assert.equal(JSON.parse(await inspect()).hostId, first.hostId);
-  console.log(`Paseo ${version}: plugin startup without app, SDK bootstrap, plugin reload, Tether reconnect and host restart, selected-agent delivery, recipient signal IDs, durable receipts, held invitation recovery, completion and duplicate suppression passed; zero model calls. Evidence: ${scratch}`);
+  // Read metadata before timeline: timeline itself would restore the session.
+  for (const [index, recipient] of [[0, agents[2]], [1, agents[1]]] as const) {
+    const metadata = JSON.parse(await inspect(1, "metadata", recipient));
+    assert.equal(metadata.agent.status, "closed", "Restart must leave the provider closed until Go");
+    assert.ok(!metadata.agent.archivedAt);
+    if (index === 1) await controlRequest(tetherConfig, "/control/turn/register", {
+      path: paths[index], actor: "Transport fixture 1", agentId: `paseo:${agents[1]}`, hostId: first.hostId, behavior: "queue",
+    });
+    const resumed = await controlRequest<any>(tetherConfig, "/control/turn/send", {
+      path: paths[index], agentId: `paseo:${agents[index]}`, operationId: `runtime-resume-${index}`,
+    });
+    let completed = false;
+    for (let attempt = 0; attempt < 80; attempt++) {
+      const state = await controlRequest<any>(tetherConfig, "/control/turn/status", { path: paths[index] });
+      if (state.agents[0]?.state === "ready") { completed = true; break; }
+      await Bun.sleep(100);
+    }
+    assert.ok(completed, "Go must restore and complete the same closed session");
+    const timeline = JSON.parse(await inspect(1, "timeline", recipient));
+    assert.equal(timeline.filter((item: any) => item.text.includes(resumed.signalId)).length, 1);
+  }
+  console.log(`Paseo ${version}: plugin startup without app, SDK bootstrap, plugin reload, Tether reconnect and host restart with closed-session steer/queue resume, creator auto-registration, selected-agent delivery, recipient signal IDs, durable receipts, held invitation recovery, completion and duplicate suppression passed; zero model calls. Evidence: ${scratch}`);
 } finally {
   await host("daemon", "stop").catch(() => {});
   await run(resolve("tether"), ["daemon", "stop"]).catch(() => {});

@@ -1,7 +1,18 @@
 import type { HostSignal } from "../shared/turns";
-import type { Position, TurnAgentHandle, TurnHost } from "./turn-sdk";
+import type { AgentSnapshot, Position, TurnAgentHandle, TurnHost } from "./turn-sdk";
 import type { TurnSnapshot, TurnTransport } from "./turn-transport";
 import { hasCompletedReceipt } from "../chat/receipts";
+
+// A persisted closed session is resumable through Paseo's timeline/send APIs.
+// Merely refreshing metadata must not start its provider process.
+function unavailable(agent: AgentSnapshot | undefined): string | undefined {
+  if (!agent || agent.archivedAt) return "Paseo agent is missing or archived.";
+  if (agent.pendingPermissions?.length) return "Paseo agent is waiting for permission.";
+  if (!["idle", "running", "closed"].includes(agent.status)) return "Paseo agent is unavailable.";
+}
+function canDeliver(agent: AgentSnapshot, signal: HostSignal): boolean {
+  return !unavailable(agent) && (signal.behavior !== "queue" || ["idle", "closed"].includes(agent.status));
+}
 
 const delay = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => {
   const done = () => { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); };
@@ -81,7 +92,7 @@ export class TurnDispatcher {
     const signals = this.snapshot.signals.filter(s => (s.recipientId ?? s.agentId) === agentId).sort((a, b) => (a.state === "pending" ? 1 : 0) - (b.state === "pending" ? 1 : 0) || a.requestedAt.localeCompare(b.requestedAt));
     const agent = this.host.agent(agentId.slice(6));
     const initial = (await agent.refresh())?.agent;
-    const reason = !initial || initial.archivedAt ? "Paseo agent is missing or archived." : initial.pendingPermissions?.length ? "Paseo agent is waiting for permission." : !["idle", "running"].includes(initial.status) ? "Paseo agent is unavailable." : undefined;
+    const reason = unavailable(initial);
     await this.transport.command({ action: "availability", hostId: this.host.hostId, token: this.token(), agentId, ...(reason ? { reason } : {}) });
     if (reason) return;
     for (let signal of signals) {
@@ -93,15 +104,28 @@ export class TurnDispatcher {
       }
       if (snapshot.pendingPermissions?.length) continue;
       if (signal.state === "pending") {
-        if (signal.behavior === "queue" && snapshot.status !== "idle") return;
-        if (!["idle", "running"].includes(snapshot.status)) continue;
-        const page = await agent.timeline.refetch({ direction: "tail", limit: 1, projection: "canonical" });
+        if (!canDeliver(snapshot, signal)) return;
+        let page;
+        try {
+          // This restores a closed provider only for a durable human invitation.
+          page = await agent.timeline.refetch({ direction: "tail", limit: 1, projection: "canonical" });
+        } catch {
+          if (this.current(signal)) await this.receipt(signal, "failed", { reason: "Paseo could not restore the agent conversation. No message was sent; retry Go." });
+          return;
+        }
         if (!this.current(signal)) continue;
+        snapshot = (await agent.refresh())?.agent;
+        if (!snapshot || !canDeliver(snapshot, signal)) return;
         signal = await this.receipt(signal, "claim", { position: page.endCursor ?? { epoch: page.epoch, seq: 0 } });
         if (this.lifetime.aborted) return;
         // Verify the lease immediately before crossing the host acceptance boundary.
         // A competing adapter sees "dispatching" and can only reconcile.
         try {
+          snapshot = (await agent.refresh())?.agent;
+          if (!snapshot || !canDeliver(snapshot, signal)) {
+            await this.receipt(signal, "failed", { reason: unavailable(snapshot) ?? "Paseo agent became busy before delivery. No message was sent; retry Go." });
+            return;
+          }
           await this.transport.command({ hostId: this.host.hostId, token: this.token(), signalId: signal.signalId, action: "verify" });
           this.lifetime.throwIfAborted();
           await agent.send(signal.text, { messageId: signal.signalId, activeTurnBehavior: signal.behavior === "queue" ? "steer" : signal.behavior });

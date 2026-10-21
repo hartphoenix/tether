@@ -8,6 +8,7 @@ export type FolioScope = "project" | "all";
 export type TetherState = {
   connection: Connection | null;
   folio: FolioEntry[] | null;
+  folioRevision?: number;
   notices: Readonly<Record<string, Notice>>;
   buttons: boolean;
   /** Readers open as plugin panels instead of browser tabs. */
@@ -98,10 +99,10 @@ export function sourceKey(): string {
 
 export function acceptBatch(batch: PumpBatch): void {
   if (state.connection?.generation !== batch.connection?.generation || state.status.tether !== batch.status.tether) waiting.length = 0;
-  setState({ connection: batch.connection, folio: batch.folio, notices: batch.notices, buttons: batch.buttons, readerPanels: batch.readerPanels === true, status: batch.status });
+  setState({ connection: batch.connection, folio: batch.folio, folioRevision: batch.folioRevision, notices: batch.notices, buttons: batch.buttons, readerPanels: batch.readerPanels === true, status: batch.status });
 }
 
 export function disconnect(): void {
   waiting.length = 0;
-  setState({ connection: null, folio: null, notices: {}, status: { connected: false, tether: null, error: "Connection interrupted. Retrying…" } });
+  setState({ connection: null, folio: null, folioRevision: undefined, notices: {}, status: { connected: false, tether: null, error: "Connection interrupted. Retrying…" } });
 }

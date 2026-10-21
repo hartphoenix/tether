@@ -180,7 +180,7 @@ export async function remoteControl<T>(connection: SharedCredential, parsed: Par
   const machineId = optionalFlag(parsed, "--machine") ?? connection.machineId ?? undefined;
   let body = { ...input };
   if (operation === "document.save") body.expectedLocationVersion = positiveInteger(requiredFlag(parsed, "--expected-location-version"), "--expected-location-version");
-  if (operation.startsWith("document.") || operation.startsWith("review.") || operation.startsWith("turn.")) {
+  if (!input.handoff && (operation.startsWith("document.") || operation.startsWith("review.") || operation.startsWith("turn."))) {
     delete body.path;
     body = { ...body, ...remoteAddress(parsed.positionals[0]!, machineId), ...(parsed.flags.has("--restore") ? { restoreArchived: true } : {}) };
   }

@@ -293,7 +293,7 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
     if (force) { quietFailure = false; show("Checking for updates…"); }
     if (pending) { forceQueued ||= force; return; }
     clearTimeout(checkTimer);
-    if (document.hidden && !force) return;
+    if ((document.hidden || (window as Window & { __tetherHostState?: { visible: boolean } }).__tetherHostState?.visible === false) && !force) return;
     pending = true;
     try {
       const response = await fetch(`${api}/updates${force ? "/check" : ""}`, { cache: "no-store", ...(force ? { method: "POST", headers: { "content-type": "application/json" }, body: "{}" } : {}), signal: AbortSignal.timeout(30_000) });
@@ -331,7 +331,7 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
     } finally {
       pending = false;
       if (forceQueued) { forceQueued = false; void check(true); }
-      else if (!document.hidden) checkTimer = setTimeout(() => void check(), installing ? 2000 : 60_000);
+      else if (!document.hidden && (window as Window & { __tetherHostState?: { visible: boolean } }).__tetherHostState?.visible !== false) checkTimer = setTimeout(() => void check(), installing ? 2000 : 60_000);
     }
   };
   if (menuCheck) menuCheck.onclick = () => void check(true);
@@ -339,4 +339,9 @@ export function mountUpdateNotice(element: HTMLElement, api: string, reportError
   addEventListener("pagehide", () => clearTimeout(checkTimer));
   addEventListener("pageshow", () => void check());
   document.addEventListener("visibilitychange", () => void check());
+  let hostVisible = (window as Window & { __tetherHostState?: { visible: boolean } }).__tetherHostState?.visible !== false;
+  addEventListener("tether-host-state", () => {
+    const visible = (window as Window & { __tetherHostState?: { visible: boolean } }).__tetherHostState?.visible !== false;
+    if (visible !== hostVisible) { hostVisible = visible; void check(); }
+  });
 }

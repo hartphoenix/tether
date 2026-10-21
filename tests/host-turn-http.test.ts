@@ -22,14 +22,14 @@ test("clipboard prompts and CLI takeover preserve identity everywhere and sign n
       const response = await fetch(new URL(`api/turn-prompt${suffix}`, base), { headers: { cookie } });
       return { status: response.status, body: await response.json() as any };
     };
-    expect((await prompt()).body.prompt).toContain("--if-empty");
+    expect((await prompt()).body.prompt).toContain("turn assign");
     const registered = await cli(["turn", "register", path, "--actor", "Builder", "--label", "Main build", "--icon", "flame", "--if-empty"]);
     expect(registered.ok).toBe(true);
     expect(registered.data.identity.icon).toBe("flame");
     const identity = registered.data.identity;
     expect((await cli(["turn", "register", path, "--actor", "Other", "--if-empty"], "intruder")).error.code).toBe("turn_slot_filled");
     expect((await prompt()).status).toBe(400);
-    expect((await prompt("?agentId=paseo%3Aold")).body.prompt).toContain("--role-id 'paseo:old' --expected-recipient 'paseo:old'");
+    expect((await prompt("?agentId=paseo%3Aold")).body.prompt).toContain("turn takeover 'handoff:");
     expect((await prompt("?agentId=paseo%3Aold")).body.prompt.split("\n\n")).toHaveLength(2);
     expect((await cli(["turn", "register", other, "--actor", "Builder"])).ok).toBe(true);
     const args = ["turn", "takeover", path, "--role-id", "paseo:old", "--expected-recipient", "paseo:old"];

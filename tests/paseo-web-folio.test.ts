@@ -1,3 +1,4 @@
+import { setState, disconnect } from "../integrations/paseo/client/state";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { disposeFolioViews, folioViewKey, mountFolioWebview, type FolioViewState } from "../integrations/paseo/client/web-folio";
 import { themedLaunch } from "../integrations/paseo/client/theme-sync";
@@ -7,6 +8,8 @@ class Guest {
   attributes: Array<[string, string]> = [];
   listeners = new Map<string, (event: any) => void>();
   removed = false;
+  scripts: string[] = [];
+  executeJavaScript(script: string) { this.scripts.push(script); return Promise.resolve(); }
   setAttribute(name: string, value: string) { this.attributes.push([name, value]); }
   addEventListener(name: string, listener: (event: any) => void) { this.listeners.set(name, listener); }
   removeEventListener(name: string) { this.listeners.delete(name); }
@@ -430,7 +433,8 @@ test("each attachment registers the guest with Paseo's browser bridge under one 
     guest.emit("did-attach");
     expect(registrations).toHaveLength(2);
     expect(registrations[0]).toMatchObject({ workspaceId: "w1", webContentsId: 40 });
-    expect(registrations[0]!.browserId).toMatch(/^tether-reader-[a-z0-9]+-\d+$/);
+    // Paseo's automation RPC rejects our former prefixed IDs; UUID v4 is accepted.
+    expect(registrations[0]!.browserId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     expect(registrations[1]).toEqual({ ...registrations[0]!, webContentsId: 41 });
     reader.dispose();
     guest.emit("did-attach");
@@ -452,4 +456,30 @@ test("each attachment registers the guest with Paseo's browser bridge under one 
     if (windowDescriptor) Object.defineProperty(globalThis, "window", windowDescriptor);
     else Reflect.deleteProperty(globalThis, "window");
   }
+});
+
+
+test("validated guests receive shared Folio invalidations without a new stream, and cleanup unsubscribes", async () => {
+  setState({ connection: { generation: "g", tetherPath: "tether", profile: "main" }, folioRevision: 1, status: { connected: true, tether: "daemon", error: null } });
+  const view = mount();
+  try {
+    await tick();
+    const guest = guests[0]!;
+    expect(guest.scripts).toHaveLength(0);
+    guest.ready();
+    expect(guest.scripts).toHaveLength(1);
+    expect(guest.scripts[0]).toContain('folioRevision');
+    setState({ query: "unrelated UI state" });
+    expect(guest.scripts).toHaveLength(1);
+    setState({ folioRevision: 2 });
+    expect(guest.scripts).toHaveLength(2);
+    guest.emit("did-start-navigation", { isMainFrame: true });
+    setState({ folioRevision: 3 });
+    expect(guest.scripts).toHaveLength(2);
+    guest.ready();
+    expect(guest.scripts).toHaveLength(3);
+    view.dispose();
+    setState({ folioRevision: 4 });
+    expect(guest.scripts).toHaveLength(3);
+  } finally { view.dispose(); disconnect(); }
 });

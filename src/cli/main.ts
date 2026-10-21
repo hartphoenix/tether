@@ -499,20 +499,40 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
         : { origin: discovery!.origin, credentialPath: config.controlPath, owner: "local", shared: false }), exitCode: 0 };
     }
     if (command === "turn.send" && ((dependencies.env ?? process.env).PASEO_AGENT_ID || (dependencies.env ?? process.env).CLAUDE_CODE_SESSION_ID || (dependencies.env ?? process.env).CODEX_THREAD_ID)) usage("Agent sessions may register or inspect turns; sends require the human's CLI.");
-    if (command === "turn.register" || command === "turn.unregister" || command === "turn.status" || command === "turn.send" || command === "turn.takeover") {
+    if (["turn.register", "turn.unregister", "turn.status", "turn.send", "turn.takeover", "turn.assign", "turn.resume"].includes(command)) {
+      const reference = parsed.positionals[0]!;
+      const handoff = reference.startsWith("handoff:");
+      if (["turn.assign", "turn.resume"].includes(command) && !handoff) usage("Use the handoff reference from a copied Go prompt.");
+      if (command === "turn.takeover" && !handoff && (!optionalFlag(parsed, "--role-id") || !optionalFlag(parsed, "--expected-recipient"))) usage("Explicit takeover requires --role-id and --expected-recipient.");
+      if (handoff && (optionalFlag(parsed, "--role-id") || optionalFlag(parsed, "--expected-recipient"))) usage("A handoff already records the role and expected recipient.");
       let hostId = optionalFlag(parsed, "--host-id") ?? (dependencies.env ?? process.env).TETHER_PASEO_HOST_ID;
-      if ((command === "turn.register" || command === "turn.takeover") && !hostId) {
+      if (["turn.register", "turn.takeover", "turn.assign", "turn.resume"].includes(command) && !hostId) {
         const raw = (dependencies.env ?? process.env).PASEO_HOME ?? join(homedir(), ".paseo");
         hostId = (await readFile(join(raw.startsWith("~/") ? join(homedir(), raw.slice(2)) : raw, "server-id"), "utf8")).trim();
       }
-      return { response: success(command, await requestControl(config, `/control/turn/${command.split(".")[1]}`, {
+      if (handoff && !("agentId" in signature && signature.agentId.startsWith("paseo:"))) usage("Run this command from your own Paseo agent session.");
+      const input = {
         ...(hostId ? { hostId } : {}), ...((optionalFlag(parsed, "--receiver") ?? process.env.TETHER_RECEIVER ?? binding?.receiver) ? { receiver: optionalFlag(parsed, "--receiver") ?? process.env.TETHER_RECEIVER ?? binding?.receiver } : {}), ...(optionalFlag(parsed, "--operation-id") ? { operationId: optionalFlag(parsed, "--operation-id") } : {}),
-        path: resolve(parsed.positionals[0]!), ...(optionalFlag(parsed, "--actor") ? { actor: optionalFlag(parsed, "--actor") } : {}), ...signature,
+        ...(handoff ? { handoff: reference } : localDocumentId(reference) ? { documentId: localDocumentId(reference) } : { path: resolve(reference) }),
+        ...(optionalFlag(parsed, "--actor") ? { actor: optionalFlag(parsed, "--actor") } : {}), ...signature,
+        ...(optionalFlag(parsed, "--name") ? { name: optionalFlag(parsed, "--name") } : {}),
         ...(optionalFlag(parsed, "--icon") ? { icon: optionalFlag(parsed, "--icon") } : {}),
         ...(parsed.flags.has("--if-empty") ? { ifEmpty: true } : {}),
         ...(optionalFlag(parsed, "--role-id") ? { roleId: optionalFlag(parsed, "--role-id"), expectedRecipient: optionalFlag(parsed, "--expected-recipient") } : {}),
         ...(optionalFlag(parsed, "--label") ? { label: optionalFlag(parsed, "--label")!.trim() } : {}),
-      })), exitCode: 0 };
+      };
+      const request = () => requestControl(config, `/control/turn/${command.split(".")[1]}`, input);
+      let result;
+      try { result = await request(); }
+      catch (cause) {
+        // Only handoffs have an atomic, durable receipt covering assignment and takeover.
+        // A single retry verifies that receipt and the current receiver before returning context.
+        const details = errorDetails(cause);
+        if (!handoff || details.outcome !== "outcome_unknown") throw cause;
+        try { result = await request(); }
+        catch (retry) { throw operationError(retry, { outcome: "outcome_unknown", recovery: "The first response was lost. Retry the identical handoff after restoring access; its durable receipt verifies the current receiver." }); }
+      }
+      return { response: success(command, result), exitCode: 0 };
     }
     if (command === "turn.wait") {
       const timeout = optionalFlag(parsed, "--timeout");
@@ -582,6 +602,20 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     }
     if (command === "document.read") {
       return { response: success(command, await requestControl(config, "/control/document/read", { path: resolve(parsed.positionals[0]!) })), exitCode: 0 };
+    }
+    if (command === "document.create") {
+      if (connection) usage("Document creation currently requires a local Tether profile on the file machine; no file was created.");
+      const body = await bodyFile(requiredFlag(parsed, "--body-file"), dependencies, 16 * 1024 * 1024);
+      let hostId = optionalFlag(parsed, "--host-id") ?? (dependencies.env ?? process.env).TETHER_PASEO_HOST_ID;
+      if ("agentId" in signature && signature.agentId.startsWith("paseo:") && !hostId) {
+        const raw = (dependencies.env ?? process.env).PASEO_HOME ?? join(homedir(), ".paseo");
+        hostId = (await readFile(join(raw.startsWith("~/") ? join(homedir(), raw.slice(2)) : raw, "server-id"), "utf8")).trim();
+      }
+      return { response: success(command, await requestControl(config, "/control/document/create", {
+        path: resolve(parsed.positionals[0]!), body, ...signature, ...(hostId ? { hostId } : {}),
+        ...(optionalFlag(parsed, "--name") ? { name: optionalFlag(parsed, "--name") } : {}),
+        ...(optionalFlag(parsed, "--icon") ? { icon: optionalFlag(parsed, "--icon") } : {}),
+      })), exitCode: 0 };
     }
     if (command === "document.save") {
       const expectedBodyRevision = requiredFlag(parsed, "--expected-body-revision");
@@ -699,8 +733,11 @@ export async function runCli(argv = process.argv.slice(2), dependencies: CliDepe
     const code = usageError ? "usage" : coded ?? (cause instanceof ControlRequestError ? cause.code : "command_failed");
     const uncertain = cause && typeof cause === "object" && (cause as { details?: { outcome?: string } }).details?.outcome === "outcome_unknown";
     let reported = completed.length ? operationError(cause, { outcome: uncertain ? "outcome_unknown" : "partially_applied", completed }) : cause;
-    if (command === "turn.takeover") reported = operationError(reported, {
-      instructions: ["Stop and report this result; do not claim the role was taken over or change the expected recipient to force it. For a stale assignment, obtain a fresh takeover prompt; for an uncertain outcome, inspect turn status before retrying."],
+    if (["turn.takeover", "turn.assign", "turn.resume"].includes(command)) reported = operationError(reported, {
+      instructions: [code === "daemon_unreachable" || code === "transport_unavailable"
+        ? "The local connection could not be verified; the daemon may still be healthy. A network-restricted sandbox can block localhost. Use only an authorized connection or permission retry; do not change session permissions or replace the daemon to bypass this boundary. Retry the same handoff after restoring access."
+        : uncertain ? "The result is unconfirmed. Retry the identical handoff command; its receipt verifies the receiver without repeating assignment. For an explicit takeover, inspect turn status before retrying."
+        : "Stop and report this result. For a stale, used or expired handoff, copy a fresh prompt; never change the expected recipient to force takeover. For an unavailable host, restore the Tether plugin connection and retry the same command."],
     });
     return { response: failure(command, reported, code), exitCode: usageError ? 2 : 1 };
   }

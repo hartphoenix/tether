@@ -40,3 +40,14 @@ test('resume retries immediately after cancellation, without overlapping request
     expect(calls).toBe(2);
   } finally { loop.dispose(); }
 });
+
+
+test('invalidations during an in-flight refresh coalesce into one follow-up', async () => {
+  let calls = 0, release!: () => void;
+  const loop = createReconnectLoop({ intervalMs: 10000, run: async () => { if (++calls === 1) await new Promise<void>(resolve => { release = resolve; }); }, onError: () => {} });
+  try {
+    loop.wake(); loop.refresh(); loop.refresh();
+    release(); await Bun.sleep(15);
+    expect(calls).toBe(2);
+  } finally { loop.dispose(); }
+});

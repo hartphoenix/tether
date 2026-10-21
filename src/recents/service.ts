@@ -44,6 +44,9 @@ export class RecentsService {
   private tail = Promise.resolve();
   private hostTail: Promise<unknown> = Promise.resolve();
   private sequence = 0;
+  private cached?: FolioSnapshot;
+  private cachedAt = 0;
+  private accessedAt = 0;
   private readonly subscribers = new Set<RecentsSubscriber>();
   private readonly folioSubscribers = new Set<FolioSubscriber>();
 
@@ -74,6 +77,7 @@ export class RecentsService {
   }
 
   private async publishFolio(sequence: number): Promise<void> {
+    this.cached = undefined;
     if (!this.folioSubscribers.size) return;
     const snapshot = await this.folioSnapshotAt(sequence);
     for (const subscriber of [...this.folioSubscribers]) {
@@ -86,7 +90,12 @@ export class RecentsService {
       this.registry.listFolio({ ...options, view: options.view ?? "all" }),
       this.registry.getRetention(),
     ]);
-    return { sequence, files, retention, filters: await this.registry.getFilters() };
+    const snapshot = { sequence, files, retention, filters: await this.registry.getFilters() };
+    if (Object.keys(options).every(key => key === "view") && (!options.view || options.view === "all")) {
+      this.cached = snapshot;
+      this.cachedAt = Date.now();
+    }
+    return snapshot;
   }
 
   private async synchronize(snapshot: RecentsSnapshot, target?: HostTarget): Promise<SyncRecentsResult> {
@@ -108,7 +117,41 @@ export class RecentsService {
   folioSnapshot(options: ListFolioOptions = {}): Promise<FolioSnapshot> {
     return this.queued(async () => {
       if (this.sequence >= Number.MAX_SAFE_INTEGER) throw new Error("The Folio snapshot sequence is exhausted.");
-      return this.folioSnapshotAt(++this.sequence, options);
+      const previous = this.cached;
+      const snapshot = await this.folioSnapshotAt(++this.sequence, options);
+      if (this.cached === snapshot) this.publishIfChanged(previous, snapshot);
+      return snapshot;
+    });
+  }
+
+  /** All embedded pages share one computation; mutations replace this cache. */
+  cachedFolioSnapshot(): Promise<FolioSnapshot> {
+    this.accessedAt = Date.now();
+    return this.queued(async () => {
+      if (this.cached && Date.now() - this.cachedAt < 30_000) return this.cached;
+      const previous = this.cached;
+      const snapshot = await this.folioSnapshotAt(++this.sequence);
+      this.publishIfChanged(previous, snapshot);
+      return snapshot;
+    });
+  }
+
+  private publishIfChanged(previous: FolioSnapshot | undefined, snapshot: FolioSnapshot): void {
+    if (!previous || JSON.stringify([previous.files, previous.filters, previous.retention]) === JSON.stringify([snapshot.files, snapshot.filters, snapshot.retention])) return;
+    for (const subscriber of [...this.folioSubscribers]) {
+      try { subscriber(snapshot); } catch { /* A dead subscriber cannot stop reconciliation. */ }
+    }
+  }
+
+  keepFolioActive(): void { this.accessedAt = Date.now(); }
+
+  /** One bounded reconciliation catches filesystem changes outside Tether. */
+  reconcileFolio(): Promise<void> {
+    return this.queued(async () => {
+      if (!this.cached || Date.now() - this.accessedAt > 90_000) return;
+      const previous = this.cached;
+      const snapshot = await this.folioSnapshotAt(++this.sequence);
+      this.publishIfChanged(previous, snapshot);
     });
   }
 

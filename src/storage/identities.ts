@@ -157,6 +157,11 @@ export class Identities {
     }).immediate();
   }
 
+  find(id: string): Identity | undefined {
+    const row = this.row(id);
+    return row ? toIdentity(row) : undefined;
+  }
+
   /** Mark a known agent seen without naming it. Unknown IDs are ignored. */
   touch(id: string, now = Date.now()): void {
     this.db.query("UPDATE identities SET last_seen_at=? WHERE id=?").run(now, id);

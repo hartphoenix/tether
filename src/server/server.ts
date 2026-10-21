@@ -1,3 +1,4 @@
+import { creationPath, createMarkdown } from "../documents/create-markdown";
 import { assertAuthority } from "../cli/relocation";
 import { localFlySettings } from "./fly-settings";
 import { isApplicationAsset, type WebResponder } from "../web/bundle";
@@ -24,6 +25,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path
 import { readFileSync, writeFileSync } from "node:fs";
 import { PrivateStore, type MutationReceipt, type DocumentReference, type PrivateDocumentRow } from "../storage/private-store";
 import { validAgentId } from "../storage/identities";
+import { TurnHandoffs, handoffFailure } from "./turn-handoffs";
 import { turnAssignmentPrompt, takeoverInstructions } from "./turn-prompt";
 import { MAX_AGENT_ID_LENGTH, isHumanId, HUMAN_ID } from "../shared/agent-identity";
 import { ViewStore, cookieVerifier, verifiesCookie } from "./view-store";
@@ -305,6 +307,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     },
   });
   const hostTurns = new HostTurns(privateStore.db, now);
+  const turnHandoffs = new TurnHandoffs(privateStore.db, now);
   const bodyAttribution = new BodyAttribution(service, () => {
     const documents = privateStore.db.query("SELECT id,path,machine_id FROM documents").all() as { id: string; path: string; machine_id: string }[];
     const hosted = hostTurns.subscriptions();
@@ -806,7 +809,95 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
     return hostTurns.request(documentId, agentId, operationId, signal =>
       captureTurnAnnotations(chatStore, { host: signal.hostId, agent: (signal.recipientId ?? signal.agentId).slice(6) }, signal.signalId, signal.text).text);
   };
+  async function handoffOperation(operation: string, body: Record<string, unknown>, owner: string) {
+    const handoff = turnHandoffs.read(body.handoff);
+    if (operation !== "resume" && operation !== handoff.kind) throw handoffFailure("handoff_kind", `Use turn ${handoff.kind} for this handoff.`);
+    const recipientId = validAgentId(body.agentId), hostId = turnIdentifier(body.hostId, "Paseo daemon ID");
+    if (!recipientId.startsWith("paseo:")) throw invalidRequest("Go assignment requires your own Paseo session.");
+    return withControlDocument({ documentId: handoff.documentId }, async grant => {
+      // Read a title before mutation only when a new identity needs a default name.
+      const existingId = handoff.kind === "assign" ? privateStore.identities.signingId(recipientId) : undefined;
+      let title = basename(grant.path, extname(grant.path));
+      if (operation === "assign" && !handoff.receipt && !body.name && existingId && !privateStore.identities.find(existingId)) {
+        const doc = await service.read(grant);
+        title = /^#\s+(.+)$/m.exec(doc.body)?.[1]?.trim() || title;
+      }
+      const receipt = privateStore.db.transaction(() => {
+        // Re-read after awaits: concurrent invocations may have completed this handoff.
+        const current = turnHandoffs.read(handoff.id);
+        if (current.receipt) {
+          const r = current.receipt;
+          if (r.recipientId !== recipientId || r.hostId !== hostId || r.owner !== owner) throw handoffFailure("handoff_used", "Another session used this handoff. Copy a fresh prompt.");
+          const subscription = hostTurns.subscriptions().find(s => s.documentId === handoff.documentId && s.agentId === r.roleId);
+          if (!subscription || (subscription.recipientId ?? subscription.agentId) !== recipientId || subscription.owner !== owner || subscription.hostId !== hostId)
+            throw handoffFailure("agent_role_changed", "This assignment has since changed. Copy a fresh prompt.");
+          return r;
+        }
+        if (operation === "resume") throw handoffFailure("handoff_not_applied", `This handoff has not been applied. Run turn ${handoff.kind} with the same reference.`);
+        if (!hostTurns.connected(owner, hostId)) throw handoffFailure("turn_host_unavailable", "The Paseo turn adapter is not connected. Restore the Tether plugin connection and retry this command.");
+        let roleId: string;
+        if (handoff.kind === "takeover") {
+          roleId = validAgentId(handoff.roleId);
+          if (!hostTurns.subscriptions().some(s => s.documentId === grant.documentId && s.agentId === roleId)) throw handoffFailure("agent_role_changed", "This role is no longer registered here. Copy a fresh prompt.");
+          if (hostTurns.subscriptions().some(s => s.agentId !== roleId && (s.recipientId ?? s.agentId) === recipientId)) throw handoffFailure("turn_conflict", "This session already receives another role. Use a separate session for takeover.");
+          privateStore.identities.takeOver(roleId, recipientId, validAgentId(handoff.expectedRecipient), now());
+          hostTurns.takeOver(roleId, recipientId, hostId, owner, handoff.expectedRecipient!);
+        } else {
+          if (!handoff.additional && allTurnAgents(grant.path, grant.documentId!).length) throw handoffFailure("turn_slot_filled", "This document already has an agent. Copy a role takeover prompt or use the add-agent flow.");
+          roleId = privateStore.identities.signingId(recipientId);
+          if (handoff.additional && allTurnAgents(grant.path, grant.documentId!).some(s => s.agentId === roleId)) throw handoffFailure("agent_already_registered", "This session already has a Go button here. Paste the add-agent prompt into a different agent session.");
+          const existing = privateStore.identities.find(roleId);
+          if (body.name !== undefined && typeof body.name !== "string") throw invalidRequest("The role name must be text.");
+          if (body.icon !== undefined && typeof body.icon !== "string") throw invalidRequest("The icon must be a name.");
+          if (existing) privateStore.identities.touch(roleId, now());
+          else {
+            const cleanTitle = title.replace(/[\p{Cc}]/gu, "").trim().slice(0, 44);
+            const base = !cleanTitle || isHumanId(cleanTitle) ? "Document agent" : cleanTitle;
+            // Explicit names fail on collision; generated names get a deterministic suffix.
+            for (let suffix = 1; ; suffix++) {
+              try { privateStore.identities.claim(roleId, typeof body.name === "string" ? body.name : suffix === 1 ? base : `${base} ${suffix}`, now(), body.icon as string | undefined); break; }
+              catch (cause) { if (body.name !== undefined || (cause as { code?: string }).code !== "agent_name_taken" || suffix >= 1000) throw cause; }
+            }
+          }
+          hostTurns.register({ documentId: grant.documentId!, machineId: grant.machineId!, path: grant.path, agentId: roleId, recipientId, hostId, owner, behavior: "steer" });
+        }
+        const applied = { roleId, recipientId, hostId, owner };
+        turnHandoffs.complete(current, applied);
+        return applied;
+      }).immediate();
+      const identity = privateStore.identities.resolve([receipt.roleId], now())[0]!;
+      const reference = owner === "local" ? grant.path : `id:${grant.documentId}`;
+      const result = { identity, recipientId, handoff: handoff.id, outcome: "applied", document: reference,
+        registrations: hostTurns.subscriptions().filter(s => s.agentId === receipt.roleId).map(({ documentId, path, label }) => ({ documentId, path, label })),
+        instructions: [
+          `Use ${JSON.stringify(identity.name)} for --actor and keep your own session identity and configured connection.`,
+          "Read the returned document and threads; follow all continuation arguments and handle each thread before acknowledging the last fully handled pending page’s cursor. Use the same CLI, profile and connection. Acknowledgement records review, not registration.",
+          "Adopt the document’s work. A <tether-turn> requests your next turn. Do not send a turn yourself. Private session memory was not transferred; takeover does not stop work already running in the previous session.",
+        ] };
+      try {
+        await bodyAttribution.sync();
+        const document = await unsignedOperation("/control/document/read", { documentId: grant.documentId });
+        const pending = await unsignedOperation("/control/review/pending", { documentId: grant.documentId, actor: receipt.roleId, limit: 10, maxBytes: 8192 }) as { events: Array<{ threadId?: string }>; continuation: string | null };
+        const next: string[][] = [];
+        const threadIds = [...new Set(pending.events.map(e => e.threadId).filter((id): id is string => !!id))];
+        const threads = [];
+        for (const id of threadIds.slice(0, 3)) {
+          const thread = await unsignedOperation("/control/review/thread", { documentId: grant.documentId, threadId: id, maxBytes: 8192 }) as { continuation: string | null };
+          threads.push(thread);
+          if (thread.continuation) next.push(["thread", reference, id, "--continuation", thread.continuation]);
+        }
+        for (const id of threadIds.slice(3)) next.push(["thread", reference, id]);
+        if (pending.continuation) next.push(["pending", reference, "--actor", identity.name, "--continuation", pending.continuation]);
+        return { ...result, context: { document, pending, threads, next } };
+      } catch (cause) {
+        return { ...result, warnings: [{ code: "onboarding_incomplete", message: diagnosticText(cause instanceof Error ? cause.message : String(cause)) }],
+          resume: ["turn", "resume", handoff.id], instructions: [...result.instructions, "Assignment succeeded; use the resume arguments with the same CLI/profile to retrieve context without repeating assignment."] };
+      }
+    });
+  }
+
   async function turnOperation(operation: string, body: Record<string, unknown>, owner = "local", canSend = false): Promise<unknown> {
+    if (body.handoff !== undefined || operation === "assign" || operation === "resume") return handoffOperation(operation, body, owner);
     if (operation === "adapter") {
       const hostId = turnIdentifier(body.hostId, "host ID");
       if (body.action === "lease") {
@@ -902,6 +993,37 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
   }
 
   async function unsignedOperation(pathname: string, body: Record<string, unknown>): Promise<unknown> {
+    if (pathname === "/control/document/create") {
+      if (body.machineId !== undefined || body.documentId !== undefined) throw invalidRequest("Creation requires a new local path.");
+      if (typeof body.body !== "string") throw invalidRequest("Creation requires Markdown body text.");
+      const path = await creationPath(body.path);
+      if (privateStore.documentForPath(path)) throw handoffFailure("document_exists", "This path already has a Tether record. Restore or relocate that document instead of claiming it as new.");
+      const recipientId = typeof body.agentId === "string" ? validAgentId(body.agentId) : undefined;
+      const hosted = recipientId?.startsWith("paseo:") === true;
+      if (hosted) {
+        const hostId = turnIdentifier(body.hostId, "Paseo daemon ID");
+        if (!hostTurns.connected("local", hostId)) throw handoffFailure("turn_host_unavailable", "Restore the Tether plugin connection and retry creation. No file was created.");
+      }
+      await createMarkdown(path, body.body);
+      // Once published, preserve the file and report partial setup explicitly.
+      let handoff: string | undefined;
+      try {
+        const document = await withControlDocument({ path }, async grant => {
+          if (hosted) handoff = turnHandoffs.create({ kind: "assign", documentId: grant.documentId! }).id;
+          const doc = await service.read(grant);
+          return { documentId: grant.documentId, path, bodyRevision: doc.bodyRevision };
+        });
+        const registration = await recents.record(path);
+        if (!hosted) return { ...document, created: true, outcome: "applied", go: { registered: false, reason: "Automatic Go delivery requires a Paseo agent session. Use the document's assignment prompt to add one." }, hostSynchronized: registration.hostSynchronized };
+        const assigned = await handoffOperation("assign", { ...body, handoff }, "local");
+        return { ...document, ...assigned, created: true, go: { registered: true }, hostSynchronized: registration.hostSynchronized };
+      } catch (cause) {
+        return { path, created: true, outcome: "partially_applied", go: { registered: false },
+          warnings: [{ code: "creator_setup_incomplete", message: diagnosticText(cause instanceof Error ? cause.message : String(cause)) }],
+          ...(handoff ? { handoff, resume: ["turn", "assign", handoff, ...(typeof body.name === "string" ? ["--name", body.name] : []), ...(typeof body.icon === "string" ? ["--icon", body.icon] : [])] } : {}),
+          instructions: ["The file was created. Do not recreate or overwrite it. Resume assignment with the returned command arguments, using the same CLI and profile; use recents add if Folio registration failed."] };
+      }
+    }
     if (pathname === "/control/document/move") {
       if (typeof body.path !== "string" || typeof body.target !== "string") throw invalidRequest("Move requires source and destination paths.");
       const result = await service.move(body.path, body.target);
@@ -1182,16 +1304,19 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (apiPath === "/turns" && request.method === "GET") return json({ agents: allTurnAgents(session.grant.path, session.grant.documentId!), identityRevision: privateStore.identities.revision() });
       if (apiPath === "/turn-prompt" && request.method === "GET") {
         const roleId = new URL(request.url).searchParams.get("agentId");
+        const additional = new URL(request.url).searchParams.get("add") === "1";
+        if (additional && roleId) throw invalidRequest("Choose either takeover or adding another agent.");
         const subscription = roleId ? hostTurns.subscriptions().find(s => s.documentId === session.grant.documentId && s.agentId === roleId) : undefined;
         if (roleId && !subscription) throw invalidRequest("Role takeover requires a durable host registration. Upgrade this role's registration first.");
-        if (!roleId && allTurnAgents(session.grant.path, session.grant.documentId!).length) throw invalidRequest("This document already has an assigned agent.");
-        return json({ prompt: turnAssignmentPrompt({ path: session.grant.path, profile: config.profile, executable: join(runtimeRoot(), "tether"),
-          ...(new URL(request.url).searchParams.get("shared") === "1" ? { sharedDocumentId: session.grant.documentId! } : {}),
-          ...(subscription ? { role: privateStore.identities.resolve([subscription.agentId], now())[0], recipientId: subscription.recipientId ?? subscription.agentId, label: subscription.label } : {}) }) }, { headers: { "cache-control": "no-store" } });
+        if (!roleId && !additional && allTurnAgents(session.grant.path, session.grant.documentId!).length) throw invalidRequest("This document already has an assigned agent.");
+        const handoff = turnHandoffs.create({ documentId: session.grant.documentId!, kind: subscription ? "takeover" : "assign", ...(additional ? { additional: true } : {}),
+          ...(subscription ? { roleId: subscription.agentId, expectedRecipient: subscription.recipientId ?? subscription.agentId } : {}) });
+        return json({ prompt: turnAssignmentPrompt({ handoff: handoff.id, kind: handoff.kind, additional, profile: config.profile,
+          executable: join(runtimeRoot(), "tether"), shared: new URL(request.url).searchParams.get("shared") === "1" }) }, { headers: { "cache-control": "no-store" } });
       }
       if (apiPath === "/turn-events" && request.method === "GET") return turnEventStream(AbortSignal.any([request.signal, turnLifetime.signal]), fn => {
         const a = hostTurns.subscribe(fn), b = turns.subscribe(fn); return () => { a(); b(); };
-      }, () => ({ agents: allTurnAgents(session.grant.path, session.grant.documentId!), identityRevision: privateStore.identities.revision() }), () => sessions.has(session.id));
+      }, () => ({ agents: allTurnAgents(session.grant.path, session.grant.documentId!), identityRevision: privateStore.identities.revision() }), () => sessions.has(session.id), true);
       // Wakes one agent; it carries no content beyond "the human started your next turn".
       if (apiPath === "/turn" && request.method === "POST") {
         const body = await requestJson(request);
@@ -1432,10 +1557,11 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (request.method === "GET" && suffix === "/api/files") return json(await recents.files());
       const updateResponse = await updateRequest(request, suffix, session.target);
       if (updateResponse) return updateResponse;
-      if (request.method === "GET" && suffix === "/api/snapshot") {
+      if (request.method === "GET" && (suffix === "/api/snapshot" || suffix === "/api/presence")) {
         const value = displayPreferences(await hostThemes.preferences(themeClient(request, session.target), await preferences()));
         session.leaseUntil = now() + leaseMs;
-        return json({ ...await recents.folioSnapshot({ view: "all" }), instanceId,
+        recents.keepFolioActive();
+        return json({ ...(suffix === "/api/snapshot" ? await recents.cachedFolioSnapshot() : {}), instanceId, hostUpdates: true,
           preferences: { ...folioTheme({ theme: value.theme, design: value.customThemes?.find(theme => theme.id === value.theme) }), uiScale: value.uiScale ?? 1, committedUiScale: value.committedUiScale, commentTextSize: value.commentTextSize ?? 16, defaultDocumentZoom: value.defaultDocumentZoom ?? 100 } });
       }
       if (request.method === "GET" && suffix === "/api/events") return recentsEventStream(request, themeClient(request, session.target));
@@ -1645,7 +1771,7 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
           const hostId = turnIdentifier(url.searchParams.get("hostId"), "host ID");
           return turnEventStream(AbortSignal.any([request.signal, turnLifetime.signal]), fn => hostTurns.subscribe(fn), () => hostTurns.snapshot("local", hostId));
         }
-        if (["/control/turn/adapter", "/control/turn/status", "/control/turn/send", "/control/turn/takeover"].includes(pathname) && request.method === "POST") return json(await turnOperation(pathname.split("/").pop()!, await requestJson(request), "local", true));
+        if (["/control/turn/adapter", "/control/turn/status", "/control/turn/send", "/control/turn/takeover", "/control/turn/assign", "/control/turn/resume"].includes(pathname) && request.method === "POST") return json(await turnOperation(pathname.split("/").pop()!, await requestJson(request), "local", true));
         if (["/control/turn/wait", "/control/turn/register", "/control/turn/unregister", "/control/turn/received"].includes(pathname) && request.method === "POST") {
           const body = await requestJson(request);
           if (pathname === "/control/turn/register" && body.hostId) return json(await turnOperation("register", body));
@@ -1860,11 +1986,16 @@ export function createDaemon(options: DaemonOptions = {}): TetherDaemon {
       if (options.publishStartup) await options.publishStartup(publish); else await publish();
       if (stopped) { await removeDiscovery(config, instanceId); return; }
       let lastExpiry = now();
+      let lastFolioCheck = now();
       timer = setInterval(() => {
         const current = now();
         if (maintenanceEnabled && !maintenanceRunning && current - lastExpiry >= 60_000) {
           lastExpiry = current; maintenanceRunning = true;
           maintenance = recents.expire().catch(() => {}).finally(() => { maintenanceRunning = false; });
+        }
+        if (!maintenanceRunning && current - lastFolioCheck >= 30_000) {
+          lastFolioCheck = current; maintenanceRunning = true;
+          maintenance = recents.reconcileFolio().catch(() => {}).finally(() => { maintenanceRunning = false; });
         }
         for (const session of [...sessions.values()]) {
           for (const [lease, expiry] of session.leases) if (expiry <= current) session.leases.delete(lease);

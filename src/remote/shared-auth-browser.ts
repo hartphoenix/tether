@@ -1,6 +1,9 @@
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import type { SharedClient } from "./shared-auth";
 
+import { pasteTextInput } from "../web/text-paste";
+document.addEventListener("paste", pasteTextInput);
+
 const status = document.querySelector<HTMLElement>("#status")!;
 async function post(path: string, body: unknown) {
   const response = await fetch(path, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });

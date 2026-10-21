@@ -18,7 +18,7 @@ export function createTurnControls(options: {
   notice: (message: string) => void;
   identity?: IdentityLookup;
   rename?: (agentId: string, x: number, y: number) => void;
-  copyAssignment?: (agent?: TurnAgent) => Promise<void>;
+  copyAssignment?: (agent?: TurnAgent, additional?: boolean) => Promise<void>;
 }) {
   const root = document.createElement('div');
   root.className = 'wm-turn-stack';
@@ -47,7 +47,7 @@ export function createTurnControls(options: {
       if (!agent) return;
       if (!options.copyAssignment) { options.rename!(agent.agentId, x, y); return; }
       openAgentMenu({ x, y, rename: () => options.rename!(agent.agentId, x, y),
-        takeover: () => options.copyAssignment!(agent), notice: options.notice });
+        takeover: () => options.copyAssignment!(agent), add: () => options.copyAssignment!(undefined, true), notice: options.notice });
     });
     slots.set(key, existing);
     return existing;
