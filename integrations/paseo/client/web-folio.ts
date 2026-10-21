@@ -1,4 +1,5 @@
 import { observePaneVisibility } from "./view-visibility";
+import { nativePasteScript } from "./native-paste";
 import { getState, subscribeState } from "./state";
 import type { FolioView } from "../shared/contracts";
 
@@ -13,6 +14,7 @@ type Guest = {
   removeEventListener(name: string, listener: Listener): void;
   remove(): void;
   executeJavaScript?(script: string): Promise<unknown>;
+  paste?(): void | Promise<void>;
   getWebContentsId?(): number;
   dispatchEvent?(event: Event): boolean;
 };
@@ -124,6 +126,8 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
     let finalUrl: string | undefined;
     let committedUrl: string | undefined;
     let domReady = false;
+    let pasteChannel: string | undefined;
+    let pasteSequence = 0;
     const listeners = new Map<string, Listener>();
     let visible = true;
     let lastHostState = "";
@@ -201,10 +205,31 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
           options.onSession?.(finalUrl);
           options.onState("ready");
           sendHostState();
+          if (!pasteChannel && guest?.paste && guest.executeJavaScript) {
+            const channel = `tether:native-paste:${crypto.randomUUID()}:`;
+            pasteChannel = channel;
+            pasteSequence = 0;
+            try {
+              void guest.executeJavaScript(nativePasteScript(channel)).catch(() => {
+                if (pasteChannel === channel) pasteChannel = undefined;
+              });
+            } catch { pasteChannel = undefined; }
+          }
         };
         // webview will-navigate cannot be cancelled. The page emits a bounded
         // console-message request instead; no preload or Node access is needed.
         listen("console-message", event => {
+          if (live() && domReady && committedUrl === finalUrl && pasteChannel && event.message?.startsWith(pasteChannel)) {
+            const value = event.message.slice(pasteChannel.length);
+            const sequence = Number(value);
+            if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(sequence) || sequence <= pasteSequence) return;
+            pasteSequence = sequence;
+            // The guest cancelled this key's default action. Invoke native paste once,
+            // bypassing Paseo's mutable menu gate; never retry an uncertain insertion.
+            try { void Promise.resolve(guest?.paste?.()).catch(() => {}); }
+            catch { /* A destroyed guest cannot accept a paste. */ }
+            return;
+          }
           const prefix = "tether:open-browser:";
           if (!live() || !domReady || !committedUrl || !options.onOpenBrowser || !event.message?.startsWith(prefix)) return;
           try {
@@ -221,6 +246,7 @@ export function mountFolioWebview(container: unknown, options: MountOptions): ()
         listen("did-start-navigation", event => {
           if (!live() || !event.isMainFrame || event.isInPlace) return;
           domReady = false;
+          pasteChannel = undefined;
           lastHostState = "";
           finalUrl = undefined;
           clearTimeout(timer);

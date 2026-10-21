@@ -3,6 +3,37 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { disposeFolioViews, folioViewKey, mountFolioWebview, type FolioViewState } from "../integrations/paseo/client/web-folio";
 import { themedLaunch } from "../integrations/paseo/client/theme-sync";
 
+test("native paste requests are scoped to a ready page and consumed once across navigation and teardown", async () => {
+  const view = mount();
+  await tick();
+  const guest = guests[0]! as Guest & { paste(): void };
+  let pastes = 0;
+  guest.paste = () => { pastes++; };
+  guest.ready();
+  const channel = guest.scripts.join('\n').match(/tether:native-paste:[0-9a-f-]+:/)![0];
+  const request = (value: string) => guest.emit('console-message', { message: value });
+  request(channel + '1');
+  request(channel + '1');
+  request(channel + '0');
+  request(channel + '2junk');
+  request('tether:native-paste:wrong:2');
+  expect(pastes).toBe(1);
+  request(channel + '2');
+  expect(pastes).toBe(2);
+  guest.emit('did-start-navigation', { isMainFrame: true });
+  request(channel + '3');
+  expect(pastes).toBe(2);
+  guest.ready();
+  const replacement = guest.scripts.at(-1)!.match(/tether:native-paste:[0-9a-f-]+:/)![0];
+  expect(replacement).not.toBe(channel);
+  request(channel + '3');
+  request(replacement + '1');
+  expect(pastes).toBe(3);
+  view.dispose();
+  request(replacement + '2');
+  expect(pastes).toBe(3);
+});
+
 class Guest {
   style = { width: "", height: "", display: "", flex: "" };
   attributes: Array<[string, string]> = [];
