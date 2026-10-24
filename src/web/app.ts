@@ -685,7 +685,9 @@ async function openDocument(discardCurrent = false, prefetched?: DocumentRespons
         },
         [Crepe.Feature.Toolbar]: {
           buildToolbar: (builder) => {
-            builder.getGroup("function").addItem("comment", {
+            const functions = builder.getGroup("function");
+            functions.group.items = functions.group.items.filter(item => item.key !== "code" && item.key !== "latex");
+            functions.addItem("comment", {
               icon: reviewNoteIconSvg,
               label: "Comment",
               active: () => false,
