@@ -54,7 +54,8 @@ const reviewCursors = Object.fromEntries(Object.entries(reviewActionSvg).map(([a
   return [action, `url("data:image/svg+xml,${encodeURIComponent(svg)}") 16 16, pointer`];
 }));
 const MAX_GAP_WORDS = 4;
-const IGNORE = { ignoreAttrs: { heading: ['id'] } };
+// Heading IDs and item labels are derived by the editor, not independent edits.
+const IGNORE = { ignoreAttrs: { heading: ['id'], list_item: ['label'] } };
 
 /** Group changes that sit within a few words of each other in the same block, or that abut across blocks. */
 export function groupHunks(base: Node, doc: Node, changes: readonly Range[]): Hunk[] {
@@ -130,6 +131,15 @@ function applyChanges(tr: Transform, target: Node, changes: readonly Range[]): T
   return tr;
 }
 
+/** Milkdown skips its automatic renumbering for transactions carrying review metadata. */
+function renumberLists(tr: Transform): void {
+  tr.doc.descendants((node, pos, parent, index) => {
+    if (node.type.name !== 'list_item' || parent?.type.name !== 'ordered_list') return;
+    const label = `${(parent.attrs.order ?? 1) + index}.`;
+    if (node.attrs.label !== label) tr.setNodeMarkup(pos, undefined, { ...node.attrs, label });
+  });
+}
+
 export const reviewPlugin = new Plugin<ReviewState | null>({
   key: reviewKey,
   state: {
@@ -154,6 +164,7 @@ export const reviewPlugin = new Plugin<ReviewState | null>({
         const accepted = new Transform(state.base);
         // Replacing one slice across isolating table cells can insert extra structure.
         for (const change of [...hunk.changes].reverse()) accepted.replace(change.fromA, change.toA, next.doc.slice(change.fromB, change.toB));
+        renumberLists(accepted);
         const base = accepted.doc;
         state = { ...state, base, ...compute(base, next.doc) };
       } else if (action?.type === 'toggle') {
@@ -281,6 +292,7 @@ export function renderBefore(base: Node, from: number, to: number, deleted: read
     const spec = serializer.nodes[node.type.name];
     if (node.isTextblock && spec) {
       const { dom, contentDOM } = DOMSerializer.renderSpec(document, spec(node));
+      if (dom instanceof HTMLElement) dom.dataset.reviewPosition = String(pos);
       (contentDOM ?? dom as HTMLElement).append(inlineRun(node, pos + 1, pos + 1, pos + 1 + node.content.size));
       return dom;
     }
@@ -290,6 +302,7 @@ export function renderBefore(base: Node, from: number, to: number, deleted: read
       return dom;
     }
     const { dom, contentDOM } = DOMSerializer.renderSpec(document, spec(node));
+    if (dom instanceof HTMLElement) dom.dataset.reviewPosition = String(pos);
     node.forEach((child, offset) => (contentDOM ?? dom as HTMLElement).append(renderNode(child, pos + 1 + offset)));
     return dom;
   };
@@ -375,12 +388,40 @@ class MarginLines {
     for (const extra of lines.slice(used)) extra.remove();
   }
 }
+/** Use changed items or their changed paragraphs, without enclosing unchanged nested lists. */
+function listMarkerBlocks(doc: Node, from: number, to: number): number[] {
+  const positions: number[] = [];
+  let outside = false;
+  doc.nodesBetween(from, to, (node, pos) => {
+    if (node.type.name === 'list_item' && from <= pos) {
+      if (to >= pos + node.nodeSize) { positions.push(pos); return false; }
+      // Attribute-only changes (such as a task checkbox) affect the item's first paragraph.
+      if (to <= pos + 1 && node.firstChild?.isTextblock) { positions.push(pos + 1); return false; }
+    }
+    if (node.isTextblock || node.isBlock && node.isAtom) {
+      const $pos = doc.resolve(pos);
+      if (Array.from({ length: $pos.depth }, (_, i) => $pos.node(i + 1)).some(parent => parent.type.name === 'list_item')) positions.push(pos);
+      else outside = true;
+      return false;
+    }
+    return true;
+  });
+  return outside ? [] : positions;
+}
+function blockExtent(elements: (globalThis.Node | null)[]): { top: number; bottom: number } | null {
+  const boxes = elements.filter((node): node is HTMLElement => node instanceof HTMLElement).map(node => node.getBoundingClientRect());
+  return boxes.length ? { top: Math.min(...boxes.map(box => box.top)), bottom: Math.max(...boxes.map(box => box.bottom)) } : null;
+}
 /** Viewport rectangle a hunk occupies, whichever wording it shows. */
 export function hunkExtent(view: EditorView, state: ReviewState, hunk: Hunk): { top: number; bottom: number } | null {
   try {
     if (showsBefore(state, hunk)) {
       const widget = view.dom.querySelector<HTMLElement>(`.tether-review-before[data-hunk="${hunk.fromB}"]`);
       if (widget) {
+        if (!hunk.inline) {
+          const extent = blockExtent(listMarkerBlocks(state.base, hunk.fromA, hunk.toA).map(pos => widget.querySelector(`[data-review-position="${pos}"]`)));
+          if (extent) return extent;
+        }
         const renderedRows = [...widget.querySelectorAll('tr')], changedRows: Element[] = [];
         if (renderedRows.length) {
           const range = blockRange(state.base, hunk.fromA, hunk.toA);
@@ -411,12 +452,14 @@ export function hunkExtent(view: EditorView, state: ReviewState, hunk: Hunk): { 
     });
     if (rows.length && !outsideTable) return { top: rows[0]!.getBoundingClientRect().top, bottom: rows.at(-1)!.getBoundingClientRect().bottom };
     const $from = view.state.doc.resolve(hunk.fromB);
-    if (hunk.fromB === hunk.toB && Array.from({ length: $from.depth }, (_, i) => $from.node(i + 1)).some(node => node.type.spec.tableRole === 'table')) {
-      // A deleted row has no current row box; mark its insertion boundary.
+    if (hunk.fromB === hunk.toB && Array.from({ length: $from.depth }, (_, i) => $from.node(i + 1)).some(node => node.type.spec.tableRole === 'table' || ['bullet_list', 'ordered_list'].includes(node.type.name))) {
+      // A deleted row or list item has no current box; mark its insertion boundary.
       const boundary = view.coordsAtPos(hunk.fromB);
       return { top: boundary.top, bottom: boundary.top + 8 };
     }
     if (!hunk.inline) {
+      const listExtent = blockExtent(listMarkerBlocks(view.state.doc, hunk.fromB, hunk.toB).map(pos => view.nodeDOM(pos)));
+      if (listExtent) return listExtent;
       const range = blockRange(view.state.doc, hunk.fromB, hunk.toB);
       let first: number | null = null, last: number | null = null;
       view.state.doc.nodesBetween(range.from, range.to, (_node, pos) => { first ??= pos; last = pos; return false; });
@@ -494,6 +537,7 @@ export function revertHunk(view: EditorView, hunk: Hunk): void {
   if (!state) return;
   const tr = view.state.tr;
   for (const change of [...hunk.changes].reverse()) tr.replace(change.fromB, change.toB, state.base.slice(change.fromA, change.toA));
+  renumberLists(tr);
   view.dispatch(tr.setMeta(reviewKey, { type: 'revert', hunk } satisfies Action));
 }
 export function toggleHunks(view: EditorView, hunks: readonly Hunk[]): void {

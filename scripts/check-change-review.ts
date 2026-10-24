@@ -281,6 +281,41 @@ try {
       await hunkLine(0).click();
       await reader.locator('#conflict').waitFor({ state: 'hidden' });
       check(await readFile(path, 'utf8') === combinedNext, 'accepting combined changes rewrote the table');
+      await reader.waitForTimeout(900);
+      const listCases: { label: string; base: string; next: string; target: string; before?: boolean }[] = [];
+      for (const marker of ['-', '*', '+', '1.', '1)', '- [ ]', '1. [ ]']) {
+        const base = `${marker} First unchanged item\n${marker} Middle original item\n${marker} Last unchanged item\n`;
+        listCases.push({ label: `${marker} insertion`, base, next: base.replace(`${marker} Last`, `${marker} Added item\n${marker} Last`), target: 'Added item' });
+        listCases.push({ label: `${marker} text`, base, next: base.replace('original', 'updated'), target: 'Middle updated item' });
+        listCases.push({ label: `${marker} deletion before`, base, next: base.replace(`${marker} Middle original item\n`, ''), target: 'Middle original item', before: true });
+        const nested = `${marker} Parent unchanged\n    ${marker} First child\n    ${marker} Last child\n${marker} Final sibling\n`;
+        listCases.push({ label: `${marker} nested insertion`, base: nested, next: nested.replace(`    ${marker} Last`, `    ${marker} Added child\n    ${marker} Last`), target: 'Added child' });
+      }
+      listCases.push({ label: 'task checkbox with children', base: '- [ ] Parent task\n    - [ ] Child unchanged\n- [ ] Other task\n', next: '- [x] Parent task\n    - [ ] Child unchanged\n- [ ] Other task\n', target: 'Parent task' });
+      listCases.push({ label: 'loose paragraph insertion', base: '- First item\n\n- Parent item\n\n  Existing paragraph\n\n- Last item\n', next: '- First item\n\n- Parent item\n\n  Added paragraph\n\n  Existing paragraph\n\n- Last item\n', target: 'Added paragraph' });
+      for (const test of listCases) {
+        phase = `list review ${test.label}`;
+        console.log(`${name}: ${phase}`);
+        await writeFile(path, test.base); await reader.reload(); await reader.locator('.ProseMirror li').first().waitFor();
+        await reader.waitForTimeout(150);
+        await writeFile(path, test.next); await reader.evaluate(() => dispatchEvent(new Event('online')));
+        await reader.locator('#save-review').waitFor({ state: 'visible' });
+        await reader.waitForFunction(() => document.querySelectorAll('.tether-review-line').length === 1);
+        if (test.before) {
+          check((await hunkLine(0).boundingBox())!.height <= 10, `${test.label}: deleted item marker covers the remaining list`);
+          await hunkLine(0).click({ button: 'right' });
+          await reader.getByRole('menuitem', { name: 'Show earlier wording', exact: true }).click();
+          await reader.locator('.tether-review-line.is-before').waitFor();
+        }
+        const selector = test.before ? '.tether-review-before p' : '.ProseMirror p';
+        const target = reader.locator(selector).filter({ hasText: test.target }).first();
+        const bounds = (await target.boundingBox())!, line = (await hunkLine(0).boundingBox())!;
+        check(line.y >= bounds.y - 2 && line.y + line.height <= bounds.y + bounds.height + 2, `${test.label}: marker extends beyond changed item: ${JSON.stringify({line,bounds})}`);
+        await hunkLine(0).click();
+        await reader.locator('#conflict').waitFor({ state: 'hidden' });
+        // Let review receipts and reverted-body saves finish before replacing the next fixture.
+        await reader.waitForTimeout(900);
+      }
       check(errors.length === 0, errors.join('\n'));
       console.log(`PASS ${name}: hunk reverts, seen lines, Done, earlier wording, review comments, mid-review changes`);
       await context.tracing.stop();

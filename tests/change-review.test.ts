@@ -275,3 +275,40 @@ test('inserted and deleted table rows accept or revert without affecting neighbo
     }
   }
 });
+
+for (const marker of ['-', '*', '+', '1.', '1)', '- [ ]', '1. [ ]']) {
+  test(`${marker} list edits accept and revert cleanly`, () => {
+    const base = `${marker} Alpha unchanged\n${marker} Beta unchanged\n${marker} Gamma unchanged\n`;
+    const next = base.replace('Beta unchanged', 'Beta updated').replace(`${marker} Gamma`, `${marker} Inserted item\n${marker} Gamma`);
+    load(base);
+    review.startIncomingDiff(crepe.editor, next);
+    const current = view.state.doc;
+    const state = review.reviewState(view)!;
+    expect(state.hunks.length).toBeGreaterThan(0);
+    for (let i = 0; i < 10 && review.reviewState(view); i++) review.markHunkSeen(view, review.reviewState(view)!.hunks[0]!);
+    expect(review.reviewState(view)).toBeNull();
+    expect(view.state.doc).toBe(current);
+    load(base);
+    review.startIncomingDiff(crepe.editor, next);
+    for (let i = 0; i < 10 && review.reviewState(view); i++) review.revertHunk(view, review.reviewState(view)!.hunks[0]!);
+    expect(review.reviewState(view)).toBeNull();
+    expect(view.state.doc.eq(state.base)).toBe(true);
+  });
+}
+
+test('ordered insertion marks only the new item, not automatic renumbering', () => {
+  const base = '1. First unchanged item\n1. Middle original item\n1. Last unchanged item\n';
+  load(base);
+  review.startIncomingDiff(crepe.editor, base.replace('1. Last', '1. Added item\n1. Last'));
+  const state = review.reviewState(view)!;
+  expect(state.hunks).toHaveLength(1);
+  const hunk = state.hunks[0]!;
+  expect(view.state.doc.textBetween(hunk.fromB, hunk.toB)).toBe('Added item');
+  review.revertHunk(view, hunk);
+  expect(review.reviewState(view)).toBeNull();
+  expect(view.state.doc.eq(state.base)).toBe(true);
+  load(base);
+  review.startIncomingDiff(crepe.editor, base.replace(/^1\./, '5.'));
+  expect(review.reviewState(view)?.hunks.length).toBeGreaterThan(0);
+  review.endIncomingDiff(view);
+});
