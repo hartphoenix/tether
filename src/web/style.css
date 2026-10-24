@@ -345,6 +345,9 @@ html[data-wm-scheme="light"] img[src$="#gh-dark-mode-only"] { display: none; }
   text-decoration: none;
   cursor: pointer;
 }
+#editor .milkdown .ProseMirror sup[data-type="footnote_reference"] + sup[data-type="footnote_reference"] {
+  margin-inline-start: 0.3em;
+}
 .wm-footnote-composer .wm-annotation-actions { justify-content: space-between; }
 .wm-mermaid { overflow-x: auto; text-align: center; }
 .wm-mermaid svg { max-width: 100%; height: auto; }
