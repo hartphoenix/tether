@@ -207,6 +207,7 @@ export function captureRange(doc: ProseMirrorNode, from: number, to: number, sou
   for (let offset = 0; offset < projection.positions.length - 1; offset += 1) {
     const position = projection.positions[offset];
     const nextPosition = projection.positions[offset + 1];
+    if (position === nextPosition) continue;
     if (position >= from && position < to && start === null) start = offset;
     if (position >= from && position < to && nextPosition !== undefined) end = offset + 1;
   }

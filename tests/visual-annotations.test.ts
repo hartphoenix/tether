@@ -9,6 +9,8 @@ import { bodyRevision, createAnchor, resolveAnchor } from '../src/core/annotatio
 import { encodePng, decodePng, renderEvidence } from '../src/documents/visual-png';
 import { validateRegion, validateVisual } from '../src/core/visual-anchor';
 import { AgentReads } from '../src/documents/agent-reads';
+import { Schema } from '@milkdown/kit/prose/model';
+import { captureRange } from '../src/web/annotations-ui';
 const png = encodePng({ width: 30, height: 20, data: new Uint8Array(30 * 20 * 4).fill(255) });
 const hash = 'sha256:' + createHash('sha256').update(png).digest('hex');
 const body = 'Before\n\n```mermaid\nflowchart LR\n A --> B\n```\n\nAfter\n';
@@ -133,6 +135,35 @@ test('source-aware block matching preserves unique moves and rejects a different
     expect(locateVisualBlock(a, edited.projection, edited.blocks)?.source).toBe('c.png');
     const twoEdited = markdownProjectionDetails('Before\n\n![A](c.png)\n\n![A](d.png)\n\nRewritten after');
     expect(locateVisualBlock(a, twoEdited.projection, twoEdited.blocks)?.source).toBe('c.png');
+});
+test('captured regions on consecutive block images save without including the preceding separator', async () => {
+    const root = await mkdtemp('/tmp/tether-consecutive-images-'), store = new PrivateStore(join(root, 'store.sqlite'));
+    try {
+        const path = join(root, 'doc.md'), body = '![A](a.png)\n\n![B](b.png)\n\n![C](c.png)\n';
+        await writeFile(path, body);
+        const sources = ['a.png', 'b.png', 'c.png'];
+        for (const source of sources) await writeFile(join(root, source), png);
+        const schema = new Schema({ nodes: {
+            doc: { content: 'block+' },
+            'image-block': { group: 'block', atom: true, attrs: { src: { default: '' } } },
+            text: {},
+        } });
+        const doc = schema.node('doc', null, sources.map(src => schema.node('image-block', { src })));
+        const service = new DocumentService({ store }), grant = await service.open(path), revision = bodyRevision(body);
+        for (const [position, source] of sources.entries()) {
+            const captured = captureRange(doc, position, position + 1, revision);
+            expect(captured).not.toBeNull();
+            const a = { ...captured!, visual: { ...anchor().visual, kind: 'image' as const, source, sourceRevision: hash } };
+            const created = await service.appendEvent({ session: grant, type: 'comment', actor: 'human', body: 'Region', anchor: a, expectedBodyRevision: revision, currentVisualRevision: hash, evidenceData: png.toString('base64') });
+            expect(created.annotations.threads).toHaveLength(position + 1);
+            expect(captured).toMatchObject({ exact: '\uFFFC', projectionStart: position * 2, projectionEnd: position * 2 + 1 });
+        }
+        // A selection spanning blocks must still retain its intervening separators.
+        expect(captureRange(doc, 0, 3, revision)?.exact).toBe('\uFFFC\n\uFFFC\n\uFFFC');
+    } finally {
+        store.close();
+        await rm(root, { recursive: true, force: true });
+    }
 });
 test('local image replacement without Markdown edits rejects stale capture and retains evidence', async () => {
     const root = await mkdtemp('/tmp/tether-image-revision-'), store = new PrivateStore(join(root, 'store.sqlite'));
