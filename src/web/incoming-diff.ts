@@ -78,9 +78,13 @@ export function groupHunks(base: Node, doc: Node, changes: readonly Range[]): Hu
 }
 function closeEnough(doc: Node, from: number, to: number): boolean {
   if (to <= from) return true;
+  const $from = doc.resolve(from), $to = doc.resolve(to);
+  // One review action per table row, including changes in separate cells.
+  for (let depth = $from.depth; depth > 0; depth--) {
+    if ($from.node(depth).type.spec.tableRole === 'row' && $to.depth >= depth && $from.start(depth) === $to.start(depth)) return true;
+  }
   const words = doc.textBetween(from, to, ' ', ' ').split(/\s+/).filter(Boolean).length;
   if (words === 0) return true;
-  const $from = doc.resolve(from), $to = doc.resolve(to);
   return words <= MAX_GAP_WORDS && $from.parent === $to.parent && $from.parent.isTextblock;
 }
 function withinTextblock(doc: Node, from: number, to: number): boolean {
@@ -147,7 +151,10 @@ export const reviewPlugin = new Plugin<ReviewState | null>({
       };
       if (action?.type === 'seen') {
         const hunk = action.hunk;
-        const base = new Transform(state.base).replace(hunk.fromA, hunk.toA, next.doc.slice(hunk.fromB, hunk.toB)).doc;
+        const accepted = new Transform(state.base);
+        // Replacing one slice across isolating table cells can insert extra structure.
+        for (const change of [...hunk.changes].reverse()) accepted.replace(change.fromA, change.toA, next.doc.slice(change.fromB, change.toB));
+        const base = accepted.doc;
         state = { ...state, base, ...compute(base, next.doc) };
       } else if (action?.type === 'toggle') {
         const before = new Set(state.before);
@@ -342,6 +349,10 @@ class MarginLines {
       if (!line) {
         line = document.createElement('button');
         line.type = 'button';
+        line.addEventListener('contextmenu', event => {
+          // The margin layer is outside the editor DOM, so forward to its existing menu handlers.
+          this.view.someProp('handleDOMEvents', handlers => handlers.contextmenu?.(this.view, event));
+        });
         line.addEventListener('click', event => {
           event.preventDefault();
           const state = reviewKey.getState(this.view.state);
@@ -370,9 +381,40 @@ export function hunkExtent(view: EditorView, state: ReviewState, hunk: Hunk): { 
     if (showsBefore(state, hunk)) {
       const widget = view.dom.querySelector<HTMLElement>(`.tether-review-before[data-hunk="${hunk.fromB}"]`);
       if (widget) {
+        const renderedRows = [...widget.querySelectorAll('tr')], changedRows: Element[] = [];
+        if (renderedRows.length) {
+          const range = blockRange(state.base, hunk.fromA, hunk.toA);
+          let index = 0;
+          state.base.nodesBetween(range.from, range.to, (node, pos) => {
+            if (node.type.spec.tableRole !== 'row') return true;
+            const row = renderedRows[index++];
+            if (row && pos < hunk.toA && pos + node.nodeSize > hunk.fromA) changedRows.push(row);
+            return false;
+          });
+          if (changedRows.length) return { top: changedRows[0]!.getBoundingClientRect().top, bottom: changedRows.at(-1)!.getBoundingClientRect().bottom };
+        }
         const rects = [...widget.getClientRects()];
         if (rects.length) return { top: Math.min(...rects.map(r => r.top)), bottom: Math.max(...rects.map(r => r.bottom)) };
       }
+    }
+    // Table hunks can span cells without changing the surrounding table.
+    const rows: HTMLElement[] = [];
+    let outsideTable = false;
+    view.state.doc.nodesBetween(hunk.fromB, hunk.toB, (node, pos) => {
+      if (node.type.spec.tableRole !== 'row') {
+        if (node.isTextblock || node.isBlock && node.isAtom) outsideTable = true;
+        return true;
+      }
+      const dom = view.nodeDOM(pos);
+      if (dom instanceof HTMLElement) rows.push(dom);
+      return false;
+    });
+    if (rows.length && !outsideTable) return { top: rows[0]!.getBoundingClientRect().top, bottom: rows.at(-1)!.getBoundingClientRect().bottom };
+    const $from = view.state.doc.resolve(hunk.fromB);
+    if (hunk.fromB === hunk.toB && Array.from({ length: $from.depth }, (_, i) => $from.node(i + 1)).some(node => node.type.spec.tableRole === 'table')) {
+      // A deleted row has no current row box; mark its insertion boundary.
+      const boundary = view.coordsAtPos(hunk.fromB);
+      return { top: boundary.top, bottom: boundary.top + 8 };
     }
     if (!hunk.inline) {
       const range = blockRange(view.state.doc, hunk.fromB, hunk.toB);
@@ -450,7 +492,9 @@ export function markHunkSeen(view: EditorView, hunk: Hunk): void {
 export function revertHunk(view: EditorView, hunk: Hunk): void {
   const state = reviewState(view);
   if (!state) return;
-  view.dispatch(view.state.tr.replace(hunk.fromB, hunk.toB, state.base.slice(hunk.fromA, hunk.toA)).setMeta(reviewKey, { type: 'revert', hunk } satisfies Action));
+  const tr = view.state.tr;
+  for (const change of [...hunk.changes].reverse()) tr.replace(change.fromB, change.toB, state.base.slice(change.fromA, change.toA));
+  view.dispatch(tr.setMeta(reviewKey, { type: 'revert', hunk } satisfies Action));
 }
 export function toggleHunks(view: EditorView, hunks: readonly Hunk[]): void {
   if (hunks.length) view.dispatch(view.state.tr.setMeta(reviewKey, { type: 'toggle', positions: hunks.map(hunk => hunk.fromB) } satisfies Action));
@@ -469,6 +513,8 @@ export function hunkAtPos(view: EditorView, pos: number): Hunk | undefined {
 export function hunkAtPoint(view: EditorView, x: number, y: number, target?: EventTarget | null): Hunk | undefined {
   const state = reviewState(view);
   if (!state) return undefined;
+  const line = target instanceof Element ? target.closest<HTMLElement>('.tether-review-line') : null;
+  if (line && line.parentElement === layers.get(view.dom)?.layer) return state.hunks.find(h => h.fromB === Number(line.dataset.hunk));
   const before = target instanceof Element ? target.closest<HTMLElement>('.tether-review-before') : null;
   if (before?.dataset.hunk) { const hunk = state.hunks.find(h => h.fromB === Number(before.dataset.hunk)); if (hunk) return hunk; }
   const found = view.posAtCoords({ left: x, top: y });

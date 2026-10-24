@@ -219,3 +219,59 @@ test("comment anchors accept earlier wording", () => {
   expect((validateAnnotationEvent(comment(anchor)) as CommentEvent).anchor.before).toEqual(anchor.before);
   expect(() => validateAnnotationEvent(comment({ ...anchor, before: { exact: "The" } }))).toThrow();
 });
+
+const table = '| Name | Value |\n| --- | --- |\n| Alpha | one |\n| Beta | two |\n| Gamma | three |\n';
+
+test('table cell changes accept or revert once without introducing structural changes', () => {
+  const updated = table.replace('| Beta | two |', '| Changed | updated |');
+  for (const action of ['seen', 'revert']) {
+    load(table);
+    review.startIncomingDiff(crepe.editor, updated);
+    const state = review.reviewState(view)!;
+    expect(state.hunks).toHaveLength(1);
+    const current = view.state.doc;
+    if (action === 'seen') review.markHunkSeen(view, state.hunks[0]!);
+    else review.revertHunk(view, state.hunks[0]!);
+    expect(review.reviewState(view)).toBeNull();
+    expect(view.state.doc.eq(action === 'seen' ? current : state.base)).toBe(true);
+  }
+});
+
+test('table alignment changes group by row and each row clears in one action', () => {
+  load(table);
+  review.startIncomingDiff(crepe.editor, table.replace('| --- | --- |', '| :--- | ---: |'));
+  const current = view.state.doc;
+  expect(review.reviewState(view)!.hunks).toHaveLength(4);
+  for (let remaining = 4; remaining > 0; remaining--) {
+    review.markHunkSeen(view, review.reviewState(view)!.hunks[0]!);
+    expect(review.reviewState(view)?.hunks.length ?? 0).toBe(remaining - 1);
+    expect(view.state.doc).toBe(current);
+  }
+});
+
+test('accepting one table row leaves other changed rows under review', () => {
+  load(table);
+  review.startIncomingDiff(crepe.editor, table.replace('one', 'first').replace('three', 'last'));
+  expect(review.reviewState(view)!.hunks).toHaveLength(2);
+  review.markHunkSeen(view, review.reviewState(view)!.hunks[0]!);
+  expect(review.reviewState(view)!.hunks).toHaveLength(1);
+  review.revertHunk(view, review.reviewState(view)!.hunks[0]!);
+  expect(review.reviewState(view)).toBeNull();
+  expect(view.state.doc.eq(review.parseIncomingDocument(crepe.editor, table.replace('one', 'first'))!)).toBe(true);
+});
+
+test('inserted and deleted table rows accept or revert without affecting neighboring rows', () => {
+  for (const updated of [table.replace('| Beta | two |\n', ''), table.replace('| Beta | two |', '| Added | new |\n| Beta | two |')]) {
+    for (const action of ['seen', 'revert']) {
+      load(table);
+      review.startIncomingDiff(crepe.editor, updated);
+      const state = review.reviewState(view)!;
+      expect(state.hunks).toHaveLength(1);
+      const current = view.state.doc;
+      if (action === 'seen') review.markHunkSeen(view, state.hunks[0]!);
+      else review.revertHunk(view, state.hunks[0]!);
+      expect(review.reviewState(view)).toBeNull();
+      expect(view.state.doc.eq(action === 'seen' ? current : state.base)).toBe(true);
+    }
+  }
+});

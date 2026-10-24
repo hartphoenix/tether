@@ -217,6 +217,70 @@ try {
         if (mode === 'toggle-comment') check(saved === incoming, 'Done wrote the file');
         if (mode === 'changed-again') check(saved === '# Changed again\n', 'a later disk change was overwritten');
       }
+      const table = '| Name | Value |\n| --- | --- |\n| Alpha | one |\n| Beta | two |\n| Gamma | three |\n';
+      for (const [label, updated, rows] of [
+        ['multiple cells', table.replace('| Beta | two |', '| Changed | updated |'), [2]],
+        ['earlier row', table.replace('| Beta | two |', '| Changed | updated |'), [2]],
+        ['separate rows', table.replace('one', 'first').replace('three', 'last'), [1, 3]],
+        ['alignment', table.replace('| --- | --- |', '| :--- | ---: |'), [0, 1, 2, 3]],
+        ['inserted row', table.replace('| Beta | two |', '| Added | new |\n| Beta | two |'), [2]],
+      ] as const) {
+        phase = `table review ${label}`;
+        console.log(`${name}: ${phase}`);
+        await writeFile(path, table); await reader.reload(); await reader.locator('.ProseMirror table.children').waitFor();
+        await reader.waitForTimeout(150);
+        await writeFile(path, updated);
+        await reader.evaluate(() => dispatchEvent(new Event('online')));
+        await reader.locator('#save-review').waitFor({ state: 'visible' });
+        await reader.waitForFunction(count => document.querySelectorAll('.tether-review-line').length === count, rows.length);
+        if (label === 'earlier row') {
+          await rightClick('.ProseMirror td', 'Changed');
+          await reader.getByRole('menuitem', { name: 'Show earlier wording', exact: true }).click();
+          await reader.locator('.tether-review-line.is-before').waitFor();
+        }
+        for (const [index, row] of rows.entries()) {
+          const lineBox = (await hunkLine(index).boundingBox())!;
+          const rowBox = (await reader.locator(label === 'earlier row' ? '.tether-review-before tr' : '.ProseMirror table.children tr').nth(row).boundingBox())!;
+          check(Math.abs(lineBox.y - rowBox.y) < 2 && Math.abs(lineBox.height - rowBox.height) < 2, `${label}: marker extends beyond changed row ${row}`);
+        }
+        for (let remaining = rows.length; remaining > 0; remaining--) {
+          await hunkLine(0).click();
+          await reader.waitForFunction(count => document.querySelectorAll('.tether-review-line').length === count, remaining - 1);
+        }
+        await reader.locator('#conflict').waitFor({ state: 'hidden' });
+        if (label === 'earlier row') {
+          await reader.waitForFunction(() => !document.querySelector('.ProseMirror')?.textContent?.includes('Changed'));
+        } else check(await readFile(path, 'utf8') === updated, `${label}: marking seen rewrote the table`);
+      }
+      phase = 'combined table edits';
+      const combinedBase = '# Table review test\n\nBaseline for testing row markers and accepting table changes.\n\n| Item | Status | Notes |\n| --- | --- | --- |\n| Alpha | Planned | First unchanged row |\n| Beta | In progress | Candidate for a single-cell edit |\n| Gamma | Planned | Candidate for edits in two cells |\n| Delta | Planned | Unchanged separator row |\n| Epsilon | Planned | Candidate for a separate edit |\n| Zeta | Planned | Last unchanged row |\n\nThis paragraph should stay unchanged.\n';
+      const combinedNext = combinedBase.replace('| Alpha | Planned | First unchanged row |', '| Alpha | Complete | Ready for review |')
+        .replace('| Delta |', '| Midpoint | New | Inserted in the middle |\n| Delta |')
+        .replace('| Zeta | Planned | Last unchanged row |', '| Zeta | Planned | Last unchanged row |\n| Eta | New | Added at the end |');
+      await writeFile(path, combinedBase); await reader.reload(); await reader.locator('.ProseMirror table.children').waitFor();
+      await reader.waitForTimeout(150);
+      await writeFile(path, combinedNext); await reader.evaluate(() => dispatchEvent(new Event('online')));
+      await reader.waitForFunction(() => document.querySelectorAll('.tether-review-line').length === 3);
+      for (const [index, row] of [1, 4, 8].entries()) {
+        const line = (await hunkLine(index).boundingBox())!, bounds = (await reader.locator('.ProseMirror table.children tr').nth(row).boundingBox())!;
+        check(Math.abs(line.y - bounds.y) < 2 && Math.abs(line.height - bounds.height) < 2, `combined edits: marker ${index} must cover only row ${row}`);
+      }
+      // Accept the middle insertion first, independently of the other two changes.
+      await hunkLine(1).click({ button: 'right' });
+      for (const label of ['Comment', 'Show earlier wording', 'Mark seen', 'Revert this change']) {
+        check(await reader.getByRole('menuitem', { name: label, exact: true }).isVisible(), `margin menu missing ${label}`);
+      }
+      check(await reader.locator('.tether-review-line').count() === 3, 'right-click accepted a change');
+      await reader.getByRole('menuitem', { name: 'Mark seen', exact: true }).click();
+      await reader.waitForFunction(() => document.querySelectorAll('.tether-review-line').length === 2);
+      check(await reader.locator('.tether-review-inserted', { hasText: 'Midpoint' }).count() === 0, 'middle insertion was not accepted');
+      check(await reader.locator('.tether-review-inserted', { hasText: 'Complete' }).count() === 1, 'accepting the middle insertion accepted Alpha');
+      check(await reader.locator('.tether-review-inserted', { hasText: 'Eta' }).count() === 1, 'accepting the middle insertion accepted Eta');
+      await hunkLine(1).click();
+      await reader.waitForFunction(() => document.querySelectorAll('.tether-review-line').length === 1);
+      await hunkLine(0).click();
+      await reader.locator('#conflict').waitFor({ state: 'hidden' });
+      check(await readFile(path, 'utf8') === combinedNext, 'accepting combined changes rewrote the table');
       check(errors.length === 0, errors.join('\n'));
       console.log(`PASS ${name}: hunk reverts, seen lines, Done, earlier wording, review comments, mid-review changes`);
       await context.tracing.stop();
