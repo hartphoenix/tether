@@ -30,6 +30,17 @@ function rangeFor(root: HTMLElement, start: number, end: number): Range | null {
   }
   return null;
 }
+function textOffset(nodes: Text[], container: Node, offset: number): number {
+  const boundary = document.createRange();
+  boundary.setStart(container, offset); boundary.collapse(true);
+  let at = 0;
+  for (const node of nodes) {
+    if (node === container) return at + offset;
+    if (boundary.comparePoint(node, 0) > 0) break;
+    at += node.length;
+  }
+  return at;
+}
 export function findAnchor(transcript: HTMLElement, a: Anchor): Range | null {
   const roots = [...transcript.querySelectorAll<HTMLElement>('[data-message-id]')].filter(r => r.dataset.messageId === a.messageId);
   // Repeated virtualized rows must not produce a plausible but wrong highlight.
@@ -79,12 +90,10 @@ export function readSelection(): Passage | null {
   const row = start.closest<HTMLElement>('[data-message-id]');
   let anchor: Anchor | undefined;
   if (row?.contains(end)) {
-    const nodes = textNodes(row); let offset = 0, begin = -1, finish = -1;
-    for (const node of nodes) {
-      if (node === range.startContainer) begin = offset + range.startOffset;
-      if (node === range.endContainer) finish = offset + range.endOffset;
-      offset += node.length;
-    }
+    const nodes = textNodes(row);
+    // DOM selections can end between child elements, not just inside text nodes.
+    const begin = textOffset(nodes, range.startContainer, range.startOffset);
+    const finish = textOffset(nodes, range.endContainer, range.endOffset);
     const text = nodes.map(n => n.data).join("");
     if (begin >= 0 && finish > begin) anchor = { messageId: row.dataset.messageId!, text: text.slice(begin, finish), start: begin, end: finish, prefix: text.slice(Math.max(0, begin - 48), begin), suffix: text.slice(finish, finish + 48) };
   }

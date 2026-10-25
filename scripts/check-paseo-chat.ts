@@ -282,6 +282,35 @@ try {
   external.dispatch("external-signal", { messageId: "external-signal", activeTurnBehavior: "steer" }); external.accepted("external-signal");
   await page.waitForFunction(() => document.querySelector('#a summary')?.textContent === "0 annotations");
   assert.equal(await page.locator('#a [data-tether-chat="batch"] li').count(), 0);
+  // Element and mixed selection boundaries must survive saving and repainting.
+  await page.evaluate(() => {
+    const row = document.querySelector('#a [data-message-id]')!;
+    row.setAttribute('data-testid', 'assistant-message');
+    row.innerHTML = '<ul><li id="bullet">First bullet</li><li>Parent<ul><li id="nested">Nested bullet</li></ul></li></ul><ol><li id="numbered">First numbered item</li><li id="second">Second numbered item</li></ol><blockquote id="quote"><p>A blockquote with <strong>bold text</strong> inside it.</p></blockquote><p id="mixed">Prefix <strong>mixed boundary</strong> suffix.</p>';
+  });
+  const passages = [
+    ['bullet', 'First bullet'], ['nested', 'Nested bullet'],
+    ['numbered', 'First numbered item'], ['second', 'Second numbered item'],
+    ['quote', 'A blockquote with bold text inside it.'], ['mixed', 'mixed boundary'],
+  ];
+  for (const [id, expected] of passages) {
+    await page.locator(`#${id}`).scrollIntoViewIfNeeded();
+    await page.evaluate(id => {
+      const node = document.getElementById(id)!;
+      const range = document.createRange(); range.selectNodeContents(node);
+      if (id === 'mixed') { range.setStart(node.querySelector('strong')!.firstChild!, 0); range.setEnd(node, 2); }
+      const selection = getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+    }, id);
+    await page.locator('[data-tether-chat="menu"]').getByRole('button', { name: 'Comment', exact: true }).click();
+    await page.locator('[data-tether-chat="card"] textarea').fill(`Comment on ${id}`);
+    await page.locator('[data-tether-chat="card"]').getByRole('button', { name: 'Comment', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[data-tether-chat="card"]'));
+    assert.equal(saved().drafts.at(-1)?.anchor?.text, expected);
+  }
+  await page.evaluate(() => { const w = window as any; w.stop(); w.stop = w.start(); });
+  await page.waitForFunction(count => document.querySelectorAll('#a [data-tether-chat="badge"]').length === count, passages.length);
+  assert.deepEqual(await page.evaluate(() => [...(CSS as any).highlights.get('tether-chat-pending')].map((range: Range) => range.toString())), passages.map(([, text]) => text));
   await page.evaluate(() => (window as any).stop());
   assert.equal(await page.locator('[data-tether-chat]').count(), 0);
   assert.equal(await page.evaluate(() => (window as any).native.sendAgentMessage === (window as any).original), true);
